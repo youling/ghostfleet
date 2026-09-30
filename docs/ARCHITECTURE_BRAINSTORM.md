@@ -1,44 +1,34 @@
-# GhostFleet Architecture Brainstorm / GhostFleet 架构头脑风暴
+# GhostFleet Architecture Brainstorm
 
 Status: Draft for Astra review
 
-状态：提交 Astra 架构审查草案
+> 中文版与英文版分离，避免中英交错影响架构审查。
 
-## 1. Core Principle / 核心原则
+---
 
-GhostFleet should be designed around lifecycle and objects, not isolated tasks.
+# 中文版
 
-GhostFleet 应围绕对象和生命周期设计，而不是围绕孤立任务设计。
+## 1. 核心原则
 
-Avoid / 避免：
+GhostFleet 应围绕生命周期和对象设计，而不是围绕孤立任务设计。
 
-```
-Create a new issue for every feature
-```
-
-每个功能创建一个新对象。
-
-Prefer / 推荐：
+避免：
 
 ```
-Existing GhostFleet object
+每个功能创建一个新的管理对象
+```
+
+采用：
+
+```
+已有 GhostFleet 对象
         |
-        + capability added
-        + lifecycle state changed
-        + new domain introduced
+        + 新增能力
+        + 生命周期变化
+        + 新领域扩展
 ```
 
-已有 GhostFleet 对象：
-
-```
-已有对象
-        |
-        + 增加能力
-        + 生命周期状态变化
-        + 引入新领域
-```
-
-## 2. High-level Architecture / 高层架构
+## 2. 总体架构
 
 ```
                     Human
@@ -58,13 +48,181 @@ Existing GhostFleet object
               Device Agents
 ```
 
-## 3. Single Entry Point, Multiple Domains / 单入口，多领域
+## 3. 单入口，多 Domain
+
+Enrollment 和日常管理不应该成为两个产品。
+
+推荐：
+
+```
+app.ghostfleet.dev
+
+Fleet
+ ├── Dashboard
+ ├── Nodes
+ ├── Enrollment
+ ├── Capabilities
+ ├── Events
+ └── Settings
+```
+
+区别应该体现在安全和服务边界，而不是用户入口。
+
+## 4. 节点生命周期
+
+```
+UNKNOWN
+   |
+ENROLLMENT_PENDING
+   |
+PROVISIONAL
+   |
+ACTIVE
+   |
+SUSPENDED
+   |
+RETIRED
+```
+
+Enrollment 是节点生命周期的一部分。
+
+## 5. 安全模型
+
+关键区别：
+
+```
+Bootstrap Identity != Operational Authority
+```
+
+设备可以获得注册自身的能力，但不应该自动获得无限执行权限。
+
+```
+Enrollment Token
+        |
+        v
+Node Identity
+        |
+        v
+Capability Grants
+        |
+        v
+Approved Operations
+```
+
+敏感能力需要 Human Gate。
+
+## 6. 控制平面模块
+
+```
+Control Plane
+ |
+ +-- Enrollment Service
+ |
+ +-- Fleet Service
+ |
+ +-- Capability Service
+ |
+ +-- Event Service
+ |
+ +-- API Layer
+```
+
+## 7. UI 策略
+
+不要从零开发完整后台。
+
+优先复用成熟开源 Dashboard/Admin 生态。
+
+GhostFleet 的核心价值：
+
+- 协议；
+- Agent Runtime；
+- 生命周期模型；
+- 能力安全；
+- AI 集成。
+
+UI 作为 API 的消费者：
+
+```
+GhostFleet API
+      |
+      +-- Official Console
+      +-- Community Plugins
+      +-- External Dashboards
+```
+
+## 8. 初始能力目标
+
+支持平台：
+
+- Linux
+- Windows
+- Android
+- macOS（未来）
+
+初始能力：
+
+- Shell/命令执行；
+- 文件操作；
+- 系统信息；
+- 容器操作；
+- 浏览器和设备自动化。
+
+## 9. AI 集成方向
+
+采用能力导向：
+
+```
+AI Agent
+   |
+   +-- MCP
+   +-- API
+   +-- SDK
+   |
+GhostFleet
+```
+
+避免将裸 Shell 作为主要抽象。
+
+---
+
+# English Version
+
+## 1. Core Principle
+
+GhostFleet should be designed around lifecycle and objects, not isolated tasks.
+
+Prefer evolving existing objects through:
+
+- added capabilities;
+- lifecycle changes;
+- new domains.
+
+## 2. High-level Architecture
+
+```
+                    Human
+                      |
+                      v
+              GhostFleet Console
+                      |
+       +--------------+--------------+
+       |              |              |
+ Enrollment      Fleet Domain   Capability
+  Domain                          Domain
+       |              |              |
+       +--------------+--------------+
+                      |
+              Control Plane
+                      |
+              Device Agents
+```
+
+## 3. Single Entry Point, Multiple Domains
 
 Enrollment and daily management should not become separate products.
 
-设备入列和日常管理不应该成为两个独立产品。
-
-Preferred / 推荐：
+Preferred:
 
 ```
 app.ghostfleet.dev
@@ -80,9 +238,7 @@ Fleet
 
 The separation is a security/service boundary, not a user experience boundary.
 
-分离的是安全边界和服务边界，而不是用户体验入口。
-
-## 4. Node Lifecycle / 节点生命周期
+## 4. Node Lifecycle
 
 ```
 UNKNOWN
@@ -100,25 +256,15 @@ RETIRED
 
 Enrollment is part of the node lifecycle.
 
-Enrollment 属于节点生命周期的一部分，而不是独立产品。
-
-## 5. Security Model / 安全模型
+## 5. Security Model
 
 Important distinction:
 
-重要区别：
-
 ```
-Bootstrap identity != operational authority
+Bootstrap Identity != Operational Authority
 ```
 
-引导身份 != 运行权限。
-
-A new device may receive enough authority to register itself, but should not automatically receive unrestricted execution capability.
-
-新设备可以获得完成注册所需的权限，但不应该自动获得无限制执行能力。
-
-Conceptually / 概念流程：
+A device may receive enough authority to register itself, but should not automatically receive unrestricted execution capability.
 
 ```
 Enrollment Token
@@ -133,54 +279,35 @@ Capability Grants
 Approved Operations
 ```
 
-Human Gate is required for sensitive capability issuance.
+Sensitive capabilities require Human Gate approval.
 
-敏感能力授予需要 Human Gate。
-
-## 6. Control Plane Components / 控制平面组件
-
-Initial conceptual modules / 初始模块：
+## 6. Control Plane Components
 
 ```
 Control Plane
  |
  +-- Enrollment Service
- |
  +-- Fleet Service
- |
  +-- Capability Service
- |
  +-- Event Service
- |
  +-- API Layer
 ```
 
-## 7. UI Strategy / UI 策略
+## 7. UI Strategy
 
 Do not build a complete custom admin UI from zero.
 
-不要从零重新开发完整后台管理 UI。
+Reuse mature open-source dashboard/admin ecosystems where practical.
 
-Reuse mature UI/control-panel ecosystems where practical.
-
-尽可能复用成熟 UI 和控制面板生态。
-
-GhostFleet differentiation is:
-
-GhostFleet 的差异化在于：
+GhostFleet differentiation:
 
 - protocol;
-- 协议；
 - agent runtime;
-- Agent 运行时；
 - lifecycle model;
-- 生命周期模型；
 - capability security;
-- 能力安全模型；
 - AI integration.
-- AI 集成。
 
-Potential UI model / UI 模型：
+UI should be an API consumer:
 
 ```
 GhostFleet API
@@ -190,33 +317,27 @@ GhostFleet API
       +-- External Dashboards
 ```
 
-## 8. Initial Capability Targets / 初始能力目标
+## 8. Initial Capability Targets
 
-Supported platforms explored / 已探索平台：
+Supported platforms:
 
 - Linux
 - Windows
 - Android
-- macOS (future / 未来)
+- macOS (future)
 
-Initial capabilities / 初始能力：
+Initial capabilities:
 
 - shell/command execution;
-- Shell/命令执行；
 - file operations;
-- 文件操作；
 - system information;
-- 系统信息；
 - container operations;
-- 容器操作；
-- browser/device automation where supported.
-- 支持情况下的浏览器和设备自动化。
+;
+- browser and device automation.
 
-## 9. Integration Direction / 集成方向
+## 9. AI Integration Direction
 
-Primary AI integration should be capability-oriented.
-
-AI 集成应该以能力为核心抽象。
+Use capability-oriented integration:
 
 ```
 AI Agent
@@ -229,5 +350,3 @@ GhostFleet
 ```
 
 Avoid exposing raw remote shell as the primary abstraction.
-
-避免将裸远程 Shell 作为主要抽象。
