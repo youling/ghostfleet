@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ghostfleet-control-plane",
+  "main": "src/adapters/cloudflare/worker.js",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [{ "name": "GHOSTFLEET_STATE", "class_name": "GhostFleetState" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GhostFleetState"] }],
+  "assets": { "directory": "dist/console", "binding": "ASSETS" }
+}
