@@ -69,7 +69,7 @@ status: `IN_PROGRESS`
 - independent second canary PASS；
 - public/private provenance review；
 - security review；
-- OSS license 冻结；
+- OSS license 已按 Human 选择冻结为 AGPL-3.0-only；
 - third-party notices 完整。
 
 ---
@@ -134,6 +134,5 @@ Implement platform adapters under the same core contract; do not fork lifecycle 
 - independent second canary PASS;
 - public/private provenance review;
 - security review;
-- OSS license freeze;
+- OSS license frozen as AGPL-3.0-only by the owner;
 - complete third-party notices.
-

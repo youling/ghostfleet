@@ -9,7 +9,7 @@ async function body(request) {
 }
 
 function errorResponse(error) {
-  const code = error?.message || "INTERNAL_ERROR";
+  const code = error?.code || (error instanceof SyntaxError ? "INVALID_JSON" : error?.message) || "INTERNAL_ERROR";
   const status = code.includes("NOT_FOUND") ? 404 : code.includes("INVALID") || code.includes("MISSING") ? 409 : 400;
   const payload = { ok: false, error: code };
   if (Array.isArray(error?.missing)) payload.missing = error.missing;

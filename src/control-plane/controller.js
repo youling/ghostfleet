@@ -17,12 +17,18 @@ export class GhostFleetController {
   now() { return isoNow(this.clock); }
   after(seconds) { return isoAfter(seconds, this.clock); }
 
+  requireLiveAttempt(attempt) {
+    if (Date.parse(attempt.expires_at) <= this.clock.now()) throw new Error("ATTEMPT_EXPIRED");
+    return attempt;
+  }
+
   emit(type, subject, data = {}) {
     assertPublicSafe(data);
     return this.store.appendEvent({ event_id: makeId("event"), type, subject, data: publicClone(data), at: this.now() });
   }
 
   transitionAttempt(attempt, to, reason = null) {
+    this.requireLiveAttempt(attempt);
     const next = transitionAttempt(attempt, to, { reason, at: this.now() });
     this.store.putAttempt(next);
     this.emit(EventType.ENROLLMENT_ATTEMPT_CHANGED, next.attempt_id, { from: attempt.state, to, revision: next.revision });
@@ -32,6 +38,7 @@ export class GhostFleetController {
 
   createEnrollmentAttempt({ asset_hint = null, desired_state = NodeLifecycle.ACTIVE, ttl_seconds = 600 } = {}) {
     assertPublicSafe(asset_hint);
+    if (desired_state !== NodeLifecycle.ACTIVE) throw new Error("DESIRED_STATE_INVALID");
     if (!Number.isInteger(ttl_seconds) || ttl_seconds < 30 || ttl_seconds > 3600) throw new Error("TTL_INVALID");
     const now = this.now();
     const attempt = {
@@ -57,11 +64,19 @@ export class GhostFleetController {
   getEnrollmentAttempt(id) { return required(this.store.getAttempt(id), "ATTEMPT_NOT_FOUND"); }
   listEnrollmentAttempts() { return this.store.listAttempts(); }
   prepareEnrollmentAttempt(id) { return this.transitionAttempt(this.getEnrollmentAttempt(id), EnrollmentState.PREPARING, "prepare"); }
-  claimEnrollmentAttempt(id) { return this.transitionAttempt(this.getEnrollmentAttempt(id), EnrollmentState.CLAIMED, "claim"); }
+  claimEnrollmentAttempt(id) {
+    const attempt = this.getEnrollmentAttempt(id);
+    if (attempt.human_gate_ids.some((gateId) => this.store.getGate(gateId)?.state !== HumanGateState.APPROVED)) {
+      throw new Error("HUMAN_GATE_APPROVAL_REQUIRED");
+    }
+    return this.transitionAttempt(attempt, EnrollmentState.CLAIMED, "claim");
+  }
   startMaterialization(id) { return this.transitionAttempt(this.getEnrollmentAttempt(id), EnrollmentState.MATERIALIZING, "materialize"); }
 
   requireEnrollmentHumanGate(id, { gate_type = "ENROLLMENT_CONFIRMATION", prompt = "Confirm enrollment", code_format = "FE1-XXXX-XXXX", ttl_seconds = 600 } = {}) {
     const attempt = this.getEnrollmentAttempt(id);
+    this.requireLiveAttempt(attempt);
+    if (!Number.isInteger(ttl_seconds) || ttl_seconds < 30 || ttl_seconds > 3600) throw new Error("TTL_INVALID");
     if (attempt.state !== EnrollmentState.PREPARING) throw new Error("HUMAN_GATE_STATE_INVALID");
     const gate = {
       gate_id: makeId("gate"),
@@ -89,6 +104,9 @@ export class GhostFleetController {
     const gate = required(this.store.getGate(gate_id), "HUMAN_GATE_NOT_FOUND");
     if (gate.state !== HumanGateState.WAITING) throw new Error("HUMAN_GATE_ALREADY_RESOLVED");
     if (!["APPROVE", "REJECT"].includes(decision)) throw new Error("HUMAN_GATE_DECISION_INVALID");
+    const attempt = this.getEnrollmentAttempt(gate.subject_id);
+    this.requireLiveAttempt(attempt);
+    if (attempt.state !== EnrollmentState.WAITING_HUMAN) throw new Error("HUMAN_GATE_STATE_INVALID");
     if (Date.parse(gate.expires_at) <= this.clock.now()) {
       gate.state = HumanGateState.EXPIRED;
       gate.resolved_at = this.now();
@@ -98,7 +116,6 @@ export class GhostFleetController {
     gate.state = decision === "APPROVE" ? HumanGateState.APPROVED : HumanGateState.REJECTED;
     gate.resolved_at = this.now();
     this.store.putGate(gate);
-    const attempt = this.getEnrollmentAttempt(gate.subject_id);
     const result = decision === "APPROVE"
       ? this.transitionAttempt(attempt, EnrollmentState.CLAIMED, "human-gate-approved")
       : this.transitionAttempt(attempt, EnrollmentState.CANCELLED, "human-gate-rejected");
@@ -108,6 +125,8 @@ export class GhostFleetController {
 
   recordEvidence(id, input) {
     const attempt = this.getEnrollmentAttempt(id);
+    this.requireLiveAttempt(attempt);
+    if ([EnrollmentState.ACCEPTED, EnrollmentState.CANCELLED, EnrollmentState.FAILED].includes(attempt.state)) throw new Error("EVIDENCE_STATE_INVALID");
     const evidence = createEvidence({ ...input, at: this.now() });
     const next = publicClone(attempt);
     next.evidence = [...next.evidence, evidence];
@@ -163,9 +182,7 @@ export class GhostFleetController {
   listEvents() { return this.store.listEvents(); }
 
   registerCapabilityDefinition(definition) {
-    assertPublicSafe(definition);
-    if (!definition?.id || !definition?.risk) throw new Error("CAPABILITY_DEFINITION_INVALID");
-    return this.store.putCapabilityDefinition(definition);
+    return this.store.putCapabilityDefinition(validateCapabilityDefinition(definition));
   }
 
   listCapabilityDefinitions() { return this.store.listCapabilityDefinitions(); }

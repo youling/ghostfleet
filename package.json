@@ -4,11 +4,24 @@
   "private": true,
   "type": "module",
   "description": "Open-source AI-native device fleet control plane",
-  "engines": { "node": ">=22" },
-  "scripts": {
-    "test": "node --test",
-    "check": "node --check src/core/model.js && node --check src/core/state-machine.js && node --check src/core/security.js && node --check src/core/capabilities.js && node --check src/core/evidence.js && node --check src/control-plane/store.js && node --check src/control-plane/controller.js && node --check src/control-plane/http.js && node --check src/integrations/mcp.js && node --check src/adapters/cloudflare/worker.js && node --check console/app.js",
-    "build:console": "node scripts/build-console.mjs"
+  "engines": {
+    "node": ">=22"
   },
-  "dependencies": { "@tabler/core": "1.6.1" }
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "node --check src/core/model.js && node --check src/core/state-machine.js && node --check src/core/security.js && node --check src/core/capabilities.js && node --check src/core/evidence.js && node --check src/control-plane/store.js && node --check src/control-plane/controller.js && node --check src/control-plane/http.js && node --check src/integrations/mcp.js && node --check src/adapters/cloudflare/worker.js && node --check console/app.js",
+    "build:console": "node scripts/build-console.mjs",
+    "dev:init": "node scripts/init-local.mjs",
+    "dev": "wrangler dev --local --ip 127.0.0.1 --port 8791 --inspector-port 0",
+    "smoke:cloud": "node scripts/smoke-cloud.mjs",
+    "build:worker": "wrangler deploy --dry-run --outdir dist/worker",
+    "verify:cloud": "node scripts/verify-cloud.mjs"
+  },
+  "dependencies": {
+    "@tabler/core": "1.6.1"
+  },
+  "devDependencies": {
+    "wrangler": "4.147.0"
+  },
+  "license": "AGPL-3.0-only"
 }

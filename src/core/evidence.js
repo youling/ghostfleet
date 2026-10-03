@@ -8,6 +8,8 @@ export function createEvidence({ type, source = "unknown", data = {}, at = new D
 }
 
 export function missingAcceptanceEvidence(evidence, required = DEFAULT_ACCEPTANCE_EVIDENCE) {
-  const present = new Set((evidence ?? []).map((item) => item.type));
+  // The newest result supersedes prior observations, including an earlier PASS.
+  const results = new Map((evidence ?? []).map((item) => [item.type, item]));
+  const present = new Set([...results].filter(([, item]) => item.data?.status === "PASS").map(([type]) => type));
   return required.filter((type) => !present.has(type));
 }

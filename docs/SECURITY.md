@@ -43,12 +43,12 @@ V0 HumanGate 至少包含：gate_id、gate_type、subject、state、prompt、exp
 
 ### Evidence
 
-状态迁移和 evidence 同时保存。Command exit=0、包已安装、服务 active、网络可达等单独事实都不能自动推导“纳管成功”。
+状态迁移和 evidence 同时保存。每个 required evidence 类型的最新观测必须显式为 `data.status = PASS`；新的 FAIL/UNKNOWN 使旧 PASS 失效。Command exit=0、包已安装、服务 active、网络可达等单独事实都不能自动推导“纳管成功”。真实 adapter 仍需校验 evidence 来源、subject 和权限；合成证据不证明真实设备。
 
 ### Known V0 limits
 
 - 尚未完成真实 provider/device adapter security review；
-- 尚未完成生产级 authentication/RBAC；
+- Cloudflare 参考 API 已有 fail-closed 的 read-only/operator bearer 边界；尚未完成生产级多用户 authentication/RBAC；
 - Cloudflare reference adapter 是结构证明，不代表已部署生产 authority；
 - MCP V0 仅开放 inspection surface；
 - 正式 release 前必须完成 live canary 和 threat-model review。
@@ -99,8 +99,7 @@ State transitions and evidence are stored together. A command exit code, install
 ### Known V0 limits
 
 - real provider/device adapter security review is not complete;
-- production-grade authentication/RBAC is not complete;
+- the Cloudflare API now has a fail-closed read-only/operator bearer boundary; production multi-user authentication/RBAC is not complete;
 - the Cloudflare reference adapter demonstrates structure, not deployed production authority;
 - V0 MCP is inspection-only;
 - live canaries and threat-model review are release gates.
-

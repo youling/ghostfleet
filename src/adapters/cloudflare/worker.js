@@ -1,6 +1,7 @@
 import { GhostFleetController } from "../../control-plane/controller.js";
 import { createHttpHandler } from "../../control-plane/http.js";
 import { InMemoryStore } from "../../control-plane/store.js";
+import { authorizeApi } from "./auth.js";
 
 export class GhostFleetState {
   constructor(state) { this.state = state; }
@@ -21,6 +22,10 @@ export class GhostFleetState {
 export default {
   async fetch(request, env) {
     const path = new URL(request.url).pathname;
+    if (path.startsWith("/v0/")) {
+      const denial = await authorizeApi(request, env);
+      if (denial) return denial;
+    }
     if (path === "/healthz" || path.startsWith("/v0/")) {
       const id = env.GHOSTFLEET_STATE.idFromName("global");
       return env.GHOSTFLEET_STATE.get(id).fetch(request);

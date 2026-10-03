@@ -4,8 +4,10 @@ function escapeHtml(value) {
   return node.innerHTML;
 }
 
+let accessToken = "";
+
 async function api(path, options = {}) {
-  const response = await fetch(path, { headers: { "content-type": "application/json" }, ...options });
+  const response = await fetch(path, { ...options, headers: { "content-type": "application/json", "authorization": `Bearer ${accessToken}` } });
   const data = await response.json();
   if (!response.ok || data.ok === false) throw new Error(data.error || "REQUEST_FAILED");
   return data;
@@ -100,6 +102,16 @@ document.querySelector("#new-attempt").addEventListener("submit", async (event) 
   } catch (error) { window.alert(error.message); }
 });
 
-refresh().catch((error) => {
-  document.querySelector("#attempts").innerHTML = `<div class="alert alert-danger">${escapeHtml(error.message)}</div>`;
+document.querySelector("#connect").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  accessToken = document.querySelector("#api-token").value;
+  document.querySelector("#api-token").value = "";
+  try { await refresh(); }
+  catch (error) { accessToken = ""; document.querySelector("#attempts").innerHTML = `<div class="alert alert-danger">${escapeHtml(error.message)}</div>`; }
+});
+
+document.querySelector("#disconnect").addEventListener("click", () => {
+  accessToken = "";
+  document.querySelector("#api-token").value = "";
+  for (const id of ["summary", "attempts", "gates", "nodes", "capabilities", "events"]) document.querySelector(`#${id}`).replaceChildren();
 });

@@ -48,13 +48,17 @@ AI 集成当前只开放观察/检查类 typed MCP 工具。高权限设备执�
 需要 Node.js 22+。
 
 ~~~bash
-npm install
+npm ci
 npm test
 npm run check
 npm run build:console
+npm run dev:init
+npm run verify:cloud
 ~~~
 
-> V0 仍处于实施阶段。正式发布前仍需真实 Linux canary、第二独立节点 canary、许可证冻结和威胁模型复审。
+许可证为 **AGPL-3.0-only**。云端开发、启动及验收见 [Cloud development](docs/CLOUD_DEVELOPMENT.md)。Console 使用单独的控制面凭据，不使用 provider/device 凭据。
+
+> V0 仍处于实施阶段。正式发布前仍需真实 Linux canary、第二独立节点 canary和威胁模型复审。
 
 ---
 
@@ -104,10 +108,14 @@ The AI integration currently exposes observation/inspection typed MCP tools only
 Node.js 22+ is required.
 
 ~~~bash
-npm install
+npm ci
 npm test
 npm run check
 npm run build:console
+npm run dev:init
+npm run verify:cloud
 ~~~
 
-> V0 is under active implementation. Production release still requires a live Linux canary, an independent second-node canary, license freeze, and threat-model review.
+Licensed under **AGPL-3.0-only**. See [Cloud development](docs/CLOUD_DEVELOPMENT.md) for startup and validation. Console credentials are separate from provider/device credentials.
+
+> V0 is under active implementation. Production release still requires a live Linux canary, an independent second-node canary, and threat-model review.

@@ -20,6 +20,11 @@
         <div class="text-secondary mt-1">One entry point for enrollment and daily fleet state.</div>
       </div></div></div></div>
       <div class="page-body"><div class="container-xl">
+        <form id="connect" class="card card-body mb-3">
+          <label for="api-token" class="form-label">Control-plane access token</label>
+          <div class="input-group"><input id="api-token" name="api_token" class="form-control" type="password" autocomplete="off" required><button class="btn btn-primary" type="submit">Connect</button><button id="disconnect" class="btn btn-outline-secondary" type="button">Disconnect</button></div>
+          <div class="text-secondary mt-2">Use a read-only or operator token for this control plane. Keep provider and device credentials outside the Console.</div>
+        </form>
         <div id="summary" class="row row-cards mb-3"></div>
         <div class="row row-cards">
           <div class="col-12 col-lg-7"><div class="card"><div class="card-header"><h3 class="card-title">Enrollment</h3></div><div class="card-body">
