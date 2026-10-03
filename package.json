@@ -1,0 +1,14 @@
+{
+  "name": "ghostfleet",
+  "version": "0.1.0-dev",
+  "private": true,
+  "type": "module",
+  "description": "Open-source AI-native device fleet control plane",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check src/core/model.js && node --check src/core/state-machine.js && node --check src/core/security.js && node --check src/core/capabilities.js && node --check src/core/evidence.js && node --check src/control-plane/store.js && node --check src/control-plane/controller.js && node --check src/control-plane/http.js && node --check src/integrations/mcp.js && node --check src/adapters/cloudflare/worker.js && node --check console/app.js",
+    "build:console": "node scripts/build-console.mjs"
+  },
+  "dependencies": { "@tabler/core": "1.6.1" }
+}
