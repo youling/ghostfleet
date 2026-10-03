@@ -1,1 +1,45 @@
-# GhostFleet V0 MCP Surface\n\n## 中文版\n\nV0 MCP 先把 AI 放在“观察对象与状态”的位置，而不是直接把节点变成万能终端。\n\n当前工具：\n\n- `ghostfleet_list_nodes`\n- `ghostfleet_list_enrollment_attempts`\n- `ghostfleet_inspect_enrollment_attempt`\n- `ghostfleet_list_capabilities`\n\n这些工具都是 inspection surface。\n\n未来 mutation surface 的约束：\n\n1. exact node identity 必须由 server-side projection 决定；\n2. capability scope 必须显式；\n3. R1/R2 policy/HumanGate 由服务端执行；\n4. operation receipt/evidence 必须可追踪；\n5. tool description/annotation 只服务 UX，不作为 authority。\n\n---\n\n## English Version\n\nV0 MCP deliberately puts the AI in an object/state inspection role before exposing mutation authority.\n\nCurrent tools:\n\n- `ghostfleet_list_nodes`\n- `ghostfleet_list_enrollment_attempts`\n- `ghostfleet_inspect_enrollment_attempt`\n- `ghostfleet_list_capabilities`\n\nAll current tools are inspection surfaces.\n\nFuture mutation surfaces must satisfy these constraints:\n\n1. exact node identity is selected by server-side projection;\n2. capability scope is explicit;\n3. R1/R2 policy/HumanGate enforcement is server side;\n4. operation receipts/evidence are traceable;\n5. tool descriptions/annotations are UX metadata, not authority.\n
+# GhostFleet V0 MCP Surface
+
+## 中文版
+
+V0 MCP 先把 AI 放在“观察对象与状态”的位置，而不是直接把节点变成万能终端。
+
+当前工具：
+
+- `ghostfleet_list_nodes`
+- `ghostfleet_list_enrollment_attempts`
+- `ghostfleet_inspect_enrollment_attempt`
+- `ghostfleet_list_capabilities`
+
+这些工具都是 inspection surface。
+
+未来 mutation surface 的约束：
+
+1. exact node identity 必须由 server-side projection 决定；
+2. capability scope 必须显式；
+3. R1/R2 policy/HumanGate 由服务端执行；
+4. operation receipt/evidence 必须可追踪；
+5. tool description/annotation 只服务 UX，不作为 authority。
+
+---
+
+## English Version
+
+V0 MCP deliberately puts the AI in an object/state inspection role before exposing mutation authority.
+
+Current tools:
+
+- `ghostfleet_list_nodes`
+- `ghostfleet_list_enrollment_attempts`
+- `ghostfleet_inspect_enrollment_attempt`
+- `ghostfleet_list_capabilities`
+
+All current tools are inspection surfaces.
+
+Future mutation surfaces must satisfy these constraints:
+
+1. exact node identity is selected by server-side projection;
+2. capability scope is explicit;
+3. R1/R2 policy/HumanGate enforcement is server side;
+4. operation receipts/evidence are traceable;
+5. tool descriptions/annotations are UX metadata, not authority.
