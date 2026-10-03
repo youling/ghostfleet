@@ -1,4 +1,5 @@
-import { validateCapabilityDefinition } from "../core/capabilities.js";\nimport { createEvidence, missingAcceptanceEvidence } from "../core/evidence.js";
+import { validateCapabilityDefinition } from "../core/capabilities.js";
+import { createEvidence, missingAcceptanceEvidence } from "../core/evidence.js";
 import { makeId, isoAfter, isoNow } from "../core/ids.js";
 import { EnrollmentState, EventType, HumanGateState, NodeLifecycle } from "../core/model.js";
 import { assertPublicSafe, publicClone } from "../core/security.js";
