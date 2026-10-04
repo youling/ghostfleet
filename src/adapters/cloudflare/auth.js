@@ -14,7 +14,7 @@ async function matches(value, expected) {
 
 // Reference single-tenant deployment credentials, never provider/device secrets.
 // Each platform integrating the provider-neutral handler must enforce its own authority boundary.
-export async function authorizeApi(request, env) {
+export async function authorizeApi(request, env, { readOnly = false } = {}) {
   const configured = [env.GHOSTFLEET_OPERATOR_TOKEN, env.GHOSTFLEET_READ_TOKEN].some((token) => typeof token === "string" && token.length >= 32);
   if (!configured) return denied("AUTH_NOT_CONFIGURED", 503);
   const authorization = request.headers.get("authorization") || "";
@@ -22,7 +22,7 @@ export async function authorizeApi(request, env) {
   const token = authorization.slice(7);
   if (await matches(token, env.GHOSTFLEET_OPERATOR_TOKEN)) return null;
   if (await matches(token, env.GHOSTFLEET_READ_TOKEN)) {
-    return request.method === "GET" ? null : denied("READ_ONLY_CREDENTIAL", 403);
+    return request.method === "GET" || readOnly ? null : denied("READ_ONLY_CREDENTIAL", 403);
   }
   return denied("UNAUTHORIZED", 401);
 }

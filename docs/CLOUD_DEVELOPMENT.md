@@ -27,7 +27,7 @@ npm run verify:cloud
 - Console 的 Connect 输入只在页面内存中保留 bearer；Disconnect 清除页面状态；不使用 URL、localStorage 或 sessionStorage。
 - Core HTTP handler 是 embedding seam。其他宿主必须提供自己的认证和授权边界；不要裸暴露它。
 
-线上 Cloudflare 部署需要另外配置账户权限、秘密绑定和 HTTPS。多用户 RBAC、逐 actor 审计、限流及真实设备适配器安全审查仍属于生产验收；本参考 bearer 边界不是完整的生产身份系统。公共 AGPL 发布时，应向网络用户提供对应源码。V0 MCP 目前是只读 dispatcher integration surface，不是可直接连接的远程 MCP transport。
+线上 Cloudflare 部署需要另外配置账户权限、秘密绑定和 HTTPS。多用户 RBAC、逐 actor 审计、限流及真实设备适配器安全审查仍属于生产验收；本参考 bearer 边界不是完整的生产身份系统。公共 AGPL 发布时，应向网络用户提供对应源码。MCP 已提供只读 Streamable HTTP `/mcp`；要求 OAuth 的客户端流程尚需 OAuth 集成。
 
 ### 验证记录与公开边界
 
@@ -40,12 +40,12 @@ npm run verify:cloud
 | 检查 | 结果 |
 | --- | --- |
 | 现有锁文件重新安装 `npm ci` | PASS |
-| Node 回归套件 | 14 tests PASS，0 failed/skipped |
+| Node 回归套件 | 16 tests PASS，0 failed/skipped |
 | `npm run check` | PASS |
 | Console + Worker dry-run build | PASS |
-| `npm run verify:cloud` | PASS：真实 workerd/SQLite DO，合成完整流程和重启恢复 |
-| 公开 tree 检查 | 41 files；未检出测试的私有实例模式；唯一 credential-pattern 提示为 Console runtime input assignment，经检查无源码凭据 |
-| 真实设备 / 线上部署 / 远程 MCP transport | 未执行，不以本地合成验证替代 |
+| `npm run verify:cloud` | PASS：真实 workerd/SQLite DO，合成完整流程、官方 MCP client 握手/调用和重启恢复 |
+| 公开 tree 检查 | 44 files；未检出测试的私有实例模式；唯一 credential-pattern 提示为 Console runtime input assignment，经检查无源码凭据 |
+| 真实设备 / 线上部署 | 未执行，不以本地合成验证替代 |
 
 测试 artifact/状态保存在 ignored `.wrangler` 中。CI 已加入相同安装、测试、构建和重启验证命令；此表不宣称远端 CI 已执行。
 
@@ -53,6 +53,6 @@ npm run verify:cloud
 
 The V0 core, Console and local Cloudflare reference adapter run in a Linux cloud workspace without sudo, Docker, device access or production credentials. Use the commands above. `build:worker` only packages; it does not deploy. `verify:cloud` starts the actual local workerd/SQLite Durable Object, checks authority and synthetic admission, then restarts it to verify durable recovery. It stops its own processes.
 
-The API requires independent read-only/operator bearer credentials; absent configuration fails closed. The Console holds its token in page memory only. This reference single-tenant boundary does not implement production multi-user RBAC or prove live device admission. Other hosts embedding the core HTTP handler must enforce their own authority boundary. The MCP integration is currently a read-only dispatcher, not a remote MCP transport.
+The API requires independent read-only/operator bearer credentials; absent configuration fails closed. The Console holds its token in page memory only. This reference single-tenant boundary does not implement production multi-user RBAC or prove live device admission. Other hosts embedding the core HTTP handler must enforce their own authority boundary. The MCP integration now exposes read-only Streamable HTTP; OAuth-dependent clients still need an OAuth integration.
 
 Production rollout and device canaries remain separate gates. Keep credentials, runtime snapshots and private instance metadata outside public source. Preserve AGPL and third-party notices, and provide corresponding source to network users of an AGPL deployment.

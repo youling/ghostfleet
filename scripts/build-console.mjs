@@ -12,4 +12,5 @@ await cp(resolve("node_modules/@tabler/core/dist/js/tabler.min.js"), resolve(out
 await cp(resolve("THIRD_PARTY_NOTICES.md"), resolve(out, "third-party/THIRD_PARTY_NOTICES.md"));
 await cp(resolve("Tabler-LICENSE.txt"), resolve(out, "third-party/Tabler-LICENSE.txt"));
 await cp(resolve("LICENSE"), resolve(out, "third-party/GhostFleet-LICENSE.txt"));
+await cp(resolve("node_modules/@modelcontextprotocol/sdk/LICENSE"), resolve(out, "third-party/MCP-SDK-LICENSE.txt"));
 console.log("GhostFleet Console built at dist/console");

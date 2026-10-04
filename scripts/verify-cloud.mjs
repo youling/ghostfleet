@@ -21,7 +21,7 @@ async function stop() {
 }
 async function start() {
   server = spawn(process.execPath, ["node_modules/wrangler/bin/wrangler.js", "dev", "--local", "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", "0"], {
-    detached: true, stdio: ["ignore", log.fd, log.fd], env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
+    detached: true, stdio: ["ignore", log.fd, log.fd], env: { ...process.env, WRANGLER_SEND_METRICS: "false", WRANGLER_LOG_PATH: ".wrangler/runtime.log" },
   });
   for (let i = 0; i < 120; i++) {
     if (server.exitCode !== null) throw new Error("Local Worker exited; inspect .wrangler/verify-cloud.log");

@@ -11,7 +11,15 @@ V0 MCP 先把 AI 放在“观察对象与状态”的位置，而不是直接把
 - `ghostfleet_inspect_enrollment_attempt`
 - `ghostfleet_list_capabilities`
 
-这些工具都是 inspection surface。
+这些工具都是 inspection surface。现在通过标准 Streamable HTTP `/mcp` 提供，使用官方 MCP SDK、stateless JSON response 和与 HTTP API 相同的 Durable Object snapshot。每次请求均验证 bearer；read-only 凭据可发送 MCP POST，但无法通过 MCP 调用 mutation。
+
+支持 bearer 配置的客户端（例如 Codex CLI）可以连接部署后的 HTTPS 地址：
+
+```sh
+codex mcp add ghostfleet --url https://YOUR-WORKER-HOST/mcp --bearer-token-env-var GHOSTFLEET_READ_TOKEN
+```
+
+凭据通过运行环境安全注入，不放在命令行或配置值中。该命令参数已通过云端 Codex CLI help 核对；真实远端连接需部署后验证。ChatGPT 等要求 OAuth 的连接流程仍需要单独的 OAuth 授权集成，当前 bearer transport 不冒充 OAuth server。部署步骤见 [Cloudflare deployment](DEPLOYMENT.md)。
 
 未来 mutation surface 的约束：
 
@@ -34,7 +42,9 @@ Current tools:
 - `ghostfleet_inspect_enrollment_attempt`
 - `ghostfleet_list_capabilities`
 
-All current tools are inspection surfaces.
+All current tools are inspection surfaces, served by the official SDK over authenticated stateless Streamable HTTP at `/mcp`. MCP and the REST API read the same Durable Object snapshot. A read-only bearer permits protocol POST requests but never enables mutation tools.
+
+Bearer-capable clients can connect using the command above once the Worker is deployed. OAuth-dependent client connection flows require a separate OAuth authorization integration; this bearer endpoint does not implement an OAuth server.
 
 Future mutation surfaces must satisfy these constraints:
 

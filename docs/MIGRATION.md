@@ -13,7 +13,7 @@ GhostFleet 公共仓库拥有通用产品实现；私有 Fleet 在完成替代�
 | Linux convergence / reboot | 目前仅公共 evidence contract | 幂等 zero-delta、真实 reboot、独立第二节点 canary |
 | Windows / Android | adapter boundary，尚未迁移 | 对应平台契约、权限及实机 canary |
 | typed operations / long jobs / sessions | 未在 V0 实现 | 全部现有调用方迁移，负向权限验证及 receipt parity |
-| MCP | 只读 dispatcher | 可连接的标准 transport、工具契约兼容与消费者验证 |
+| MCP | 只读 Streamable HTTP，官方 client 本地验证 | 线上连接、OAuth 集成及消费者验证 |
 | Console / deployment | 本地静态资源、鉴权和 API | 真实部署、生产身份系统、安全复审及源码提供 |
 
 每次 cutover 要有旧/新 exact revision、能力对照测试、consumer 切换证据和回滚路径。通过后，旧实现可改为明确调用公共 package 的薄兼容层；公共 core 只在 GhostFleet 维护，不在 Fleet 复制第二份修复。薄层退役和旧代码删除应在私仓独立 PR 完成，保持实例数据和配置在私有 owner。

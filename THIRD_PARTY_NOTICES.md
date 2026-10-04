@@ -12,3 +12,11 @@
 - The Console build copies this notice into `dist/console/third-party/THIRD_PARTY_NOTICES.md`; the project release process must preserve applicable upstream license notices.
 
 GhostFleet V0 intentionally excludes optional `dist/libs` vendor plugins.
+
+## Model Context Protocol SDK
+
+- Package: `@modelcontextprotocol/sdk@1.32.0`
+- Upstream: `https://github.com/modelcontextprotocol/typescript-sdk`
+- Copyright: 2024 Anthropic, PBC.
+- License: MIT; the Console build preserves the package's full license in `third-party/MCP-SDK-LICENSE.txt`.
+- The Worker uses the official server and Web Standards Streamable HTTP transport. The smoke verifier uses the official client.

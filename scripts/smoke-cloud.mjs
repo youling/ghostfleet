@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { DEFAULT_ACCEPTANCE_EVIDENCE } from "../src/core/model.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 const base = process.env.GHOSTFLEET_LOCAL_URL || "http://127.0.0.1:8791";
 const url = new URL(base);
@@ -20,6 +22,18 @@ async function call(path, { method = "GET", input, token = vars.GHOSTFLEET_OPERA
 await call("/healthz", { token: null });
 await call("/v0/nodes", { token: null, status: 401 });
 await call("/v0/enrollment-attempts", { method: "POST", token: vars.GHOSTFLEET_READ_TOKEN, input: {}, status: 403 });
+await call("/mcp", { method: "POST", token: null, input: {}, status: 401 });
+const mcpClient = new Client({ name: "ghostfleet-cloud-smoke", version: "1.0.0" });
+try {
+  await mcpClient.connect(new StreamableHTTPClientTransport(new URL("/mcp", base), {
+    requestInit: { headers: { authorization: `Bearer ${vars.GHOSTFLEET_READ_TOKEN}` } },
+  }));
+  assert.equal((await mcpClient.listTools()).tools.length, 4);
+  const viaMcp = await mcpClient.callTool({ name: "ghostfleet_list_nodes", arguments: {} });
+  const viaHttp = await call("/v0/nodes", { token: vars.GHOSTFLEET_READ_TOKEN });
+  assert.deepEqual(viaMcp.structuredContent.nodes, viaHttp.nodes);
+  console.log("PASS: official remote MCP client connects to Worker and reads the same durable node state.");
+} finally { await mcpClient.close(); }
 if (process.argv.includes("--verify-restart")) {
   const expected = JSON.parse(await readFile(receipt, "utf8"));
   const { nodes } = await call("/v0/nodes", { token: vars.GHOSTFLEET_READ_TOKEN });
