@@ -45,6 +45,8 @@ V0 HumanGate 至少包含：gate_id、gate_type、subject、state、prompt、exp
 
 状态迁移和 evidence 同时保存。每个 required evidence 类型的最新观测必须显式为 `data.status = PASS`；新的 FAIL/UNKNOWN 使旧 PASS 失效。Command exit=0、包已安装、服务 active、网络可达等单独事实都不能自动推导“纳管成功”。真实 adapter 仍需校验 evidence 来源、subject 和权限；合成证据不证明真实设备。
 
+Core-owned identity/catalog 证据只能从已存储的 NodeIdentity/projection 生成，公共 evidence 写入口不能伪造。PROVISIONAL 仅用于 enrollment 观察；完整验收后才晋升 ACTIVE。Core projection 证明不替代真实设备与 adapter 的绑定，也不替代 transport/control/convergence/reboot 证明。
+
 ### Known V0 limits
 
 - 尚未完成真实 provider/device adapter security review；
@@ -95,6 +97,8 @@ Human-facing pairing codes belong to their enrollment ceremony/attempt, not the 
 ### Evidence
 
 State transitions and evidence are stored together. A command exit code, installed package, active service or reachable transport alone never proves successful admission.
+
+Core-owned identity/catalog proofs derive only from stored NodeIdentity/projection and cannot be forged through the public evidence endpoint. PROVISIONAL supports enrollment inspection only; full acceptance promotes it to ACTIVE. Core projection evidence does not replace binding to a real device/adapter or transport/control/convergence/reboot proofs.
 
 ### Known V0 limits
 

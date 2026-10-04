@@ -13,6 +13,8 @@ V0 MCP 先把 AI 放在“观察对象与状态”的位置，而不是直接把
 
 这些工具都是 inspection surface。现在通过标准 Streamable HTTP `/mcp` 提供，使用官方 MCP SDK、stateless JSON response 和与 HTTP API 相同的 Durable Object snapshot。每次请求均验证 bearer；read-only 凭据可发送 MCP POST，但无法通过 MCP 调用 mutation。
 
+节点列表包含 MATERIALIZING 期间的 PROVISIONAL 身份，Console、HTTP 和 MCP 读取同一个 node_uid。PROVISIONAL 不等于 ACTIVE，不授予 operational authority。
+
 支持 bearer 配置的客户端（例如 Codex CLI）可以连接部署后的 HTTPS 地址：
 
 ```sh
@@ -43,6 +45,8 @@ Current tools:
 - `ghostfleet_list_capabilities`
 
 All current tools are inspection surfaces, served by the official SDK over authenticated stateless Streamable HTTP at `/mcp`. MCP and the REST API read the same Durable Object snapshot. A read-only bearer permits protocol POST requests but never enables mutation tools.
+
+The node list includes PROVISIONAL identities during MATERIALIZING. Console, HTTP and MCP read the same node_uid. PROVISIONAL is not ACTIVE and grants no operational authority.
 
 Bearer-capable clients can connect using the command above once the Worker is deployed. OAuth-dependent client connection flows require a separate OAuth authorization integration; this bearer endpoint does not implement an OAuth server.
 

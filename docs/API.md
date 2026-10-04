@@ -29,6 +29,8 @@ Cloudflare 参考宿主另提供 `GET /v0/access`，返回当前已认证 bearer
 - `POST /v0/enrollment-attempts/:id/reconcile`；
 - `POST /v0/enrollment-attempts/:id/accept`。
 
+`materialize` 可接收 `{ "node_id": "lab-device", "platform": "linux" }`，返回带稳定 `node_uid` 的 attempt；`GET /v0/nodes` 同时暴露 PROVISIONAL 投影。该身份尚未完成验收、没有 operational authority。identity/catalog 证据由 core 生成，`evidence` 拒绝这两类输入及伪造的 `ghostfleet-core` 来源。`accept` 不 mint 新身份；可省略 body，兼容的 node_id/platform 参数只能匹配 materialize 时的值。旧的“accept 时设置身份”调用需迁移到 materialize。
+
 ### Capability metadata
 
 - `POST /v0/capabilities` 注册 adapter capability definition。
@@ -71,6 +73,8 @@ The Cloudflare reference host also provides authenticated `GET /v0/access`, retu
 - `POST /v0/enrollment-attempts/:id/reconcile-required`
 - `POST /v0/enrollment-attempts/:id/reconcile`
 - `POST /v0/enrollment-attempts/:id/accept`
+
+`materialize` accepts optional `{ "node_id": "lab-device", "platform": "linux" }` and returns an attempt with its stable `node_uid`; `GET /v0/nodes` includes PROVISIONAL enrollment projections. This identity is not accepted and has no operational authority. Core generates identity/catalog proofs; `evidence` rejects those types and forged `ghostfleet-core` sources. `accept` never mints an identity. Its body may be omitted; compatibility node_id/platform arguments must match materialization. Callers that previously assigned identity at acceptance must move those fields to materialize.
 
 ### Capability metadata
 

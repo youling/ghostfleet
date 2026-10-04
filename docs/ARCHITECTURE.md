@@ -37,7 +37,7 @@ UI 不持有 provider root credential，也不因为“同一个入口”而获�
 - `EnrollmentAttempt`：未知物理设备到 durable node identity 之间的生命周期对象；
 - `HumanGate`：人工确认不是聊天上下文，而是持久化状态；
 - `Evidence`：每次关键状态迁移的可验证依据；
-- `NodeIdentity`：成功 admission 后形成的稳定节点身份；
+- `NodeIdentity`：在 MATERIALIZING 建立的稳定 PROVISIONAL 身份，验收后以同一 node_uid 晋升 ACTIVE；
 - `CapabilityDefinition`：节点或 adapter 能提供什么，而不是 raw credential；
 - `Event`：控制循环的唤醒和审计事实。
 
@@ -73,6 +73,8 @@ V0 使用 provider-neutral evidence 类型：
 - `reboot.recovered`
 
 具体 provider 事实由 adapter 映射到这些公共 evidence 类型。例如某个网络 provider 的 Running/IP/外部可见性属于 transport evidence，不进入 core 协议成为硬编码依赖。
+
+`materialize` 在控制面创建 PROVISIONAL NodeIdentity 和 enrollment catalog 投影，再从实际存储状态生成 core-owned `identity.materialized` / `catalog.admitted`。目录登记只允许纳管期间观察，不授权日常设备操作。客户端不能提交或覆盖这两项证据；其余五项必须由真实 adapter 观察提供，合成测试不证明真机。`accept` 验证全部证据后晋升同一身份，不能重新 mint。重复 materialize、durable reload 和 reconcile 保留同一身份；重复 materialize 不产生 material delta。
 
 ### 6. Capability 模型
 
@@ -172,7 +174,7 @@ Sharing one UX entry point never means the browser receives provider root author
 - `EnrollmentAttempt`: lifecycle object between an unknown physical asset and durable node identity;
 - `HumanGate`: durable human approval state rather than chat memory;
 - `Evidence`: verifiable facts attached to important transitions;
-- `NodeIdentity`: stable identity after successful admission;
+- `NodeIdentity`: stable PROVISIONAL identity created during MATERIALIZING and promoted to ACTIVE with the same node_uid after acceptance;
 - `CapabilityDefinition`: what an adapter can safely expose, not a raw credential;
 - `Event`: durable facts used to drive the control loop.
 
@@ -208,6 +210,8 @@ V0 uses provider-neutral evidence types:
 - `reboot.recovered`
 
 Provider-specific facts are mapped by adapters into these public evidence types instead of becoming hard-coded core dependencies.
+
+`materialize` creates a PROVISIONAL NodeIdentity and enrollment catalog projection, then derives core-owned `identity.materialized` and `catalog.admitted` evidence from stored state. Catalog registration permits enrollment inspection only, never operational authority. Clients cannot submit or overwrite those two proofs; the remaining five need real adapter observations, and synthetic tests do not prove hardware acceptance. `accept` promotes the same identity only after all proofs pass. Repeated materialization, durable reload and reconcile retain the identity; repeated materialization has zero material delta.
 
 ### 6. Capability model
 
@@ -256,4 +260,3 @@ The official Console reuses a mature open-source UI foundation. V0 selects Table
 The public repository contains reusable schemas, state machine, UI, API, adapter contracts, synthetic tests and reference deployment.
 
 It excludes real account IDs, private node inventory, live endpoints, long-lived credentials, user-specific policy, private recovery coordinates and internal multi-agent governance.
-

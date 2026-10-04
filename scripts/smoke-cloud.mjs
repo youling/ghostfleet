@@ -53,10 +53,13 @@ if (process.argv.includes("--verify-restart")) {
   const bypass = await call(`${path}/claim`, { method: "POST", input: {}, status: 400 });
   assert.equal(bypass.error, "HUMAN_GATE_APPROVAL_REQUIRED");
   await call(`/v0/human-gates/${gate.gate_id}/resolve`, { method: "POST", input: { decision: "APPROVE" } });
-  await call(`${path}/materialize`, { method: "POST", input: {} });
+  const { attempt: materializing } = await call(`${path}/materialize`, { method: "POST", input: { node_id: "synthetic-cloud-canary", platform: "linux" } });
+  const { nodes: provisionalNodes } = await call("/v0/nodes", { token: vars.GHOSTFLEET_READ_TOKEN });
+  assert.equal(provisionalNodes.find((node) => node.node_uid === materializing.node_uid)?.lifecycle, "PROVISIONAL");
   await call(`${path}/accept`, { method: "POST", input: {}, status: 409 });
-  for (const type of DEFAULT_ACCEPTANCE_EVIDENCE) await call(`${path}/evidence`, { method: "POST", input: { type, source: "synthetic-cloud-smoke", data: { status: "PASS" } }, status: 201 });
+  for (const type of DEFAULT_ACCEPTANCE_EVIDENCE.filter((type) => !["identity.materialized", "catalog.admitted"].includes(type))) await call(`${path}/evidence`, { method: "POST", input: { type, source: "synthetic-cloud-smoke", data: { status: "PASS" } }, status: 201 });
   const { node } = await call(`${path}/accept`, { method: "POST", input: { node_id: "synthetic-cloud-canary", platform: "linux" }, status: 201 });
+  assert.equal(node.node_uid, materializing.node_uid);
   await call(`${path}/accept`, { method: "POST", input: {}, status: 409 });
   await mkdir(".wrangler", { recursive: true });
   await writeFile(receipt, JSON.stringify({ attempt_id: attempt.attempt_id, node_uid: node.node_uid }));

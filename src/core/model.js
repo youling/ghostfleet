@@ -34,10 +34,16 @@ export const EventType = Object.freeze({
   CAPABILITY_AVAILABLE: "CapabilityAvailable",
   CAPABILITY_REQUESTED: "CapabilityRequested",
   CAPABILITY_GRANTED: "CapabilityGranted",
+  NODE_MATERIALIZED: "NodeMaterialized",
   NODE_ADMITTED: "NodeAdmitted",
   PROJECTION_STALE: "ProjectionStale",
   RECONCILE_REQUIRED: "ReconcileRequired",
 });
+
+export const CORE_OWNED_EVIDENCE = Object.freeze([
+  "identity.materialized",
+  "catalog.admitted",
+]);
 
 export const CapabilityRequestState = Object.freeze({
   WAITING_HUMAN: "WAITING_HUMAN",

@@ -93,10 +93,11 @@ test("failed or unknown latest evidence cannot admit a node", () => {
   c.prepareEnrollmentAttempt(attempt.attempt_id);
   c.claimEnrollmentAttempt(attempt.attempt_id);
   c.startMaterialization(attempt.attempt_id);
-  for (const type of DEFAULT_ACCEPTANCE_EVIDENCE) c.recordEvidence(attempt.attempt_id, { type, data: { status: "PASS" } });
+  for (const type of DEFAULT_ACCEPTANCE_EVIDENCE.filter((type) => !["identity.materialized", "catalog.admitted"].includes(type))) c.recordEvidence(attempt.attempt_id, { type, data: { status: "PASS" } });
   c.recordEvidence(attempt.attempt_id, { type: "reboot.recovered", data: { status: "FAIL" } });
   assert.throws(() => c.acceptEnrollment(attempt.attempt_id), (error) => error.missing?.includes("reboot.recovered"));
-  assert.equal(c.listNodes().length, 0);
+  assert.equal(c.listNodes().length, 1);
+  assert.equal(c.listNodes()[0].lifecycle, "PROVISIONAL");
   c.recordEvidence(attempt.attempt_id, { type: "reboot.recovered", data: { status: "PASS" } });
   c.acceptEnrollment(attempt.attempt_id);
   assert.throws(() => c.recordEvidence(attempt.attempt_id, { type: "reboot.recovered" }), /EVIDENCE_STATE_INVALID/);

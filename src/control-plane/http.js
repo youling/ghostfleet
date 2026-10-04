@@ -39,7 +39,7 @@ export function createHttpHandler(controller) {
         const input = await body(request);
         if (action === "prepare") return json({ ok: true, attempt: controller.prepareEnrollmentAttempt(id) });
         if (action === "claim") return json({ ok: true, attempt: controller.claimEnrollmentAttempt(id) });
-        if (action === "materialize") return json({ ok: true, attempt: controller.startMaterialization(id) });
+        if (action === "materialize") return json({ ok: true, attempt: controller.startMaterialization(id, input) });
         if (action === "human-gates") return json({ ok: true, gate: controller.requireEnrollmentHumanGate(id, input) }, 201);
         if (action === "evidence") return json({ ok: true, evidence: controller.recordEvidence(id, input) }, 201);
         if (action === "reconcile-required") return json({ ok: true, attempt: controller.markReconcileRequired(id, input.reason) });

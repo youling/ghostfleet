@@ -1,7 +1,7 @@
 export const MCP_TOOLS = Object.freeze([
   {
     name: "ghostfleet_list_nodes",
-    description: "List admitted GhostFleet nodes and their lifecycle metadata.",
+    description: "List GhostFleet node identities, including PROVISIONAL enrollment projections. Only ACTIVE nodes have completed acceptance.",
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
   },
   {

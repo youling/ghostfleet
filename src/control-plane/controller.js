@@ -1,9 +1,9 @@
 import { validateCapabilityDefinition } from "../core/capabilities.js";
 import { createEvidence, missingAcceptanceEvidence } from "../core/evidence.js";
 import { makeId, isoAfter, isoNow } from "../core/ids.js";
-import { EnrollmentState, EventType, HumanGateState, NodeLifecycle } from "../core/model.js";
+import { CORE_OWNED_EVIDENCE, EnrollmentState, EventType, HumanGateState, NodeLifecycle } from "../core/model.js";
 import { assertPublicSafe, publicClone } from "../core/security.js";
-import { transitionAttempt } from "../core/state-machine.js";
+import { InvalidTransitionError, transitionAttempt } from "../core/state-machine.js";
 import { InMemoryStore } from "./store.js";
 
 function required(value, message) { if (!value) throw new Error(message); return value; }
@@ -71,7 +71,52 @@ export class GhostFleetController {
     }
     return this.transitionAttempt(attempt, EnrollmentState.CLAIMED, "claim");
   }
-  startMaterialization(id) { return this.transitionAttempt(this.getEnrollmentAttempt(id), EnrollmentState.MATERIALIZING, "materialize"); }
+  #provisionalNode(attempt) {
+    const node = attempt.node_uid && this.store.getNode(attempt.node_uid);
+    if (!node) throw new Error("PROVISIONAL_IDENTITY_MISSING");
+    if (node.node_uid !== attempt.node_uid || node.enrollment_attempt_id !== attempt.attempt_id || node.lifecycle !== NodeLifecycle.PROVISIONAL) {
+      throw new Error("PROVISIONAL_IDENTITY_MISMATCH");
+    }
+    return node;
+  }
+
+  #assertIdentityInput(node, { node_id, platform }) {
+    if ((node_id !== undefined && node_id !== null && node_id !== node.node_id) ||
+        (platform !== undefined && platform !== node.platform)) throw new Error("NODE_IDENTITY_MISMATCH");
+  }
+
+  startMaterialization(id, input = {}) {
+    const attempt = this.requireLiveAttempt(this.getEnrollmentAttempt(id));
+    if (![EnrollmentState.CLAIMED, EnrollmentState.MATERIALIZING].includes(attempt.state)) {
+      throw new InvalidTransitionError(attempt.state, EnrollmentState.MATERIALIZING);
+    }
+    const { node_id = null, platform = "unknown" } = input;
+    assertPublicSafe(input);
+    if (Object.keys(input).some((key) => !["node_id", "platform"].includes(key))) throw new Error("MATERIALIZATION_INPUT_INVALID");
+    if (node_id !== null && (typeof node_id !== "string" || !node_id.trim() || node_id.length > 128)) throw new Error("NODE_ID_INVALID");
+    if (typeof platform !== "string" || !/^[a-z][a-z0-9_-]{0,31}$/.test(platform)) throw new Error("PLATFORM_INVALID");
+    let node;
+    if (attempt.node_uid) {
+      node = this.#provisionalNode(attempt);
+      this.#assertIdentityInput(node, input);
+      // A lost response must not remint an identity or append duplicate evidence/events.
+      if (attempt.state === EnrollmentState.MATERIALIZING) return publicClone(attempt);
+    } else {
+      if (attempt.state === EnrollmentState.MATERIALIZING) throw new Error("PROVISIONAL_IDENTITY_MISSING");
+      const node_uid = makeId("node");
+      node = {
+        node_uid, node_id: node_id || node_uid, platform,
+        lifecycle: NodeLifecycle.PROVISIONAL,
+        enrollment_attempt_id: id, capabilities: [],
+        materialized_at: this.now(), admitted_at: null, updated_at: this.now(),
+      };
+    }
+    this.store.putNode(node);
+    const next = this.transitionAttempt({ ...attempt, node_uid: node.node_uid }, EnrollmentState.MATERIALIZING, "materialize");
+    this.#recordCatalogEvidence(next.attempt_id, node);
+    this.emit(EventType.NODE_MATERIALIZED, node.node_uid, { enrollment_attempt_id: id, platform: node.platform });
+    return this.getEnrollmentAttempt(id);
+  }
 
   requireEnrollmentHumanGate(id, { gate_type = "ENROLLMENT_CONFIRMATION", prompt = "Confirm enrollment", code_format = "FE1-XXXX-XXXX", ttl_seconds = 600 } = {}) {
     const attempt = this.getEnrollmentAttempt(id);
@@ -124,6 +169,20 @@ export class GhostFleetController {
   }
 
   recordEvidence(id, input) {
+    if (CORE_OWNED_EVIDENCE.includes(input.type) || input.source === "ghostfleet-core") throw new Error("CORE_EVIDENCE_RESERVED");
+    return this.#recordEvidence(id, input);
+  }
+
+  #recordCatalogEvidence(id, node) {
+    for (const type of CORE_OWNED_EVIDENCE) {
+      this.#recordEvidence(id, { type, source: "ghostfleet-core", data: {
+        status: "PASS", node_uid: node.node_uid, lifecycle: node.lifecycle,
+        projection: "enrollment_catalog",
+      } });
+    }
+  }
+
+  #recordEvidence(id, input) {
     const attempt = this.getEnrollmentAttempt(id);
     this.requireLiveAttempt(attempt);
     if ([EnrollmentState.ACCEPTED, EnrollmentState.CANCELLED, EnrollmentState.FAILED].includes(attempt.state)) throw new Error("EVIDENCE_STATE_INVALID");
@@ -145,34 +204,37 @@ export class GhostFleetController {
 
   resumeFromReconcile(id, resume_state) {
     if (![EnrollmentState.CLAIMED, EnrollmentState.MATERIALIZING].includes(resume_state)) throw new Error("RECONCILE_RESUME_STATE_INVALID");
-    return this.transitionAttempt(this.getEnrollmentAttempt(id), resume_state, "reconciled");
+    const attempt = this.getEnrollmentAttempt(id);
+    if (resume_state === EnrollmentState.MATERIALIZING) this.#provisionalNode(attempt);
+    return this.transitionAttempt(attempt, resume_state, "reconciled");
   }
 
-  acceptEnrollment(id, { node_id = null, platform = "unknown" } = {}) {
-    const attempt = this.getEnrollmentAttempt(id);
+  acceptEnrollment(id, input = {}) {
+    const attempt = this.requireLiveAttempt(this.getEnrollmentAttempt(id));
     if (attempt.state !== EnrollmentState.MATERIALIZING) throw new Error("ACCEPT_STATE_INVALID");
+    if (Object.keys(input).some((key) => !["node_id", "platform"].includes(key))) throw new Error("ACCEPT_INPUT_INVALID");
+    const provisional = this.#provisionalNode(attempt);
+    this.#assertIdentityInput(provisional, input);
+    for (const type of CORE_OWNED_EVIDENCE) {
+      const proof = attempt.evidence.findLast((item) => item.type === type);
+      if (proof?.source !== "ghostfleet-core" || proof?.data.node_uid !== provisional.node_uid) throw new Error("CORE_EVIDENCE_INVALID");
+    }
     const missing = missingAcceptanceEvidence(attempt.evidence);
     if (missing.length) {
       const error = new Error("ACCEPTANCE_EVIDENCE_MISSING");
       error.missing = missing;
       throw error;
     }
-    const node_uid = makeId("node");
     const node = {
-      node_uid,
-      node_id: node_id || node_uid,
-      platform,
+      ...provisional,
       lifecycle: NodeLifecycle.ACTIVE,
-      enrollment_attempt_id: id,
-      capabilities: [],
       admitted_at: this.now(),
       updated_at: this.now(),
     };
     this.store.putNode(node);
-    let accepted = this.transitionAttempt(attempt, EnrollmentState.ACCEPTED, "acceptance-evidence-complete");
-    accepted.node_uid = node_uid;
-    this.store.putAttempt(accepted);
-    this.emit(EventType.NODE_ADMITTED, node_uid, { enrollment_attempt_id: id, platform });
+    this.#recordCatalogEvidence(id, node);
+    this.transitionAttempt(this.getEnrollmentAttempt(id), EnrollmentState.ACCEPTED, "acceptance-evidence-complete");
+    this.emit(EventType.NODE_ADMITTED, node.node_uid, { enrollment_attempt_id: id, platform: node.platform });
     return publicClone(node);
   }
 
