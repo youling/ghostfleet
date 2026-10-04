@@ -1,45 +1,87 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GhostFleet Console</title>
+  <title>GhostFleet · 控制面板</title>
   <link rel="stylesheet" href="./assets/tabler.min.css">
+  <link rel="stylesheet" href="./console.css">
 </head>
 <body>
-  <div class="page">
-    <header class="navbar navbar-expand-md d-print-none">
-      <div class="container-xl">
-        <h1 class="navbar-brand navbar-brand-autodark">GhostFleet</h1>
-        <div class="navbar-nav flex-row order-md-last"><span class="badge bg-blue-lt">V0</span></div>
+  <a class="skip-link" href="#main" data-i18n="skip">跳到主要内容</a>
+  <header class="site-header">
+    <div class="shell header-content">
+      <a class="brand" href="#main" aria-label="GhostFleet">
+        <svg viewBox="0 0 28 28" width="28" height="28" fill="none" aria-hidden="true"><path d="M6 23V12a8 8 0 0 1 16 0v11l-4-3-4 3-4-3-4 3Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M11 12v2m6-2v2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <span>GhostFleet</span><span class="version">V0</span>
+      </a>
+      <div class="header-tools">
+        <span id="connection-status" class="connection-status"></span>
+        <label for="language" class="visually-hidden" data-i18n="language">界面语言</label>
+        <select id="language" class="form-select language-select"><option value="zh-CN">中文</option><option value="en">English</option></select>
       </div>
-    </header>
-    <div class="page-wrapper">
-      <div class="page-header d-print-none"><div class="container-xl"><div class="row g-2 align-items-center"><div class="col">
-        <h2 class="page-title">Fleet lifecycle</h2>
-        <div class="text-secondary mt-1">One entry point for enrollment and daily fleet state.</div>
-      </div></div></div></div>
-      <div class="page-body"><div class="container-xl">
-        <form id="connect" class="card card-body mb-3">
-          <label for="api-token" class="form-label">Control-plane access token</label>
-          <div class="input-group"><input id="api-token" name="api_token" class="form-control" type="password" autocomplete="off" required><button class="btn btn-primary" type="submit">Connect</button><button id="disconnect" class="btn btn-outline-secondary" type="button">Disconnect</button></div>
-          <div class="text-secondary mt-2">Use a read-only or operator token for this control plane. Keep provider and device credentials outside the Console.</div>
-        </form>
-        <div id="summary" class="row row-cards mb-3"></div>
-        <div class="row row-cards">
-          <div class="col-12 col-lg-7"><div class="card"><div class="card-header"><h3 class="card-title">Enrollment</h3></div><div class="card-body">
-            <form id="new-attempt" class="row g-2 mb-3"><div class="col"><input class="form-control" name="asset_hint" placeholder="Asset hint, e.g. lab-laptop"></div><div class="col-auto"><button class="btn btn-primary" type="submit">New attempt</button></div></form>
-            <div id="attempts"></div>
-          </div></div></div>
-          <div class="col-12 col-lg-5"><div class="card"><div class="card-header"><h3 class="card-title">Human Gates</h3></div><div class="card-body" id="gates"></div></div></div>
-          <div class="col-12"><div class="card"><div class="card-header"><h3 class="card-title">Nodes</h3></div><div class="table-responsive"><table class="table card-table table-vcenter"><thead><tr><th>Node</th><th>Platform</th><th>Lifecycle</th><th>Admitted</th></tr></thead><tbody id="nodes"></tbody></table></div></div></div>
-          <div class="col-12 col-lg-5"><div class="card"><div class="card-header"><h3 class="card-title">Capability Registry</h3></div><div class="card-body" id="capabilities"></div></div></div>
-          <div class="col-12 col-lg-7"><div class="card"><div class="card-header"><h3 class="card-title">Events</h3></div><div class="card-body" id="events"></div></div></div>
-        </div>
-      </div></div>
     </div>
-  </div>
-  <script src="./assets/tabler.min.js"></script>
+  </header>
+  <main id="main" class="shell" tabindex="-1">
+    <div class="page-heading">
+      <div><h1 data-i18n="title">设备控制面板</h1><p data-i18n="subtitle">查看纳管进度，处理人工确认，追踪设备状态。</p></div>
+      <button id="refresh" class="btn btn-outline-secondary" type="button" disabled data-i18n="refresh">刷新状态</button>
+    </div>
+
+    <details id="connection-panel" class="connection-panel" open>
+      <summary><span data-i18n="connection">连接控制平面</span><span class="secondary" data-i18n="tokenMemory">令牌仅在本页内存中使用</span></summary>
+      <form id="connect">
+        <label for="api-token" class="form-label" data-i18n="tokenLabel">访问令牌</label>
+        <div class="connection-fields">
+          <input id="api-token" name="api_token" class="form-control" type="password" autocomplete="off" spellcheck="false" required aria-describedby="token-help" data-i18n-placeholder="tokenPlaceholder" placeholder="粘贴此控制平面的只读或操作员令牌">
+          <button class="btn btn-primary" type="submit" data-i18n="connect">连接</button>
+          <button id="disconnect" class="btn btn-outline-secondary" type="button" disabled data-i18n="disconnect">断开</button>
+        </div>
+        <p id="token-help" class="secondary help" data-i18n="tokenHelp">使用 GhostFleet 控制平面的访问令牌。Cloudflare API Token 和设备凭据请保留在对应的配置中。</p>
+      </form>
+    </details>
+    <div id="feedback" class="feedback" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+    <div id="summary" class="summary-line" aria-live="polite"></div>
+    <nav class="section-nav" aria-label="Console sections">
+      <a href="#enrollment-section" data-i18n="enrollment">纳管记录</a>
+      <a href="#approvals-section" data-i18n="approvals">人工确认</a>
+      <a href="#nodes-section" data-i18n="nodes">设备</a>
+      <a href="#capabilities-section" data-i18n="capabilities">可用能力</a>
+      <a href="#events-section" data-i18n="events">最近活动</a>
+    </nav>
+    <div class="workspace-grid">
+      <section id="enrollment-section" class="panel enrollment-panel" aria-labelledby="enrollment-title">
+        <div class="panel-heading"><h2 id="enrollment-title" data-i18n="enrollment">纳管记录</h2><span id="attempt-count" class="secondary"></span></div>
+        <form id="new-attempt" class="enrollment-form">
+          <label for="asset-hint" class="form-label" data-i18n="deviceLabel">设备名称</label>
+          <div class="new-attempt-fields"><input id="asset-hint" name="asset_hint" class="form-control" required maxlength="120" data-i18n-placeholder="devicePlaceholder" placeholder="例如：ThinkPad"><button class="btn btn-primary" type="submit" disabled data-i18n="createRecord">创建纳管记录</button></div>
+          <p class="secondary help" data-i18n="recordScope">V0 创建和跟踪控制平面记录；设备端安装与真实验收仍需接入适配器。</p>
+          <p id="permission-note" class="permission-note"></p>
+        </form>
+        <div id="attempts"></div>
+      </section>
+      <section id="approvals-section" class="panel approvals-panel" aria-labelledby="approvals-title">
+        <div class="panel-heading"><h2 id="approvals-title" data-i18n="approvals">人工确认</h2><span id="gate-count" class="count-badge">0</span></div>
+        <p class="secondary section-description" data-i18n="approvalHelp">核对设备与请求，再决定是否继续。</p>
+        <div id="gates"></div>
+      </section>
+      <section id="nodes-section" class="panel nodes-panel" aria-labelledby="nodes-title">
+        <div class="panel-heading"><h2 id="nodes-title" data-i18n="nodes">设备</h2><span id="node-count" class="secondary"></span></div>
+        <div class="table-responsive" tabindex="0" role="region" aria-labelledby="nodes-title">
+          <table class="table table-vcenter node-table"><thead><tr><th data-i18n="device">设备</th><th data-i18n="platform">平台</th><th data-i18n="lifecycle">状态</th><th data-i18n="admitted">纳管时间</th></tr></thead><tbody id="nodes"></tbody></table>
+        </div>
+      </section>
+      <section id="capabilities-section" class="panel capabilities-panel" aria-labelledby="capabilities-title">
+        <div class="panel-heading"><h2 id="capabilities-title" data-i18n="capabilities">可用能力</h2></div>
+        <div id="capabilities"></div>
+      </section>
+      <section id="events-section" class="panel activity-panel" aria-labelledby="events-title">
+        <div class="panel-heading"><h2 id="events-title" data-i18n="events">最近活动</h2><span class="secondary" data-i18n="latest20">最新 20 条</span></div>
+        <div id="events" tabindex="0" role="region" aria-labelledby="events-title"></div>
+      </section>
+    </div>
+    <footer class="footer"><span data-i18n="footer">GhostFleet V0 · 控制平面状态以服务端记录为准</span><a href="https://github.com/youling/ghostfleet" target="_blank" rel="noopener noreferrer" data-i18n="source">源代码</a></footer>
+  </main>
   <script type="module" src="./app.js"></script>
 </body>
 </html>

@@ -4,6 +4,8 @@
 
 V0 API 是 lifecycle/control-plane contract，不是 provider credential API。
 
+Cloudflare 参考宿主另提供 `GET /v0/access`，返回当前已认证 bearer 的 `access: "operator" | "read_only"`，用于 Console 展示权限；无凭据、无效凭据及只读变更仍由服务端拒绝。该响应设置 `Cache-Control: no-store`，不访问设备存储。其他宿主提供 Console 时需实现同样的认证元数据接口；core HTTP handler 自身不推断凭据。
+
 ### Read
 
 - `GET /healthz`
@@ -44,6 +46,8 @@ Capability definition 仅描述 id、R0/R1/R2 风险级别、说明和 adapter c
 ## English Version
 
 The V0 API is a lifecycle/control-plane contract, not a provider-credential API.
+
+The Cloudflare reference host also provides authenticated `GET /v0/access`, returning `access: "operator" | "read_only"` for Console permission display. The server still rejects missing/invalid credentials and read-only mutations. This metadata response uses `Cache-Control: no-store` and does not access device storage. Other Console hosts must implement this authenticated metadata interface; the core HTTP handler does not infer credentials.
 
 ### Read
 

@@ -21,6 +21,9 @@ async function call(path, { method = "GET", input, token = vars.GHOSTFLEET_OPERA
 
 await call("/healthz", { token: null });
 await call("/v0/nodes", { token: null, status: 401 });
+assert.equal((await call("/v0/access")).access, "operator");
+assert.equal((await call("/v0/access", { token: vars.GHOSTFLEET_READ_TOKEN })).access, "read_only");
+await call("/v0/access", { token: null, status: 401 });
 await call("/v0/enrollment-attempts", { method: "POST", token: vars.GHOSTFLEET_READ_TOKEN, input: {}, status: 403 });
 await call("/mcp", { method: "POST", token: null, input: {}, status: 401 });
 const mcpClient = new Client({ name: "ghostfleet-cloud-smoke", version: "1.0.0" });

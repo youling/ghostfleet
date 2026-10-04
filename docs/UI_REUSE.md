@@ -12,7 +12,7 @@ GhostFleet V0 官方 Console 采用 **Tabler** 作为 UI/UX 基础壳，不自�
 - upstream: `https://github.com/tabler/tabler`
 - package: `@tabler/core@1.6.1`
 - license: `MIT`
-- V0 使用范围：core CSS + core JavaScript + 原项目 LICENSE。
+- V0 使用范围：core CSS + 原项目 LICENSE。当前交互使用原生 HTML 与 JavaScript，不打包未使用的 Tabler JavaScript。
 
 ### 明确排除
 
@@ -49,7 +49,7 @@ The official GhostFleet V0 Console uses **Tabler** as its UI/UX foundation inste
 - upstream: `https://github.com/tabler/tabler`
 - package: `@tabler/core@1.6.1`
 - license: `MIT`
-- V0 scope: core CSS + core JavaScript + upstream LICENSE.
+- V0 scope: core CSS + upstream LICENSE. Current interactions use native HTML and JavaScript; unused Tabler JavaScript is not bundled.
 
 ### Explicit exclusions
 

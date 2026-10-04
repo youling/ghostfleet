@@ -24,7 +24,7 @@ npm run verify:cloud
 - `GHOSTFLEET_OPERATOR_TOKEN`：允许此单租户参考控制面的对象操作和 gate resolution。
 - 每个配置值至少 32 字符，应使用独立随机凭据；这些不是 provider/device 的 root credential。
 - 未配置凭据的 `/v0/*` 返回 503；无效或缺失 bearer 返回 401；`/healthz` 和公开静态 Console 不返回实例记录。
-- Console 的 Connect 输入只在页面内存中保留 bearer；Disconnect 清除页面状态；不使用 URL、localStorage 或 sessionStorage。
+- Console 的 Connect 输入只在页面内存中保留 bearer；Disconnect 清除页面状态；令牌不写入 URL、localStorage 或 sessionStorage。语言偏好可保存在 localStorage。
 - Core HTTP handler 是 embedding seam。其他宿主必须提供自己的认证和授权边界；不要裸暴露它。
 
 线上 Cloudflare 部署需要另外配置账户权限、秘密绑定和 HTTPS。多用户 RBAC、逐 actor 审计、限流及真实设备适配器安全审查仍属于生产验收；本参考 bearer 边界不是完整的生产身份系统。公共 AGPL 发布时，应向网络用户提供对应源码。MCP 已提供只读 Streamable HTTP `/mcp`；要求 OAuth 的客户端流程尚需 OAuth 集成。
@@ -40,11 +40,12 @@ npm run verify:cloud
 | 检查 | 结果 |
 | --- | --- |
 | 现有锁文件重新安装 `npm ci` | PASS |
-| Node 回归套件 | 16 tests PASS，0 failed/skipped |
+| Node 回归套件 | 17 tests PASS，0 failed/skipped；本云环境另外以 `node --test --test-isolation=none test/*.test.js` 确认逐用例结果 |
 | `npm run check` | PASS |
 | Console + Worker dry-run build | PASS |
 | `npm run verify:cloud` | PASS：真实 workerd/SQLite DO，合成完整流程、官方 MCP client 握手/调用和重启恢复 |
-| 公开 tree 检查 | 44 files；未检出测试的私有实例模式；唯一 credential-pattern 提示为 Console runtime input assignment，经检查无源码凭据 |
+| 公开 tree 检查 | 50 files；新增截图仅含本地合成数据；唯一 credential-pattern 提示为 Console runtime input assignment，经检查无源码凭据 |
+| Console 浏览器验证 | PASS：中英文、320px 至桌面布局、只读权限、真实本机生命周期操作、断开竞态和变更结果不明确时的恢复；见 [Console](CONSOLE.md) |
 | 真实设备 / 线上部署 | 未执行，不以本地合成验证替代 |
 
 测试 artifact/状态保存在 ignored `.wrangler` 中。CI 已加入相同安装、测试、构建和重启验证命令；此表不宣称远端 CI 已执行。

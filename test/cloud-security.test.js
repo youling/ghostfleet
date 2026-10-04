@@ -26,6 +26,23 @@ test("cloud API fails closed before it reaches storage", async () => {
   assert.equal(calls, 2);
 });
 
+test("access metadata reports the authenticated scope without touching storage", async () => {
+  const env = {
+    GHOSTFLEET_OPERATOR_TOKEN: operator, GHOSTFLEET_READ_TOKEN: reader,
+    GHOSTFLEET_STATE: { idFromName() { throw new Error("metadata must not access storage"); } },
+  };
+  for (const [token, scope] of [[operator, "operator"], [reader, "read_only"]]) {
+    const response = await worker.fetch(request("GET", token, "/v0/access"), env);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.deepEqual(await response.json(), { ok: true, access: scope });
+  }
+  assert.equal((await worker.fetch(request("GET", "wrong", "/v0/access"), env)).status, 401);
+  assert.equal((await worker.fetch(request("GET", undefined, "/v0/access"), env)).status, 401);
+  assert.equal((await worker.fetch(request("GET", reader, "/v0/access"), {})).status, 503);
+  assert.equal((await worker.fetch(request("POST", reader, "/v0/access"), env)).status, 403);
+});
+
 test("Durable Object reloads committed state between requests", async () => {
   const values = new Map();
   const storage = { transaction: (fn) => fn({ get: async (key) => structuredClone(values.get(key)), put: async (key, value) => values.set(key, structuredClone(value)) }) };

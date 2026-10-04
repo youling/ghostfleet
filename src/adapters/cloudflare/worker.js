@@ -1,7 +1,7 @@
 import { GhostFleetController } from "../../control-plane/controller.js";
 import { createHttpHandler } from "../../control-plane/http.js";
 import { InMemoryStore } from "../../control-plane/store.js";
-import { authorizeApi } from "./auth.js";
+import { authorizeApi, getAccessLevel } from "./auth.js";
 import { handleMcpRequest } from "../../integrations/mcp-http.js";
 
 export class GhostFleetState {
@@ -28,6 +28,9 @@ export default {
     if (path.startsWith("/v0/") || isMcp) {
       const denial = await authorizeApi(request, env, { readOnly: isMcp });
       if (denial) return denial;
+    }
+    if (path === "/v0/access" && request.method === "GET") {
+      return Response.json({ ok: true, access: await getAccessLevel(request, env) }, { headers: { "cache-control": "no-store" } });
     }
     if (path === "/healthz" || path.startsWith("/v0/") || isMcp) {
       const id = env.GHOSTFLEET_STATE.idFromName("global");

@@ -12,6 +12,15 @@ async function matches(value, expected) {
   return difference === 0;
 }
 
+export async function getAccessLevel(request, env) {
+  const authorization = request.headers.get("authorization") || "";
+  if (!authorization.startsWith("Bearer ") || authorization.length > 4096) return null;
+  const token = authorization.slice(7);
+  if (await matches(token, env.GHOSTFLEET_OPERATOR_TOKEN)) return "operator";
+  if (await matches(token, env.GHOSTFLEET_READ_TOKEN)) return "read_only";
+  return null;
+}
+
 // Reference single-tenant deployment credentials, never provider/device secrets.
 // Each platform integrating the provider-neutral handler must enforce its own authority boundary.
 export async function authorizeApi(request, env, { readOnly = false } = {}) {

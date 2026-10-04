@@ -58,6 +58,8 @@ npm run verify:cloud
 
 许可证为 **AGPL-3.0-only**。云端开发、启动及验收见 [Cloud development](docs/CLOUD_DEVELOPMENT.md)。Console 使用单独的控制面凭据，不使用 provider/device 凭据。
 
+Console 默认中文、支持英文切换，包含纳管进度、人工确认和只读权限提示。使用说明与合成数据预览见 [Console](docs/CONSOLE.md)。
+
 > V0 仍处于实施阶段。正式发布前仍需真实 Linux canary、第二独立节点 canary和威胁模型复审。
 
 ---
@@ -117,5 +119,7 @@ npm run verify:cloud
 ~~~
 
 Licensed under **AGPL-3.0-only**. See [Cloud development](docs/CLOUD_DEVELOPMENT.md) for startup and validation. Console credentials are separate from provider/device credentials.
+
+The Console defaults to Chinese with an English switch and displays enrollment progress, human approvals and access scope. See [Console](docs/CONSOLE.md) for usage and synthetic-data previews.
 
 > V0 is under active implementation. Production release still requires a live Linux canary, an independent second-node canary, and threat-model review.
