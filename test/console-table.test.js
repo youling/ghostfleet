@@ -1,6 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { selectRows } from "../console/table-model.js";
+import { enrollmentDisplayName, selectRows } from "../console/table-model.js";
+
+test("structured enrollment hints display only the node bound to that attempt", () => {
+  const attempt = { attempt_id: "attempt-1", node_uid: "node-1", asset_hint: { enrollment_ref: "opaque-ref", assets_join: "UNBOUND" } };
+  const nodes = [{ node_uid: "node-1", node_id: "Linux device", enrollment_attempt_id: "attempt-1" }];
+  const before = structuredClone({ attempt, nodes });
+  assert.equal(enrollmentDisplayName(attempt, nodes), "Linux device");
+  assert.equal(enrollmentDisplayName(attempt, [{ ...nodes[0], enrollment_attempt_id: "another-attempt" }]), "attempt-1");
+  assert.equal(enrollmentDisplayName(attempt, [{ ...nodes[0], node_uid: "another-node" }]), "attempt-1");
+  assert.equal(enrollmentDisplayName({ ...attempt, attempt_id: undefined }, nodes, "subject-1"), "subject-1");
+  assert.deepEqual({ attempt, nodes }, before);
+});
+test("pending enrollments retain a string label or a stable ID without coercing arbitrary hints", () => {
+  assert.equal(enrollmentDisplayName({ attempt_id: "attempt-1", asset_hint: "Named device" }), "Named device");
+  for (const hint of [{}, [], ["device"], 42, true, null, undefined, "", "   "]) {
+    assert.equal(enrollmentDisplayName({ attempt_id: "attempt-1", asset_hint: hint }), "attempt-1");
+  }
+  assert.equal(enrollmentDisplayName(undefined, [], "subject-1"), "subject-1");
+});
 
 const adapter = {
   searchText: (row) => row.name + " " + row.id,

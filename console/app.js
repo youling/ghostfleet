@@ -1,6 +1,6 @@
 import { applyLocale, getLanguage, setLanguage, t } from "./i18n.js";
 import { DEFAULT_ACCEPTANCE_EVIDENCE as requiredEvidence } from "./model.js";
-import { selectRows } from "./table-model.js";
+import { enrollmentDisplayName, selectRows } from "./table-model.js";
 import { icon } from "./icons.js";
 
 // The UI owns presentation only. Authority, transitions and admission stay on the server.
@@ -50,10 +50,15 @@ function evidenceResults(attempt) {
   const latest = new Map((attempt.evidence || []).map((item) => [item.type, item]));
   return { latest, passed: requiredEvidence.filter((type) => latest.get(type)?.data?.status === "PASS").length };
 }
+function attemptName(attempt, fallback = attempt?.attempt_id) {
+  return enrollmentDisplayName(attempt, snapshot?.nodes || [], fallback);
+}
 function subjectName(id) {
-  return snapshot?.attempts.find((item) => item.attempt_id === id)?.asset_hint ||
-    snapshot?.nodes.find((item) => item.node_uid === id)?.node_id ||
-    attemptFor(snapshot?.gates.find((gate) => gate.gate_id === id) || {})?.asset_hint || id;
+  const attempt = snapshot?.attempts.find((item) => item.attempt_id === id);
+  if (attempt) return attemptName(attempt, id);
+  const node = snapshot?.nodes.find((item) => item.node_uid === id);
+  if (node) return node.node_id;
+  return attemptName(attemptFor(snapshot?.gates.find((gate) => gate.gate_id === id) || {}), id);
 }
 function empty(title, description, symbol = "devices", reset = false) {
   return '<div class="empty-state">' + icon(symbol) + "<strong>" + text(title) + "</strong><p>" + text(description) + "</p>" +
@@ -155,9 +160,9 @@ function renderOverview() {
   const waiting = snapshot.gates.filter(gateActionable);
   const active = activeAttempts();
   const queue = [
-    ...waiting.map((gate) => ({ kind: "gate", id: gate.gate_id, name: attemptFor(gate)?.asset_hint || gate.subject_id, symbol: "approvals", detail: t("needsApproval") })),
+    ...waiting.map((gate) => ({ kind: "gate", id: gate.gate_id, name: attemptName(attemptFor(gate), gate.subject_id), symbol: "approvals", detail: t("needsApproval") })),
     ...active.filter((attempt) => ["CREATED", "PREPARING", "CLAIMED", "RECONCILE_REQUIRED"].includes(attempt.state)).slice().reverse().map((attempt) =>
-      ({ kind: "attempt", id: attempt.attempt_id, name: attempt.asset_hint || attempt.attempt_id, symbol: "enrollment", detail: t("state." + attempt.state) + " · " + t("continueEnrollment") })),
+      ({ kind: "attempt", id: attempt.attempt_id, name: attemptName(attempt), symbol: "enrollment", detail: t("state." + attempt.state) + " · " + t("continueEnrollment") })),
   ];
   const latestNodes = snapshot.nodes.slice().sort((a, b) => Date.parse(b.admitted_at) - Date.parse(a.admitted_at)).slice(0, 5);
   const summary = [[snapshot.nodes.length, "summaryNodes"], [active.length, "summaryActive"], [waiting.length, "summaryGates"]].map(([count, key]) =>
@@ -180,12 +185,12 @@ const tables = {
   devices: { kind: "node", id: (row) => row.node_uid, data: () => snapshot.nodes, name: (row) => row.node_id, status: (row) => row.lifecycle, category: () => "all",
     states: ["ACTIVE", "PROVISIONAL", "SUSPENDED", "RETIRED"], columns: [["name", "device", true], ["state", "lifecycle", true], ["platform", "platform", true, true], ["date", "admitted", true, true]],
     date: (row) => row.admitted_at, empty: ["emptyNodesTitle", "emptyNodes"] },
-  enrollment: { kind: "attempt", id: (row) => row.attempt_id, data: () => snapshot.attempts, name: (row) => row.asset_hint || row.attempt_id, status: attemptState,
+  enrollment: { kind: "attempt", id: (row) => row.attempt_id, data: () => snapshot.attempts, name: (row) => attemptName(row), status: attemptState,
     category: (row) => finalStates.has(row.state) || expired(row) ? "completed" : "current",
     states: ["CREATED", "PREPARING", "WAITING_HUMAN", "CLAIMED", "MATERIALIZING", "RECONCILE_REQUIRED", "ACCEPTED", "FAILED", "CANCELLED", "EXPIRED"],
     columns: [["name", "device", true], ["state", "lifecycle", true], ["evidence", "evidence", false, true], ["date", "createdAt", true, true]],
     date: (row) => row.created_at, empty: ["emptyAttemptsTitle", "emptyAttempts"] },
-  approvals: { kind: "gate", id: (row) => row.gate_id, data: () => snapshot.gates, name: (row) => attemptFor(row)?.asset_hint || row.subject_id, status: gateState,
+  approvals: { kind: "gate", id: (row) => row.gate_id, data: () => snapshot.gates, name: (row) => attemptName(attemptFor(row), row.subject_id), status: gateState,
     category: (row) => gateActionable(row) ? "pending" : "resolved", states: ["WAITING", "APPROVED", "REJECTED", "EXPIRED"],
     columns: [["name", "device", true], ["state", "lifecycle", true], ["prompt", "request", false, true], ["date", "expiresAt", true, true]],
     date: (row) => row.expires_at, empty: ["emptyGatesTitle", "emptyGates"] },
@@ -272,7 +277,7 @@ function section(title, body) { return '<section class="detail-section"><h3>' + 
 function attemptActions(attempt) {
   if (finalStates.has(attempt.state) || expired(attempt)) return "";
   const button = (action, label, primary = false) => '<button type="button" class="btn ' + (primary ? "btn-primary" : "btn-outline-secondary") +
-    '" aria-label="' + h(t(label) + " · " + (attempt.asset_hint || attempt.attempt_id)) + '" data-attempt="' + h(attempt.attempt_id) + '" data-action="' + action + '"' + disabled() + ">" + text(label) + "</button>";
+    '" aria-label="' + h(t(label) + " · " + attemptName(attempt)) + '" data-attempt="' + h(attempt.attempt_id) + '" data-action="' + action + '"' + disabled() + ">" + text(label) + "</button>";
   if (attempt.state === "CREATED") return button("prepare", "prepare", true);
   if (attempt.state === "PREPARING") return button("human-gates", "requestGate", true) + button("claim", "claim");
   if (attempt.state === "CLAIMED") return button("materialize", "materialize", true);
@@ -300,7 +305,7 @@ function detailBody(kind, row) {
   if (kind === "attempt") {
     const state = attemptState(row), actions = attemptActions(row);
     const gates = snapshot.gates.filter((gate) => gate.subject_id === row.attempt_id);
-    return '<h3 class="detail-title">' + h(row.asset_hint || row.attempt_id) + "</h3>" + badge(state) +
+    return '<h3 class="detail-title">' + h(attemptName(row)) + "</h3>" + badge(state) +
       '<div class="record-id">' + h(row.attempt_id) + "</div>" + progress(row) +
       '<p class="detail-message">' + text(state === "EXPIRED" ? "nextExpired" : "next." + row.state) + "</p>" +
       (actions ? '<div class="record-actions">' + actions + "</div>" : "") +
@@ -313,8 +318,8 @@ function detailBody(kind, row) {
   if (kind === "gate") {
     const attempt = attemptFor(row), actionable = gateActionable(row);
     const decisionButton = (decision, label, primary) => '<button type="button" class="btn ' + (primary ? "btn-primary" : "btn-outline-danger") +
-      '" data-gate="' + h(row.gate_id) + '" data-decision="' + decision + '" aria-label="' + h(t(label) + " · " + (attempt?.asset_hint || row.subject_id)) + '"' + disabled() + ">" + text(label) + "</button>";
-    return '<h3 class="detail-title">' + h(attempt?.asset_hint || row.subject_id) + "</h3>" + badge(gateState(row)) +
+      '" data-gate="' + h(row.gate_id) + '" data-decision="' + decision + '" aria-label="' + h(t(label) + " · " + attemptName(attempt, row.subject_id)) + '"' + disabled() + ">" + text(label) + "</button>";
+    return '<h3 class="detail-title">' + h(attemptName(attempt, row.subject_id)) + "</h3>" + badge(gateState(row)) +
       '<p class="detail-message">' + (row.prompt === "Confirm enrollment" ? text("gateDefaultPrompt") : h(row.prompt || t("gateDefaultPrompt"))) + "</p>" +
       fields([["recordId", row.gate_id], ["subject", row.subject_id], ["createdAt", date(row.created_at, true)], ["expiresAt", date(row.expires_at, true)]]) +
       (actionable ? '<div class="record-actions">' + decisionButton("APPROVE", "approve", true) + decisionButton("REJECT", "reject", false) + "</div>" :
@@ -355,8 +360,8 @@ function commandEntries() {
   if (!snapshot) return pages;
   return [...pages,
     ...snapshot.nodes.map((row) => ({ kind: "node", id: row.node_uid, name: row.node_id, subtitle: t("devices") + " · " + row.node_uid, symbol: "devices" })),
-    ...snapshot.gates.filter(gateActionable).map((row) => ({ kind: "gate", id: row.gate_id, name: attemptFor(row)?.asset_hint || row.subject_id, subtitle: t("needsApproval") + " · " + row.gate_id, symbol: "approvals" })),
-    ...snapshot.attempts.map((row) => ({ kind: "attempt", id: row.attempt_id, name: row.asset_hint || row.attempt_id, subtitle: t("enrollment") + " · " + row.attempt_id, symbol: "enrollment" })),
+    ...snapshot.gates.filter(gateActionable).map((row) => ({ kind: "gate", id: row.gate_id, name: attemptName(attemptFor(row), row.subject_id), subtitle: t("needsApproval") + " · " + row.gate_id, symbol: "approvals" })),
+    ...snapshot.attempts.map((row) => ({ kind: "attempt", id: row.attempt_id, name: attemptName(row), subtitle: t("enrollment") + " · " + row.attempt_id, symbol: "enrollment" })),
     ...snapshot.capabilities.map((row) => ({ kind: "capability", id: row.id, name: row.id, subtitle: t("risk" + row.risk), symbol: "capabilities" })),
   ];
 }

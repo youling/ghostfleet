@@ -1,4 +1,12 @@
 // Client-side view state only; this module never changes authoritative records.
+export function enrollmentDisplayName(attempt, nodes = [], fallback = "") {
+  const label = (value) => typeof value === "string" && value.trim() ? value : "";
+  if (label(attempt?.asset_hint)) return attempt.asset_hint;
+  const node = label(attempt?.attempt_id) && label(attempt?.node_uid) && nodes.find((item) =>
+    item.node_uid === attempt.node_uid && item.enrollment_attempt_id === attempt.attempt_id);
+  return label(node?.node_id) || label(attempt?.attempt_id) || label(fallback);
+}
+
 export function selectRows(rows, options, adapter) {
   const query = String(options.query || "").trim().toLocaleLowerCase(options.locale);
   const filtered = rows.filter((row) =>
