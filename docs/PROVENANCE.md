@@ -2,6 +2,10 @@
 
 status: `V0`
 
+## Public Console references / 公共界面参考
+
+The professional admin Console follows the user's shadcn-admin layout/interaction reference at `e16c87f213a5ba5e45964e9b67c792105ec74d26` (MIT). No upstream code, screenshot or brand asset is copied into this repository. The Tabler component CSS remains the runtime foundation. Impeccable `6e802bd0ed99f53180e2359fddab6da8d97970d9` (Apache-2.0) is a development/review skill only; its code is not vendored. Exact use and synthetic preview evidence are recorded in [Console](CONSOLE.md).
+
 ## 中文版
 
 GhostFleet 源自 `youling/fleet` 的真实实践，但公共仓库不是私仓 visibility flip，也不是整个目录复制。

@@ -1,0 +1,815 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-04T14:23:52Z",
+  "title": "Design System: GhostFleet Console",
+  "extensions": {
+    "colorMeta": {
+      "canvas": {
+        "role": "neutral",
+        "displayName": "Light Canvas",
+        "canonical": "#fff",
+        "tonalRamp": [
+          "oklch(15% 0.00000 0.00)",
+          "oklch(26% 0.00000 0.00)",
+          "oklch(38% 0.00000 0.00)",
+          "oklch(49% 0.00000 0.00)",
+          "oklch(61% 0.00000 0.00)",
+          "oklch(72% 0.00000 0.00)",
+          "oklch(84% 0.00000 0.00)",
+          "oklch(95% 0.00000 0.00)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Light Control Surface",
+        "canonical": "#fff",
+        "tonalRamp": [
+          "oklch(15% 0.00000 0.00)",
+          "oklch(26% 0.00000 0.00)",
+          "oklch(38% 0.00000 0.00)",
+          "oklch(49% 0.00000 0.00)",
+          "oklch(61% 0.00000 0.00)",
+          "oklch(72% 0.00000 0.00)",
+          "oklch(84% 0.00000 0.00)",
+          "oklch(95% 0.00000 0.00)"
+        ]
+      },
+      "sidebar": {
+        "role": "neutral",
+        "displayName": "Light Sidebar Plane",
+        "canonical": "#fafafa",
+        "tonalRamp": [
+          "oklch(15% 0.00000 0.00)",
+          "oklch(26% 0.00000 0.00)",
+          "oklch(38% 0.00000 0.00)",
+          "oklch(49% 0.00000 0.00)",
+          "oklch(61% 0.00000 0.00)",
+          "oklch(72% 0.00000 0.00)",
+          "oklch(84% 0.00000 0.00)",
+          "oklch(95% 0.00000 0.00)"
+        ]
+      },
+      "muted-surface": {
+        "role": "neutral",
+        "displayName": "Light Muted Surface",
+        "canonical": "#f4f4f5",
+        "tonalRamp": [
+          "oklch(15% 0.00133 286.38)",
+          "oklch(26% 0.00133 286.38)",
+          "oklch(38% 0.00133 286.38)",
+          "oklch(49% 0.00133 286.38)",
+          "oklch(61% 0.00133 286.38)",
+          "oklch(72% 0.00133 286.38)",
+          "oklch(84% 0.00133 286.38)",
+          "oklch(95% 0.00133 286.38)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Light Primary Ink",
+        "canonical": "#18181b",
+        "tonalRamp": [
+          "oklch(15% 0.00586 285.89)",
+          "oklch(26% 0.00586 285.89)",
+          "oklch(38% 0.00586 285.89)",
+          "oklch(49% 0.00586 285.89)",
+          "oklch(61% 0.00586 285.89)",
+          "oklch(72% 0.00586 285.89)",
+          "oklch(84% 0.00586 285.89)",
+          "oklch(95% 0.00586 285.89)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Light Secondary Ink",
+        "canonical": "#62626c",
+        "tonalRamp": [
+          "oklch(15% 0.01575 285.82)",
+          "oklch(26% 0.01575 285.82)",
+          "oklch(38% 0.01575 285.82)",
+          "oklch(49% 0.01575 285.82)",
+          "oklch(61% 0.01575 285.82)",
+          "oklch(72% 0.01575 285.82)",
+          "oklch(84% 0.01575 285.82)",
+          "oklch(95% 0.01575 285.82)"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Light Quiet Divider",
+        "canonical": "#e4e4e7",
+        "tonalRamp": [
+          "oklch(15% 0.00403 286.32)",
+          "oklch(26% 0.00403 286.32)",
+          "oklch(38% 0.00403 286.32)",
+          "oklch(49% 0.00403 286.32)",
+          "oklch(61% 0.00403 286.32)",
+          "oklch(72% 0.00403 286.32)",
+          "oklch(84% 0.00403 286.32)",
+          "oklch(95% 0.00403 286.32)"
+        ]
+      },
+      "input-line": {
+        "role": "neutral",
+        "displayName": "Light Input Boundary",
+        "canonical": "#8b8b96",
+        "tonalRamp": [
+          "oklch(15% 0.01626 285.93)",
+          "oklch(26% 0.01626 285.93)",
+          "oklch(38% 0.01626 285.93)",
+          "oklch(49% 0.01626 285.93)",
+          "oklch(61% 0.01626 285.93)",
+          "oklch(72% 0.01626 285.93)",
+          "oklch(84% 0.01626 285.93)",
+          "oklch(95% 0.01626 285.93)"
+        ]
+      },
+      "primary": {
+        "role": "primary",
+        "displayName": "Light Neutral Action",
+        "canonical": "#18181b",
+        "tonalRamp": [
+          "oklch(15% 0.00586 285.89)",
+          "oklch(26% 0.00586 285.89)",
+          "oklch(38% 0.00586 285.89)",
+          "oklch(49% 0.00586 285.89)",
+          "oklch(61% 0.00586 285.89)",
+          "oklch(72% 0.00586 285.89)",
+          "oklch(84% 0.00586 285.89)",
+          "oklch(95% 0.00586 285.89)"
+        ]
+      },
+      "primary-ink": {
+        "role": "primary",
+        "displayName": "Light Inverse Action Ink",
+        "canonical": "#fff",
+        "tonalRamp": [
+          "oklch(15% 0.00000 0.00)",
+          "oklch(26% 0.00000 0.00)",
+          "oklch(38% 0.00000 0.00)",
+          "oklch(49% 0.00000 0.00)",
+          "oklch(61% 0.00000 0.00)",
+          "oklch(72% 0.00000 0.00)",
+          "oklch(84% 0.00000 0.00)",
+          "oklch(95% 0.00000 0.00)"
+        ]
+      },
+      "focus": {
+        "role": "primary",
+        "displayName": "Light Focus Blue",
+        "canonical": "#2563eb",
+        "tonalRamp": [
+          "oklch(15% 0.21521 262.88)",
+          "oklch(26% 0.21521 262.88)",
+          "oklch(38% 0.21521 262.88)",
+          "oklch(49% 0.21521 262.88)",
+          "oklch(61% 0.21521 262.88)",
+          "oklch(72% 0.21521 262.88)",
+          "oklch(84% 0.21521 262.88)",
+          "oklch(95% 0.21521 262.88)"
+        ]
+      },
+      "green": {
+        "role": "secondary",
+        "displayName": "Light Success Green",
+        "canonical": "#166534",
+        "tonalRamp": [
+          "oklch(15% 0.10832 151.33)",
+          "oklch(26% 0.10832 151.33)",
+          "oklch(38% 0.10832 151.33)",
+          "oklch(49% 0.10832 151.33)",
+          "oklch(61% 0.10832 151.33)",
+          "oklch(72% 0.10832 151.33)",
+          "oklch(84% 0.10832 151.33)",
+          "oklch(95% 0.10832 151.33)"
+        ]
+      },
+      "green-bg": {
+        "role": "secondary",
+        "displayName": "Light Success Tint",
+        "canonical": "#f0fdf4",
+        "tonalRamp": [
+          "oklch(15% 0.01806 155.83)",
+          "oklch(26% 0.01806 155.83)",
+          "oklch(38% 0.01806 155.83)",
+          "oklch(49% 0.01806 155.83)",
+          "oklch(61% 0.01806 155.83)",
+          "oklch(72% 0.01806 155.83)",
+          "oklch(84% 0.01806 155.83)",
+          "oklch(95% 0.01806 155.83)"
+        ]
+      },
+      "amber": {
+        "role": "secondary",
+        "displayName": "Light Attention Amber",
+        "canonical": "#854d0e",
+        "tonalRamp": [
+          "oklch(15% 0.10337 61.91)",
+          "oklch(26% 0.10337 61.91)",
+          "oklch(38% 0.10337 61.91)",
+          "oklch(49% 0.10337 61.91)",
+          "oklch(61% 0.10337 61.91)",
+          "oklch(72% 0.10337 61.91)",
+          "oklch(84% 0.10337 61.91)",
+          "oklch(95% 0.10337 61.91)"
+        ]
+      },
+      "amber-bg": {
+        "role": "secondary",
+        "displayName": "Light Attention Tint",
+        "canonical": "#fffbeb",
+        "tonalRamp": [
+          "oklch(15% 0.02140 95.28)",
+          "oklch(26% 0.02140 95.28)",
+          "oklch(38% 0.02140 95.28)",
+          "oklch(49% 0.02140 95.28)",
+          "oklch(61% 0.02140 95.28)",
+          "oklch(72% 0.02140 95.28)",
+          "oklch(84% 0.02140 95.28)",
+          "oklch(95% 0.02140 95.28)"
+        ]
+      },
+      "blue": {
+        "role": "secondary",
+        "displayName": "Light Progress Blue",
+        "canonical": "#1d4ed8",
+        "tonalRamp": [
+          "oklch(15% 0.21717 264.38)",
+          "oklch(26% 0.21717 264.38)",
+          "oklch(38% 0.21717 264.38)",
+          "oklch(49% 0.21717 264.38)",
+          "oklch(61% 0.21717 264.38)",
+          "oklch(72% 0.21717 264.38)",
+          "oklch(84% 0.21717 264.38)",
+          "oklch(95% 0.21717 264.38)"
+        ]
+      },
+      "blue-bg": {
+        "role": "secondary",
+        "displayName": "Light Progress Tint",
+        "canonical": "#eff6ff",
+        "tonalRamp": [
+          "oklch(15% 0.01418 254.60)",
+          "oklch(26% 0.01418 254.60)",
+          "oklch(38% 0.01418 254.60)",
+          "oklch(49% 0.01418 254.60)",
+          "oklch(61% 0.01418 254.60)",
+          "oklch(72% 0.01418 254.60)",
+          "oklch(84% 0.01418 254.60)",
+          "oklch(95% 0.01418 254.60)"
+        ]
+      },
+      "red": {
+        "role": "secondary",
+        "displayName": "Light Error Red",
+        "canonical": "#b91c1c",
+        "tonalRamp": [
+          "oklch(15% 0.19049 27.52)",
+          "oklch(26% 0.19049 27.52)",
+          "oklch(38% 0.19049 27.52)",
+          "oklch(49% 0.19049 27.52)",
+          "oklch(61% 0.19049 27.52)",
+          "oklch(72% 0.19049 27.52)",
+          "oklch(84% 0.19049 27.52)",
+          "oklch(95% 0.19049 27.52)"
+        ]
+      },
+      "red-bg": {
+        "role": "secondary",
+        "displayName": "Light Error Tint",
+        "canonical": "#fef2f2",
+        "tonalRamp": [
+          "oklch(15% 0.01295 17.38)",
+          "oklch(26% 0.01295 17.38)",
+          "oklch(38% 0.01295 17.38)",
+          "oklch(49% 0.01295 17.38)",
+          "oklch(61% 0.01295 17.38)",
+          "oklch(72% 0.01295 17.38)",
+          "oklch(84% 0.01295 17.38)",
+          "oklch(95% 0.01295 17.38)"
+        ]
+      },
+      "dark-canvas": {
+        "role": "neutral",
+        "displayName": "Dark Canvas",
+        "canonical": "#09090b",
+        "tonalRamp": [
+          "oklch(15% 0.00439 285.82)",
+          "oklch(26% 0.00439 285.82)",
+          "oklch(38% 0.00439 285.82)",
+          "oklch(49% 0.00439 285.82)",
+          "oklch(61% 0.00439 285.82)",
+          "oklch(72% 0.00439 285.82)",
+          "oklch(84% 0.00439 285.82)",
+          "oklch(95% 0.00439 285.82)"
+        ]
+      },
+      "dark-surface": {
+        "role": "neutral",
+        "displayName": "Dark Control Surface",
+        "canonical": "#111114",
+        "tonalRamp": [
+          "oklch(15% 0.00611 285.77)",
+          "oklch(26% 0.00611 285.77)",
+          "oklch(38% 0.00611 285.77)",
+          "oklch(49% 0.00611 285.77)",
+          "oklch(61% 0.00611 285.77)",
+          "oklch(72% 0.00611 285.77)",
+          "oklch(84% 0.00611 285.77)",
+          "oklch(95% 0.00611 285.77)"
+        ]
+      },
+      "dark-sidebar": {
+        "role": "neutral",
+        "displayName": "Dark Sidebar Plane",
+        "canonical": "#101013",
+        "tonalRamp": [
+          "oklch(15% 0.00615 285.74)",
+          "oklch(26% 0.00615 285.74)",
+          "oklch(38% 0.00615 285.74)",
+          "oklch(49% 0.00615 285.74)",
+          "oklch(61% 0.00615 285.74)",
+          "oklch(72% 0.00615 285.74)",
+          "oklch(84% 0.00615 285.74)",
+          "oklch(95% 0.00615 285.74)"
+        ]
+      },
+      "dark-muted-surface": {
+        "role": "neutral",
+        "displayName": "Dark Muted Surface",
+        "canonical": "#202024",
+        "tonalRamp": [
+          "oklch(15% 0.00752 285.83)",
+          "oklch(26% 0.00752 285.83)",
+          "oklch(38% 0.00752 285.83)",
+          "oklch(49% 0.00752 285.83)",
+          "oklch(61% 0.00752 285.83)",
+          "oklch(72% 0.00752 285.83)",
+          "oklch(84% 0.00752 285.83)",
+          "oklch(95% 0.00752 285.83)"
+        ]
+      },
+      "dark-ink": {
+        "role": "neutral",
+        "displayName": "Dark Primary Ink",
+        "canonical": "#fafafa",
+        "tonalRamp": [
+          "oklch(15% 0.00000 0.00)",
+          "oklch(26% 0.00000 0.00)",
+          "oklch(38% 0.00000 0.00)",
+          "oklch(49% 0.00000 0.00)",
+          "oklch(61% 0.00000 0.00)",
+          "oklch(72% 0.00000 0.00)",
+          "oklch(84% 0.00000 0.00)",
+          "oklch(95% 0.00000 0.00)"
+        ]
+      },
+      "dark-muted": {
+        "role": "neutral",
+        "displayName": "Dark Secondary Ink",
+        "canonical": "#a1a1aa",
+        "tonalRamp": [
+          "oklch(15% 0.01294 286.07)",
+          "oklch(26% 0.01294 286.07)",
+          "oklch(38% 0.01294 286.07)",
+          "oklch(49% 0.01294 286.07)",
+          "oklch(61% 0.01294 286.07)",
+          "oklch(72% 0.01294 286.07)",
+          "oklch(84% 0.01294 286.07)",
+          "oklch(95% 0.01294 286.07)"
+        ]
+      },
+      "dark-line": {
+        "role": "neutral",
+        "displayName": "Dark Quiet Divider",
+        "canonical": "#2c2c32",
+        "tonalRamp": [
+          "oklch(15% 0.01078 285.72)",
+          "oklch(26% 0.01078 285.72)",
+          "oklch(38% 0.01078 285.72)",
+          "oklch(49% 0.01078 285.72)",
+          "oklch(61% 0.01078 285.72)",
+          "oklch(72% 0.01078 285.72)",
+          "oklch(84% 0.01078 285.72)",
+          "oklch(95% 0.01078 285.72)"
+        ]
+      },
+      "dark-input-line": {
+        "role": "neutral",
+        "displayName": "Dark Input Boundary",
+        "canonical": "#62626c",
+        "tonalRamp": [
+          "oklch(15% 0.01575 285.82)",
+          "oklch(26% 0.01575 285.82)",
+          "oklch(38% 0.01575 285.82)",
+          "oklch(49% 0.01575 285.82)",
+          "oklch(61% 0.01575 285.82)",
+          "oklch(72% 0.01575 285.82)",
+          "oklch(84% 0.01575 285.82)",
+          "oklch(95% 0.01575 285.82)"
+        ]
+      },
+      "dark-primary": {
+        "role": "primary",
+        "displayName": "Dark Neutral Action",
+        "canonical": "#fafafa",
+        "tonalRamp": [
+          "oklch(15% 0.00000 0.00)",
+          "oklch(26% 0.00000 0.00)",
+          "oklch(38% 0.00000 0.00)",
+          "oklch(49% 0.00000 0.00)",
+          "oklch(61% 0.00000 0.00)",
+          "oklch(72% 0.00000 0.00)",
+          "oklch(84% 0.00000 0.00)",
+          "oklch(95% 0.00000 0.00)"
+        ]
+      },
+      "dark-primary-ink": {
+        "role": "primary",
+        "displayName": "Dark Inverse Action Ink",
+        "canonical": "#18181b",
+        "tonalRamp": [
+          "oklch(15% 0.00586 285.89)",
+          "oklch(26% 0.00586 285.89)",
+          "oklch(38% 0.00586 285.89)",
+          "oklch(49% 0.00586 285.89)",
+          "oklch(61% 0.00586 285.89)",
+          "oklch(72% 0.00586 285.89)",
+          "oklch(84% 0.00586 285.89)",
+          "oklch(95% 0.00586 285.89)"
+        ]
+      },
+      "dark-focus": {
+        "role": "primary",
+        "displayName": "Dark Focus Blue",
+        "canonical": "#93c5fd",
+        "tonalRamp": [
+          "oklch(15% 0.09560 251.81)",
+          "oklch(26% 0.09560 251.81)",
+          "oklch(38% 0.09560 251.81)",
+          "oklch(49% 0.09560 251.81)",
+          "oklch(61% 0.09560 251.81)",
+          "oklch(72% 0.09560 251.81)",
+          "oklch(84% 0.09560 251.81)",
+          "oklch(95% 0.09560 251.81)"
+        ]
+      },
+      "dark-green": {
+        "role": "secondary",
+        "displayName": "Dark Success Green",
+        "canonical": "#86efac",
+        "tonalRamp": [
+          "oklch(15% 0.13627 154.45)",
+          "oklch(26% 0.13627 154.45)",
+          "oklch(38% 0.13627 154.45)",
+          "oklch(49% 0.13627 154.45)",
+          "oklch(61% 0.13627 154.45)",
+          "oklch(72% 0.13627 154.45)",
+          "oklch(84% 0.13627 154.45)",
+          "oklch(95% 0.13627 154.45)"
+        ]
+      },
+      "dark-green-bg": {
+        "role": "secondary",
+        "displayName": "Dark Success Tint",
+        "canonical": "#123021",
+        "tonalRamp": [
+          "oklch(15% 0.04584 159.58)",
+          "oklch(26% 0.04584 159.58)",
+          "oklch(38% 0.04584 159.58)",
+          "oklch(49% 0.04584 159.58)",
+          "oklch(61% 0.04584 159.58)",
+          "oklch(72% 0.04584 159.58)",
+          "oklch(84% 0.04584 159.58)",
+          "oklch(95% 0.04584 159.58)"
+        ]
+      },
+      "dark-amber": {
+        "role": "secondary",
+        "displayName": "Dark Attention Amber",
+        "canonical": "#fcd34d",
+        "tonalRamp": [
+          "oklch(15% 0.15342 91.61)",
+          "oklch(26% 0.15342 91.61)",
+          "oklch(38% 0.15342 91.61)",
+          "oklch(49% 0.15342 91.61)",
+          "oklch(61% 0.15342 91.61)",
+          "oklch(72% 0.15342 91.61)",
+          "oklch(84% 0.15342 91.61)",
+          "oklch(95% 0.15342 91.61)"
+        ]
+      },
+      "dark-amber-bg": {
+        "role": "secondary",
+        "displayName": "Dark Attention Tint",
+        "canonical": "#38280d",
+        "tonalRamp": [
+          "oklch(15% 0.04715 77.99)",
+          "oklch(26% 0.04715 77.99)",
+          "oklch(38% 0.04715 77.99)",
+          "oklch(49% 0.04715 77.99)",
+          "oklch(61% 0.04715 77.99)",
+          "oklch(72% 0.04715 77.99)",
+          "oklch(84% 0.04715 77.99)",
+          "oklch(95% 0.04715 77.99)"
+        ]
+      },
+      "dark-blue": {
+        "role": "secondary",
+        "displayName": "Dark Progress Blue",
+        "canonical": "#93c5fd",
+        "tonalRamp": [
+          "oklch(15% 0.09560 251.81)",
+          "oklch(26% 0.09560 251.81)",
+          "oklch(38% 0.09560 251.81)",
+          "oklch(49% 0.09560 251.81)",
+          "oklch(61% 0.09560 251.81)",
+          "oklch(72% 0.09560 251.81)",
+          "oklch(84% 0.09560 251.81)",
+          "oklch(95% 0.09560 251.81)"
+        ]
+      },
+      "dark-blue-bg": {
+        "role": "secondary",
+        "displayName": "Dark Progress Tint",
+        "canonical": "#172642",
+        "tonalRamp": [
+          "oklch(15% 0.05624 261.97)",
+          "oklch(26% 0.05624 261.97)",
+          "oklch(38% 0.05624 261.97)",
+          "oklch(49% 0.05624 261.97)",
+          "oklch(61% 0.05624 261.97)",
+          "oklch(72% 0.05624 261.97)",
+          "oklch(84% 0.05624 261.97)",
+          "oklch(95% 0.05624 261.97)"
+        ]
+      },
+      "dark-red": {
+        "role": "secondary",
+        "displayName": "Dark Error Red",
+        "canonical": "#fca5a5",
+        "tonalRamp": [
+          "oklch(15% 0.10349 19.57)",
+          "oklch(26% 0.10349 19.57)",
+          "oklch(38% 0.10349 19.57)",
+          "oklch(49% 0.10349 19.57)",
+          "oklch(61% 0.10349 19.57)",
+          "oklch(72% 0.10349 19.57)",
+          "oklch(84% 0.10349 19.57)",
+          "oklch(95% 0.10349 19.57)"
+        ]
+      },
+      "dark-red-bg": {
+        "role": "secondary",
+        "displayName": "Dark Error Tint",
+        "canonical": "#3a191e",
+        "tonalRamp": [
+          "oklch(15% 0.05233 11.79)",
+          "oklch(26% 0.05233 11.79)",
+          "oklch(38% 0.05233 11.79)",
+          "oklch(49% 0.05233 11.79)",
+          "oklch(61% 0.05233 11.79)",
+          "oklch(72% 0.05233 11.79)",
+          "oklch(84% 0.05233 11.79)",
+          "oklch(95% 0.05233 11.79)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Page heading on desktop."
+      },
+      "headline-mobile": {
+        "displayName": "Headline Mobile",
+        "purpose": "Page heading at maximum width 640px."
+      },
+      "detail-title": {
+        "displayName": "Detail Title",
+        "purpose": "Record identity in the inspection sheet."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Section headings."
+      },
+      "subheading": {
+        "displayName": "Subheading",
+        "purpose": "Detail subsections; line height remains the Tabler heading default."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Authored system-font reading text."
+      },
+      "description": {
+        "displayName": "Description",
+        "purpose": "Page descriptions and supporting copy."
+      },
+      "control": {
+        "displayName": "Control",
+        "purpose": "Library button labels with the retained Tabler system font stack."
+      },
+      "field": {
+        "displayName": "Field",
+        "purpose": "Library field values with the retained Tabler system font stack."
+      },
+      "table": {
+        "displayName": "Table",
+        "purpose": "Dense table rows and detail data."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Status words and small metadata; exact weight varies by context."
+      },
+      "brand": {
+        "displayName": "Brand",
+        "purpose": "Compact GhostFleet navigation identity."
+      },
+      "payload": {
+        "displayName": "Payload",
+        "purpose": "Preformatted event data using the retained library monospace stack."
+      }
+    },
+    "shadows": [
+      {
+        "name": "selected-tab",
+        "value": "0 1px 2px #0000000d",
+        "purpose": "Tiny lift on the selected segmented tab."
+      },
+      {
+        "name": "column-menu",
+        "value": "0 6px 18px #00000012",
+        "purpose": "Separates the floating column selection menu."
+      }
+    ],
+    "motion": [
+      {
+        "name": "button-background",
+        "value": "background-color 150ms ease",
+        "purpose": "Authored button hover transition."
+      },
+      {
+        "name": "library-field",
+        "value": "border-color .15s ease-in-out, outline-color .15s ease-in-out, box-shadow .15s ease-in-out",
+        "purpose": "Retained Tabler field transitions; authored focus removes box shadow."
+      },
+      {
+        "name": "library-navigation",
+        "value": "color .15s ease-in-out, background-color .15s ease-in-out, border-color .15s ease-in-out, outline-color .15s ease-in-out",
+        "purpose": "Retained Tabler navigation state transitions."
+      },
+      {
+        "name": "pending-pulse",
+        "value": "pending 1.2s ease-in-out infinite; 50% { opacity: .45; }",
+        "purpose": "Loading-placeholder pulse."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }",
+        "purpose": "Removes all animations and transitions for the user preference."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "overview-narrow",
+        "value": "1200px"
+      },
+      {
+        "name": "overview-stack",
+        "value": "1000px"
+      },
+      {
+        "name": "mobile-navigation",
+        "value": "900px"
+      },
+      {
+        "name": "small-screen",
+        "value": "640px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary action",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Neutral filled action; snippet uses authored palette and focus, with library state-color drift excluded.",
+      "html": "<button type=\"button\" class=\"ds-button ds-primary\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M12 5v14M5 12h14\"/></svg>创建纳管记录</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:40px;padding:.5625rem 1rem;border:1px solid var(--line);border-radius:var(--radius);font-family:system-ui, -apple-system, BlinkMacSystemFont, \"San Francisco\", \"Segoe UI\", Roboto, \"Helvetica Neue\", sans-serif;font-size:13px;font-weight:550;line-height:1.25rem;cursor:pointer;box-shadow:none;transition:background-color 150ms ease;}.ds-button:disabled{opacity:.45;cursor:not-allowed;pointer-events:none;}@media(max-width:640px){.ds-button{min-height:44px;}}.ds-icon{display:block;width:18px;height:18px;flex:0 0 18px;}.ds-primary{background:var(--primary);border-color:var(--primary);color:var(--primary-ink);}.ds-primary:hover,.ds-primary:active{filter:brightness(.86);}:focus-visible{outline:2px solid var(--focus);outline-offset:3px;}@media(prefers-reduced-motion:reduce){.ds-button,.ds-field,.ds-nav-item{transition:none;}}"
+    },
+    {
+      "name": "Secondary action",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Quiet bordered action for refresh, recovery, and navigation.",
+      "html": "<button type=\"button\" class=\"ds-button ds-secondary\">读取服务端状态</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:40px;padding:.5625rem 1rem;border:1px solid var(--line);border-radius:var(--radius);font-family:system-ui, -apple-system, BlinkMacSystemFont, \"San Francisco\", \"Segoe UI\", Roboto, \"Helvetica Neue\", sans-serif;font-size:13px;font-weight:550;line-height:1.25rem;cursor:pointer;box-shadow:none;transition:background-color 150ms ease;}.ds-button:disabled{opacity:.45;cursor:not-allowed;pointer-events:none;}@media(max-width:640px){.ds-button{min-height:44px;}}.ds-secondary{background:var(--surface);color:var(--ink);}.ds-secondary:hover{background:var(--muted-surface);border-color:var(--input-line);}:focus-visible{outline:2px solid var(--focus);outline-offset:3px;}@media(prefers-reduced-motion:reduce){.ds-button,.ds-field,.ds-nav-item{transition:none;}}"
+    },
+    {
+      "name": "Destructive outline",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Red outline for a negative decision, with a red tint on hover.",
+      "html": "<button type=\"button\" class=\"ds-button ds-danger-action\">拒绝请求</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:40px;padding:.5625rem 1rem;border:1px solid var(--line);border-radius:var(--radius);font-family:system-ui, -apple-system, BlinkMacSystemFont, \"San Francisco\", \"Segoe UI\", Roboto, \"Helvetica Neue\", sans-serif;font-size:13px;font-weight:550;line-height:1.25rem;cursor:pointer;box-shadow:none;transition:background-color 150ms ease;}.ds-button:disabled{opacity:.45;cursor:not-allowed;pointer-events:none;}@media(max-width:640px){.ds-button{min-height:44px;}}.ds-danger-action{background:var(--surface);color:var(--red);border-color:var(--red);}.ds-danger-action:hover{background:var(--red-bg);}:focus-visible{outline:2px solid var(--focus);outline-offset:3px;}@media(prefers-reduced-motion:reduce){.ds-button,.ds-field,.ds-nav-item{transition:none;}}"
+    },
+    {
+      "name": "Icon action",
+      "kind": "button",
+      "refersTo": "button-icon",
+      "description": "Compact, named icon-only action with a quiet hover surface.",
+      "html": "<button type=\"button\" class=\"ds-button ds-icon-action\" aria-label=\"关闭\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m6 6 12 12M6 18 18 6\"/></svg></button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:40px;padding:.5625rem 1rem;border:1px solid var(--line);border-radius:var(--radius);font-family:system-ui, -apple-system, BlinkMacSystemFont, \"San Francisco\", \"Segoe UI\", Roboto, \"Helvetica Neue\", sans-serif;font-size:13px;font-weight:550;line-height:1.25rem;cursor:pointer;box-shadow:none;transition:background-color 150ms ease;}.ds-button:disabled{opacity:.45;cursor:not-allowed;pointer-events:none;}@media(max-width:640px){.ds-button{min-height:44px;}}.ds-icon{display:block;width:18px;height:18px;flex:0 0 18px;}.ds-icon-action{width:40px;padding:0;border-color:transparent;background:transparent;color:var(--muted);}.ds-icon-action:hover{background:var(--muted-surface);color:var(--ink);}:focus-visible{outline:2px solid var(--focus);outline-offset:3px;}@media(prefers-reduced-motion:reduce){.ds-button,.ds-field,.ds-nav-item{transition:none;}}"
+    },
+    {
+      "name": "Search field",
+      "kind": "input",
+      "refersTo": "field",
+      "description": "Strong field boundary, muted placeholder, and visible focus outline.",
+      "html": "<label class=\"ds-field-label\" for=\"ds-record-query\">搜索记录</label><input id=\"ds-record-query\" class=\"ds-field\" type=\"search\" placeholder=\"搜索名称或 ID…\" autocomplete=\"off\">",
+      "css": ".ds-field-label{display:block;margin-bottom:8px;font-family:-apple-system, BlinkMacSystemFont, \"Segoe UI\", \"Noto Sans SC\", sans-serif;font-size:13px;font-weight:550;line-height:1.55;color:var(--ink);}.ds-field{min-height:40px;width:100%;padding:9px 11px;background:var(--surface);color:var(--ink);border:1px solid var(--input-line);border-radius:var(--radius);font-family:system-ui, -apple-system, BlinkMacSystemFont, \"San Francisco\", \"Segoe UI\", Roboto, \"Helvetica Neue\", sans-serif;font-size:13px;font-weight:400;line-height:1.25rem;box-shadow:none;caret-color:var(--ink);transition:border-color 150ms ease-in-out,outline-color 150ms ease-in-out,box-shadow 150ms ease-in-out;}.ds-field::placeholder{color:var(--muted);opacity:1;}.ds-field:focus{border-color:var(--focus);outline:2px solid var(--focus);outline-offset:2px;box-shadow:none;}.ds-field:disabled{background:var(--muted-surface);color:var(--muted);}@media(prefers-reduced-motion:reduce){.ds-button,.ds-field,.ds-nav-item{transition:none;}}"
+    },
+    {
+      "name": "Current navigation item",
+      "kind": "nav",
+      "refersTo": "navigation-item-current",
+      "description": "Current route retains text and a muted surface, with semantic page state.",
+      "html": "<nav aria-label=\"控制面板导航\"><a class=\"ds-nav-item\" href=\"#devices\" aria-current=\"page\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect x=\"3\" y=\"4\" width=\"18\" height=\"13\" rx=\"2\"/><path d=\"M8 21h8m-4-4v4\"/></svg><span>设备</span></a></nav>",
+      "css": ".ds-icon{display:block;width:18px;height:18px;flex:0 0 18px;}.ds-nav-item{display:flex;align-items:center;gap:10px;min-height:42px;padding:8px 10px;border-radius:6px;background:transparent;color:var(--muted);font-family:-apple-system, BlinkMacSystemFont, \"Segoe UI\", \"Noto Sans SC\", sans-serif;font-size:14px;line-height:1.55;text-decoration:none;transition:color 150ms ease-in-out,background-color 150ms ease-in-out,border-color 150ms ease-in-out,outline-color 150ms ease-in-out;}.ds-nav-item:hover,.ds-nav-item[aria-current=\"page\"]{background:var(--muted-surface);color:var(--ink);}.ds-nav-item[aria-current=\"page\"]{font-weight:600;}:focus-visible{outline:2px solid var(--focus);outline-offset:3px;}@media(prefers-reduced-motion:reduce){.ds-button,.ds-field,.ds-nav-item{transition:none;}}"
+    },
+    {
+      "name": "Status chip",
+      "kind": "chip",
+      "refersTo": "state-warning",
+      "description": "Semantic labels share a small rounded form and visible text.",
+      "html": "<div class=\"ds-chip-row\"><span class=\"ds-chip ds-success\">活跃</span><span class=\"ds-chip ds-warning\">待人工确认</span><span class=\"ds-chip ds-info\">准备中</span><span class=\"ds-chip ds-danger\">失败</span></div>",
+      "css": ".ds-chip-row{display:flex;gap:8px;flex-wrap:wrap;}.ds-chip{display:inline-flex;align-items:center;gap:5px;border:1px solid transparent;border-radius:5px;padding:2px 7px;font-family:-apple-system, BlinkMacSystemFont, \"Segoe UI\", \"Noto Sans SC\", sans-serif;font-size:11px;font-weight:500;line-height:1.55;white-space:nowrap;}.ds-success{color:var(--green);background:var(--green-bg);}.ds-warning{color:var(--amber);background:var(--amber-bg);}.ds-info{color:var(--blue);background:var(--blue-bg);}.ds-danger{color:var(--red);background:var(--red-bg);}"
+    },
+    {
+      "name": "Work queue container",
+      "kind": "card",
+      "refersTo": "queue-card",
+      "description": "Thin bordered queue with text-led, divided work items.",
+      "html": "<section class=\"ds-queue\"><h2 class=\"ds-queue-heading\">待办事项</h2><button type=\"button\" class=\"ds-queue-item\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect x=\"3\" y=\"4\" width=\"18\" height=\"13\" rx=\"2\"/><path d=\"M8 21h8m-4-4v4\"/></svg><span><strong>查看纳管记录</strong><span class=\"ds-queue-help\">核对当前状态与下一步</span></span></button></section>",
+      "css": ".ds-icon{display:block;width:18px;height:18px;flex:0 0 18px;}.ds-queue{border:1px solid var(--line);border-radius:var(--radius);padding:17px;color:var(--ink);font-family:-apple-system, BlinkMacSystemFont, \"Segoe UI\", \"Noto Sans SC\", sans-serif;line-height:1.55;}.ds-queue-heading{font-size:15px;font-weight:600;line-height:1.45;margin:0 0 8px;}.ds-queue-item{display:flex;align-items:flex-start;gap:10px;width:100%;padding:16px 0;border:0;background:transparent;color:var(--ink);text-align:left;cursor:pointer;font-family:-apple-system, BlinkMacSystemFont, \"Segoe UI\", \"Noto Sans SC\", sans-serif;line-height:1.55;}.ds-queue-item>.ds-icon{color:var(--muted);margin-top:2px;}.ds-queue-item strong{display:block;font-size:12px;}.ds-queue-item:hover strong{text-decoration:underline;text-underline-offset:3px;}.ds-queue-help{display:block;margin-top:4px;font-size:11px;color:var(--muted);}@media(max-width:640px){.ds-queue{padding:15px;}.ds-queue-item{padding-block:12px;}}:focus-visible{outline:2px solid var(--focus);outline-offset:3px;}"
+    },
+    {
+      "name": "Segmented view tabs",
+      "kind": "custom",
+      "refersTo": "view-tabs",
+      "description": "Muted track and gently elevated selected tab; runtime supplies arrow-key behavior.",
+      "html": "<div class=\"ds-tabs\" role=\"tablist\" aria-label=\"纳管记录\"><button type=\"button\" class=\"ds-tab\" role=\"tab\" aria-selected=\"true\" tabindex=\"0\">进行中</button><button type=\"button\" class=\"ds-tab\" role=\"tab\" aria-selected=\"false\" tabindex=\"-1\">全部</button><button type=\"button\" class=\"ds-tab\" role=\"tab\" aria-selected=\"false\" tabindex=\"-1\">已结束</button></div>",
+      "css": ".ds-tabs{display:flex;gap:4px;width:fit-content;padding:4px;background:var(--muted-surface);border-radius:7px;}.ds-tab{border:0;border-radius:4px;min-height:34px;padding:5px 12px;background:transparent;color:var(--muted);font-family:-apple-system, BlinkMacSystemFont, \"Segoe UI\", \"Noto Sans SC\", sans-serif;font-size:12px;line-height:1.55;cursor:pointer;}.ds-tab[aria-selected=\"true\"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px #0000000d;}:focus-visible{outline:2px solid var(--focus);outline-offset:3px;}"
+    },
+    {
+      "name": "Record detail sheet",
+      "kind": "custom",
+      "refersTo": "detail-sheet",
+      "description": "Full-height, right-attached inspection surface; snippet samples its contained header, feedback, and fields.",
+      "html": "<section class=\"ds-sheet\" aria-label=\"记录详情\"><header class=\"ds-sheet-heading\"><h2>纳管详情</h2><button type=\"button\" class=\"ds-sheet-close\" aria-label=\"关闭\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m6 6 12 12M6 18 18 6\"/></svg></button></header><div class=\"ds-sheet-content\"><h3 class=\"ds-sheet-title\">设备名称</h3><p class=\"ds-sheet-message\">查看服务端记录与下一步。</p><dl class=\"ds-sheet-fields\"><dt>状态</dt><dd>待人工确认</dd><dt>版本</dt><dd>1</dd></dl></div></section>",
+      "css": ".ds-icon{display:block;width:18px;height:18px;flex:0 0 18px;}.ds-sheet{width:min(490px,100%);background:var(--surface);color:var(--ink);border:solid var(--line);border-width:0 0 0 1px;border-radius:0;font-family:-apple-system, BlinkMacSystemFont, \"Segoe UI\", \"Noto Sans SC\", sans-serif;line-height:1.55;}.ds-sheet-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:68px;padding:16px 20px;border-bottom:1px solid var(--line);background:var(--surface);}.ds-sheet-heading h2{margin:0;font-size:14px;font-weight:600;line-height:1.45;}.ds-sheet-close{display:flex;align-items:center;justify-content:center;width:40px;min-height:40px;padding:0;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--muted);cursor:pointer;}.ds-sheet-close:hover{background:var(--muted-surface);color:var(--ink);}.ds-sheet-content{padding:22px;overflow-wrap:anywhere;}.ds-sheet-title{margin:0 0 10px;font-size:20px;font-weight:600;line-height:1.4;}.ds-sheet-message{margin:16px 0 0;font-size:12px;color:var(--muted);}.ds-sheet-fields{display:grid;grid-template-columns:115px minmax(0,1fr);column-gap:14px;row-gap:12px;margin:20px 0 0;font-size:12px;}.ds-sheet-fields dt{color:var(--muted);font-weight:450;}.ds-sheet-fields dd{margin:0;overflow-wrap:anywhere;}@media(max-width:640px){.ds-sheet{width:100%;}.ds-sheet-content{padding:20px;}.ds-sheet-close{min-height:44px;}}:focus-visible{outline:2px solid var(--focus);outline-offset:3px;}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Professional administration",
+    "overview": "GhostFleet follows the professional administration conventions the user chose: quiet neutral surfaces, compact navigation, data-first typography, and familiar controls. Records, access scope, and the next available action should be easy to scan in Chinese and English.\n\nThe authored console stylesheet sets the reusable visual rules after Tabler core CSS. It maps Tabler body background, body color, and border color to the console tokens, while retaining library button and form mechanics. Light and dark themes keep the same hierarchy; the system preference is used until an explicit appearance preference is selected. The GhostFleet name remains the visual identifier.",
+    "keyCharacteristics": [
+      "Neutral light and dark surfaces with restrained semantic color.",
+      "Compact shell, readable data rows, and border-led separation.",
+      "Chinese by default, with an English switch and locale-aware dates and sorting.",
+      "Native dialogs, visible keyboard focus, and preserved list context."
+    ],
+    "rules": [
+      {
+        "name": "The State Color Rule",
+        "body": "Use green, amber, blue, and red to explain status, evidence, feedback, or focus. Keep the primary action neutral and pair every status color with visible text.",
+        "section": "colors"
+      },
+      {
+        "name": "The Task Scale Rule",
+        "body": "Use the compact headline, title, body, table, and label roles for operational hierarchy. Reserve the largest role for the page heading; do not introduce a decorative display face.",
+        "section": "typography"
+      },
+      {
+        "name": "The Border First Rule",
+        "body": "At-rest tables and queue containers use thin borders and tonal separation. Small shadows identify a selected tab or a floating column menu.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do use the active theme’s semantic tokens for surfaces, text, borders, focus, and status.",
+      "Do preserve visible status words, synthetic-evidence labels, permission explanations, and in-dialog recovery feedback.",
+      "Do keep overflow inside a labeled, focusable table region and keep the first record column visible on small screens.",
+      "Do use authored SVG symbols with accessible text or an accessible name on icon-only controls.",
+      "Do preserve keyboard focus, filter state, sort state, column selection, and pagination when inspecting a record.",
+      "Do check both languages and themes, and disable animation and transitions for reduced-motion preferences."
+    ],
+    "donts": [
+      "Don’t use semantic status colors as decorative brand accents or replace the neutral primary action with a blue brand color.",
+      "Don’t rely on color alone to communicate state, permission, or an operation result.",
+      "Don’t widen the document to fit a dense table or force long record identifiers onto an unbroken line in detail content.",
+      "Don’t make an unavailable action look available or replace uncertain operation feedback with an optimistic success message.",
+      "Don’t introduce decorative gradients, oversized display typography, or hard offset shadows into this established admin interface.",
+      "Don’t use glyphs or emoji in place of the authored interface SVGs."
+    ]
+  }
+}

@@ -152,6 +152,93 @@ const en = {
   errorAmbiguous: "No definite operation result arrived; the server may have acted. Refresh state and check the record before acting again.",
 };
 
+Object.assign(zh, {
+  navigation: "导航", readServerState: "读取服务端状态", operationPending: "正在处理，请稍候。",
+  overview: "总览", devices: "设备", capabilities: "能力目录", activity: "活动记录", settings: "设置", workspace: "工作空间", descriptionLabel: "说明",
+  toggleNavigation: "展开或收起导航", toggleTheme: "切换浅色或深色主题", quickSearch: "搜索…",
+  close: "关闭", back: "返回", appearance: "外观", appearanceHelp: "匹配当前使用环境，外观偏好仅保存在本浏览器。",
+  theme: "主题", systemTheme: "跟随系统", lightTheme: "浅色", darkTheme: "深色",
+  currentScope: "当前能力范围", connectionSettingsHelp: "使用此实例的访问令牌连接。令牌仅保留在当前页面内存中。",
+  "description.overview": "设备状态与需要处理的事项，集中在一个工作空间。",
+  "description.devices": "查看已纳管设备的控制平面生命周期记录。",
+  "description.enrollment": "跟踪纳管进度、人工确认与验收证据。",
+  "description.approvals": "核对设备和请求后，决定是否继续。",
+  "description.capabilities": "查看注册的能力定义与风险等级。当前页面仅供查看。",
+  "description.activity": "追踪纳管、人工确认与验收操作留下的事件。",
+  "description.settings": "管理当前连接与本地外观偏好。",
+  shortOperator: "操作员", shortReadOnly: "只读", session: "当前会话", memorySession: "令牌仅在页面内存中",
+  connectControlPlane: "连接控制平面", welcomeTitle: "连接你的设备工作空间",
+  welcomeHelp: "连接后可查看设备、跟踪纳管进度并处理人工确认。请选择此实例的只读或操作员令牌。",
+  todo: "待办事项", recentDevices: "最近纳管的设备", viewAll: "查看全部", viewDetails: "查看详情",
+  viewRequest: "查看请求", needsApproval: "需要人工批准", continueEnrollment: "继续纳管流程",
+  emptyTodoTitle: "暂无待处理事项", emptyTodoHelp: "需要批准或继续操作的请求会出现在这里。",
+  summaryActive: "条进行中的记录", simulationShort: "模拟验收",
+  all: "全部", current: "进行中", completed: "已结束", pending: "待处理", resolved: "已处理",
+  searchRecords: "搜索名称或 ID…", allStatuses: "全部状态", allRisks: "全部风险", allEvents: "全部事件",
+  columns: "列显示", sortBy: "按{column}排序", noMatches: "没有匹配的记录",
+  noMatchesHelp: "调整搜索条件或筛选状态后重试。", clearFilters: "清空筛选",
+  paginationRange: "{from}–{to} / {total} 条", rowsPerPage: "每页", pageCount: "{page} / {pages} 页",
+  previousPage: "上一页", nextPage: "下一页", tableRegion: "{name}数据列表", action: "操作",
+  createdAt: "创建时间", updatedAt: "更新时间", expiresAt: "有效期至", risk: "风险等级", eventPayload: "事件数据",
+  evidence: "验收证据", evidenceCount: "{passed}/{total} 通过", request: "请求", eventType: "事件",
+  subject: "对象", time: "时间", recordId: "记录 ID", deviceUid: "设备 UID", revision: "版本",
+  "details.node": "设备详情", "details.attempt": "纳管详情", "details.gate": "人工确认详情",
+  "details.capability": "能力详情", "details.event": "事件详情",
+  relatedAttempt: "关联纳管记录", relatedApprovals: "关联人工确认", transitionHistory: "状态变化",
+  noTransitions: "尚未发生状态迁移。", noEvidence: "尚未提交验收证据。",
+  lifecycleHelp: "这里显示控制平面记录的生命周期，当前版本不提供设备在线或心跳检测。",
+  capabilityScope: "这是已注册的能力元数据。此页面不授予能力，也不执行设备命令。",
+  gateNotActionable: "该请求当前无法处理。请核对记录状态，必要时刷新服务端状态。",
+  operatorNeeded: "创建记录和处理确认需要操作员权限。",
+  searchTitle: "搜索页面与记录", commandPlaceholder: "输入设备名称、记录 ID 或页面名称",
+  commandHelp: "方向键选择，Enter 打开，Esc 关闭", commandEmpty: "没有匹配的页面或记录。",
+  lastRead: "上次读取 {time}", defaultExpiry: "记录默认有效期为 10 分钟，请在有效期内完成流程。",
+  errorAmbiguous: "没有收到明确的操作结果，服务端可能已执行。请先重新读取状态，核对记录后再操作。",
+});
+Object.assign(en, {
+  navigation: "Navigation", readServerState: "Read server state", operationPending: "Working. Please wait.",
+  overview: "Overview", devices: "Devices", capabilities: "Capabilities", activity: "Activity", settings: "Settings", workspace: "Workspace", descriptionLabel: "Description",
+  toggleNavigation: "Expand or collapse navigation", toggleTheme: "Switch light or dark theme", quickSearch: "Search…",
+  close: "Close", back: "Back", appearance: "Appearance", appearanceHelp: "Match your working environment. Appearance preferences stay in this browser.",
+  theme: "Theme", systemTheme: "System", lightTheme: "Light", darkTheme: "Dark",
+  currentScope: "Current capabilities", connectionSettingsHelp: "Connect with this instance’s access token. It stays in page memory only.",
+  "description.overview": "Device state and actionable work, together in one workspace.",
+  "description.devices": "Inspect control-plane lifecycle records for admitted devices.",
+  "description.enrollment": "Follow enrollment progress, human approvals and acceptance evidence.",
+  "description.approvals": "Check the device and request before deciding whether to continue.",
+  "description.capabilities": "Inspect registered definitions and risk levels. This page is read-only.",
+  "description.activity": "Trace events from enrollment, human approvals and evidence review.",
+  "description.settings": "Manage this connection and local appearance preferences.",
+  shortOperator: "Operator", shortReadOnly: "Read only", session: "Current session", memorySession: "Token stays in page memory",
+  connectControlPlane: "Connect control plane", welcomeTitle: "Connect your device workspace",
+  welcomeHelp: "Connect to inspect devices, follow enrollment and review human approvals. Use this instance’s read-only or operator token.",
+  todo: "Actionable work", recentDevices: "Recently admitted devices", viewAll: "View all", viewDetails: "View details",
+  viewRequest: "View request", needsApproval: "Human approval needed", continueEnrollment: "Continue enrollment",
+  emptyTodoTitle: "No pending work", emptyTodoHelp: "Requests needing approval or a next step will appear here.",
+  summaryActive: "active enrollment records", simulationShort: "Synthetic acceptance",
+  all: "All", current: "In progress", completed: "Completed", pending: "Pending", resolved: "Resolved",
+  searchRecords: "Search names or IDs…", allStatuses: "All states", allRisks: "All risks", allEvents: "All events",
+  columns: "Columns", sortBy: "Sort by {column}", noMatches: "No matching records",
+  noMatchesHelp: "Adjust your search or state filter and try again.", clearFilters: "Clear filters",
+  paginationRange: "{from}–{to} of {total}", rowsPerPage: "Rows", pageCount: "Page {page} of {pages}",
+  previousPage: "Previous page", nextPage: "Next page", tableRegion: "{name} data table", action: "Actions",
+  createdAt: "Created", updatedAt: "Updated", expiresAt: "Valid until", risk: "Risk level", eventPayload: "Event data",
+  evidence: "Acceptance evidence", evidenceCount: "{passed}/{total} passed", request: "Request", eventType: "Event",
+  subject: "Subject", time: "Time", recordId: "Record ID", deviceUid: "Device UID", revision: "Revision",
+  "details.node": "Device details", "details.attempt": "Enrollment details", "details.gate": "Approval details",
+  "details.capability": "Capability details", "details.event": "Event details",
+  relatedAttempt: "Enrollment record", relatedApprovals: "Related approvals", transitionHistory: "State changes",
+  noTransitions: "No state transitions yet.", noEvidence: "No acceptance evidence submitted yet.",
+  lifecycleHelp: "This is the recorded control-plane lifecycle. V0 does not provide device online or heartbeat detection.",
+  capabilityScope: "This is registered capability metadata. This page does not grant authority or execute device commands.",
+  gateNotActionable: "This request cannot currently be resolved. Check its record and refresh server state if needed.",
+  operatorNeeded: "Creating records and resolving approvals require operator access.",
+  searchTitle: "Search pages and records", commandPlaceholder: "Enter a device name, record ID or page name",
+  commandHelp: "Arrow keys select, Enter opens, Esc closes", commandEmpty: "No matching pages or records.",
+  lastRead: "Last read {time}", defaultExpiry: "Records expire after 10 minutes by default. Complete the flow before expiration.",
+  errorAmbiguous: "No definite operation result arrived; the server may have acted. Read the current state and check the record before acting again.",
+});
+
 let language = "zh-CN";
 try { if (localStorage.getItem("ghostfleet-language") === "en") language = "en"; } catch {}
 export function getLanguage() { return language; }
@@ -167,7 +254,8 @@ export function applyLocale() {
   document.documentElement.lang = language;
   document.title = t("pageTitle");
   document.querySelector("#language").value = language;
-  document.querySelector(".section-nav").setAttribute("aria-label", t("sectionLabel"));
+  for (const node of document.querySelectorAll("[data-console-navigation]")) node.setAttribute("aria-label", t("sectionLabel"));
   for (const node of document.querySelectorAll("[data-i18n]")) node.textContent = t(node.dataset.i18n);
   for (const node of document.querySelectorAll("[data-i18n-placeholder]")) node.setAttribute("placeholder", t(node.dataset.i18nPlaceholder));
+  for (const node of document.querySelectorAll("[data-i18n-aria]")) node.setAttribute("aria-label", t(node.dataset.i18nAria));
 }

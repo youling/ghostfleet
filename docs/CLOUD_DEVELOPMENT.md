@@ -16,7 +16,7 @@ npm run verify:cloud
 
 `build:worker` 仅 dry-run 打包，不部署；`verify:cloud` 使用 Linux 子进程组，在 loopback 18791 启动真实 workerd/SQLite Durable Object，验证 Console 静态资源、认证、只读权限、HumanGate、证据入列、重复入列拒绝，再停止并重启验证持久化恢复。该脚本自动回收它创建的进程。全部设备证据是 **synthetic**，不能据此宣称真实节点已经完成纳管、零差异收敛或重启恢复。
 
-持续开发时运行 `npm run dev`。本地端口为 8791；修改 Console 后重跑 `build:console`。`dev:init` 在 ignored `.dev.vars` 中生成独立本地随机凭据，并保留已有文件。不要提交该文件、`.wrangler` 状态或日志。安装依赖和保存文件不代表后台进程会跨环境快照存活，需要重新启动。
+持续开发时运行 `npm run dev`。本地端口为 8791；修改 Console 后先停止本地 dev，再重跑 `build:console` 并启动，避免重建静态目录时保留旧的资源 manifest。`dev:init` 在 ignored `.dev.vars` 中生成独立本地随机凭据，并保留已有文件。不要提交该文件、`.wrangler` 状态或日志。安装依赖和保存文件不代表后台进程会跨环境快照存活，需要重新启动。
 
 ### 部署认证边界
 
@@ -24,7 +24,7 @@ npm run verify:cloud
 - `GHOSTFLEET_OPERATOR_TOKEN`：允许此单租户参考控制面的对象操作和 gate resolution。
 - 每个配置值至少 32 字符，应使用独立随机凭据；这些不是 provider/device 的 root credential。
 - 未配置凭据的 `/v0/*` 返回 503；无效或缺失 bearer 返回 401；`/healthz` 和公开静态 Console 不返回实例记录。
-- Console 的 Connect 输入只在页面内存中保留 bearer；Disconnect 清除页面状态；令牌不写入 URL、localStorage 或 sessionStorage。语言偏好可保存在 localStorage。
+- Console 的 Connect 输入只在页面内存中保留 bearer；Disconnect 清除页面状态；令牌不写入 URL、localStorage 或 sessionStorage。语言、主题和侧栏折叠偏好可保存在 localStorage。
 - Core HTTP handler 是 embedding seam。其他宿主必须提供自己的认证和授权边界；不要裸暴露它。
 
 线上 Cloudflare 部署需要另外配置账户权限、秘密绑定和 HTTPS。多用户 RBAC、逐 actor 审计、限流及真实设备适配器安全审查仍属于生产验收；本参考 bearer 边界不是完整的生产身份系统。公共 AGPL 发布时，应向网络用户提供对应源码。MCP 已提供只读 Streamable HTTP `/mcp`；要求 OAuth 的客户端流程尚需 OAuth 集成。
@@ -40,11 +40,11 @@ npm run verify:cloud
 | 检查 | 结果 |
 | --- | --- |
 | 现有锁文件重新安装 `npm ci` | PASS |
-| Node 回归套件 | 17 tests PASS，0 failed/skipped；本云环境另外以 `node --test --test-isolation=none test/*.test.js` 确认逐用例结果 |
+| Node 回归套件 | 21 tests PASS，0 failed/skipped；本云环境另外以 `node --test --test-isolation=none test/*.test.js` 确认逐用例结果 |
 | `npm run check` | PASS |
 | Console + Worker dry-run build | PASS |
 | `npm run verify:cloud` | PASS：真实 workerd/SQLite DO，合成完整流程、官方 MCP client 握手/调用和重启恢复 |
-| 公开 tree 检查 | 50 files；新增截图仅含本地合成数据；唯一 credential-pattern 提示为 Console runtime input assignment，经检查无源码凭据 |
+| 公开 tree 检查 | 已检查全部公开文件；截图仅含隔离本地合成数据；唯一 credential-pattern 提示为 Console runtime input assignment，经检查无源码凭据 |
 | Console 浏览器验证 | PASS：中英文、320px 至桌面布局、只读权限、真实本机生命周期操作、断开竞态和变更结果不明确时的恢复；见 [Console](CONSOLE.md) |
 | 真实设备 / 线上部署 | 未执行，不以本地合成验证替代 |
 

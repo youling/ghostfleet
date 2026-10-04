@@ -7,7 +7,7 @@ selected_at: `2026-10-04`
 
 ### 选择
 
-GhostFleet V0 官方 Console 采用 **Tabler** 作为 UI/UX 基础壳，不自行重做后台设计系统。
+GhostFleet V0 官方 Console 保留 **Tabler** core CSS 作为组件基础，GhostFleet 自己实现模块壳、表格和详情交互。用户选择 [shadcn-admin](https://github.com/satnaing/shadcn-admin) 的专业后台风格；具体参考版本与边界见 [Console](CONSOLE.md)。
 
 - upstream: `https://github.com/tabler/tabler`
 - package: `@tabler/core@1.6.1`
@@ -22,15 +22,14 @@ V0 不复制或打包 `dist/libs` 中的可选第三方插件，也不加载 ven
 
 ### 复用边界
 
-Tabler 负责：
+Tabler 提供组件样式基础：
 
-- layout；
 - cards / tables / forms / badges；
-- responsive behavior；
 - light/dark capable design foundation。
 
 GhostFleet 自己负责：
 
+- 固定/折叠侧栏、手机导航、主题 tokens、搜索、表格筛选/分页和详情弹窗；
 - Enrollment / Node / Capability / Event 领域模型；
 - HumanGate UX；
 - API/view model；
@@ -44,7 +43,7 @@ GhostFleet 自己负责：
 
 ### Selection
 
-The official GhostFleet V0 Console uses **Tabler** as its UI/UX foundation instead of inventing a new admin design system.
+The official GhostFleet V0 Console keeps **Tabler** core CSS as its component foundation. GhostFleet implements the module shell, tables and detail interactions. The user selected shadcn-admin conventions; the exact reference and reuse boundaries are recorded in [Console](CONSOLE.md).
 
 - upstream: `https://github.com/tabler/tabler`
 - package: `@tabler/core@1.6.1`
@@ -59,7 +58,7 @@ The current GhostFleet UI is primarily lifecycle, lists, state, Human Gates and 
 
 ### Reuse boundary
 
-Tabler owns layout, cards/tables/forms/badges, responsive behavior and the general visual foundation.
+Tabler provides the base component styles. GhostFleet owns its navigation, responsive composition, theme tokens, filtering/paging, command search and detail dialogs.
 
 GhostFleet owns Enrollment/Node/Capability/Event domain semantics, HumanGate UX, API/view models and authority boundaries.
 
