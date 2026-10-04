@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GhostFleet Console</title>
+  <link rel="stylesheet" href="./assets/tabler.min.css">
+</head>
+<body>
+  <div class="page">
+    <header class="navbar navbar-expand-md d-print-none">
+      <div class="container-xl">
+        <h1 class="navbar-brand navbar-brand-autodark">GhostFleet</h1>
+        <div class="navbar-nav flex-row order-md-last"><span class="badge bg-blue-lt">V0</span></div>
+      </div>
+    </header>
+    <div class="page-wrapper">
+      <div class="page-header d-print-none"><div class="container-xl"><div class="row g-2 align-items-center"><div class="col">
+        <h2 class="page-title">Fleet lifecycle</h2>
+        <div class="text-secondary mt-1">One entry point for enrollment and daily fleet state.</div>
+      </div></div></div></div>
+      <div class="page-body"><div class="container-xl">
+        <form id="connect" class="card card-body mb-3">
+          <label for="api-token" class="form-label">Control-plane access token</label>
+          <div class="input-group"><input id="api-token" name="api_token" class="form-control" type="password" autocomplete="off" required><button class="btn btn-primary" type="submit">Connect</button><button id="disconnect" class="btn btn-outline-secondary" type="button">Disconnect</button></div>
+          <div class="text-secondary mt-2">Use a read-only or operator token for this control plane. Keep provider and device credentials outside the Console.</div>
+        </form>
+        <div id="summary" class="row row-cards mb-3"></div>
+        <div class="row row-cards">
+          <div class="col-12 col-lg-7"><div class="card"><div class="card-header"><h3 class="card-title">Enrollment</h3></div><div class="card-body">
+            <form id="new-attempt" class="row g-2 mb-3"><div class="col"><input class="form-control" name="asset_hint" placeholder="Asset hint, e.g. lab-laptop"></div><div class="col-auto"><button class="btn btn-primary" type="submit">New attempt</button></div></form>
+            <div id="attempts"></div>
+          </div></div></div>
+          <div class="col-12 col-lg-5"><div class="card"><div class="card-header"><h3 class="card-title">Human Gates</h3></div><div class="card-body" id="gates"></div></div></div>
+          <div class="col-12"><div class="card"><div class="card-header"><h3 class="card-title">Nodes</h3></div><div class="table-responsive"><table class="table card-table table-vcenter"><thead><tr><th>Node</th><th>Platform</th><th>Lifecycle</th><th>Admitted</th></tr></thead><tbody id="nodes"></tbody></table></div></div></div>
+          <div class="col-12 col-lg-5"><div class="card"><div class="card-header"><h3 class="card-title">Capability Registry</h3></div><div class="card-body" id="capabilities"></div></div></div>
+          <div class="col-12 col-lg-7"><div class="card"><div class="card-header"><h3 class="card-title">Events</h3></div><div class="card-body" id="events"></div></div></div>
+        </div>
+      </div></div>
+    </div>
+  </div>
+  <script src="./assets/tabler.min.js"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
