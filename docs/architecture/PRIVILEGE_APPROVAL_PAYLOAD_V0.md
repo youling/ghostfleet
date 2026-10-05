@@ -66,6 +66,14 @@ decided_at: timestamp
 
 v0 不提供“永久批准”按钮。Approval 只服务本次 normalized request / lease issuance。
 
+Approval Request 生命周期固定为：
+
+```text
+PENDING -> APPROVED | DENIED | EXPIRED | SUPERSEDED
+```
+
+任何终态都不可复活；request digest 改变时旧 approval request 进入 `SUPERSEDED`，必须创建新 id。
+
 <!-- topic:ux -->
 ### Human 应看到什么
 
@@ -123,7 +131,7 @@ The Human sees target, requester/intent, typed operations, exact scope, all publ
 <!-- topic:decision -->
 ### Decision
 
-`APPROVE` authorizes only the bound digest; `DENY` forbids lease issuance. Expired, stale-policy, or digest-mismatched approval is invalid. Auto-policy decisions remain policy records rather than fake Human approvals.
+`APPROVE` authorizes only the bound digest; `DENY` forbids lease issuance. Expired, stale-policy, or digest-mismatched approval is invalid. Auto-policy decisions remain policy records rather than fake Human approvals. Approval-request states are `PENDING -> APPROVED | DENIED | EXPIRED | SUPERSEDED`; terminal requests are never revived.
 
 <!-- topic:security -->
 ### Security
