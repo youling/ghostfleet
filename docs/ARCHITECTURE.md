@@ -1,17 +1,15 @@
 # GhostFleet Architecture — V0 Baseline
 
 status: `V0_IMPLEMENTATION_BASELINE`
-architecture_source: `the deployment-origin implementation#289`
+architecture_source: [Public canonical packages ADR](adr/001-public-canonical-packages.md)
 
 ## 中文版
 
 <!-- topic:reference -->
 
-
-
 ### 1. 产品边界
 
-GhostFleet 是面向 AI Agent 与 Human 的设备舰队生命周期控制平面。核心不是“远程执行命令”，而是让真实设备以明确身份、状态、能力、证据和人工门禁进入可管理生命周期。
+GhostFleet 为人工操作员和 AI 代理提供设备舰队生命周期控制面，通过明确的身份、状态、能力、证据与人工确认管理真实设备的准入和操作。
 
 ~~~text
 Human / AI
@@ -25,25 +23,25 @@ Provider / Device adapters
 Real devices
 ~~~
 
-### 2. 单入口，多 Domain
+### 2. 单入口，多个领域
 
-Enrollment 和日常管理共享一个 Console 和产品入口，不拆成两个站点。隔离发生在内部 授权/domain 边界：
+纳管与日常管理共用 Console 和产品入口，内部按领域与权限隔离：
 
-- Enrollment Domain：新设备入列、临时身份、HumanGate、resume/对账；
-- Fleet Domain：NodeIdentity、生命周期、目录投影；
-- Capability Domain：能力定义、风险级别、授权引用；
-- Event Domain：状态变化、证据和需要人工处理的事件。
+- 纳管领域：准入尝试、临时身份、人工确认、恢复与对账；
+- 设备领域：`NodeIdentity`、生命周期与目录投影；
+- 能力领域：能力定义、风险等级与授权引用；
+- 事件领域：状态变化、证据和需要操作员处理的事件。
 
-UI 不持有 提供方 root 凭据，也不因为“同一个入口”而获得所有内部 授权。
+浏览器不持有提供方的根凭据，共享入口也不授予全部内部权限。
 
 ### 3. 一等对象
 
-- `EnrollmentAttempt`：未知物理设备到 durable node 身份 之间的生命周期对象；
-- `HumanGate`：人工确认不是聊天上下文，而是持久化状态；
-- `Evidence`：每次关键状态迁移的可验证依据；
-- `NodeIdentity`：在 MATERIALIZING 建立的稳定 PROVISIONAL 身份，验收后以同一 `node_uid` 晋升 ACTIVE；
-- `CapabilityDefinition`：节点或 adapter 能提供什么，而不是 raw 凭据；
-- `Event`：控制循环的唤醒和审计事实。
+- `EnrollmentAttempt`：从未知物理设备到持久节点身份的生命周期对象；
+- `HumanGate`：持久化的人工确认状态，不依赖聊天记忆；
+- `Evidence`：关键状态变化的可验证依据；
+- `NodeIdentity`：在 `MATERIALIZING` 阶段创建稳定的 `PROVISIONAL` 身份，验收后以同一 `node_uid` 晋升 `ACTIVE`；
+- `CapabilityDefinition`：适配器可安全提供的能力声明，不携带原始凭据；
+- `Event`：驱动控制循环的持久事实。
 
 ### 4. EnrollmentAttempt 状态机
 
@@ -62,11 +60,11 @@ non-terminal
   -> FAILED / CANCELLED
 ~~~
 
-Lost response 或外部 提供方 结果不确定时进入 `RECONCILE_REQUIRED`，而不是盲目重试或重新 mint。
+响应丢失或提供方结果不确定时进入 `RECONCILE_REQUIRED`，先对账，不能盲目重试或重新生成身份。
 
-### 5. 证据驱动 准入
+### 5. 证据驱动的准入
 
-V0 使用 提供方-neutral 证据 类型：
+V0 使用与提供方无关的证据类型：
 
 - `transport.ready`
 - `bootstrap.report`
@@ -76,45 +74,31 @@ V0 使用 提供方-neutral 证据 类型：
 - `convergence.zero_delta`
 - `reboot.recovered`
 
-具体 提供方 事实由 adapter 映射到这些公共 证据 类型。例如某个网络 提供方 的 Running/IP/外部可见性属于 传输 证据，不进入 core 协议成为硬编码依赖。
+适配器将提供方事实映射为公共证据；网络状态、地址和外部可见性等事实不成为核心协议的硬编码依赖。
 
-`materialize` 在控制面创建 PROVISIONAL NodeIdentity 和 enrollment catalog 投影，再从实际存储状态生成 core-owned `identity.materialized` / `catalog.admitted`。目录登记只允许纳管期间观察，不授权日常设备操作。客户端不能提交或覆盖这两项证据；其余五项必须由真实 adapter 观察提供，合成测试不证明真机。`accept` 验证全部证据后晋升同一身份，不能重新 mint。重复 materialize、durable reload 和 对账 保留同一身份；重复 materialize 不产生 material delta。
+`materialize` 创建 `PROVISIONAL` 身份和纳管目录投影，从实际存储生成核心拥有的 `identity.materialized` 与 `catalog.admitted` 证据。目录登记只允许纳管观察，不授权日常设备操作。客户端不能提交或覆盖这两项证明；另外五项须由真实适配器观察提供，合成测试不证明真机验收。`accept` 验证全部证据后晋升同一身份。重复物化、持久化恢复与对账保留身份，重复物化不产生实质变更。
 
-### 6. Capability 模型
+身份准入和纳管目录投影属于本控制面。独立消费者仍须完成目录、鉴权、配置和调用路由接线，验证允许与越权调用、身份回读及回滚。单独的 canary 或 `ACTIVE` 状态不证明用户实际使用的消费者已完成端到端纳管。详见 [迁移](MIGRATION.md)。
 
-Capability 是“受控能力声明”，不是 凭据。定义至少包含：
+### 6. 能力模型
 
-- 能力 id；
-- 风险级别 R0/R1/R2；
-- adapter contract；
-- 可选 策略 元数据。
+能力是受控声明，不是凭据。定义至少包含能力 ID、R0/R1/R2 风险级别、适配器契约和可选策略元数据。
 
-高权限设备动作不在 core 内直接实现。Core 负责 能力 discovery、授权 contract、HumanGate 和 回执/证据；Linux/Windows/Android 等 adapter 才负责平台实现。
+核心负责能力发现、授权契约、人工确认和回执/证据。Linux、Windows、Android 等适配器提供平台执行，高权限设备动作不直接实现在核心中。
 
 ### 7. AI 接口
 
-V0 MCP surface 先提供观察/检查工具：节点、EnrollmentAttempt、Capability Registry。这样模型先看到“对象与状态”，而不是拿到一个万能 Shell。
+V0 MCP 提供节点、纳管尝试和能力目录的观察与检查工具。模型先获得对象和状态；以后新增变更工具时，须在服务端强制执行策略、精确身份、能力权限及人工确认。工具说明不是安全边界。
 
-后续 变更 tool 必须在 server-side 策略、node 身份、能力 权限范围 和 HumanGate 之下，不依赖 tool description 作为安全边界。
+### 8. 事件驱动的控制
 
-### 8. Event-driven 控制
+典型事件包括 `EnrollmentAttemptChanged`、`HumanGateRequired`、`HumanGateResolved`、`EvidenceUpdated`、`CapabilityAvailable`、`NodeAdmitted`、`ProjectionStale` 和 `ReconcileRequired`。
 
-典型事件：
-
-- EnrollmentAttemptChanged
-- HumanGateRequired
-- HumanGateResolved
-- EvidenceUpdated
-- CapabilityAvailable
-- NodeAdmitted
-- ProjectionStale
-- ReconcileRequired
-
-AI/Chat 不应承担高频 polling daemon。持久运行 executor/runner 可以消费事件，但 runner 不可用不等于 Fleet 不可用。
+聊天和 AI 不承担高频轮询守护进程。持久执行器可以消费事件；某个执行器不可用，不等于设备舰队整体不可用。
 
 ### 9. 部署抽象
 
-Core 是 提供方-neutral。V0 同时给出 Cloudflare reference adapter：
+核心与提供方无关。V0 提供 Cloudflare 参考适配器：
 
 ~~~text
 Static Console
@@ -123,31 +107,26 @@ Static Console
  -> adapters
 ~~~
 
-Cloudflare 只是参考实现。其他部署可以实现同一 store/API/adapter contract。
+其他部署可实现相同的存储、API 与适配器契约。
 
 ### 10. Console
 
-官方 Console 使用成熟开源 UI 基础。V0 选 Tabler 作为视觉与组件壳，GhostFleet 只实现领域页面和 view model：Nodes、Enrollment、Human Gates、Capabilities、Events。
+官方 Console 使用成熟开源 UI 基础。V0 采用 Tabler 作为视觉和组件基础，GhostFleet 实现节点、纳管、人工确认、能力和事件等领域页面与视图模型。
 
 ### 11. 平台路线
 
-- Linux：首个 live canary；
-- Windows：复用相同 能力/生命周期 contract；
-- Android：复用相同 contract，设备 UI 能力由 adapter 表达；
-- Apple/macOS/iOS：先保留 adapter 边界，V0 不作为实施 gate。
+- Linux：首个真实 canary 集成；
+- Windows：复用生命周期与能力契约；
+- Android：复用契约，由适配器表达设备 UI 能力；
+- Apple/macOS/iOS：保留适配器边界，不作为 V0 实施前置。
 
-### 12. Open-源代码 boundary
+### 12. 开源边界
 
-公共仓库包括通用 schema、状态 machine、UI、API、adapter contracts、合成 tests 和 reference deployment。
+公开仓包含通用 schema、状态机、UI、API、适配器契约、合成测试和参考部署。真实账号、私有设备清单、实际端点、长期凭据、个人策略、私有恢复坐标和内部代理治理留在部署方。
 
-公共仓库不包括：真实账号 ID、私有 node inventory、live 服务端点、长期 凭据、个人 策略、私有恢复坐标、内部多 Agent 治理。
+### 当前源码预览与可选模块
 
----
-
-
-### 当前 source-preview 与可选模块
-
-Publiccandidate包含typed-control、bootstrap、Pythonplatformruntime与显式authorizationbuildingblocks；具体entry/components/tests见[exportmanifest](export-manifest.json)。默认MCP四只读工具、Console生命周期对象管理不启用设备executionbackend。生产OAuth/Pagehosting/第二independenthardware不由源码搬迁完成。Core/API/permission与标准AIclient无关，不需OpenAI/ChatGPTconfig；专有profile/redirect/actor/scope只optional并保持exactbinding。细节见[操作参考](OPERATIONS.md)、[授权机制](AUTHORIZATION.md)、[迁移](MIGRATION.md)。
+公开 `main` 包含类型化控制、bootstrap、Python 平台运行时和显式可选的授权基础模块。[导出清单](export-manifest.json) 列出入口、组件和测试。默认 MCP 四个只读工具与 Console 的生命周期对象管理没有设备执行后端。生产 OAuth、Pages 托管和第二台独立硬件分别验收。核心、API、权限与标准 AI 客户端无关，无需 OpenAI/ChatGPT 配置；特定客户端的配置、重定向、身份和权限范围通过可选适配器精确绑定。详见 [操作](OPERATIONS.md)、[授权](AUTHORIZATION.md) 和 [迁移](MIGRATION.md)。
 
 ## English Version
 
@@ -226,6 +205,8 @@ Provider-specific facts are mapped by adapters into these public evidence types 
 
 `materialize` creates a PROVISIONAL NodeIdentity and enrollment catalog projection, then derives core-owned `identity.materialized` and `catalog.admitted` evidence from stored state. Catalog registration permits enrollment inspection only, never operational authority. Clients cannot submit or overwrite those two proofs; the remaining five need real adapter observations, and synthetic tests do not prove hardware acceptance. `accept` promotes the same identity only after all proofs pass. Repeated materialization, durable reload and reconcile retain the identity; repeated materialization has zero material delta.
 
+Identity admission and the enrollment catalog projection are local to this control plane. An independent consumer still requires catalog/authentication/configuration/call-route integration, permitted and unauthorized-call tests, identity readback and rollback acceptance. A canary or ACTIVE state alone does not establish end-to-end admission through that consumer; see [Migration](MIGRATION.md).
+
 ### 6. Capability model
 
 A Capability is a bounded ability declaration, not a credential. A definition includes at least an id, R0/R1/R2 risk class, adapter contract, and optional policy metadata.
@@ -277,4 +258,4 @@ It excludes real account IDs, private node inventory, live endpoints, long-lived
 
 ### Current source preview and optional modules
 
-The public candidate includes typed control, bootstrap, Python platform runtimes and explicit authorization building blocks. See the [export manifest](export-manifest.json) for entries/components/tests. The default four read-only MCP tools and Console lifecycle-object management enable no device-execution backend. Source extraction does not complete production OAuth/Pages or independent second-device acceptance. Core/API/authority are standard AI-client-neutral without OpenAI/ChatGPT configuration; proprietary profile/redirect/actor/scope compatibility is optional and keeps exact binding. See [Operations](OPERATIONS.md), [Authorization](AUTHORIZATION.md) and [Migration](MIGRATION.md).
+The public source preview on `main` includes typed control, bootstrap, Python platform runtimes and explicit authorization building blocks. See the [export manifest](export-manifest.json) for entries/components/tests. The default four read-only MCP tools and Console lifecycle-object management enable no device-execution backend. Source extraction does not complete production OAuth/Pages or independent second-device acceptance. Core/API/authority are standard AI-client-neutral without OpenAI/ChatGPT configuration; proprietary profile/redirect/actor/scope compatibility is optional and keeps exact binding. See [Operations](OPERATIONS.md), [Authorization](AUTHORIZATION.md) and [Migration](MIGRATION.md).

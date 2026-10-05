@@ -12,9 +12,11 @@ GhostFleet 是开源设备管理控制面，与 AI 客户端无关。人工操�
 <!-- topic:startup -->
 ### 开始开发
 
-需要 Node.js 22+。当前实现仍在公开预览分支，先从已评审分支或指定提交取得源码，再执行：
+需要 Node.js 22+。源码预览已进入本仓 `main`；从默认分支开始开发。审阅特定版本时，使用该版本的精确提交。
 
 ```sh
+git clone https://github.com/youling/ghostfleet.git
+cd ghostfleet
 npm ci
 npm test
 npm run check
@@ -36,7 +38,7 @@ npm run dev
 | 类型化控制 | 操作、策略、精确目标、截止时间、任务/会话及可选本地/Cloudflare 后端 | 未配置后端时拒绝；不注册默认工具 |
 | Bootstrap/Python | 载荷生成、校验器、Linux 收敛器、辅助程序、Windows/Android 运行时 | 显式选择；真实安装/执行另需授权 |
 
-一台受保护的 Linux 设备已通过真实验证。这不代表第二台独立设备、生产 Pages、所有平台或 OAuth 客户端都已通过。正式发布仍需独立硬件/重建证据和安全复审，见 [测试](docs/TESTING.md) 和 [迁移](docs/MIGRATION.md)。
+一次受保护的 Linux 单机集成已通过真实 canary 验证。设备在本控制面成为 `ACTIVE`，只表示满足本控制面的准入要求；独立消费者的设备目录、鉴权配置、调用路由和操作权限仍须接线并验收。用户实际使用的插件能够发现该身份、完成其授权范围内的调用并通过权限负测后，才算该消费者的端到端纳管或切换完成。单机证据也不代表第二台独立设备、生产 Pages、所有平台或 OAuth 客户端都已通过。正式发布仍需独立硬件/重建证据和安全复审，见 [测试](docs/TESTING.md) 和 [迁移](docs/MIGRATION.md)。
 
 <!-- topic:development -->
 ### 贡献与验收
@@ -66,9 +68,11 @@ The source includes a runnable core/Console/HTTP/read-only MCP surface, Linux re
 <!-- topic:startup -->
 ### Start development
 
-Use Node.js 22+. Obtain the source from the currently reviewed public branch/ref, then run:
+Use Node.js 22+. The source preview is available on this repository's `main` branch. Start from the default branch; use an exact commit when reviewing a specific revision.
 
 ```sh
+git clone https://github.com/youling/ghostfleet.git
+cd ghostfleet
 npm ci
 npm test
 npm run check
@@ -90,7 +94,7 @@ Open `http://127.0.0.1:8791/` on the same machine. Local initialization prints n
 | Typed control | Optional typed operations, target/policy/currentness, job/session, native/Cloudflare backend boundaries | Rejects unconfigured backend; registers no default tools |
 | Bootstrap/Python | Optional payload generation, validators, Linux converger, helpers, Windows/Android runtimes | Opt-in; real installation/execution needs separate authority |
 
-A protected single Linux node passed real validation. This does not establish an independent second device, production Pages, every platform or OAuth client. Formal release retains independent hardware/rebuild and security-review gates; see [Testing](docs/TESTING.md) and [Migration](docs/MIGRATION.md).
+One protected Linux integration passed a real canary. `ACTIVE` establishes admission under this control plane's requirements only; independent consumers still need catalog registration, authentication configuration, call routing and operational permission acceptance. End-to-end admission or cutover through a user's actual plugin requires discovery of the accepted identity, permitted calls and unauthorized-operation rejection in that consumer. Single-node evidence also does not establish an independent second device, production Pages, every platform or OAuth client. Formal release retains independent hardware/rebuild and security-review gates; see [Testing](docs/TESTING.md) and [Migration](docs/MIGRATION.md).
 
 <!-- topic:development -->
 ### Contribution and acceptance
