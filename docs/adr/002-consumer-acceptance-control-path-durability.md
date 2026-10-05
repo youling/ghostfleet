@@ -30,16 +30,32 @@ GhostFleet 将消费者验收定义为**独立于核心 Node lifecycle 的一等
 - node-scoped rollback plan/result；
 - 最终 consumer acceptance state。
 
+consumer acceptance 生命周期固定为：
+
+```text
+PENDING -> ACCEPTED -> ROLLED_BACK
+```
+
+`ROLLED_BACK` 是终态；重新接入必须创建新的 acceptance record，不能复活旧记录。证据缺失或无法判定时保持 `PENDING`，不得猜测晋升。
+
 对依赖特权凭据的消费者接入，增加 fail-closed custody gate：
 
 - executor/session/workspace-local key、path 或临时文件不得满足验收；
 - 可接受的 custody 必须解析为 deployment-owned durable reference，例如 provider-native secret，或由部署方声明并证明的 host-owned protected artifact；
+- durable class 本身不是证明；必须同时绑定明确的 deployment owner 与 attestation reference，并能关联本次 consumer/config current revision；
 - GhostFleet 只保存和验证引用、类别与证据，不保存 secret plaintext；
+- durable class 缺 owner/attestation 时直接 fail closed，不降级为“较弱 durable”；
 - 无法证明 custody durability 时，consumer acceptance 不得 PASS。
 
-executor-independence 必须由事实证明：初次成功后，从一个不依赖原 builder/session/workspace 的新执行上下文重新完成等价授权调用。没有这项证据，不得把控制路径视为持久接入。
+executor-independence 必须由事实证明：初次成功后，从一个不依赖原 builder/session/workspace 的新执行上下文重新完成**同一授权 operation / capability**。fresh-context evidence 必须绑定原执行上下文、同一 operation identity，并携带独立 receipt/readback reference；仅有 `dependency_free=true` 或 `result=PASS` 自述不足以证明执行者无关性。
 
-consumer rollback 采用**节点级语义**：适配器/集成必须声明并移除该节点引入的 policy、target、routing 或等价 binding，并证明此前已验收路径恢复。仅回退代码、镜像或 Worker 版本，不足以构成节点回滚。
+consumer rollback 采用**节点级语义**，并分为 plan 与 result 两层：
+
+- acceptance 阶段只要求 rollback plan：声明该 consumer 引入的完整 binding set 与 prior-path restoration contract；此时新路径仍应在位；
+- 实际 rollback transition 才验 rollback result：removed set 必须与 declared set 精确相等，并携带 removal/readback evidence，证明此前已验收路径恢复；
+- 如果真实回滚需要移除 plan 未声明的对象，必须先修订 plan / authority，再执行；不得把额外删除当作隐式许可。
+
+仅回退代码、镜像或 Worker 版本，不足以构成节点回滚。
 
 核心 `ACTIVE`、成功 tunnel、单次 SSH、单次 typed call 或 Human 维护通道，均不得交叉关闭 consumer acceptance。
 
@@ -108,11 +124,19 @@ Consumer acceptance must bind at least:
 - node-scoped rollback plan/result;
 - final consumer acceptance state.
 
-For privileged control credentials, acceptance fails closed unless custody resolves to a deployment-owned durable reference. Executor/session/workspace-local keys, paths, or temporary files cannot satisfy acceptance. GhostFleet stores and validates references, classes, and evidence rather than secret plaintext.
+The consumer-acceptance lifecycle is fixed:
 
-Executor independence must be demonstrated by reissuing an equivalent authorized operation from a fresh execution context that has no dependency on the original builder/session/workspace.
+```text
+PENDING -> ACCEPTED -> ROLLED_BACK
+```
 
-Consumer rollback is node-scoped: integrations must remove the node-specific policy, target, routing, or equivalent bindings they introduced and prove restoration of the previously accepted path. Reverting only code, an image, or a Worker version is insufficient.
+`ROLLED_BACK` is terminal. Re-admission requires a new acceptance record; an old rolled-back record cannot be revived. Missing or undecidable evidence keeps the record `PENDING`.
+
+For privileged control credentials, acceptance fails closed unless custody resolves to a deployment-owned durable reference. Executor/session/workspace-local keys, paths, or temporary files cannot satisfy acceptance. A durable class is not proof by itself: it must bind an explicit deployment owner plus an attestation reference associated with the current consumer/config revision. Missing owner/attestation fails closed rather than degrading into a weaker durable state. GhostFleet stores references, classes, and evidence rather than secret plaintext.
+
+Executor independence must be demonstrated by reissuing the **same authorized operation/capability** from a fresh execution context with no dependency on the original builder/session/workspace. Fresh-context evidence must bind the origin context, the same operation identity, and an independent receipt/readback reference; boolean self-assertions alone are insufficient.
+
+Consumer rollback is node-scoped and separates plan from result. Acceptance requires a rollback plan declaring the complete binding set and prior-path restoration contract while the new path remains live. The actual rollback transition then requires an exact removed-set match plus removal/readback evidence proving restoration of the previously accepted path. Removing an undeclared object requires the plan/authority to be amended before that mutation. Reverting only code, an image, or a Worker version is insufficient.
 
 Core `ACTIVE`, a successful tunnel, one SSH call, one typed call, or a Human maintenance surface cannot cross-close consumer acceptance.
 
