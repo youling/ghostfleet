@@ -43,7 +43,7 @@ npm run dev
 <!-- topic:development -->
 ### 贡献与验收
 
-后续通用插件开发以本仓为准。[贡献](CONTRIBUTING.md)、[插件开发](docs/PLUGIN_DEVELOPMENT.md)、[架构](docs/ARCHITECTURE.md)、[API](docs/API.md)、[MCP](docs/MCP.md) 和 [安全](docs/SECURITY.md) 提供实现方法与边界。公开 CI 不需要私有凭据或设备。
+后续**所有通用远控产品开发**以本仓为准，包括 core/API/MCP/Console、typed-control、enrollment、capability、consumer-acceptance、通用平台适配与客户端适配。`youling/fleet` 只维护礼宏的私有舰队实例、部署配置、真实设备/账号 evidence、私有 provider binding、consumer cutover 与运维；不得把通用功能继续写回 Fleet 形成第二实现。[贡献](CONTRIBUTING.md)、[插件开发](docs/PLUGIN_DEVELOPMENT.md)、[架构](docs/ARCHITECTURE.md)、[API](docs/API.md)、[MCP](docs/MCP.md) 和 [安全](docs/SECURITY.md) 提供实现方法与边界。公开 CI 不需要私有凭据或设备。
 
 ```sh
 npm run check:publication
