@@ -3,32 +3,32 @@
 ## 中文
 
 <!-- topic:ownership -->
-### 公开 canonical owner
+### 通用实现的公开权威来源
 
-GhostFleet 是后续通用插件、协议、validator 与产品实现的 canonical source。部署私有仓只保存实例 policy、provider/node 配置、secret custody、真实 evidence 与调用 glue，不能复制另一份通用 core 修复。公开 package/contract 通过 revision 与版本引用；具体部署仍由部署 owner 决定接入/升级。
+GhostFleet 是后续通用插件、协议、校验器和产品实现的权威源码来源。部署私有仓库只保存实例策略、提供方/节点配置、秘密托管、真实证据和调用衔接代码，不能维护另一份通用核心实现。通过源码版本和包版本引用公开包与契约；具体接入和升级仍由部署责任方决定。
 
-平台插件、provider adapter、AI client adapter 是不同边界。核心 HTTP/MCP、权限和生命周期与 AI 客户端无关。ChatGPT/OpenAI 特有 OAuth、callback、profile、actor/scope 或 SDK 只能放在可选 client adapter；不能成为所有 AI Agent 的安装或认证前提。
+平台插件、提供方适配器和 AI 客户端适配器属于不同边界。核心 HTTP/MCP、权限与生命周期独立于 AI 客户端。ChatGPT/OpenAI 特有的 OAuth、回调、配置、调用主体/权限范围或 SDK 只能放在可选客户端适配器中，不能成为所有 AI Agent 的安装或认证前提。
 
 <!-- topic:design -->
-### 设计一个 adapter
+### 设计适配器
 
-先选择 boundary：读取控制面对象用标准 HTTP/MCP；消费 Linux 证明用 `LinuxReceiptAdapter`；执行受限命令用显式 typed-control backend；平台 runtime 用 Python package。不要把通用 shell、provider root、节点原始日志暴露成便利 API。描述 owner、可用 capability、exact identity、scope、effect fences、deadline、cancel、UNKNOWN/reconcile 与 recovery。
+先选择边界：读取控制面对象使用标准 HTTP/MCP；消费 Linux 证据使用 `LinuxReceiptAdapter`；执行受限命令使用显式注入的类型化控制后端；平台运行时使用 Python 包。不要将任意 shell、提供方根权限或节点原始日志暴露为便利 API。说明责任方、可用能力、精确身份、权限范围、防重复派发记录、截止时间、取消、`UNKNOWN` 对账与恢复。
 
-receipt observer 必须独立解析受保护 reference 并做 fresh 身份核验，不能回显 caller 的 PASS/digest/nonce 当成认证。SHA 只证明内容绑定，不证明 signer 或执行 authority。baseline positive/negative fixture 必须全 synthetic，不能用真实历史节点截取数据。
+回执观察器必须独立解析受保护引用，并核验当前身份；不能回显调用方的 PASS、摘要或 nonce 后便当作认证。SHA 只证明内容绑定，不证明签名者或执行授权。基线正负样本必须全部合成，不能截取真实历史节点数据。
 
 <!-- topic:extension -->
 ### 实现与协议兼容
 
-采用 injectable system/transport/provider 接口，constructor/import 不做远程 I/O。每次执行前验证 current source 与 target；写入前持久化一次 effect dispatch fence。资源清理由拥有者执行，不删除别人的 state。Linux convergence 只管理自己声明的文件/服务/package，不顺手升级或改变 foreign state。
+采用可注入的系统、传输和提供方接口，构造或导入时不进行远程 I/O。每次执行前验证当前源码与目标，变更前持久化一次防重复派发记录。责任方只清理自己拥有的资源，不删除他人状态。Linux 收敛只管理已声明的文件、服务和包，不顺手升级软件包或改变外部状态。
 
-旧 `fleet-*` protocol markers 和已安装 helper path 是 compatibility ABI，不能为美观改名；新 public namespace 与旧 wire/storage layout 不同。如变更 ABI，提供版本判别、双向兼容测试、consumer cutover与rollback，先收集状态再禁止 blind replay。
+旧 `fleet-*` 协议标记和已安装的辅助程序路径属于兼容 ABI，不能为美观改名；公开命名空间不同于旧传输协议和存储布局。ABI 变更须提供版本判别、双向兼容测试、调用方切换与回滚；先对账当前状态，再依据契约决定是否重放，不能盲目重试。
 
 <!-- topic:review -->
 ### 测试、贡献与验收
 
-每个 adapter 提交接口说明、synthetic contract tests、权限负向 tests、timeout/late-result/no-retry、source/target mismatch、恢复与状态污染测试。通过 [Publication](PUBLICATION.md) 的源码/fixture/图像/日志边界与 [Testing](TESTING.md) 的独立构建。维护 [迁移表](MIGRATION.md) 与双语文档，不提交 private credential、endpoint、registry 或 raw receipt。
+每个适配器提交接口说明、合成契约测试、权限负向测试，以及超时、迟到结果、不重试、源码/目标不匹配、恢复和状态污染测试。满足 [公开边界](PUBLICATION.md) 对源码、样本、图像和日志的要求，并按 [测试](TESTING.md) 独立构建。维护 [迁移表](MIGRATION.md) 和双语文档，不提交私有凭据、端点、实例清单或原始回执。
 
-提交 PR 后由 reviewer 绑定 exact public head 检查；测试通过不是自动合并或生产部署授权。真实设备/第二独立节点/客户端 OAuth 等分别要求相应验收。公开 CI 使用无 secret hosted runner；不要将 fork PR 接到 self-hosted device 或 provider 凭据。
+提交 PR 后由审阅者绑定精确公开提交检查，测试通过不自动授予合并或生产部署授权。真实设备、第二独立节点和客户端 OAuth 分别验收。公开 CI 使用无秘密的托管运行器，不能让 fork PR 访问自托管设备或提供方凭据。
 
 ## English
 

@@ -1,6 +1,6 @@
 {
   "schema": "ghostfleet.public-export-manifest.v1",
-  "stage": "source-preview-candidate",
+  "stage": "source-preview",
   "release_ready": false,
   "ai_client_neutral": true,
   "default_surface": {
@@ -25,27 +25,54 @@
       "name": "@ghostfleet/typed-control",
       "path": "packages/typed-control",
       "entry": "packages/typed-control/src/index.ts",
-      "optional_entries": ["packages/typed-control/src/cloudflareBackend.ts", "packages/typed-control/src/authorization/index.ts"],
+      "optional_entries": [
+        "packages/typed-control/src/cloudflareBackend.ts",
+        "packages/typed-control/src/authorization/index.ts"
+      ],
       "mode": "explicit-opt-in-library",
       "default_backend": "reject-before-contact",
-      "components": ["typed-operations", "policy", "exact-targets", "absolute-deadlines", "jobs-rpc", "sessions-rpc", "privileged-rpc", "native-backend-injection", "cloudflare-ssh-adapter", "optional-authorization-ingress", "owner-consent", "pkce", "exact-client-profile-validation"],
+      "components": [
+        "typed-operations",
+        "policy",
+        "exact-targets",
+        "absolute-deadlines",
+        "jobs-rpc",
+        "sessions-rpc",
+        "privileged-rpc",
+        "native-backend-injection",
+        "cloudflare-ssh-adapter",
+        "optional-authorization-ingress",
+        "owner-consent",
+        "pkce",
+        "exact-client-profile-validation"
+      ],
       "oauth_issuer_store": "deployment-supplied-not-delivered",
       "oauth_refresh_and_revocation_server": "not-delivered",
-      "compatibility_scopes": ["fleet.read", "fleet.operate", "fleet.exec", "fleet.privileged"],
+      "compatibility_scopes": [
+        "fleet.read",
+        "fleet.operate",
+        "fleet.exec",
+        "fleet.privileged"
+      ],
       "check": "npm run check:typed",
       "test": "npm run test:typed",
       "build": "npm run build:typed",
-      "validation": "candidate-pending-review"
+      "validation": "see-exact-revision-ci-and-review",
+      "consumer_acceptance": "deployment-specific-required"
     },
     {
       "name": "@ghostfleet/bootstrap",
       "path": "packages/bootstrap",
       "entry": "packages/bootstrap/src/index.js",
       "mode": "explicit-opt-in-payload-generation",
-      "components": ["linux-bootstrap", "convergence-payload"],
+      "components": [
+        "linux-bootstrap",
+        "convergence-payload"
+      ],
       "check": "npm run check:bootstrap",
       "test": "npm run test:bootstrap",
-      "validation": "candidate-pending-review"
+      "validation": "see-exact-revision-ci-and-review",
+      "consumer_acceptance": "deployment-specific-required"
     },
     {
       "name": "ghostfleet-runtime",
@@ -53,11 +80,27 @@
       "entry": "packages/runtime-python/src/ghostfleet_runtime/__init__.py",
       "resource_root": "packages/runtime-python/src/ghostfleet_runtime/resources",
       "mode": "explicit-opt-in-platform-runtime",
-      "components": ["identity-validation", "registry-validation", "profiles", "instance-projections", "linux-enrollment", "linux-convergence", "jobs-helper", "sessions-helper", "privileged-helpers", "windows-runtime", "android-runtime", "optional-android-device-adapter"],
-      "optional_dependencies": ["android"],
+      "components": [
+        "identity-validation",
+        "registry-validation",
+        "profiles",
+        "instance-projections",
+        "linux-enrollment",
+        "linux-convergence",
+        "jobs-helper",
+        "sessions-helper",
+        "privileged-helpers",
+        "windows-runtime",
+        "android-runtime",
+        "optional-android-device-adapter"
+      ],
+      "optional_dependencies": [
+        "android"
+      ],
       "test": "npm run test:python",
       "artifact_check": "python scripts/verify-python-artifact.py",
-      "validation": "candidate-pending-review"
+      "validation": "see-exact-revision-ci-and-review",
+      "consumer_acceptance": "deployment-specific-required"
     }
   ],
   "publication": {
@@ -71,5 +114,7 @@
     "independent-second-device-live-validation",
     "production-hosting-and-identity-review",
     "capability-specific-consumer-cutover-before-private-retirement"
-  ]
+  ],
+  "review_evidence": "Use GitHub PR review and CI for the exact source revision; this index does not self-attest a commit.",
+  "admission_scope": "Control-plane identity admission is separate from deployment-specific consumer catalog, authentication, routing and cutover acceptance."
 }

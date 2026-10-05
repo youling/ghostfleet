@@ -5,7 +5,7 @@
 <!-- topic:install -->
 ### 安装并运行合成示例
 
-从当前已评审的公开预览分支或提交版本取得源码，再安装、检查和构建：
+默认从公开 `main` 取得已合并的源码预览；精确提交复核时使用审阅者指定的公开提交，再安装、检查和构建。软件包仍处于源码开发/预览状态，正式稳定发布另行验收：
 
 ```sh
 npm ci
@@ -69,7 +69,7 @@ node examples/typed-control-synthetic.mjs
 <!-- topic:install -->
 ### Runnable synthetic example
 
-Install dependencies from the current reviewed preview ref, then compile and run the repository example:
+Use public `main` for the merged source preview by default, or the reviewer-specified public commit for exact-commit validation. Packages remain source-development/preview artifacts with separate stable-release acceptance. Install dependencies, then compile and run the repository example:
 
 ```sh
 npm ci

@@ -5,35 +5,35 @@
 <!-- topic:snapshot -->
 ### 公开快照和数据
 
-只导出经review的通用source/contracts/tests，保留publicpackage与thirdpartylicense，不搬privateGit历史。Publicprovenance只陈述通用来源/许可；exactprivatesource与excludedpath审计留在受保护owner。真实node/provider/account/endpoint/topology、secretrefs/values、rawreceipts/logs、screenshots和运行数据不得放publictree、PR、CIartifact或release。
+只导出经过审阅的通用源码、契约和测试，保留公开包及第三方许可，不迁入私有 Git 历史。公开来源说明只陈述通用来源和许可；精确私有源码与排除路径的审计由受保护责任方保管。真实节点、提供方、账户、端点、拓扑、秘密引用与值、原始回执、日志、截图和运行数据不得进入公开文件树、PR、CI 产物或发布包。
 
-演示/测试必须独立重建syntheticfixtures，使用文档保留IP、example域名和temporarypaths；不能从真实UID变形得到fixture。已审syntheticConsole图片按exactSHA绑定，新增/改变后重新视觉review。
+演示和测试须独立重建合成样本，使用文档保留 IP、示例域名和临时路径；不能修改真实 UID 后当作样本。已审阅的合成控制台图片绑定精确 SHA，新增或修改后须重新视觉审阅。
 
 <!-- topic:guard -->
-### 执行 guard
+### 执行公开边界检查
 
 ```sh
 npm run check:publication
 npm run check:docs
 ```
 
-publicationguard使用tracked与nonignored新文件清单，拒路径越界/symlink、私有artifact路径、未知binary/encoding或超预算。检查有限token/PEM/Authorization/quotedcredential/JWT形状、IPv4/IPv6、providerkey、NodeUID、tailnet、home路径、email及defaultAIprovider耦合。结果仅rule/path/line，不输出匹配值；sensitivepath被遮蔽。
+公开边界检查列出已跟踪文件及未被忽略的新文件，拒绝路径越界、符号链接、私有产物路径、未知二进制或编码及超过扫描预算的内容。它检查有限的令牌、PEM、Authorization、引号内凭据和 JWT 形状，以及 IPv4/IPv6、提供方密钥、节点 UID、tailnet 定位信息、用户主目录路径、邮箱和默认 AI 提供方耦合。结果只含规则、路径与行号，不输出匹配值，敏感路径会被遮蔽。
 
-这是有限模式guard，不是DLP：不是所有secretprefix/JWT/跨行literal/编码key都可识别，动态拼接、加密、复杂encoding与真实alias需要另一个受保护privatevalue审计与review。source通过不替代打包产物、sourcemap、logs、tar/zipmetadata、release与图片审查。
+这是有限模式检查，不是完整的数据泄漏防护（DLP）。它无法识别所有秘密前缀、JWT、跨行字面量或编码密钥；动态拼接、加密、复杂编码和真实别名需要单独受保护的私有值审计与审阅。源码检查通过不替代对打包产物、source map、日志、tar/zip 元数据、发布包和图片的审查。
 
 <!-- topic:exceptions -->
 ### 误报和例外
 
-`publication-policy.json`的fixtureexception绑定exactpath、rule、matchedvalueSHA或整source-lineSHA、inert理由与类型；真实秘密不能allowlist。Detector中keyformatmarker和Windowsversion/broadcastrejection常量可单点评审，但不能把整个test文件、directory、CGNATrange或tokenprefix放行。失效exception会失败。
+`publication-policy.json` 中的样本例外绑定精确路径、规则、匹配值 SHA 或整行源码 SHA、无实际作用的理由及类型；真实秘密不能加入允许清单。检测器中的密钥格式标记、Windows 版本和广播拒绝常量可逐点评审，不能放行整个测试文件、目录、CGNAT 范围或令牌前缀。失效例外会使检查失败。
 
-publiccontact例外只允许exactaddress+path+理由，不放行整个domain。binaryreview绑定文件SHA、purpose、review。Publicdefaultentry/package不能新增OpenAI/ChatGPT依赖；专有clientcompatibility需单独可选adapter和exactreview，不通过广泛路径exemption。
+公开联系地址的例外只允许精确地址、路径和理由，不放行整个域名。二进制审阅绑定文件 SHA、用途和审阅记录。公开默认入口或软件包不得新增 OpenAI/ChatGPT 依赖；专有客户端兼容须采用独立可选适配器并精确审阅，不能依赖大范围路径豁免。
 
 <!-- topic:review -->
 ### 发布检查与处置
 
-提交前在cleanpubliccheckout执行完整tests/build/guards。检查机器exportmanifest只含publicpaths/status/exports/tests；documentlink与中英topic结构通过后再独立审语义。发现可能实际secret时停止传播该内容，只报告redactedpath/rule；由credentialowner核对rotation/revocation，不自行复制、replay或公开诊断值。
+提交前在干净公开检出目录运行完整测试、构建和边界检查。机器导出清单只能含公开路径、状态、导出和测试；文档链接及中英文主题结构通过后，还须独立审阅语义。发现可能的真实秘密时停止传播内容，仅报告遮蔽后的路径和规则；凭据责任方核对轮换与撤销，不得自行复制、重放或公开诊断值。
 
-公开CI无provider/device或私仓secret，无selfhosted设备、部署或pull_request_target。发布前审license与依赖；sourcePR、正式release、productiondeployment与privatecutover分别验收。
+公开 CI 不含提供方、设备或私有仓库秘密，不使用自托管设备、部署命令或 pull_request_target。发布前审查许可与依赖；源码 PR、正式发布、生产部署和私有调用方切换分别验收。
 
 ## English
 

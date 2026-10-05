@@ -5,14 +5,14 @@
 <!-- topic:ownership -->
 ### 唯一规范实现与当前状态
 
-本仓维护通用核心/API/MCP、插件契约、校验器和可选设备运行时。实例责任方保留提供方/节点事实、私有策略与投影、秘密托管、原始回执、现役调用方和生产操作。公开源码预览不等于生产发布；[导出清单](export-manifest.json) 记录模块、入口、测试和待审状态。
+本仓维护通用核心/API/MCP、插件契约、校验器和可选设备运行时。实例责任方保留提供方/节点事实、私有策略与投影、秘密托管、原始回执、现役调用方和生产操作。公开源码预览不等于生产发布；[导出清单](export-manifest.json) 记录模块、入口、测试及部署方仍需完成的验收。
 
 公开迁移不导入私有 Git 历史、实例清单或原始真机证明。旧通用实现删除必须等逐项调用方切换验收，不因公开代码能够构建而删除现役路径。
 
 <!-- topic:matrix -->
 ### 机制覆盖和剩余工作
 
-| 能力 | 公开候选位置与模式 | 切换/发布前需完成 |
+| 能力 | 公开源码位置与模式 | 切换/发布前需完成 |
 | --- | --- | --- |
 | 生命周期、证据、节点、Console | `src/core`、`src/control-plane`、`console` | 精确身份、源绑定、持久化和调用方行为一致性 |
 | MCP | `src/integrations`，四个只读工具 | 实际标准客户端握手及权限/Origin 验证，不开放设备变更 |
@@ -35,6 +35,22 @@
 硬件专属散热/root/解锁/恢复、原始证明包、历史 registry 和当前投影包含非公开事实或特殊平台副作用，不直接复制。可复用部分另需通用契约、独立合成样本、平台负测与硬件验收。旧调用方保持可用直到替代通过；现有 Linux/Windows/Android 源码不自动支持 Apple 或未测 SDK 家族。
 
 <!-- topic:checklist -->
+### 控制面准入与消费者接入
+
+`ACTIVE` 和 `catalog.admitted` 属于本控制面的身份准入与纳管目录投影。它们不证明独立消费者已经登记设备、更新鉴权或客户端配置、连接调用路由、获得操作权限或完成回滚验证。独立控制面的 canary 通过，也不能代替用户实际插件的端到端验收。
+
+调用方目录缺少设备时，先核对它读取的数据源、投影、过滤规则、身份绑定与版本。仅凭目录缺失不能判断需要重新安装、加入网络或生成身份；不能用第二份身份掩盖旧绑定问题。复用已验收身份并核对其当前有效性，再按下表验收每个消费者。
+
+| 接入项 | 需要从实际消费者取得的证据 |
+| --- | --- |
+| 目录与身份 | 能发现目标；消费者记录解析到同一已准入身份与当前源版本 |
+| 鉴权与配置 | 实际客户端、凭据、权限范围和重定向精确绑定；轮换或失效配置拒绝 |
+| 路由与允许调用 | 在其授权范围内的调用走预期后端，并回读同一身份与当前结果 |
+| 权限负测 | 缺少、错误或权限不足的凭据不能调用未授权能力；目录可见不授予执行权限 |
+| 回滚 | 能恢复已验收的旧消费者和访问路径，未知副作用先对账而非重发 |
+
+只有实际使用的消费者完成这些检查，才算该消费者的端到端纳管或切换完成。
+
 ### 切换检查清单
 
 1. 冻结一项能力的公开包/版本、旧代码与配置版本、调用方清单和责任方，不扩大到其它平台/节点。
@@ -52,21 +68,21 @@
 
 新的所有者同意证明是 v2，拒绝旧无 origin 证明；注册、授权和 token/refresh 权限须按可信存储与当前客户端配置重验。私有签发方仍未自动切换，不能以迁移文件宣称兼容旧授权。
 
-本次源码预览不执行私有代码删除、main 合并、生产部署或提供方变更。源码迁入、合成测试、单机试验与正式发布分别记录，避免把“代码已迁”说成“全部远控已上线”。
+源码预览已进入公开 `main`。该仓内合并不执行私有代码删除、生产部署或提供方变更。源码迁入、合成测试、单机试验与正式发布分别记录，避免把“代码已迁”说成“全部远控已上线”。
 
 ## English
 
 <!-- topic:ownership -->
 ### Canonical owners and current status
 
-This repository owns generic core/API/MCP, plugin contracts/validators and optional device runtimes. Instance owners retain provider/node facts, private policy/projection, secret custody, raw receipts, existing consumers and production operations. A public source-preview candidate is not a production release; the [export manifest](export-manifest.json) declares modules/exports/tests and pending review.
+This repository owns generic core/API/MCP, plugin contracts/validators and optional device runtimes. Instance owners retain provider/node facts, private policy/projection, secret custody, raw receipts, existing consumers and production operations. The source preview is available on public `main` and is not a production release. The [export manifest](export-manifest.json) declares modules, exports, tests and deployment-specific acceptance requirements; use exact-revision PR reviews and CI as evidence.
 
 Publication imports no private Git history, inventory or actual device proof. Removing prior generic implementations is conditional on subsequent capability-specific cutover, not merely a successful public build.
 
 <!-- topic:matrix -->
 ### Mechanism coverage and remaining work
 
-| Capability | Public candidate location/mode | Cutover or release work |
+| Capability | Public source location/mode | Cutover or release work |
 | --- | --- | --- |
 | Lifecycle/evidence/Node/Console | `src/core`, `src/control-plane`, `console`; default object surface | Exact identity, source binding, persistence and consumer parity |
 | MCP | `src/integrations`; four read-only tools | Actual generic SDK handshakes and scope/origin checks; no device mutation |
@@ -75,7 +91,7 @@ Publication imports no private Git history, inventory or actual device proof. Re
 | Bootstrap/Linux convergence | `packages/bootstrap` plus Python Linux runtime; optional | One-dispatch fence, exact package/host, fresh observer and actual immediate zero-delta repeat |
 | Windows/Android runtime | Python resources/platform modules; optional | Platform dependencies/authority, real adapters, cross-platform negatives and hardware canaries |
 | Profiles/validators/projection | Python core and packaged resources | Owner/read-model boundaries, source revisions, forbidden inventory/secret fields and installed resources |
-| OAuth/access mechanisms | Evaluate actual public optional helper exports only | Generic PKCE/redirect/DCR/consent/token-scope review; production ingress/consumer configuration remains separate |
+| OAuth/access mechanisms | Optional `./authorization` export | Exact client profiles, PKCE, registered/current scope ceilings and v2 origin-bound consent are implemented; production issuer storage, ingress and consumers need separate acceptance |
 | Production Console/Pages/identity | Reference Worker/DO/assets | Separate production hosting/identity/security and Pages cutover; not completed |
 | Independent second-device/rebuild | Not a source copy | Single-node evidence cannot substitute; perform independent hardware/recovery acceptance |
 
@@ -89,6 +105,22 @@ Real provider brokers, secret custody, instance OAuth and production Worker entr
 Hardware-specific thermal/root/unlock/recovery mechanisms, raw legacy proof bundles, historical registries and current projections contain nonpublic facts or special platform effects and are not copied directly. Reusable parts need a generic contract, synthetic fixtures, platform negative tests and hardware acceptance. Existing private consumers remain usable until replacement passes. Linux/Windows/Android source does not automatically support Apple or untested SDK families.
 
 <!-- topic:checklist -->
+### Control-plane admission and consumer integration
+
+`ACTIVE` and `catalog.admitted` represent identity admission and the enrollment catalog projection within this control plane. They do not establish that an independent consumer has registered the device, updated authentication/client configuration, connected call routes, obtained operational permission or validated rollback. An independent control-plane canary cannot substitute for end-to-end acceptance in the user's actual plugin.
+
+When a consumer catalog omits a device, inspect its data source, projection, filters, identity binding and revision. Absence alone does not establish a need to reinstall, rejoin or mint an identity; do not create a second identity to hide old binding problems. Reuse the accepted identity, check currentness and validate each consumer as follows.
+
+| Integration item | Evidence from the actual consumer |
+| --- | --- |
+| Catalog and identity | Discover the target; consumer records resolve to the same accepted identity and current source revision |
+| Authentication and configuration | Bind the actual client, credential, scopes and redirects exactly; reject rotated or stale configuration |
+| Routes and permitted calls | Calls within its authority reach the expected backend and read back the same identity and current result |
+| Negative authority | Missing, incorrect or insufficient credentials cannot invoke unauthorized capabilities; visibility grants no execution authority |
+| Rollback | Restore the accepted previous consumer/access path; reconcile unknown effects rather than replay them |
+
+Only these checks in the actual consumer establish that consumer's end-to-end admission or cutover.
+
 ### Cutover checklist
 
 1. Freeze one capability's public package/revision, previous source/config revisions, consumer list and owner without expanding to other platforms/nodes.
@@ -104,7 +136,7 @@ Hardware-specific thermal/root/unlock/recovery mechanisms, raw legacy proof bund
 
 Rollback requires compatible state/schema, exact public/prior package revisions and receipts for effects; resetting a branch alone is insufficient. Stop new dispatch, reconcile read-only, inspect pending jobs/sessions/enrollment/reboot, then restore the accepted prior consumer. Unknown mutations are never re-submitted; privileged authority is not inherited from ordinary exec.
 
-This source preview performs no private-source deletion, main merge, production deployment or provider changes. Record formal release conditions, provenance audit and current review separately so “source migrated” cannot mean “all remote control is live”.
+The source preview is merged into public `main`. That repository merge performs no private-source deletion, production deployment or provider changes. Record formal release conditions, provenance audit and current review separately so “source migrated” cannot mean “all remote control is live”.
 
 
 Public owner-consent proof v2 rejects legacy origin-less proofs. Registered-client, authorization and token/refresh scopes are revalidated against trusted stored ceilings and current profiles; private issuers have not automatically cut over.

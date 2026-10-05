@@ -5,23 +5,23 @@
 <!-- topic:scope -->
 ### 贡献边界
 
-通用插件、core/API/MCP/Console、validators和可选runtime都在本仓维护。实例账号、registry、providerendpoint、key、credentialref、rawdeviceevidence与生产runbook不属于公开贡献。主流程保持AIclientneutral；可以增加显式可选clientadapter，但不能让ChatGPT/OpenAI成为必需依赖或放宽exactclientredirect/profile/scopes。
+通用插件、核心、API、MCP、Console、校验器和可选运行时都在本仓维护。实例账号、设备目录、提供方端点、密钥、凭据引用、原始设备证据与生产操作手册不属于公开贡献。主流程保持与 AI 客户端无关；可以增加显式启用的可选客户端适配器，但不能让 ChatGPT 或 OpenAI 成为必需依赖，也不能放宽客户端重定向地址、配置档案或权限范围的精确匹配。
 
-新的执行能力必须保留identity/authority/currentness、effectfence、timeout与UNKNOWNreconcile，不通过“方便AI”绕过policy。先读 [插件开发](docs/PLUGIN_DEVELOPMENT.md)、[安全](docs/SECURITY.md) 和 [公开边界](docs/PUBLICATION.md)。
+新的执行能力必须保留身份、授权与当前状态校验、防重复派发记录、超时，以及 `UNKNOWN` 结果的对账机制，不能以“方便 AI”为由绕过策略。先读 [插件开发](docs/PLUGIN_DEVELOPMENT.md)、[安全](docs/SECURITY.md) 和 [公开边界](docs/PUBLICATION.md)。
 
 <!-- topic:workflow -->
 ### 实现和 Pull Request
 
-在featurebranch提交可审source/tests/documentation；不直接改protectedmain。PR描述具体problem、行为变化、risk与validation。更新每篇中英对应topic、publicexport/migrationmatrix与license。只提交reviewedsyntheticevidence；不要粘贴真实logs或全环境输出。
+在功能分支提交可审查的源码、测试和文档，不直接修改受保护的 `main`。PR 描述具体问题、行为变化、风险与验证结果。同步更新各篇中英文对应主题、公开导出清单、迁移对照表和许可说明。只提交经过审查的合成证据，不粘贴真实日志或完整环境输出。
 
-执行 `npm ci`、root与optionalpackage相关checks、publication/docs、Console/Workerdry-run及localverify。新模块不得依赖privateclone、真实device或默认OAuthclient。Reviewer绑定exacthead；scope/head改变需复核，不以旧CI或模型selfreport替代验收。
+执行 `npm ci`、根项目与相关可选包检查、公开边界及文档检查、Console 构建、Worker 构建预演和本地验证。新模块不得依赖私有克隆、真实设备或默认 OAuth 客户端。审查绑定精确提交；范围或提交变化后须重新核验，不能用旧 CI 或模型自述替代验收。
 
 <!-- topic:license -->
 ### 许可、依赖与安全报告
 
-项目为AGPL-3.0-only，保留LICENSE、copyright与thirdparty notices。迁入源码需核对来源许可及可重新分发权；不可仅改namespace就抹去来源。新的依赖需最小化、锁版本、审许可与公开audit；publicActions固定exactrevision，forkPR没有秘密。
+项目采用 `AGPL-3.0-only`，保留 `LICENSE`、版权和第三方说明。迁入源码需核对来源许可及可重新分发权，不能仅改命名空间就抹去来源。新增依赖须尽量少、锁定版本，并审查许可与公开审计结果；公开 Actions 固定精确版本，来自外部分叉的 PR 不接收秘密。
 
-安全问题遵循 [SECURITY.md](SECURITY.md)。公开issue只给脱敏影响/复现，不贴credential、真实locator或rawpayload。Merge不自动授权productiondeploy、release、旧code删除或设备操作。
+安全问题遵循 [SECURITY.md](SECURITY.md)。公开工单只提供脱敏后的影响和复现步骤，不附凭据、真实定位信息或原始载荷。合并不自动授权生产部署、正式发布、删除旧代码或设备操作。
 
 ## English
 

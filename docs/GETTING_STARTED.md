@@ -12,10 +12,10 @@
 <!-- topic:startup -->
 ### 安装并启动无设备预览
 
-当前实现仍在公开预览分支。先取得该分支；若 reviewer 指定了精确提交，则改为该提交进行核验。正式合并后再使用相应 main/release 版本。
+源码预览已合并到本仓 `main`。以下命令获取默认分支；审阅指定版本时，另使用审阅要求的精确提交。源码预览和正式稳定发布分别验收。
 
 ```sh
-git clone --branch feat/v0-control-plane https://github.com/youling/ghostfleet.git
+git clone https://github.com/youling/ghostfleet.git
 cd ghostfleet
 npm ci
 npm test
@@ -30,7 +30,7 @@ npm run dev
 <!-- topic:verify -->
 ### 验证和会话
 
-在 Linux 的另一个终端执行 `npm run verify:cloud`，在隔离的本地参考环境验证标准 MCP 客户端、API 和持久化。该命令明确要求 Linux。Windows 使用跨平台核心测试和 `npm run verify:ai-client-neutral`，Cloudflare 运行时证明等待 Linux CI；平台拒绝不是通过。`npm run check:publication` 与 `npm run check:docs` 检查可公开状态及文档结构；它们不是生产部署或真机纳管证明。
+在 Linux 的另一个终端执行 `npm run verify:cloud`，在隔离的本地参考环境验证标准 MCP 客户端、API 和持久化。该命令明确要求 Linux。Windows 使用跨平台核心测试和 `npm run verify:ai-client-neutral`，Cloudflare 运行时证明由所选提交的 Linux CI 提供；平台拒绝不是通过。`npm run check:publication` 与 `npm run check:docs` 检查可公开状态及文档结构；它们不是生产部署或真机纳管证明。
 
 Console 默认中文，可切换 English。只读会话不能变更记录；操作员令牌可管理控制面记录、纳管和 HumanGate，但默认没有设备执行能力。合成演示状态不能当作设备在线或准入证据。标准 [HTTP API](API.md) 和 [MCP](MCP.md) 读取同一控制面对象；多客户端独立验证使用 `npm run verify:ai-client-neutral`。
 
@@ -48,13 +48,13 @@ Console 默认中文，可切换 English。只读会话不能变更记录；操�
 
 Use Node.js 22+, npm and Git. This delivery is a source checkout and development version, not a published npm plugin; package manifests determine publishability. The HTTP, Console and MCP paths require no ChatGPT/OpenAI account, API key, real device or private-repository access. Python and typed control are optional; read [Platforms and runtimes](PLATFORMS.md) before installing them.
 
-The implementation remains on the reviewed public preview branch; if a reviewer provides an exact commit, validate that commit until main/release contains the accepted implementation. Local development listens on loopback. Device/provider operations, production cloud changes and deletion of the previous implementation require separate authority and capability acceptance.
+The source preview is merged into this repository's `main` branch. The commands below obtain the default branch; review a specific version at its requested exact commit. Source-preview acceptance and formal stable release remain separate. Local development listens on loopback. Device/provider operations, production cloud changes and deletion of the previous implementation require separate authority and capability acceptance.
 
 <!-- topic:startup -->
 ### Install and start a device-free preview
 
 ```sh
-git clone --branch feat/v0-control-plane https://github.com/youling/ghostfleet.git
+git clone https://github.com/youling/ghostfleet.git
 cd ghostfleet
 npm ci
 npm test
@@ -69,7 +69,7 @@ Keep the process running and open `http://127.0.0.1:8791/` on the same machine. 
 <!-- topic:verify -->
 ### Validation and sessions
 
-On Linux, run `npm run verify:cloud` from another terminal to verify the official MCP client, API and persistence in an isolated local reference environment. This command explicitly requires Linux. On Windows, use the cross-platform core tests and `npm run verify:ai-client-neutral`; Cloudflare runtime proof awaits Linux CI, and platform rejection is not a pass. Run `npm run check:publication` and `npm run check:docs` for publication and documentation structure checks; these do not prove production deployment or hardware admission.
+On Linux, run `npm run verify:cloud` from another terminal to verify the official MCP client, API and persistence in an isolated local reference environment. This command explicitly requires Linux. On Windows, use the cross-platform core tests and `npm run verify:ai-client-neutral`; Cloudflare runtime proof comes from Linux CI for the selected revision, and platform rejection is not a pass. Run `npm run check:publication` and `npm run check:docs` for publication and documentation structure checks; these do not prove production deployment or hardware admission.
 
 The Console defaults to Chinese and supports English. Mutation buttons are disabled in a read-only session. Operators can manage lifecycle/enrollment/HumanGate records, without default device execution. Actual independent MCP client validation uses `npm run verify:ai-client-neutral`. Synthetic preview state does not prove device connectivity or admission. See [API](API.md) for standard HTTP clients and [MCP](MCP.md) for standard MCP clients; both observe the same control-plane objects.
 

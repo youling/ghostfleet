@@ -5,29 +5,34 @@
 <!-- topic:architecture -->
 ### Worker/DO/Console 与 Pages
 
-当前参考宿主是CloudflareWorker+SQLiteDurableObject+staticassets，`wrangler.jsonc`将Consolebuild放在`dist/console`。DO对象与迁移tag保存lifecycle/evidence；MCP与API共享snapshot。它是可运行reference，不代表已经有productionURL或Pages迁移完成。
+当前参考宿主由 Cloudflare Worker、SQLite Durable Object 和静态资源组成；`wrangler.jsonc` 从 `dist/console` 提供控制台构建产物。Durable Object 类与迁移标签用于持久化生命周期和证据，MCP 与 API 共享同一快照。这是可运行的参考实现，不证明已有生产 URL 或已完成 Pages 迁移。
 
-若迁Console到Pages，Worker仍负责authenticatedAPI/MCP及durablestate。必须设计exactAPIbase/origin、no-store/authheaders、secret不进staticbundle、HTTPS与身份系统、安全review及rollback；不能仅上传HTML就称production迁移成功。Host成功也不安装device或授予执行权限。
+若将控制台迁至 Pages，Worker 仍负责需认证的 API/MCP 和持久化状态。必须明确 API 基址与允许的来源、禁止缓存及认证请求头、静态包不含秘密、HTTPS 与身份系统、安全审阅和回滚方案。仅上传 HTML 不构成生产迁移验收；宿主部署成功也不会安装设备或授予执行权限。
 
 <!-- topic:build -->
 ### 本地验证与 dry-run
 
+使用 Node.js 22+ 和 Python 3.10+；先选定本次使用的 Python 环境，再安装测试扩展。以下命令中的 `python` 必须指向同一环境。
+
 ```sh
 npm ci
+python -m pip install -e "packages/runtime-python[test]"
 npm run test:all
 npm run check:all
 npm run build:console
 npm run build:typed
 npm run build:worker
-npm run verify:cloud
+npm run verify:ai-client-neutral
 ```
 
-build:worker仅Wranglerdry-run打包；localverify只用隔离workerd/DO和syntheticfixtures。不能把CLI可用、packagebuild、localrestart或staticpreview当生产验收。PublicCI不会deploy或需要provider/accountsecret。
+仅在 Linux 上再运行 `npm run verify:cloud`。Windows 使用上面的 `verify:ai-client-neutral` 检查标准客户端路径；Linux 专用检查的结果须另行核对对应提交的 Linux CI，不能计为 Windows 本机通过。
+
+`build:worker` 仅通过 Wrangler dry-run 打包；本地验证使用隔离的 workerd、Durable Object 和合成样本。CLI 可用、软件包构建、本地重启或静态预览均不构成生产验收。公开 CI 不部署，也不需要提供方或账户秘密。
 
 <!-- topic:secrets -->
 ### 授权与配置
 
-在已授权目标account以Cloudflareprovider-nativeflow配置scopedAPIcredential，不用globalAPIkey，不将accountID/secret提交publicconfig。部署operator必须核对实际Workers/DO/asset/migration权限。两个独立随机controlplanebearer用Wrangler交互secret输入：
+在已授权的目标账户中，通过 Cloudflare 原生流程配置限定权限的 API 凭据；不使用全局 API 密钥，不将账户 ID 或秘密提交到公开配置。部署操作员须核对实际的 Workers、Durable Object、静态资源和迁移权限。用 Wrangler 交互式秘密输入配置两个独立随机的控制面访问令牌：
 
 ```sh
 npx --no-install wrangler secret put GHOSTFLEET_READ_TOKEN
@@ -35,14 +40,14 @@ npx --no-install wrangler secret put GHOSTFLEET_OPERATOR_TOKEN
 npx --no-install wrangler deploy
 ```
 
-这些是effectfulsteps，只有指定account、deploymentauthority与review已满足才执行；不是publicCI步骤。`.dev.vars`仅local，不自动成为productionsecrets。Token不放shellargv或staticassets，provider/devicecredentials另外custody。
+这些步骤会产生实际变更，只有目标账户、部署授权与审阅条件均已满足时才执行，不属于公开 CI。`.dev.vars` 仅用于本地，不会自动成为生产秘密。令牌不得放入命令行参数或静态资源；提供方和设备凭据须单独托管。
 
 <!-- topic:acceptance -->
 ### 线上验收和回滚
 
-部署后验证HTTPShealth、未登录拒绝、readonlymutation拒绝、sameoriginConsole、officialgenericMCPinitialize/list/call、DOrestart sameidentity与当前head。Multiclient/RBAC/OAuth、receiptinjection/trustedwriter、custody/revoke与logsartifact审查单独列出，不凭bearerprototype宣称productionidentity完整。
+部署后验证 HTTPS 健康检查、未登录请求拒绝、只读身份变更拒绝、同源控制台、官方标准 MCP 客户端的 initialize/list/call，以及 Durable Object 重启后身份与当前提交一致。多客户端、RBAC/OAuth、回执注入与可信写入方、凭据托管与撤销、日志和产物审查须分别验收；访问令牌原型不证明生产身份体系完整。
 
-记录当前Workerrevision、DOschema/migration和Consolebuild；回滚要确认statecompatible，先停止effectdispatch，再只读reconcile，保留原identity及路径。第二独立hardware/rebuild和privateconsumer切换仍需对应acceptance；Pages/上线不能替代devicecanary。
+记录当前 Worker 版本、Durable Object schema/迁移和控制台构建版本。回滚前确认状态兼容，先停止副作用派发，再只读对账，保留原身份及访问路径。第二独立硬件/重建和独立调用方切换仍须各自验收，Pages 或宿主上线不能替代设备试验。控制面 `ACTIVE` 与七项证据仅证明本控制面的准入；每个独立调用方还须验证同一身份在其目录中可发现、认证配置和调用路由可用、正负权限及回滚通过。
 
 ## English
 
@@ -56,15 +61,20 @@ If the Console moves to Pages, the Worker still owns authenticated API/MCP and d
 <!-- topic:build -->
 ### Local validation and dry-run
 
+Use Node.js 22+ and Python 3.10+. Select the Python environment before installing the test extra; every `python` command below must use that same environment.
+
 ```sh
 npm ci
+python -m pip install -e "packages/runtime-python[test]"
 npm run test:all
 npm run check:all
 npm run build:console
 npm run build:typed
 npm run build:worker
-npm run verify:cloud
+npm run verify:ai-client-neutral
 ```
+
+Run `npm run verify:cloud` additionally on Linux only. Windows uses the standard-client check above; verify Linux-only results separately against Linux CI for the corresponding commit, never as a local Windows pass.
 
 `build:worker` is Wrangler dry-run packaging only; local verification uses isolated workerd/DO and synthetic fixtures. CLI availability, package builds, local restarts and static previews are not production acceptance. Public CI neither deploys nor requires provider/account secrets.
 
@@ -86,4 +96,4 @@ These effectful steps require a specified account, deployment authority and comp
 
 After deployment, verify HTTPS health, unauthenticated rejection, read-only mutation rejection, same-origin Console, official generic MCP initialize/list/call, persistent identity across DO restart and the current head. List multi-client/RBAC/OAuth, receipt injection/trusted writers, custody/revocation and log/artifact review separately; a bearer prototype does not establish complete production identity.
 
-Record Worker revision, DO schema/migration and Console build. Rollback requires compatible state: stop effect dispatch, reconcile read-only and preserve identity/access paths. Independent second-device/rebuild evidence and private consumer cutover still need their own acceptance; Pages/hosting cannot substitute for hardware canaries.
+Record Worker revision, DO schema/migration and Console build. Rollback requires compatible state: stop effect dispatch, reconcile read-only and preserve identity/access paths. Independent second-device/rebuild evidence and independent consumer cutover still need their own acceptance; Pages/hosting cannot substitute for hardware canaries. Control-plane `ACTIVE` and seven evidence types establish admission in this control plane only. Each independent consumer must also validate discovery of the same identity in its catalog, authentication/configuration, usable call routes, positive/negative permissions and rollback.
