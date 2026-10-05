@@ -7,7 +7,7 @@
 
 通用插件、核心、API、MCP、Console、校验器和可选运行时都在本仓维护。实例账号、设备目录、提供方端点、密钥、凭据引用、原始设备证据与生产操作手册不属于公开贡献。主流程保持与 AI 客户端无关；可以增加显式启用的可选客户端适配器，但不能让 ChatGPT 或 OpenAI 成为必需依赖，也不能放宽客户端重定向地址、配置档案或权限范围的精确匹配。
 
-新的执行能力必须保留身份、授权与当前状态校验、副作用隔离、超时，以及 `UNKNOWN` 结果的对账机制，不能以“方便 AI”为由绕过策略。先读 [插件开发](docs/PLUGIN_DEVELOPMENT.md)、[安全](docs/SECURITY.md) 和 [公开边界](docs/PUBLICATION.md)。
+新的执行能力必须保留身份、授权与当前状态校验、防重复派发记录、超时，以及 `UNKNOWN` 结果的对账机制，不能以“方便 AI”为由绕过策略。先读 [插件开发](docs/PLUGIN_DEVELOPMENT.md)、[安全](docs/SECURITY.md) 和 [公开边界](docs/PUBLICATION.md)。
 
 <!-- topic:workflow -->
 ### 实现和 Pull Request
