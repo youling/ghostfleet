@@ -5,20 +5,20 @@
 <!-- topic:notices -->
 ### Tabler
 
-- `@tabler/core@1.6.1`，MIT；upstream：https://github.com/tabler/tabler。
-- 只 bundlecompiledcoreCSS，Console 交互用 nativeHTML/JavaScript；排除 unusedTablerJavaScript 与 optionalvendorplugins。
-- 版权保留 2018–2026TheTablerAuthors 与 codecalm.netPawełKuna，如 packageartifactheader。
-- 完整 MIT 文本见`Tabler-LICENSE.txt`；来源 upstreammasterrevision`f7c848a9382d1f806d569d3866c0e02b8709c340`，为 packageheader 链接的源代码。Npm 包缺独立 LICENSE 且审阅时没有 v1.6.1GitTag，不宣称源代码/artifactversionmatch。
-- Build 将本 notice 放`dist/console/third-party/THIRD_PARTY_NOTICES.md`；发布保留适用 upstreamlicensenotices。
+- `@tabler/core@1.6.1`，MIT；上游：`https://github.com/tabler/tabler`。
+- 只打包编译后的核心 CSS，Console 交互使用原生 HTML 与 JavaScript；排除未使用的 Tabler JavaScript 与可选供应商插件，包括 `dist/libs` 下的插件。
+- 保留包产物头部中的版权声明：2018–2026 The Tabler Authors；2018–2026 codecalm.net Paweł Kuna。
+- 完整 MIT 文本见 `Tabler-LICENSE.txt`，取自上游 `master` 提交 `f7c848a9382d1f806d569d3866c0e02b8709c340`，该源码由包的许可头链接。npm 包缺少独立 `LICENSE`，且审阅时没有可用的 `v1.6.1` Git 标签；本说明不宣称源码版本与产物版本匹配。
+- 构建将本说明放入 `dist/console/third-party/THIRD_PARTY_NOTICES.md`；项目发布过程须保留适用的上游许可说明。
 
 ### Model Context Protocol SDK
 
-- `@modelcontextprotocol/sdk@1.32.0`，MIT；upstream：https://github.com/modelcontextprotocol/typescript-sdk；copyright2024Anthropic,PBC。
-- Consolebuild 保留完整 license 至`third-party/MCP-SDK-LICENSE.txt`；Worker 使用 officialserver/WebStandardsStreamableHTTPtransport，verifier 使用 officialclient。
+- `@modelcontextprotocol/sdk@1.32.0`，MIT；上游：`https://github.com/modelcontextprotocol/typescript-sdk`；版权：2024 Anthropic, PBC.
+- Console 构建将完整许可保留至 `third-party/MCP-SDK-LICENSE.txt`；Worker 使用官方服务端与 Web Standards Streamable HTTP 传输，冒烟验证使用官方客户端。
 
-### Optional packages
+### 可选包
 
-typed-control 直接依赖 Microsoftdev-tunnels-ssh/keys、buffer、Zod、jose；runtimePython 依赖 PyYAML，测试扩展依赖是 pytest，Android 扩展依赖是 uiautomator2。精确版本与依赖 license 以 rootlock/package 元数据、Pythonpyproject 和随产物保留的 license 为准。不是将 thirdpartycode 重新许可为 AGPL；所有 transitive/vendorednotice 发布前核对。代码迁入 genericowner 许可与 sourceaudit 另外保留；不需要公开私有实例事实。
+`typed-control` 直接依赖 Microsoft 的 `dev-tunnels-ssh` 与 `dev-tunnels-ssh-keys`、buffer、Zod 和 jose。Python 运行时依赖 PyYAML，测试扩展依赖 pytest，可选 Android 扩展依赖 uiautomator2。精确版本与依赖许可以根锁文件及包元数据、Python `pyproject` 和产物中保留的许可为准。第三方代码不改用 AGPL 重新许可；发布前须核对全部传递依赖及随附供应商代码的说明。迁入通用代码的所有者许可与来源审计另行保留，无需公开私有实例信息。
 
 
 

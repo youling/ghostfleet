@@ -11,16 +11,16 @@ selected_at: `2026-10-04`
 
 ### 选择
 
-GhostFleet V0 官方 Console 保留 **Tabler** core CSS 作为组件基础，GhostFleet 自己实现模块壳、表格和详情交互。用户选择 [shadcn-admin](https://github.com/satnaing/shadcn-admin) 的专业后台风格；具体参考版本与边界见 [Console](CONSOLE.md)。
+GhostFleet V0 官方 Console 保留 **Tabler** 核心 CSS 作为组件基础，由 GhostFleet 实现页面框架、表格和详情交互。用户选择 [shadcn-admin](https://github.com/satnaing/shadcn-admin) 的专业后台风格；具体参考版本与边界见 [Console](CONSOLE.md)。
 
-- upstream: `https://github.com/tabler/tabler`
-- package: `@tabler/core@1.6.1`
-- license: `MIT`
-- V0 使用范围：core CSS + 原项目 LICENSE。当前交互使用原生 HTML 与 JavaScript，不打包未使用的 Tabler JavaScript。
+- 上游：`https://github.com/tabler/tabler`
+- 包：`@tabler/core@1.6.1`
+- 许可：`MIT`
+- V0 使用范围：核心 CSS 与原项目 `LICENSE`。当前交互使用原生 HTML 与 JavaScript，不打包未使用的 Tabler JavaScript。
 
 ### 明确排除
 
-V0 不复制或打包 `dist/libs` 中的可选第三方插件，也不加载 vendor stylesheet。尤其不因为 Dashboard 需求默认引入图表库。
+V0 不复制或打包 `dist/libs` 中的可选第三方插件，也不默认加载供应商样式表。图表库不是后台页面的基础依赖。
 
 理由：GhostFleet 当前页面主要是生命周期、列表、状态、HumanGate 和事件，不需要图表依赖；减少许可证面和供应链面也符合 V0 最小化原则。
 
@@ -28,18 +28,18 @@ V0 不复制或打包 `dist/libs` 中的可选第三方插件，也不加载 ven
 
 Tabler 提供组件样式基础：
 
-- cards / tables / forms / badges；
-- light/dark capable design foundation。
+- 卡片、表格、表单与状态标签；
+- 支持浅色与深色主题的设计基础。
 
 GhostFleet 自己负责：
 
-- 固定/折叠侧栏、手机导航、主题 tokens、搜索、表格筛选/分页和详情弹窗；
-- Enrollment / Node / Capability / Event 领域模型；
-- HumanGate UX；
-- API/view model；
-- 授权 boundary。
+- 固定及折叠侧栏、移动导航、响应布局、主题变量、搜索、表格筛选与分页、详情弹窗；
+- 注册（`Enrollment`）、节点（`Node`）、能力（`Capability`）与事件（`Event`）领域模型；
+- 人工审批（`HumanGate`）交互；
+- API 与界面显示模型；
+- 授权边界。
 
-绝不复用第三方后台自己的 凭据、身份、ACL 或 生命周期 语义覆盖 GhostFleet contract。
+第三方后台自身的凭据、身份、ACL 或生命周期语义不能覆盖 GhostFleet 契约。
 
 ---
 
