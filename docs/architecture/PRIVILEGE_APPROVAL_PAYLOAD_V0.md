@@ -1,4 +1,4 @@
-# Human Approval Payload v0 / 人类审批载荷 v0
+# 人类审批载荷 v0 / Human Approval Payload v0
 
 status: Proposed  
 owner: youling/ghostfleet  
