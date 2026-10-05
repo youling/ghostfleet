@@ -27,6 +27,8 @@ allowed_operations:
   - operation_id: systemd.unit.create
     scope_ref: service/cloudflared
     parameter_constraints_ref: constraints/...
+recovery_mode: ROLLBACK
+recovery_ref: rollback/...
 not_before: timestamp
 expires_at: timestamp
 max_uses: 1
@@ -62,7 +64,8 @@ AUTO path 必须绑定允许自动授权的 `PolicyDecision`。HUMAN path 必须
 Lease 生命周期固定为：
 
 ```text
-NOT_YET_VALID -> ACTIVE -> CONSUMED | EXPIRED | REVOKED
+NOT_YET_VALID -> ACTIVE | REVOKED
+ACTIVE -> CONSUMED | EXPIRED | REVOKED
 ```
 
 终态 lease 不可复活；重新授权必须签发新 `lease_id`。Revocation 必须是 durable record，至少绑定 `lease_id / revoked_at / reason_code / authority_ref`。
@@ -107,7 +110,7 @@ Receipt 必须绑定 lease、request、operation、effect fence、result，以�
 <!-- topic:lease -->
 ### Lease semantics
 
-A `PrivilegeLease` is a short-lived capability, not a root credential. It binds issuer, subject, audience/helper, node, normalized request digest, policy/approval authority, operations and scope, validity window, use limit, effect-fence namespace, and authenticity proof. It carries no secret plaintext or unrestricted shell authority.
+A `PrivilegeLease` is a short-lived capability, not a root credential. It binds issuer, subject, audience/helper, node, normalized request digest, policy/approval authority, operations and scope, recovery mode/reference, validity window, use limit, effect-fence namespace, and authenticity proof. It carries no secret plaintext or unrestricted shell authority.
 
 <!-- topic:authenticity -->
 ### Authenticity and authority
@@ -117,7 +120,7 @@ The validator must machine-verify a trusted issuer and lease authenticity. Self-
 <!-- topic:currentness -->
 ### Currentness
 
-Target, subject, audience, digest, lease revocation state, policy/authority revision, time window, currentness, and remaining uses must all match. Lease states are `NOT_YET_VALID -> ACTIVE -> CONSUMED | EXPIRED | REVOKED`; terminal leases are never revived. Missing or unknown facts fail closed.
+Target, subject, audience, digest, lease revocation state, policy/authority revision, time window, currentness, and remaining uses must all match. A lease may be revoked before activation; otherwise it moves `NOT_YET_VALID -> ACTIVE`, then terminates as `CONSUMED | EXPIRED | REVOKED`. Terminal leases are never revived. Missing or unknown facts fail closed.
 
 <!-- topic:scope -->
 ### Scope and parameters
