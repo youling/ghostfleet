@@ -52,6 +52,7 @@ AUTO path 必须绑定允许自动授权的 `PolicyDecision`。HUMAN path 必须
 - `subject_ref` 与请求执行者一致；
 - `audience_ref` 与当前 helper 一致；
 - request digest 未漂移；
+- lease 本身未撤销；
 - policy revision / authority record 未失效或被撤销；
 - 当前时间在 `not_before <= now < expires_at`；
 - lease 尚未超过 `max_uses`。
@@ -102,7 +103,7 @@ The validator must machine-verify a trusted issuer and lease authenticity. Self-
 <!-- topic:currentness -->
 ### Currentness
 
-Target, subject, audience, digest, policy/authority revision, time window, revocation/currentness, and remaining uses must all match. Missing or unknown facts fail closed.
+Target, subject, audience, digest, lease revocation state, policy/authority revision, time window, currentness, and remaining uses must all match. Missing or unknown facts fail closed.
 
 <!-- topic:scope -->
 ### Scope and parameters
