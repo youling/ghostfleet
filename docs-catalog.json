@@ -182,6 +182,17 @@
       ]
     },
     {
+      "path": "docs/CONSUMER_ACCEPTANCE.md",
+      "topics": [
+        "boundary",
+        "elements",
+        "custody",
+        "independence",
+        "rollback",
+        "nonadmitting"
+      ]
+    },
+    {
       "path": "docs/API.md",
       "topics": [
         "reference"

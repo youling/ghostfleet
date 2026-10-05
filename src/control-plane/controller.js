@@ -1,4 +1,11 @@
 import { validateCapabilityDefinition } from "../core/capabilities.js";
+import {
+  completeConsumerRollback,
+  createConsumerAcceptance,
+  evaluateConsumerAcceptance,
+  recordConsumerEvidence,
+  recordConsumerSignal,
+} from "../core/consumer-acceptance.js";
 import { createEvidence, missingAcceptanceEvidence } from "../core/evidence.js";
 import { makeId, isoAfter, isoNow } from "../core/ids.js";
 import { CORE_OWNED_EVIDENCE, EnrollmentState, EventType, HumanGateState, NodeLifecycle } from "../core/model.js";
@@ -248,4 +255,62 @@ export class GhostFleetController {
   }
 
   listCapabilityDefinitions() { return this.store.listCapabilityDefinitions(); }
+
+  // Consumer acceptance is a separate contract: it references an existing
+  // NodeIdentity and never mints one or mutates NodeLifecycle. Core ACTIVE is a
+  // precondition here, never an acceptance signal.
+
+  openConsumerAcceptance(input) {
+    const record = createConsumerAcceptance(input);
+    this.store.putConsumerAcceptance(record);
+    this.emit(EventType.CONSUMER_ACCEPTANCE_OPENED, record.acceptance_id, {
+      node_uid: record.node_uid, consumer_ref: record.consumer_ref,
+      source_revision: record.source_revision, config_revision: record.config_revision,
+      custody_class: record.custody.custody_class, durability: record.custody.durability,
+    });
+    return record;
+  }
+
+  getConsumerAcceptance(id) { return required(this.store.getConsumerAcceptance(id), "CONSUMER_ACCEPTANCE_NOT_FOUND"); }
+  listConsumerAcceptances() { return this.store.listConsumerAcceptances(); }
+
+  recordConsumerSignal(id, signal, detail = {}) {
+    const next = recordConsumerSignal(this.getConsumerAcceptance(id), signal, detail);
+    this.store.putConsumerAcceptance(next);
+    this.emit(EventType.CONSUMER_ACCEPTANCE_EVIDENCE_UPDATED, id, { signal });
+    return next;
+  }
+
+  recordConsumerAcceptanceEvidence(id, element, data) {
+    const record = this.getConsumerAcceptance(id);
+    const next = recordConsumerEvidence(record, element, data, { at: this.now() });
+    this.store.putConsumerAcceptance(next);
+    this.emit(EventType.CONSUMER_ACCEPTANCE_EVIDENCE_UPDATED, id, { element });
+    return next;
+  }
+
+  evaluateConsumerAcceptance(id) {
+    const record = this.getConsumerAcceptance(id);
+    const node = required(this.store.getNode(record.node_uid), "NODE_NOT_FOUND");
+    const decided = evaluateConsumerAcceptance(record, { node });
+    this.store.putConsumerAcceptance(decided);
+    this.emit(EventType.CONSUMER_ACCEPTANCE_DECIDED, id, {
+      accepted: decided.decision.accepted,
+      missing: decided.decision.missing,
+      blocking: decided.decision.blocking,
+      non_admitting_signals_ignored: decided.decision.non_admitting_signals_ignored,
+    });
+    return decided;
+  }
+
+  completeConsumerRollback(id, input) {
+    const record = this.getConsumerAcceptance(id);
+    const next = completeConsumerRollback(record, { ...input, at: this.now() });
+    this.store.putConsumerAcceptance(next);
+    this.emit(EventType.CONSUMER_ROLLBACK_COMPLETED, id, {
+      removed_bindings: next.decision.removed_bindings,
+      declared_bindings: record.introduced_bindings,
+    });
+    return next;
+  }
 }

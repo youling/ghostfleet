@@ -38,6 +38,10 @@ export const EventType = Object.freeze({
   NODE_ADMITTED: "NodeAdmitted",
   PROJECTION_STALE: "ProjectionStale",
   RECONCILE_REQUIRED: "ReconcileRequired",
+  CONSUMER_ACCEPTANCE_OPENED: "ConsumerAcceptanceOpened",
+  CONSUMER_ACCEPTANCE_EVIDENCE_UPDATED: "ConsumerAcceptanceEvidenceUpdated",
+  CONSUMER_ACCEPTANCE_DECIDED: "ConsumerAcceptanceDecided",
+  CONSUMER_ROLLBACK_COMPLETED: "ConsumerRollbackCompleted",
 });
 
 export const CORE_OWNED_EVIDENCE = Object.freeze([

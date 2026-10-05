@@ -1,7 +1,7 @@
 import { publicClone } from "../core/security.js";
 
 function blankState() {
-  return { attempts: {}, gates: {}, nodes: {}, events: [], capability_definitions: {} };
+  return { attempts: {}, gates: {}, nodes: {}, events: [], capability_definitions: {}, consumer_acceptances: {} };
 }
 
 export class InMemoryStore {
@@ -21,4 +21,7 @@ export class InMemoryStore {
   getCapabilityDefinition(id) { return Object.hasOwn(this.state.capability_definitions, id) ? publicClone(this.state.capability_definitions[id]) : null; }
   putCapabilityDefinition(value) { this.state.capability_definitions[value.id] = publicClone(value); return this.getCapabilityDefinition(value.id); }
   listCapabilityDefinitions() { return Object.values(this.state.capability_definitions).map(publicClone); }
+  getConsumerAcceptance(id) { return Object.hasOwn(this.state.consumer_acceptances, id) ? publicClone(this.state.consumer_acceptances[id]) : null; }
+  putConsumerAcceptance(value) { this.state.consumer_acceptances[value.acceptance_id] = publicClone(value); return this.getConsumerAcceptance(value.acceptance_id); }
+  listConsumerAcceptances() { return Object.values(this.state.consumer_acceptances).map(publicClone); }
 }
