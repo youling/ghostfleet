@@ -1,4 +1,4 @@
-# Privilege Lease Validator v0 / 权限租约验证器 v0
+# 权限租约验证器 v0 / Privilege Lease Validator v0
 
 status: Proposed  
 owner: youling/ghostfleet  
