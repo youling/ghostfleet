@@ -1,4 +1,4 @@
-# Privilege Broker v0 Contract / 权限代理 v0 契约
+# 权限代理 v0 契约 / Privilege Broker v0 Contract
 
 status: Proposed  
 owner: youling/ghostfleet  
