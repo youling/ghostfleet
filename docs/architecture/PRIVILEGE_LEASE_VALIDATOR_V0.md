@@ -59,6 +59,14 @@ AUTO path 必须绑定允许自动授权的 `PolicyDecision`。HUMAN path 必须
 
 任何 UNKNOWN / missing / stale 条件 fail closed。
 
+Lease 生命周期固定为：
+
+```text
+NOT_YET_VALID -> ACTIVE -> CONSUMED | EXPIRED | REVOKED
+```
+
+终态 lease 不可复活；重新授权必须签发新 `lease_id`。Revocation 必须是 durable record，至少绑定 `lease_id / revoked_at / reason_code / authority_ref`。
+
 <!-- topic:scope -->
 ### Operation / scope / parameter
 
@@ -71,7 +79,13 @@ Agent 提供的 risk label 不参与 validator 的 authority 判定。
 
 每次执行必须带唯一 execution/effect reference。对有副作用操作，v0 默认 `max_uses=1`。
 
-Helper 必须在 side effect 前原子 reserve/consume effect fence，避免 RPC timeout 后同一 mutation 被 blind retry。若 crash/网络中断发生在“可能已产生 effect、但 receipt 未确认”的窗口，结果进入：
+Effect fence 生命周期：
+
+```text
+AVAILABLE -> RESERVED -> COMMITTED | RECONCILE_REQUIRED
+```
+
+终态 fence 不得回到 `AVAILABLE`。Helper 必须在 side effect 前原子 reserve/consume effect fence，避免 RPC timeout 后同一 mutation 被 blind retry。若 crash/网络中断发生在“可能已产生 effect、但 receipt 未确认”的窗口，结果进入：
 
 ```text
 RECONCILE_REQUIRED
@@ -103,7 +117,7 @@ The validator must machine-verify a trusted issuer and lease authenticity. Self-
 <!-- topic:currentness -->
 ### Currentness
 
-Target, subject, audience, digest, lease revocation state, policy/authority revision, time window, currentness, and remaining uses must all match. Missing or unknown facts fail closed.
+Target, subject, audience, digest, lease revocation state, policy/authority revision, time window, currentness, and remaining uses must all match. Lease states are `NOT_YET_VALID -> ACTIVE -> CONSUMED | EXPIRED | REVOKED`; terminal leases are never revived. Missing or unknown facts fail closed.
 
 <!-- topic:scope -->
 ### Scope and parameters
@@ -113,7 +127,7 @@ The requested operation must be explicitly leased, the resource must be inside t
 <!-- topic:replay -->
 ### Replay and effect fences
 
-Mutating v0 leases default to one use. The helper reserves/consumes a unique effect fence before side effects. If the effect may have happened but the receipt is uncertain, the result is `RECONCILE_REQUIRED`; blind retry is forbidden.
+Mutating v0 leases default to one use. Effect fences move `AVAILABLE -> RESERVED -> COMMITTED | RECONCILE_REQUIRED` and never return to available. The helper reserves/consumes a unique effect fence before side effects. If the effect may have happened but the receipt is uncertain, the result is `RECONCILE_REQUIRED`; blind retry is forbidden.
 
 <!-- topic:outcomes -->
 ### Outcomes
