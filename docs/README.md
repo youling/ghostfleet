@@ -11,7 +11,7 @@
 | 理解数据、权限与流程 | [架构](ARCHITECTURE.md)、[API](API.md)、[MCP](MCP.md)、[安全模型](SECURITY.md) |
 | 插件和设备执行集成 | [插件开发](PLUGIN_DEVELOPMENT.md)、[类型化控制](CONTROL.md)、[平台](PLATFORMS.md)、[Linux 回执](LINUX_ADAPTER.md) |
 | 测试、恢复、发布 | [测试](TESTING.md)、[恢复](RECOVERY.md)、[发布清理](PUBLICATION.md)、[部署](DEPLOYMENT.md) |
-| 通用代码迁移与归属 | [ADR](adr/001-public-canonical-packages.md)、[迁移](MIGRATION.md)、[来源](PROVENANCE.md)、[导出清单](export-manifest.json) |
+| 通用代码迁移与归属 | [ADR 001：公开包归属](adr/001-public-canonical-packages.md)、[ADR 002：消费者验收与控制路径持久性](adr/002-consumer-acceptance-control-path-durability.md)、[迁移](MIGRATION.md)、[来源](PROVENANCE.md)、[导出清单](export-manifest.json) |
 | 参与开发和许可 | [贡献](../CONTRIBUTING.md)、[报告安全问题](../SECURITY.md)、[第三方说明](../THIRD_PARTY_NOTICES.md)、[LICENSE](../LICENSE) |
 
 文档同页先中文，后完整英文。主题与链接检查验证结构和链接，独立审阅核对语义等价。
@@ -34,7 +34,7 @@
 | Objects, authority and workflow | [Architecture](ARCHITECTURE.md), [API](API.md), [MCP](MCP.md), [Security model](SECURITY.md) |
 | Plugin/device execution integration | [Plugin development](PLUGIN_DEVELOPMENT.md), [Typed control](CONTROL.md), [Platforms](PLATFORMS.md), [Linux receipts](LINUX_ADAPTER.md) |
 | Testing, recovery and publication | [Testing](TESTING.md), [Recovery](RECOVERY.md), [Publication](PUBLICATION.md), [Deployment](DEPLOYMENT.md) |
-| Extraction and ownership | [ADR](adr/001-public-canonical-packages.md), [Migration](MIGRATION.md), [Provenance](PROVENANCE.md), [Export manifest](export-manifest.json) |
+| Extraction and ownership | [ADR 001: public canonical packages](adr/001-public-canonical-packages.md), [ADR 002: consumer acceptance durability](adr/002-consumer-acceptance-control-path-durability.md), [Migration](MIGRATION.md), [Provenance](PROVENANCE.md), [Export manifest](export-manifest.json) |
 | Contribution/licensing | [Contributing](../CONTRIBUTING.md), [Security reporting](../SECURITY.md), [Third-party notices](../THIRD_PARTY_NOTICES.md), [LICENSE](../LICENSE) |
 
 Each page contains Chinese followed by equivalent English. Topic/link checks validate structure and links; independent review checks semantic equivalence.
