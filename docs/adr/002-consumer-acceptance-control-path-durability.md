@@ -5,6 +5,7 @@
 
 ## 中文
 
+<!-- topic:context -->
 ### Context
 
 GhostFleet 已经把核心设备准入与独立消费者接入区分开：`NodeIdentity.ACTIVE` 与七类核心 evidence 只证明设备通过本控制面的准入要求，不证明某个独立消费者已经完成目录发现、鉴权配置、调用路由、操作权限与回滚验收。
@@ -13,6 +14,7 @@ ThinkPad 的历史 7/7 canary 真实证明了核心生命周期、稳定身份�
 
 因此，问题不是核心 `ACTIVE` 定义错误，也不是缺少另一套 enrollment lifecycle；问题是消费者验收缺少足够强的机器可判 contract，导致一次成功调用曾被错误外推为持久消费者接入。
 
+<!-- topic:decision -->
 ### Decision
 
 GhostFleet 将消费者验收定义为**独立于核心 Node lifecycle 的一等 integration contract**，但不创建第二套 `NodeIdentity`、第二 enrollment state machine 或第二 SSOT。
@@ -59,6 +61,7 @@ consumer rollback 采用**节点级语义**，并分为 plan 与 result 两层�
 
 核心 `ACTIVE`、成功 tunnel、单次 SSH、单次 typed call 或 Human 维护通道，均不得交叉关闭 consumer acceptance。
 
+<!-- topic:alternatives -->
 ### Alternatives
 
 **方案 A：把核心 `ACTIVE` 继续视为完整纳管完成。**  
@@ -73,6 +76,7 @@ consumer rollback 采用**节点级语义**，并分为 plan 与 result 两层�
 **方案 D：把 Human 维护 SSH surface 作为机器控制路径的默认 fallback。**  
 拒绝。Human maintenance authority 与机器控制 authority 是不同边界，不能因可达性而互相替代。
 
+<!-- topic:consequences -->
 ### Consequences
 
 收益：
@@ -89,6 +93,7 @@ consumer rollback 采用**节点级语义**，并分为 plan 与 result 两层�
 - release/cutover tests 增加 fresh-context executor-independence 与 node-scoped rollback 验证；
 - 历史 evidence 需要按真实证明范围重新解释，不能再用“一次 canary 成功”外推完整消费者接入。
 
+<!-- topic:compatibility -->
 ### Compatibility / historical interpretation
 
 ThinkPad 历史 7/7 canary 保留为 GhostFleet **核心准入能力**的有效证据；不重写、不删除，也不降级现有 `NodeIdentity.ACTIVE`。
@@ -99,6 +104,7 @@ ThinkPad 历史 7/7 canary 保留为 GhostFleet **核心准入能力**的有效�
 
 ## English
 
+<!-- topic:context -->
 ### Context
 
 GhostFleet already separates core device admission from independent consumer integration: `NodeIdentity.ACTIVE` and the seven core evidence types establish admission under this control plane, not catalog discovery, authentication configuration, call routing, operational authority, or rollback acceptance in an independent consumer.
@@ -107,6 +113,7 @@ The historical ThinkPad 7/7 canary genuinely established core lifecycle behavior
 
 The defect is therefore not the core `ACTIVE` definition and not the absence of another enrollment lifecycle. The missing element is a sufficiently strong machine-decidable consumer acceptance contract.
 
+<!-- topic:decision -->
 ### Decision
 
 GhostFleet defines consumer acceptance as a first-class integration contract separate from the core Node lifecycle, without creating a second `NodeIdentity`, enrollment state machine, or SSOT.
@@ -140,6 +147,7 @@ Consumer rollback is node-scoped and separates plan from result. Acceptance requ
 
 Core `ACTIVE`, a successful tunnel, one SSH call, one typed call, or a Human maintenance surface cannot cross-close consumer acceptance.
 
+<!-- topic:alternatives -->
 ### Alternatives
 
 **A. Treat core `ACTIVE` as complete managed admission.**  
@@ -154,12 +162,14 @@ Rejected because that proves only executor-local capability, not durable deploym
 **D. Use a Human maintenance SSH surface as the default machine-control fallback.**  
 Rejected because Human maintenance authority and machine-control authority are distinct boundaries.
 
+<!-- topic:consequences -->
 ### Consequences
 
 Benefits include machine-verifiable separation between core and consumer admission, executor-independent control durability, node-scoped rollback, and continued provider-neutral public core semantics.
 
 Costs include additional adapter evidence, explicit custody ownership, fresh-context acceptance tests, and stricter interpretation of historical canary evidence.
 
+<!-- topic:compatibility -->
 ### Compatibility / historical interpretation
 
 The historical ThinkPad 7/7 canary remains valid evidence for GhostFleet core admission behavior. Existing `NodeIdentity.ACTIVE` is preserved.
