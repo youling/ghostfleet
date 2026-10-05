@@ -21,7 +21,7 @@ GhostFleet 定义以下通用对象链：
 Agent Intent
   -> PrivilegeRequest
   -> PolicyDecision
-  -> [HumanApprovalRecord when required]
+  -> [HumanApprovalRequest -> HumanApprovalRecord when required]
   -> PrivilegeLease
   -> Lease Validator / Node Privileged Helper
   -> Typed OS Action
@@ -33,7 +33,7 @@ Agent Intent
 1. **Policy Engine 只做决策，不直接等价于 authority。** 它输出 `AUTO_APPROVE | HUMAN_REQUIRED | REJECT` 与约束；Broker/issuer 只有在决策前提满足后才能签发 lease。
 2. **Agent 不提供具有权威性的 risk。** 风险由 canonical operation policy、scope、impact、secret/identity involvement 与 recovery 条件推导；调用方声明不得降低结果。
 3. **Capability != shell。** Lease 只能授权 typed operation + exact scope/parameter constraints，不提供 arbitrary shell、unrestricted sudo、root SSH 或 credential export。
-4. **Human approval 绑定 exact normalized request digest。** Human 看到 target、intent、typed operations、scope、duration/max-use、impact、recovery、为何需要 Human；任何字段变化都产生新 digest/新审批，旧 approval 不可复用。
+4. **Human approval 绑定 exact normalized request digest。** PolicyDecision 需要 Human 时先生成 `HumanApprovalRequest`，Human 决策后形成 `HumanApprovalRecord`。Human 看到 target、intent、typed operations、scope、所有会改变 effect 的 public-safe 参数、duration/max-use、impact、recovery、为何需要 Human；secret 值只显示 opaque reference。任何字段变化都产生新 digest/新审批，旧 approval 不可复用。
 5. **Recovery 是显式语义，不是假设所有动作都可回滚。** `recovery_mode = NONE | ROLLBACK | COMPENSATING | IRREVERSIBLE`。若 operation policy 要求 recovery 而请求缺失，直接 `REJECT`；`IRREVERSIBLE` 只能走显式 Human acceptance，不能靠“升风险”自动放行。
 6. **Lease 是短时 capability token，不含 secret plaintext。** 必须绑定 issuer、subject/requester、audience/helper、node identity、request digest、policy revision、authority/approval reference、typed operations、scope、time window、max uses 与 replay/effect fence。
 7. **Lease Validator fail closed。** 验证 authenticity、issuer/audience/target/subject、request digest、policy/approval currentness、time、use count、operation/scope/parameter match 与 replay fence。缺失/未知/过期/漂移均拒绝。
@@ -76,7 +76,7 @@ GhostFleet needs bounded privileged actions without giving Agents permanent root
 <!-- topic:decision -->
 ### Decision
 
-GhostFleet defines `PrivilegeRequest -> PolicyDecision -> optional HumanApprovalRecord -> PrivilegeLease -> Lease Validator/Helper -> typed OS action -> PrivilegeReceipt`. Risk is derived from canonical policy rather than trusted from the caller. Leases authorize typed operations and exact scope, never unrestricted shell access. Human approval binds an exact normalized request digest. Recovery is explicit as `NONE | ROLLBACK | COMPENSATING | IRREVERSIBLE`. Missing required recovery fails closed. Leases bind issuer, subject, audience, node, request digest, policy/approval references, operations, scope, validity, use limits, and replay/effect fences. Mutating v0 leases default to one use. Unknown or uncertain outcomes do not permit blind retry.
+GhostFleet defines `PrivilegeRequest -> PolicyDecision -> optional HumanApprovalRequest/HumanApprovalRecord -> PrivilegeLease -> Lease Validator/Helper -> typed OS action -> PrivilegeReceipt`. Risk is derived from canonical policy rather than trusted from the caller. Leases authorize typed operations and exact scope, never unrestricted shell access. Human approval binds an exact normalized request digest. Recovery is explicit as `NONE | ROLLBACK | COMPENSATING | IRREVERSIBLE`. Missing required recovery fails closed. Leases bind issuer, subject, audience, node, request digest, policy/approval references, operations, scope, validity, use limits, and replay/effect fences. Mutating v0 leases default to one use. Unknown or uncertain outcomes do not permit blind retry.
 
 <!-- topic:alternatives -->
 ### Alternatives
