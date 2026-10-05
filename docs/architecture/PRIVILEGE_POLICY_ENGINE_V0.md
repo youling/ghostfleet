@@ -1,4 +1,4 @@
-# Privilege Policy Engine v0 / 权限策略引擎 v0
+# 权限策略引擎 v0 / Privilege Policy Engine v0
 
 status: Proposed  
 owner: youling/ghostfleet  
