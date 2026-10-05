@@ -1,6 +1,6 @@
 # ADR 002 — 消费者验收与控制路径持久性 / Consumer acceptance and control-path durability
 
-状态：Proposed  
+状态：Accepted  
 来源 Issue：#4
 
 ## 中文
