@@ -1,4 +1,4 @@
-# ADR 003 — AI-native 权限代理、审批与租约验证 / AI-native Privilege Broker, Approval, and Lease Validation
+# ADR 003 — AI 原生权限代理、审批与租约验证 / AI-native Privilege Broker, Approval, and Lease Validation
 
 状态：Proposed  
 来源 Issue：#9
