@@ -1,4 +1,4 @@
-# Privilege Helper IPC v0 Contract / 节点提权 Helper IPC v0 契约
+# 节点提权 Helper IPC v0 契约 / Privilege Helper IPC v0 Contract
 
 status: Proposed  
 owner: youling/ghostfleet  
