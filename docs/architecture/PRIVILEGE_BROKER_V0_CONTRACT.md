@@ -54,6 +54,17 @@ Lease 绑定 issuer、subject、audience/helper、node、request digest、policy
 
 Lease 不含 root credential、private key、provider token 或 arbitrary shell authority。
 
+<!-- topic:lifecycle -->
+### 生命周期
+
+```text
+PrivilegeRequest:      OPEN -> DECIDED | CANCELLED | EXPIRED
+HumanApprovalRequest:  PENDING -> APPROVED | DENIED | EXPIRED | SUPERSEDED
+PrivilegeLease:        NOT_YET_VALID -> ACTIVE -> CONSUMED | EXPIRED | REVOKED
+```
+
+`PolicyDecision`、`HumanApprovalRecord`、`PrivilegeReceipt` 是 immutable records。任何 terminal request/approval/lease 都不能复活；重新请求、重新审批、重新签发必须产生新的 id。Policy revision 变化可以让旧 authority 失效，但不得原地改写旧记录。
+
 <!-- topic:receipt -->
 ### PrivilegeReceipt
 
@@ -100,6 +111,11 @@ Policy returns `AUTO_APPROVE | HUMAN_REQUIRED | REJECT`, derived risk, reason co
 ### PrivilegeLease
 
 A lease binds issuer, subject, helper audience, node, normalized request digest, policy/approval authority, typed operations/scope, validity, use limits, and effect fences. It contains no root credential, private key, provider token, or arbitrary shell capability.
+
+<!-- topic:lifecycle -->
+### Lifecycle
+
+`PrivilegeRequest` closes as `DECIDED | CANCELLED | EXPIRED`. `HumanApprovalRequest` closes as `APPROVED | DENIED | EXPIRED | SUPERSEDED`. A lease moves from `NOT_YET_VALID` to `ACTIVE` and terminates as `CONSUMED | EXPIRED | REVOKED`. Terminal objects are never revived; retries/re-approval/reissuance create new identifiers. Decisions, approval records, and receipts are immutable records.
 
 <!-- topic:receipt -->
 ### PrivilegeReceipt
