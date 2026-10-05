@@ -1,4 +1,4 @@
-# Privilege Operation Taxonomy v0 / 权限操作分类 v0
+# 权限操作分类 v0 / Privilege Operation Taxonomy v0
 
 status: Proposed  
 owner: youling/ghostfleet  
