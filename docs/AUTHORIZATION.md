@@ -14,35 +14,35 @@ npm run test:typed
 npm run build:typed
 ```
 
-源码入口为 `packages/typed-control/src/authorization/index.ts`，构建后的入口为 `dist/authorization/index.js`。JWT 机制依赖 jose，不依赖 OpenAI SDK。
+源码入口为 `packages/typed-control/src/authorization/index.ts`，构建后的入口为 `dist/authorization/index.js`。JWT 机制依赖 `jose`，不依赖 OpenAI SDK。
 
 <!-- topic:profile -->
 ### 客户端配置、动态注册和 PKCE
 
 | 接口 | 可信输入、结果与拒绝条件 |
 | --- | --- |
-| `validateClientProfile(profile)` | 部署方安装 `profile_id/client_id/client_name/redirect_uris/scopes`；重定向必须精确 HTTPS，拒绝通配符、用户信息、fragment 和重复项 |
+| `validateClientProfile(profile)` | 部署方安装 `profile_id/client_id/client_name/redirect_uris/scopes`；重定向必须为精确 HTTPS URL，拒绝通配符、用户信息、片段和重复项 |
 | `validateRegistration(metadata,profile)` | 名称和重定向匹配固定配置，返回版本化 `RegisteredClientBinding`，保存客户端、配置、重定向、注册权限及 `profile_snapshot` |
 | `revalidateRegisteredClient(stored,profile)` | 从可信存储取注册绑定，与当前配置重新核对；轮换/缺失/陈旧绑定拒绝 |
 | `validateAuthorizationRequest(params,profile,stored)` | 必需第三参数为可信已存储绑定；参数唯一、精确客户端/重定向/PKCE，权限不超过注册上限 |
-| `revalidateTokenScope(grant,stored,profile)` | 重新核对已认证令牌/refresh 授权与注册及当前配置；只读注册不能扩大为执行授权 |
-| `verifyPkce(verifier,storedChallenge)` | verifier 为 43–128 字符，并核对已存储 S256 challenge；返回布尔值，不能用调用方自选 challenge 作为授权依据 |
+| `revalidateTokenScope(grant,stored,profile)` | 重新核对已认证令牌/刷新授权与注册及当前配置；只读注册不能扩大为执行授权 |
+| `verifyPkce(verifier,storedChallenge)` | 验证值为 43–128 字符，并核对已存储的 S256 挑战值；返回布尔值，不能用调用方自选挑战值作为授权依据 |
 
-请求不能创建或扩大部署配置。集成者持久化已核验绑定，授权码只能使用一次；交换令牌时核对 code、verifier、client、redirect、expiry 和重放状态。动态注册、授权码和令牌中的权限还要按已注册上限及当前客户端配置重新验证。公开辅助模块不自动构成完整签发方存储或上线 OAuth 服务。
+请求不能创建或扩大部署配置。集成者持久化已核验绑定，授权码只能使用一次；交换令牌时核对授权码、验证值、客户端、重定向、期限和重放状态。动态注册、授权码和令牌中的权限还须按已注册上限及当前客户端配置重新验证。公开辅助模块不自动构成完整签发方存储、令牌认证或上线 OAuth 服务。
 
 <!-- topic:ingress -->
 ### 请求预算、所有者同意和令牌
 
 `guardOAuthRequest` 在读取请求体前要求配置全局和来源限额。缺配置时拒绝为 503，限额拒绝时为 429；方法、请求体和期限限制以实际模块为准。`bearerTokenMatches/bearerAuthorized` 比较哈希，拒绝弱的预期令牌和空白，不回显凭据。
 
-`ownerConsentForm(request,secret,clientName,owner,origin)` 的第五个参数是必需的可信 HTTPS origin，不能从请求推断。证明绑定 origin、所有者主体、客户端查询和期限，使用 `ghostfleet-consent-v2` 签名域。GET/POST 验证拒绝跨 origin、不同主体、过期、篡改及旧版无 origin 证明。共享签名秘密也不能让 origin A 的证明在 origin B 重放。集成者仍提供可信存储、一次性 nonce 消费和撤销。`access` 模块显式验证部署配置的 Cloudflare Access JWT：核对 issuer、audience、身份和权限，不能因为可解码就信任。
+`ownerConsentForm(request,secret,clientName,owner,origin)` 的第五个参数是必需的可信 HTTPS 来源（origin），不能从请求推断。证明绑定来源、所有者主体、客户端查询和期限，使用 `ghostfleet-consent-v2` 签名域。GET/POST 验证拒绝跨来源、不同主体、过期、篡改及旧版无来源证明。即使共享签名秘密，来源 A 的证明也不能在来源 B 重放。集成者仍须提供可信存储、一次性 nonce 消费和撤销。`access` 模块显式验证部署配置的 Cloudflare Access JWT，核对签发者、受众、身份和权限，不能因为可解码就信任。
 
-访问令牌、签名密钥、verifier、所有者身份和提供方凭据都留在受控托管。合成模块测试不证明账户登录、生产重定向或撤销已经完成。私有签发方还没有因为迁移源文件自动切换到新版证明。
+访问令牌、签名密钥、验证值、所有者身份和提供方凭据均留在受控托管。合成模块测试不证明账户登录、生产重定向或撤销已完成；迁入源文件也不会自动将私有签发方切换到新版证明。
 
 <!-- topic:family -->
 ### 客户端、SDK 家族和兼容
 
-两个不相关的合成客户端配置验证精确重定向、PKCE、注册和权限。实际标准 MCP SDK 客户端通过 `npm run verify:ai-client-neutral` 在无 OpenAI 配置的干净环境执行 initialize/list/call，并检查缺少凭据拒绝、只读 403，以及存储/设备没有增量。这不等于专有 OAuth 客户端已生产接入。
+两个不相关的合成客户端配置用于验证精确重定向、PKCE、注册和权限。实际标准 MCP SDK 客户端通过 `npm run verify:ai-client-neutral` 在无 OpenAI 配置的干净环境执行 initialize/list/call，并检查缺少凭据时拒绝、只读身份变更返回 403，以及存储和设备无增量。这不等于专有 OAuth 客户端已接入生产。
 
 旧 Sites 交接在独立可选兼容模块中，只有显式选择配置时才使用；保留精确预期 URL、HTTPS、路径与认证，通用交接不推断客户端。工具授权元数据的兼容镜像源码不注册默认工具。SDK 差异需要 JSON/SSE、大小限制、额外参数、令牌边界测试及具体客户端试验；不能用重命名或通配符绕过重验。
 
@@ -62,7 +62,7 @@ npm run test:typed
 npm run build:typed
 ```
 
-The source entry is `packages/typed-control/src/authorization/index.ts`; the runtime build entry is `dist/authorization/index.js`. jose supports JWT mechanisms, not an OpenAI SDK.
+The source entry is `packages/typed-control/src/authorization/index.ts`; the runtime build entry is `dist/authorization/index.js`. JWT mechanisms depend on `jose`, not an OpenAI SDK.
 
 <!-- topic:profile -->
 ### Client profiles, DCR and PKCE
@@ -85,7 +85,7 @@ Requests cannot create or widen deployment profiles. Integrators persist validat
 
 `ownerConsentForm(request,secret,clientName,owner,origin)` requires trusted canonical HTTPS origin as its fifth argument, never inferred from request data. Proofs bind origin, owner subject, client query and expiry using the `ghostfleet-consent-v2` signing domain. GET/POST verification rejects cross-origin, different-owner, expired, tampered and legacy origin-less proofs. Even shared signing secrets cannot replay origin A proofs at origin B. Integrators still provide trusted storage, one-use nonce consumption and revocation. The `access` module explicitly validates deployment-configured Cloudflare Access JWTs; verify issuer/audience/identity/scopes rather than trusting decoded claims.
 
-Raw bearers, signing keys, code verifiers, owner identity and provider credentials stay in controlled custody. Generic helper tests do not establish account login, production OAuth redirects or provider revocation.
+Raw bearers, signing keys, code verifiers, owner identity and provider credentials stay in controlled custody. Generic helper tests do not establish account login, production OAuth redirects or provider revocation. Importing source files does not automatically switch a private issuer to the new proof format.
 
 <!-- topic:family -->
 ### Clients, SDK families and compatibility

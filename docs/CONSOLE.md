@@ -5,31 +5,31 @@
 <!-- topic:session -->
 ### 连接与凭据
 
-按 [快速开始](GETTING_STARTED.md) 启动，打开同源Console。在Settings连接该controlplane的read/operatorbearer；它不是CloudflareAPI或device/providercredential。Token只保留页面内存，连接清空输入，disconnect/reload/close清除。语言/theme/sidebar偏好可存浏览器；不要把credential存localStorage、URL、clipboardlog或screenshots。
+按 [快速开始](GETTING_STARTED.md) 启动并打开同源控制台，在设置中使用本控制面的只读或操作员访问令牌连接。该令牌不同于 Cloudflare API 或设备/提供方凭据。令牌仅保留在页面内存中，连接后清空输入框，断开、刷新或关闭页面时清除。语言、主题和侧栏偏好可保存在浏览器中；凭据不得写入 localStorage、URL、剪贴板日志或截图。
 
-界面默认中文，支持English与light/dark/system。Readonlysession禁对象mutation；operator可管理lifecycle/HumanGate，但默认不执行设备能力。ACTIVE是admission状态，不代表online/heartbeat；填写device名称不会安装agent或生成真机proof。
+界面默认中文，支持英文以及浅色、深色和跟随系统的主题。只读会话不能变更对象；操作员可管理生命周期和 HumanGate，但默认不执行设备能力。`ACTIVE` 是准入状态，不代表在线或心跳正常；填写设备名称不会安装代理或生成真机证据。控制面准入不证明独立调用方已完成目录发现、认证、路由、权限或回滚切换。
 
 <!-- topic:workflow -->
 ### 列表、详情和不确定状态
 
-首页显示最近设备、进行中记录、待确认与活动；侧栏进入devices/enrollment/gates/capabilities/events/settings。列表支持name/IDsearch、statefilter、sort、pagination和optionalcolumns；点击record打开detaildrawer保留查询条件。Ctrl/CmdK搜page/record，方向键/Enter选择、Esc关闭；mobile使用导航drawer，宽表区域横向滚动。
+首页显示最近设备、进行中的尝试、待确认事项和活动；侧栏可进入设备、纳管、人类批准、能力、事件和设置页面。列表支持名称/ID 搜索、状态筛选、排序、分页和可选列；点击记录打开详情抽屉并保留查询条件。Ctrl/Cmd K 搜索页面或记录，方向键和 Enter 选择，Esc 关闭。移动端使用导航抽屉，宽表格在自身区域横向滚动。
 
-operator创建attempt，准备、请求精确gate，核对对象/请求/expiry再批准或拒绝。最新evidence FAIL/UNKNOWN覆盖旧PASS。错误显示在当前dialog，可读取serverstate；未知mutation暂禁button且不自动retry。Structuredasset_hint不直接Objectcoercion，优先有效字符串或boundnode/stableattemptID。
+操作员创建纳管尝试、准备并请求精确批准，核对对象、请求和期限后再批准或拒绝。最新证据中的 `FAIL/UNKNOWN` 覆盖旧 `PASS`。错误在当前对话框内显示，可读取服务端状态；变更结果不确定时暂时禁用按钮，不自动重试。结构化 `asset_hint` 不直接转成对象标签，优先使用有效字符串、已绑定节点或稳定的尝试 ID。
 
-Capability目录只展示definition/risk，不执行命令。source-labeledsyntheticevidence不能当实际deviceacceptance。
+能力目录仅显示定义与风险，不执行命令。标明合成来源的证据不能作为真实设备验收。
 
 <!-- topic:preview -->
 ### 设计、合成图片与验证
 
-界面使用TablerCSS/nativeJavaScript，公共布局参考而无额外React/图表依赖。设计token见 [DESIGN](../DESIGN.md)，产品边界见 [PRODUCT](../PRODUCT.md)，license见 [第三方说明](../THIRD_PARTY_NOTICES.md)。认证、scope、TTL、gate/state与admission由server决定，UIlabel不提供authority。
+界面使用 Tabler CSS 和原生 JavaScript，参考公开布局，不额外依赖 React 或图表库。设计变量见 [DESIGN](../DESIGN.md)，产品边界见 [PRODUCT](../PRODUCT.md)，许可见 [第三方说明](../THIRD_PARTY_NOTICES.md)。认证、权限范围、有效期、批准/状态与准入由服务端决定，界面标签不授予权限。
 
-七图均是isolatedsyntheticpreview，不是productionPages或realcanary：
+七张图片均来自隔离的合成预览，不证明生产 Pages 或真实设备试验已完成：
 
 ![中文桌面合成预览](images/console-desktop.png)
 
 [devices](images/console-devices.png) · [detail](images/console-detail.png) · [mobile](images/console-mobile.png) · [mobile devices](images/console-mobile-devices.png) · [English](images/console-english.png) · [dark](images/console-dark.png)
 
-已有布局/keyboard/filters/tokenmemory/readonly/persistence等验证，不替代完整accessibilitycertification或平台真机验收。每次图像变更需publicationpolicyexactSHA复审。
+已有布局、键盘、筛选、令牌内存、只读和偏好持久化检查，不替代完整无障碍认证或平台真机验收。每次图像变更须按公开边界策略重新审阅精确 SHA。
 
 ## English
 
@@ -38,7 +38,7 @@ Capability目录只展示definition/risk，不执行命令。source-labeledsynth
 
 Start with [Getting started](GETTING_STARTED.md) and open the same-origin Console. Under Settings, connect with this control plane's read/operator bearer, never a Cloudflare API or device/provider credential. Tokens stay in page memory, the input clears after connection, and disconnect/reload/close clears them. Language/theme/sidebar preferences may persist locally; credentials must not enter localStorage, URLs, clipboard logs or screenshots.
 
-The Console defaults to Chinese with English and light/dark/system support. Read-only sessions cannot mutate objects. Operators manage lifecycle/HumanGate objects but do not execute hardware capabilities by default. ACTIVE is admission status, not connectivity/heartbeat; entering a device name installs no agent and creates no hardware proof.
+The Console defaults to Chinese with English and light/dark/system support. Read-only sessions cannot mutate objects. Operators manage lifecycle/HumanGate objects but do not execute hardware capabilities by default. ACTIVE is admission status, not connectivity/heartbeat; entering a device name installs no agent and creates no hardware proof. Control-plane admission does not establish independent consumer discovery/authentication/route/permission/rollback cutover.
 
 <!-- topic:workflow -->
 ### Lists, details and uncertain outcomes
