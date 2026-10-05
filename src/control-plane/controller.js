@@ -312,6 +312,8 @@ export class GhostFleetController {
     this.emit(EventType.CONSUMER_ROLLBACK_COMPLETED, id, {
       removed_bindings: next.decision.removed_bindings,
       declared_bindings: record.declared_bindings,
+      rollback_receipt_ref: next.decision.rollback_receipt_ref,
+      prior_path_readback_ref: next.decision.prior_path_readback_ref,
     });
     return next;
   }

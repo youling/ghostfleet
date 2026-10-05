@@ -1,7 +1,7 @@
-# Consumer acceptance contract
+# 消费者验收契约 / Consumer acceptance contract
 
 artifact: `CONSUMER_ACCEPTANCE_CONTRACT`
-artifact_version: `1.1.0`
+artifact_version: `1.2.0`
 status: `ACTIVE`
 owner: `youling/ghostfleet`
 
@@ -87,7 +87,7 @@ durable class 缺少 `owner_ref` 或 `attestation_ref` 时不会降级为"较弱
 
 `EXECUTOR_BOUND` 与 `UNRESOLVED` 保持在 `evaluate` 阶段产生 `CUSTODY_NOT_DURABLE` 阻断项，并且**证据载荷无法洗白**——即使证据声称 `DURABLE`，判定仍然读记录自身的分类。解析不出持久性时一律 fail closed。
 
-契约只保存**不透明的引用元数据**，绝不保存机密本身。`custody_ref` / `owner_ref` / `attestation_ref` 必须是受限字符集的 opaque reference；PEM 头、JWT 形状、provider key 形状、长 base64 块都会被 `CUSTORY_REFERENCE_SECRET_SHAPED` 拒绝。契约里若出现 `private_key`、`bearer`、`api_token` 这类字段名，会被既有的 `assertPublicSafe` 拦下。具体的凭据机制由各 deployment adapter 负责证明。
+契约只保存**不透明的引用元数据**，绝不保存机密本身。`custody_ref` / `owner_ref` / `attestation_ref` 必须是受限字符集的 opaque reference；PEM 头、JWT 形状、provider key 形状、长 base64 块都会被 `CUSTODY_REFERENCE_SECRET_SHAPED` 拒绝。契约里若出现 `private_key`、`bearer`、`api_token` 这类字段名，会被既有的 `assertPublicSafe` 拦下。具体的凭据机制由各 deployment adapter 负责证明。
 
 <!-- topic:independence -->
 
@@ -104,6 +104,16 @@ durable class 缺少 `owner_ref` 或 `attestation_ref` 时不会降级为"较弱
 
 `origin_executor_ref` 是**创建时必填**的可判定输入，不是可选项。否则"fresh context 不得等于 original executor"这一检查会完全失效，只剩调用方自报 `dependency_free: true`。因此 `executor.independence` 证据的**两端**都与记录绑定校验：`origin_executor_ref` 必须等于记录的值，`fresh_context_ref` 必须不等于它。`dependency_free` 不为 `true`、结果不为 `PASS`、两端不匹配、或原执行者给自己背书，都会被拒绝。
 
+更关键的是：独立性的含义是"fresh context **重放了同一个被授权 operation** 并产生了**自己的 receipt**"。所以：
+
+- `authority.positive` 必须携带**可判定的 operation identity**（有界 opaque token）；
+- `executor.independence` 必须绑定**同一个 operation identity**；
+- fresh context 必须携带**独立的 `receipt_ref`**，且不得等于 baseline 的 `receipt_ref`；
+- 还必须携带独立的 `readback_ref`，用于表明这次重放确实落到了同一身份，而不只是"声称发起过一次调用"；
+- `operation` / `receipt_ref` / `readback_ref` / 等价性 任一缺失或不匹配，一律 fail closed。
+
+也就是说，**仅仅重写一个 PASS 形状的 payload 无法证明独立性**——这正是本契约要防的那类"证据只声明结果结构、不证明事实"。
+
 这一项是 consumer acceptance 的证据，**不是**新的核心 enrollment 证据类型。
 
 <!-- topic:rollback -->
@@ -112,6 +122,9 @@ consumer 回滚是**节点范围**的，不只是版本范围的。关键是分�
 
 - **acceptance 阶段**只要求 `rollback.plan`：声明本 consumer 引入的绑定集合，以及旧路径恢复契约（`prior_path_restoration_contract_ref`）。此时新路径必须仍然在位。
 - **实际回滚结果**只在 `completeConsumerRollback` 时验证：`removed_bindings` 必须与计划的声明集合**精确相等**——既不能遗漏，也不能有多余。
+- 回滚结果必须**显式**声明 `result: "PASS"`，**不提供缺省 PASS**：省略它就是没有证明任何事，默认成成功等于把沉默当结论。
+- 必须携带 provider-neutral 的 `rollback_receipt_ref`（等价于 removal evidence ref）与 `prior_path_readback_ref`（等价于恢复证明）。两者都是有界 opaque reference，且不得指向同一个引用。
+- 两个 proof ref 会保留在 durable decision 与事件里，供后续审计回读。
 
 ```text
 code/version rollback alone   != 节点范围回滚完成
@@ -241,6 +254,16 @@ A control path must not hold only inside the original executor's session or work
 
 `origin_executor_ref` is a **create-time required** decidable input, not optional. Without it the "fresh context must differ from the original executor" check is entirely inert, leaving only the caller self-reporting `dependency_free: true`. Therefore **both ends** of the `executor.independence` evidence are validated against the record: `origin_executor_ref` must equal the record's value and `fresh_context_ref` must differ from it. A `dependency_free` that is not `true`, a non-`PASS` result, mismatched ends, or the original executor certifying itself are all rejected.
 
+More importantly, independence means the fresh context **replayed the same authorized operation** and produced **its own receipt**. Therefore:
+
+- `authority.positive` must carry a **decidable operation identity** (a bounded opaque token);
+- `executor.independence` must bind to **the same operation identity**;
+- the fresh context must carry an **independent `receipt_ref`**, which must not equal the baseline `receipt_ref`;
+- it must also carry an independent `readback_ref`, showing the replay actually landed on the same identity rather than merely claiming a call was made;
+- any missing or mismatched `operation` / `receipt_ref` / `readback_ref` / equivalence fails closed.
+
+In other words, **merely restating a PASS-shaped payload cannot prove independence** — which is exactly the "evidence that only asserts a result shape rather than proving the fact" failure this contract exists to prevent.
+
 This is consumer acceptance evidence, **not** a new core enrollment evidence type.
 
 <!-- topic:rollback -->
@@ -249,6 +272,9 @@ Consumer rollback is **node-scoped**, not merely version-scoped. The key is that
 
 - The **acceptance** stage requires only `rollback.plan`: the declared binding set this consumer introduced, plus the prior-path restoration contract (`prior_path_restoration_contract_ref`). At this point the new path must still be in place.
 - The actual rollback **result** is verified only at `completeConsumerRollback`: `removed_bindings` must be an **exact set match** against the plan's declared set — no omissions and no extras.
+- The rollback result must state `result: "PASS"` **explicitly**; there is **no default PASS**. Omitting it proves nothing, and defaulting would turn silence into a conclusion.
+- It must carry a provider-neutral `rollback_receipt_ref` (equivalent to a removal evidence ref) and a `prior_path_readback_ref` (equivalent to a restoration proof). Both are bounded opaque references and must not be the same reference.
+- Both proof refs are retained in the durable decision and the event so they can be audited later.
 
 ```text
 code/version rollback alone    != node-scoped rollback complete

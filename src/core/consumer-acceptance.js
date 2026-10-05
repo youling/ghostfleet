@@ -83,6 +83,9 @@ export const REQUIRED_CONSUMER_EVIDENCE = Object.freeze([
 
 const NODE_UID_RE = /^node-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CONSUMER_REF_RE = /^[a-z][a-z0-9._-]{2,79}$/;
+// A decidable operation identity, provider-neutral. It must be a bounded opaque
+// token so that two operations can be compared for exact equality.
+const OPERATION_RE = /^[A-Za-z0-9][A-Za-z0-9._:/#-]{2,159}$/;
 // Provider-neutral: a revision is a bounded opaque immutable reference. It is
 // NOT required to be a Git SHA, because deployment/provider config revisions
 // are not Git objects. `source_revision` MAY be a Git SHA (that satisfies this
@@ -121,6 +124,10 @@ function assertRevision(value, field) {
 }
 
 /** Validate a declared/removed binding list: public-safe, opaque, bounded, deduplicated. */
+function latestEvidence(record, element) {
+  return record.evidence.findLast((item) => item.element === element) ?? null;
+}
+
 function normalizeBindingSet(value, field) {
   if (!Array.isArray(value)) fail("ROLLBACK_BINDINGS_INVALID", { field });
   if (value.length > MAX_BINDINGS) fail("ROLLBACK_BINDINGS_TOO_MANY", { field });
@@ -257,6 +264,9 @@ const ELEMENT_VALIDATORS = {
   },
   "authority.positive": (record, data) => {
     if (data.result !== "PASS") fail("EVIDENCE_POSITIVE_NOT_PASS");
+    // A decidable operation identity, so executor-independence can later bind
+    // to the same operation instead of trusting a free-form label.
+    if (typeof data.operation !== "string" || !OPERATION_RE.test(data.operation)) fail("EVIDENCE_OPERATION_IDENTITY_INVALID");
     assertOpaqueReference(data.receipt_ref, "receipt_ref");
   },
   "authority.negative": (record, data) => {
@@ -274,6 +284,18 @@ const ELEMENT_VALIDATORS = {
     if (data.origin_executor_ref !== record.origin_executor_ref) fail("EXECUTOR_INDEPENDENCE_ORIGIN_MISMATCH");
     if (data.fresh_context_ref === record.origin_executor_ref) fail("EXECUTOR_INDEPENDENCE_SAME_CONTEXT");
     if (data.result !== "PASS") fail("EXECUTOR_INDEPENDENCE_NOT_PASS");
+    // Independence means the fresh context re-issued the SAME authorized
+    // operation, and produced its OWN receipt. Re-declaring a PASS-shaped
+    // payload is not evidence of an independent replay.
+    const baseline = latestEvidence(record, "authority.positive");
+    if (!baseline) fail("EXECUTOR_INDEPENDENCE_BASELINE_MISSING");
+    if (data.operation !== baseline.data.operation) fail("EXECUTOR_INDEPENDENCE_OPERATION_MISMATCH", { baseline: baseline.data.operation ?? null });
+    assertOpaqueReference(data.receipt_ref, "receipt_ref");
+    if (data.receipt_ref === baseline.data.receipt_ref) fail("EXECUTOR_INDEPENDENCE_RECEIPT_REUSED");
+    // A readback reference is what shows the replay actually landed on the same
+    // identity from the fresh context, not merely that a call was claimed.
+    assertOpaqueReference(data.readback_ref, "readback_ref");
+    if (data.readback_ref === data.receipt_ref) fail("EXECUTOR_INDEPENDENCE_READBACK_NOT_INDEPENDENT");
   },
   "rollback.plan": (record, data) => {
     // Acceptance-time: declare the binding set this consumer introduced and
@@ -313,7 +335,14 @@ export function assertNodeScopedRollbackComplete(rollback) {
   const extra = removed.filter((ref) => !declaredSet.has(ref));
   if (extra.length) fail("ROLLBACK_BINDINGS_UNDECLARED", { extra });
   if (rollback?.prior_path_restored !== true) fail("ROLLBACK_PRIOR_PATH_NOT_RESTORED");
+  // result is explicit. There is no default PASS: a caller that omits it has
+  // not proven anything, and defaulting would turn silence into success.
   if (rollback?.result !== "PASS") fail("ROLLBACK_NOT_COMPLETE");
+  // Restoring the prior path must itself be evidenced, not asserted: a removal
+  // receipt for the bindings plus a readback of the prior path being back.
+  assertOpaqueReference(rollback?.rollback_receipt_ref, "rollback_receipt_ref");
+  assertOpaqueReference(rollback?.prior_path_readback_ref, "prior_path_readback_ref");
+  if (rollback.prior_path_readback_ref === rollback.rollback_receipt_ref) fail("ROLLBACK_READBACK_NOT_INDEPENDENT");
   return true;
 }
 
@@ -368,21 +397,32 @@ export function evaluateConsumerAcceptance(record, { node } = {}) {
  */
 export function completeConsumerRollback(record, input = {}) {
   if (record.state !== ConsumerAcceptanceState.ACCEPTED) fail("ROLLBACK_REQUIRES_ACCEPTED", { state: record.state });
-  const allowed = ["removed_bindings", "prior_path_restored", "result", "at"];
+  const allowed = ["removed_bindings", "prior_path_restored", "result", "rollback_receipt_ref", "prior_path_readback_ref", "at"];
   if (Object.keys(input).some((key) => !allowed.includes(key))) fail("ROLLBACK_INPUT_FIELDS_INVALID", { unexpected: Object.keys(input).filter((key) => !allowed.includes(key)) });
   const at = input.at ?? new Date().toISOString();
   if (record.declared_bindings === null) fail("ROLLBACK_PLAN_MISSING");
   assertPublicSafe(input);
+  // `result` is required, not defaulted.
+  if (!Object.hasOwn(input, "result")) fail("ROLLBACK_RESULT_REQUIRED");
   assertNodeScopedRollbackComplete({
     declared_bindings: record.declared_bindings,
     removed_bindings: input.removed_bindings,
     prior_path_restored: input.prior_path_restored,
-    result: input.result ?? "PASS",
+    result: input.result,
+    rollback_receipt_ref: input.rollback_receipt_ref,
+    prior_path_readback_ref: input.prior_path_readback_ref,
   });
   return Object.freeze({
     ...record,
     state: ConsumerAcceptanceState.ROLLED_BACK,
-    decision: { ...record.decision, rolled_back_at: at, removed_bindings: normalizeBindingSet(input.removed_bindings, "removed_bindings") },
+    decision: {
+      ...record.decision,
+      rolled_back_at: at,
+      removed_bindings: normalizeBindingSet(input.removed_bindings, "removed_bindings"),
+      // Proof references are retained in the durable decision and the event.
+      rollback_receipt_ref: input.rollback_receipt_ref,
+      prior_path_readback_ref: input.prior_path_readback_ref,
+    },
     updated_at: at,
   });
 }

@@ -33,6 +33,26 @@ const DECLARED_BINDINGS = ["adapter-binding/node-scope", "adapter-binding/consum
 const ORIGIN_EXECUTOR = "executor-original-run";
 const FRESH_CONTEXT = "executor-fresh-context";
 const RESTORATION_CONTRACT = "contract/prior-path-restoration-v1";
+// One authorized operation, replayed from the fresh context.
+const OPERATION = "node.identity.read";
+const BASELINE_RECEIPT = "receipt/baseline-positive";
+const FRESH_RECEIPT = "receipt/fresh-independent";
+const FRESH_READBACK = "readback/fresh-independent";
+const ROLLBACK_RECEIPT = "receipt/rollback-removal";
+const PRIOR_PATH_READBACK = "readback/prior-path-restored";
+
+// A complete, evidenced rollback payload. Tests vary one field at a time so each
+// negative assertion isolates the field under test.
+function rollbackInput(overrides = {}) {
+  return {
+    removed_bindings: DECLARED_BINDINGS,
+    prior_path_restored: true,
+    result: "PASS",
+    rollback_receipt_ref: ROLLBACK_RECEIPT,
+    prior_path_readback_ref: PRIOR_PATH_READBACK,
+    ...overrides,
+  };
+}
 
 function admitNode(controller) {
   const attempt = controller.createEnrollmentAttempt({ asset_hint: "lab-device" });
@@ -68,12 +88,12 @@ function evidencePairs(record, { bindings = DECLARED_BINDINGS, includeIndependen
     ["consumer.identity", { consumer_ref: record.consumer_ref, source_revision: record.source_revision, config_revision: record.config_revision }],
     ["control_path.binding", { control_path_ref: record.control_path_ref, binding_ref: bindings[0] ?? "adapter-binding/node-scope" }],
     ["custody.durability", { durability: CustodyDurability.DURABLE, custody_class: record.custody.custody_class, custody_ref: record.custody.custody_ref, owner_ref: record.custody.owner_ref, attestation_ref: record.custody.attestation_ref }],
-    ["authority.positive", { operation: "node.identity.read", result: "PASS", receipt_ref: "receipt/positive-one" }],
-    ["authority.negative", { operation: "node.privileged.write", result: "DENIED", denial_observed: true, receipt_ref: "receipt/negative-one" }],
+    ["authority.positive", { operation: OPERATION, result: "PASS", receipt_ref: BASELINE_RECEIPT }],
+    ["authority.negative", { operation: OPERATION, result: "DENIED", denial_observed: true, receipt_ref: "receipt/negative-one" }],
     ["call_route.readback", { node_uid: record.node_uid, observed_ref: "route-readback/observed-one" }],
   ];
   if (includeIndependence) {
-    pairs.push(["executor.independence", { fresh_context_ref: FRESH_CONTEXT, origin_executor_ref: record.origin_executor_ref, dependency_free: true, operation: "node.identity.read", result: "PASS" }]);
+    pairs.push(["executor.independence", { fresh_context_ref: FRESH_CONTEXT, origin_executor_ref: record.origin_executor_ref, dependency_free: true, operation: OPERATION, result: "PASS", receipt_ref: FRESH_RECEIPT, readback_ref: FRESH_READBACK }]);
   }
   if (includePlan) pairs.push(planFor(record, { bindings }));
   return pairs;
@@ -158,7 +178,7 @@ test("R2: a rolled-back record is terminal and cannot be re-evaluated to ACCEPTE
   const controller = new GhostFleetController();
   const { node } = admitNode(controller);
   const accepted = acceptedRecord(controller, node);
-  const rolled = controller.completeConsumerRollback(accepted.acceptance_id, { removed_bindings: DECLARED_BINDINGS, prior_path_restored: true });
+  const rolled = controller.completeConsumerRollback(accepted.acceptance_id, rollbackInput());
   assert.equal(rolled.state, ConsumerAcceptanceState.ROLLED_BACK);
   assert.equal(rolled.evidence.length, REQUIRED_CONSUMER_EVIDENCE.length, "evidence is still present after rollback");
 
@@ -417,8 +437,8 @@ test("R1: rollback result is verified only at completeConsumerRollback", () => {
   const { node } = admitNode(controller);
   const accepted = acceptedRecord(controller, node);
   // Prior path not restored yet: acceptance is unaffected, rollback is blocked.
-  assert.throws(() => controller.completeConsumerRollback(accepted.acceptance_id, { removed_bindings: DECLARED_BINDINGS, prior_path_restored: false }), /ROLLBACK_PRIOR_PATH_NOT_RESTORED/);
-  const rolled = controller.completeConsumerRollback(accepted.acceptance_id, { removed_bindings: DECLARED_BINDINGS, prior_path_restored: true });
+  assert.throws(() => controller.completeConsumerRollback(accepted.acceptance_id, rollbackInput({ prior_path_restored: false })), /ROLLBACK_PRIOR_PATH_NOT_RESTORED/);
+  const rolled = controller.completeConsumerRollback(accepted.acceptance_id, rollbackInput());
   assert.equal(rolled.state, ConsumerAcceptanceState.ROLLED_BACK);
   assert.deepEqual(rolled.decision.removed_bindings, DECLARED_BINDINGS);
 });
@@ -430,7 +450,7 @@ test("R5: an extra undeclared removed binding is rejected", () => {
   const { node } = admitNode(controller);
   const accepted = acceptedRecord(controller, node);
   assert.throws(
-    () => controller.completeConsumerRollback(accepted.acceptance_id, { removed_bindings: [...DECLARED_BINDINGS, "adapter-binding/someone-elses"], prior_path_restored: true }),
+    () => controller.completeConsumerRollback(accepted.acceptance_id, rollbackInput({ removed_bindings: [...DECLARED_BINDINGS, "adapter-binding/someone-elses"] })),
     (error) => {
       assert.equal(error.code, "ROLLBACK_BINDINGS_UNDECLARED");
       assert.deepEqual(error.extra, ["adapter-binding/someone-elses"]);
@@ -444,7 +464,7 @@ test("R5: a partially removed declared set is rejected", () => {
   const { node } = admitNode(controller);
   const accepted = acceptedRecord(controller, node);
   assert.throws(
-    () => controller.completeConsumerRollback(accepted.acceptance_id, { removed_bindings: [DECLARED_BINDINGS[0]], prior_path_restored: true }),
+    () => controller.completeConsumerRollback(accepted.acceptance_id, rollbackInput({ removed_bindings: [DECLARED_BINDINGS[0]] })),
     (error) => {
       assert.equal(error.code, "ROLLBACK_BINDINGS_REMAIN");
       assert.deepEqual(error.missing, [DECLARED_BINDINGS[1]]);
@@ -466,7 +486,7 @@ test("R5: completeConsumerRollback input is closed and public-safe", () => {
   const controller = new GhostFleetController();
   const { node } = admitNode(controller);
   const accepted = acceptedRecord(controller, node);
-  assert.throws(() => controller.completeConsumerRollback(accepted.acceptance_id, { removed_bindings: DECLARED_BINDINGS, prior_path_restored: true, unexpected: true }), /ROLLBACK_INPUT_FIELDS_INVALID/);
+  assert.throws(() => controller.completeConsumerRollback(accepted.acceptance_id, rollbackInput({ unexpected: true })), /ROLLBACK_INPUT_FIELDS_INVALID/);
 });
 
 test("R5: an explicitly empty declared binding set is a legal, completable rollback", () => {
@@ -475,7 +495,7 @@ test("R5: an explicitly empty declared binding set is a legal, completable rollb
   const accepted = acceptedRecord(controller, node, { bindings: [] });
   assert.equal(accepted.state, ConsumerAcceptanceState.ACCEPTED);
   assert.deepEqual(accepted.declared_bindings, [], "explicitly empty is a real declaration");
-  const rolled = controller.completeConsumerRollback(accepted.acceptance_id, { removed_bindings: [], prior_path_restored: true });
+  const rolled = controller.completeConsumerRollback(accepted.acceptance_id, rollbackInput({ removed_bindings: [] }));
   assert.equal(rolled.state, ConsumerAcceptanceState.ROLLED_BACK);
   assert.deepEqual(rolled.decision.removed_bindings, []);
 });
@@ -512,6 +532,171 @@ test("R7: config_revision need not be a Git SHA", () => {
     node_uid: makeId("node"), consumer_ref: "adapter.alpha", source_revision: SOURCE_REVISION,
     config_revision: "has spaces and is not a ref", control_path_ref: CONTROL_PATH_REF, custody: DURABLE_CUSTODY, origin_executor_ref: ORIGIN_EXECUTOR,
   }), /REVISION_INVALID/);
+});
+
+// R8 — executor independence must prove an equivalent authorized replay.
+
+test("R8: a PASS-shaped payload without operation equivalence cannot prove independence", () => {
+  const controller = new GhostFleetController();
+  const { node } = admitNode(controller);
+  const record = openAcceptance(controller, node);
+  const withBaseline = recordConsumerEvidence(record, "authority.positive", { operation: OPERATION, result: "PASS", receipt_ref: BASELINE_RECEIPT });
+  // No operation, no fresh receipt, no readback: exactly the payload the review
+  // said used to pass.
+  assert.throws(
+    () => recordConsumerEvidence(withBaseline, "executor.independence", { fresh_context_ref: FRESH_CONTEXT, origin_executor_ref: ORIGIN_EXECUTOR, dependency_free: true, result: "PASS" }),
+    (error) => {
+      assert.equal(error.code, "EXECUTOR_INDEPENDENCE_OPERATION_MISMATCH");
+      assert.equal(error.baseline, OPERATION);
+      return true;
+    },
+  );
+});
+
+test("R8: independence must replay the same operation as the baseline", () => {
+  const controller = new GhostFleetController();
+  const { node } = admitNode(controller);
+  const record = openAcceptance(controller, node);
+  const withBaseline = recordConsumerEvidence(record, "authority.positive", { operation: OPERATION, result: "PASS", receipt_ref: BASELINE_RECEIPT });
+  const base = { fresh_context_ref: FRESH_CONTEXT, origin_executor_ref: ORIGIN_EXECUTOR, dependency_free: true, result: "PASS", operation: OPERATION, receipt_ref: FRESH_RECEIPT, readback_ref: FRESH_READBACK };
+  assert.throws(
+    () => recordConsumerEvidence(withBaseline, "executor.independence", { ...base, operation: "node.disk.usage.read" }),
+    (error) => {
+      assert.equal(error.code, "EXECUTOR_INDEPENDENCE_OPERATION_MISMATCH");
+      assert.equal(error.baseline, OPERATION);
+      return true;
+    },
+  );
+  const next = recordConsumerEvidence(withBaseline, "executor.independence", base);
+  assert.equal(next.evidence.at(-1).element, "executor.independence");
+});
+
+test("R8: independence requires its own receipt and a distinct readback", () => {
+  const controller = new GhostFleetController();
+  const { node } = admitNode(controller);
+  const record = openAcceptance(controller, node);
+  const withBaseline = recordConsumerEvidence(record, "authority.positive", { operation: OPERATION, result: "PASS", receipt_ref: BASELINE_RECEIPT });
+  const base = { fresh_context_ref: FRESH_CONTEXT, origin_executor_ref: ORIGIN_EXECUTOR, dependency_free: true, result: "PASS", operation: OPERATION, receipt_ref: FRESH_RECEIPT, readback_ref: FRESH_READBACK };
+  assert.throws(() => recordConsumerEvidence(withBaseline, "executor.independence", { ...base, receipt_ref: undefined }), /CUSTODY_REFERENCE_INVALID/);
+  assert.throws(
+    () => recordConsumerEvidence(withBaseline, "executor.independence", { ...base, receipt_ref: BASELINE_RECEIPT }),
+    (error) => {
+      assert.equal(error.code, "EXECUTOR_INDEPENDENCE_RECEIPT_REUSED");
+      return true;
+    },
+  );
+  assert.throws(() => recordConsumerEvidence(withBaseline, "executor.independence", { ...base, readback_ref: undefined }), /CUSTODY_REFERENCE_INVALID/);
+  assert.throws(
+    () => recordConsumerEvidence(withBaseline, "executor.independence", { ...base, readback_ref: base.receipt_ref }),
+    (error) => {
+      assert.equal(error.code, "EXECUTOR_INDEPENDENCE_READBACK_NOT_INDEPENDENT");
+      return true;
+    },
+  );
+});
+
+test("R8: independence cannot be claimed before a baseline positive exists", () => {
+  const record = createConsumerAcceptance({
+    node_uid: makeId("node"), consumer_ref: "adapter.alpha", source_revision: SOURCE_REVISION,
+    config_revision: CONFIG_REVISION, control_path_ref: CONTROL_PATH_REF, custody: DURABLE_CUSTODY, origin_executor_ref: ORIGIN_EXECUTOR,
+  });
+  assert.throws(
+    () => recordConsumerEvidence(record, "executor.independence", { fresh_context_ref: FRESH_CONTEXT, origin_executor_ref: ORIGIN_EXECUTOR, dependency_free: true, result: "PASS", operation: OPERATION, receipt_ref: FRESH_RECEIPT, readback_ref: FRESH_READBACK }),
+    /EXECUTOR_INDEPENDENCE_BASELINE_MISSING/,
+  );
+});
+
+test("R8: authority.positive requires a decidable operation identity", () => {
+  const record = createConsumerAcceptance({
+    node_uid: makeId("node"), consumer_ref: "adapter.alpha", source_revision: SOURCE_REVISION,
+    config_revision: CONFIG_REVISION, control_path_ref: CONTROL_PATH_REF, custody: DURABLE_CUSTODY, origin_executor_ref: ORIGIN_EXECUTOR,
+  });
+  assert.throws(() => recordConsumerEvidence(record, "authority.positive", { result: "PASS", receipt_ref: BASELINE_RECEIPT }), /EVIDENCE_OPERATION_IDENTITY_INVALID/);
+  assert.throws(() => recordConsumerEvidence(record, "authority.positive", { operation: "has spaces in it", result: "PASS", receipt_ref: BASELINE_RECEIPT }), /EVIDENCE_OPERATION_IDENTITY_INVALID/);
+  assert.doesNotThrow(() => recordConsumerEvidence(record, "authority.positive", { operation: OPERATION, result: "PASS", receipt_ref: BASELINE_RECEIPT }));
+});
+
+test("R8: a complete equivalent replay is accepted", () => {
+  const controller = new GhostFleetController();
+  const { node } = admitNode(controller);
+  const record = recordAll(controller, openAcceptance(controller, node));
+  const independence = record.evidence.find((item) => item.element === "executor.independence");
+  assert.equal(independence.data.operation, OPERATION);
+  assert.equal(independence.data.receipt_ref, FRESH_RECEIPT);
+  assert.equal(independence.data.readback_ref, FRESH_READBACK);
+  const positive = record.evidence.find((item) => item.element === "authority.positive");
+  assert.equal(independence.data.operation, positive.data.operation);
+  assert.notEqual(independence.data.receipt_ref, positive.data.receipt_ref);
+});
+
+// R9 — rollback restoration must be evidenced, not self-declared.
+
+test("R9: rollback result cannot be defaulted to PASS when omitted", () => {
+  const controller = new GhostFleetController();
+  const { node } = admitNode(controller);
+  const accepted = acceptedRecord(controller, node);
+  assert.throws(
+    () => controller.completeConsumerRollback(accepted.acceptance_id, { removed_bindings: DECLARED_BINDINGS, prior_path_restored: true, rollback_receipt_ref: ROLLBACK_RECEIPT, prior_path_readback_ref: PRIOR_PATH_READBACK }),
+    (error) => {
+      assert.equal(error.code, "ROLLBACK_RESULT_REQUIRED");
+      return true;
+    },
+  );
+});
+
+test("R9: rollback requires a removal receipt and a prior-path readback", () => {
+  const controller = new GhostFleetController();
+  const { node } = admitNode(controller);
+  const accepted = acceptedRecord(controller, node);
+  const base = { removed_bindings: DECLARED_BINDINGS, prior_path_restored: true, result: "PASS", rollback_receipt_ref: ROLLBACK_RECEIPT, prior_path_readback_ref: PRIOR_PATH_READBACK };
+  assert.throws(() => controller.completeConsumerRollback(accepted.acceptance_id, { ...base, rollback_receipt_ref: undefined }), /CUSTODY_REFERENCE_INVALID/);
+  assert.throws(() => controller.completeConsumerRollback(accepted.acceptance_id, { ...base, prior_path_readback_ref: undefined }), /CUSTODY_REFERENCE_INVALID/);
+  assert.throws(() => controller.completeConsumerRollback(accepted.acceptance_id, { ...base, rollback_receipt_ref: "not opaque" }), /CUSTODY_REFERENCE_INVALID/);
+  assert.throws(
+    () => controller.completeConsumerRollback(accepted.acceptance_id, { ...base, prior_path_readback_ref: ROLLBACK_RECEIPT }),
+    (error) => {
+      assert.equal(error.code, "ROLLBACK_READBACK_NOT_INDEPENDENT");
+      return true;
+    },
+  );
+});
+
+test("R9: the durable decision and event retain both proof references", () => {
+  const controller = new GhostFleetController();
+  const { node } = admitNode(controller);
+  const accepted = acceptedRecord(controller, node);
+  const rolled = controller.completeConsumerRollback(accepted.acceptance_id, {
+    removed_bindings: DECLARED_BINDINGS, prior_path_restored: true, result: "PASS",
+    rollback_receipt_ref: ROLLBACK_RECEIPT, prior_path_readback_ref: PRIOR_PATH_READBACK,
+  });
+  assert.equal(rolled.state, ConsumerAcceptanceState.ROLLED_BACK);
+  assert.equal(rolled.decision.rollback_receipt_ref, ROLLBACK_RECEIPT);
+  assert.equal(rolled.decision.prior_path_readback_ref, PRIOR_PATH_READBACK);
+  const persisted = controller.getConsumerAcceptance(accepted.acceptance_id);
+  assert.equal(persisted.decision.rollback_receipt_ref, ROLLBACK_RECEIPT);
+  assert.equal(persisted.decision.prior_path_readback_ref, PRIOR_PATH_READBACK);
+  const event = controller.listEvents().findLast((item) => item.type === EventType.CONSUMER_ROLLBACK_COMPLETED);
+  assert.equal(event.data.rollback_receipt_ref, ROLLBACK_RECEIPT);
+  assert.equal(event.data.prior_path_readback_ref, PRIOR_PATH_READBACK);
+});
+
+test("R9: assertNodeScopedRollbackComplete itself fails closed without proof refs", () => {
+  const base = { declared_bindings: DECLARED_BINDINGS, removed_bindings: DECLARED_BINDINGS, prior_path_restored: true, result: "PASS" };
+  assert.throws(() => assertNodeScopedRollbackComplete(base), /CUSTODY_REFERENCE_INVALID/);
+  assert.throws(() => assertNodeScopedRollbackComplete({ ...base, rollback_receipt_ref: ROLLBACK_RECEIPT }), /CUSTODY_REFERENCE_INVALID/);
+  assert.equal(assertNodeScopedRollbackComplete({ ...base, rollback_receipt_ref: ROLLBACK_RECEIPT, prior_path_readback_ref: PRIOR_PATH_READBACK }), true);
+});
+
+// D1 — documentation correctness.
+
+test("D1: the document title is Chinese-first bilingual and the custody error literal is correct", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const text = await readFile(new URL("../docs/CONSUMER_ACCEPTANCE.md", import.meta.url), "utf8");
+  const firstHeading = text.split(/\r?\n/).find((line) => line.startsWith("# "));
+  assert.match(firstHeading, /[\u4e00-\u9fff]/, "the title must lead with Chinese");
+  assert.match(firstHeading, /Consumer Acceptance Contract/i, "the title must carry the English name too");
+  assert.equal(text.includes("CUSTORY_REFERENCE_SECRET_SHAPED"), false, "the CUSTORY typo must be gone");
+  assert.ok(text.includes("CUSTODY_REFERENCE_SECRET_SHAPED"));
 });
 
 // Criterion 6 — existing core semantics and the read-only default MCP surface are unchanged.
