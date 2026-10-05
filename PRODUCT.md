@@ -1,38 +1,47 @@
-# GhostFleet
+# GhostFleet product scope / 产品范围
 
-<!-- impeccable:product-schema 1 -->
+## 中文
 
-## Platform
+<!-- topic:purpose -->
+### 用户与核心价值
 
-web
+面向Humanoperator、AIagent与pluginbuilder的设备fleetcontrolplane。通过稳定identity、lifecycle、capability、authority、HumanGate和evidence管理设备；HTTP/MCP和Console提供同一对象，不把remote shell当完整设备管理。
 
-## Users
+通用机制在本仓维护，实例owner保留账户、node/provider事实、配置、credentials与rawruntimeevidence。主流程与AIclient无关，不需要ChatGPT/OpenAI；专有clientadapter仅可选。
 
-The user manages personal devices, including a ThinkPad, and wants an open-source plugin and accompanying control panel. Humans inspect and approve requests; AI clients inspect the same authoritative control-plane state through typed MCP tools.
+<!-- topic:implemented -->
+### 当前可实现的体验
 
-## Product Purpose
+DefaultConsole管理lifecycle/HumanGate并检查evidence；defaultMCP提供四inspectiontools。Corematerialization产生稳定PROVISIONALUID，fullproof后同UID升ACTIVE，不改旧identity/Assets主权。Structuredlabels、synthetic来源和readonlyscope可见。
 
-Provide a device control plane with enrollment attempts, human approvals, evidence, admitted nodes, capabilities and events. The public project is extracted from private Fleet practices without private inventory or credentials.
+Optionaltyped-control/bootstrap/Pythonruntime提供平台机制和backendseam，但没有自动deviceexecutioningress。Publicsource可build/test和device-freepreview；实际生产adapter/custody、上线OAuth/Pages与平台真机验收不是默认体验。
 
-## Capabilities and Constraints
+<!-- topic:limits -->
+### 范围、限制与品牌
 
-- Existing stack: native HTML/CSS/JavaScript, Tabler core CSS, provider-neutral Node core, and a Cloudflare Worker/SQLite Durable Object reference host.
-- V0 supports durable lifecycle records and read-only MCP inspection. It does not install device agents or prove that a real ThinkPad is managed.
-- The backend owns bearer authentication, read-only/operator authority, human approvals, expiration, transitions and evidence acceptance.
-- The Console stores access tokens in page memory only. Non-secret appearance/language preferences may be stored locally.
-- Synthetic examples and screenshots must be identified as synthetic.
-- AGPL-3.0-only was explicitly selected by the user. Private Fleet source remains until the public replacement exceeds its capability.
+品牌是专业中性的bilingualadmininterface，语义状态不夸大能力。实际Console有navigation/tables/detail/search/theme/language；synthetic截图仅展示UI。Defaultcapabilitycatalog不是执行按钮。Publiclanding/docs不宣称已支持所有平台、生产SLA、无限freeActions或完整发布插件。
 
-## Brand Commitments
+source-preview、单节点canary、独立secondhardware、securityreview、productiondeploy和正式release分别陈述。未来plugin以publiccanonicalpackage为准；oldprivate删除需consumer/rollback验收。
 
-- Preserve the GhostFleet name.
-- Default Chinese with an English switch, explicitly requested by the user.
-- The user requests a professional administration interface inspired by satnaing/shadcn-admin, preserving its core interaction ideas without a pixel-for-pixel copy.
+## English
 
-## Evidence on Hand
+<!-- topic:purpose -->
+### Users and purpose
 
-README.md, docs/API.md, docs/SECURITY.md and the core model define the current public contract. Browser previews in docs/images contain local synthetic records only. The panel redesign uses shadcn-admin as a public visual/interaction reference, not as proof of GhostFleet backend functionality.
+A device fleet control plane for human operators, AI agents and plugin builders. Stable identity, lifecycle, capability, authority, HumanGate and evidence govern devices. HTTP/MCP and Console expose the same objects; a remote shell is not complete device management.
 
-## Landing Page
+This repository maintains generic mechanisms; instance owners retain accounts, node/provider facts, configuration, credentials and raw runtime evidence. The main flow is AI-client-neutral and requires no ChatGPT/OpenAI; proprietary client adapters are optional.
 
-The user explicitly selected device state and actionable work as the landing-page priority. Present inventory and pending work before secondary metadata.
+<!-- topic:implemented -->
+### Current implemented experience
+
+The default Console manages lifecycle/HumanGate objects and inspects evidence; default MCP exposes four inspection tools. Core materialization creates a stable PROVISIONAL UID and promotes the same UID after complete proof, preserving prior identity and Assets ownership. Structured labels, synthetic provenance and read-only scope are visible.
+
+Optional typed-control/bootstrap/Python runtimes provide platform mechanisms/backend seams without automatic device-execution ingress. Public source builds/tests and previews without hardware; production adapters/custody, online OAuth/Pages and platform hardware acceptance are not the default experience.
+
+<!-- topic:limits -->
+### Scope, limits and presentation
+
+The brand is a professional neutral bilingual administration interface whose status language does not overstate capability. The Console implements navigation/tables/details/search/themes/languages; synthetic screenshots demonstrate UI only. The capability catalog is not an execution button. Public landing/docs claim neither every platform, production SLA, unlimited free Actions nor a fully released plugin.
+
+Describe source preview, single-node canary, independent second-device evidence, security review, production deployment and formal release separately. Future plugins use public canonical packages; prior-source removal requires consumer/rollback acceptance.

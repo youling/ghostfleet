@@ -257,7 +257,58 @@ components:
 
 # Design System: GhostFleet Console
 
-## Overview
+## 中文
+
+<!-- topic:design -->
+### 视觉原则
+
+沿用专业后台惯例：中性浅色/深色 surface、紧凑 navigation、数据优先 typography 与熟悉 controls。中文/English 同一层次，状态、accessscope 与下一 action 清晰可扫。TablerCSS 之后的自写 stylesheet 映射 body/background/border tokens，不复制外部参考 code；Theme 采用 system 直到用户明确选择。
+
+### 色彩与字体
+
+Frontmatter 是 machine-readableCSS 对应 tokens，dark-*是同一 token 的覆盖而非额外品牌色。Light 使用 white/zinc，dark 使用近黑 zinc；primary/primary-ink 反转中性色，focus 使用可辨蓝色。Green=active/accepted/approved，amber=waiting/对账/expiry，red=failed/rejected，blue=preparing/claimed/materializing。Synthetic 另用 amber 文字，不以颜色代替状态。
+
+系统字体与 NotoSansSC fallback 避免 runtimefont 依赖，payload 使用 monospace。Headline25px/mobile23px，detailtitle20px，body14px，description/control/field13px，table12px，label/payload11px；权重/行高/spacing 完整数值在 frontmatter。LongID 在 tabletruncate、detailswrap，不让页面横向溢出。
+
+### 布局、深度与形状
+
+Desktop 侧栏可 collapse，mobile 使用 native navigation dialog。宽 table 只在带 label/focus 的 frame 内滚动；small 首列 sticky180–210px。Record/sort 触摸目标 44px，standardbutton40px/mobile44px，smallpaging/columns 按 40pxminimum。层次主要靠 1pxborder/hovertone，queue/table 无装饰 shadow；selectedtab 与 floatingcolumnmenu 用轻 shadow，nativebackdrop 暗化当前 context。
+
+Radius 遵循 frontmatter：square0、small4px、badge5px、navigation6px、control7px、dialog10px。Sidebar/detail sheet 方角，少量 local3px/8px 值不扩全局 scale。Spacing 只用声明的 4–32px 层次，不把 semanticcolor 当 brand 装饰。
+
+### Buttons、fields、navigation
+
+Primary 中性填充，hover/activebrightness(.86)，secondarysurface+border/hovermuted，dangeroutline/redtint，iconbutton40px/currentColor。Transition150ms，disabledopacity.45 及 notallowed；Tabler 继承的 disabled/focusprimaryblue 是库 exception，不 canonize 为中性 theme。
+
+Fieldsurface/ink 与较强 inputborder，placeholdermuted，focus2pxoutline+2pxoffset，无额外 shadow；error 在当前 modal 可见 feedback。Navigationrestmuted、hover/currentink+mutedsurface、currentweight600，aria-current=page；rows42px、icons/accessiblelabels 保留，desktopcollapse 保留 title，mobile 可明确关闭。
+
+### Chips、tables、tabs
+
+Statechip 使用 semanticforeground/background 与文字，riskchip 中性。五步 progress 使用 completedgreen/currentblue 和 aria-current=步骤。Queuepadding17px/mobile15px，tableheaders11px14px/cells14px/mobile12px、mutedhover、aria-sort、nativecolumncheckbox；pagination10/25/50rows，边界 disabled。
+
+Segmentedtabs 实现 tablist/tab/tabpanel、single selectedtab 及 left/right/Home/End 键盘导航。Selectedsurfacefill+轻 shadow。查看 detail 时保留 filter/sort/column/page，不把 displaymodel 当 serverauthority。
+
+### Dialog、detail 与 keyboard
+
+Create480px/search560px 受 viewportminus32px 限制；detail 右侧 max490px/100dvh，smallfullwidth，stickyheader，label/value115px/rest。Longidentifiers/payloadwrap。Nativemodalcontainfocus/Escape/backdropdismiss；Ctrl/CmdK 搜 record，up/down/Enter 选，creation/detail/mobilemodal 中不开第二 search。
+
+关闭恢复原 control 或 pageheading，relatedrecord 可 backtrack；Esc 关闭 columnmenu 后返 focus，skiplink 进入 main。Dialog 里 error/读取-状态恢复可见，UNKNOWNmutationdisable/不自动重试。
+
+### Feedback、权限与 accessibility
+
+Neutral/successgreen/errorredfeedback，权限/uncertainbanneramber。Politeatomicliveregion 在 page 与 dialog 中；只读/unavailableactions 提供文字原因，empty/disconnected 给实际 nextstep。Loading 五 skeletonrows 与 aria-busy，pulse1.2s/opacity.45；prefers-reduced-motion 关闭所有 animations/transitions。
+
+全局 focus2pxoutline/3pxoffset，库 buttonfocus 保留已说明 exception。InlineSVG24grid/stroke1.7/roundcap/currentColor，normal18px/sort14px/brand28px；decorative 隐藏辅助技术，icon-only 有 localizedname。不能用 emoji/glyph 替代 SVG。
+
+### 应做与禁止
+
+使用 active-theme 语义 tokens、状态文字、合成 labels 与权限说明；保留 visiblefocus、listcontext、two-language/theme 与 reducedmotionchecks。避免装饰 gradient、oversizeddisplaytype、offsethardshadow；不以颜色独传状态，不把 unavailable/unknown 画成 available/success，不为表格撑宽 document。实际 tokens 与 implementationexceptions 以 frontmatter、CSS 和下方 English 详细 reference 共同核对。
+
+
+## English
+
+<!-- topic:design -->
+### Overview
 
 **Creative North Star: "Professional administration"**
 
@@ -272,17 +323,17 @@ The authored console stylesheet sets the reusable visual rules after Tabler core
 - Chinese by default, with an English switch and locale-aware dates and sorting.
 - Native dialogs, visible keyboard focus, and preserved list context.
 
-## Colors
+### Colors
 
 The palette uses white and zinc in light mode, near-black zinc in dark mode, and readable semantic foreground/background pairs. The frontmatter retains the CSS custom-property names; every `dark-` token is the matching override, not an additional accent.
 
-### Primary
+#### Primary
 
 - **Neutral action:** `primary` and `primary-ink` provide the filled action and inverse label. Dark mode reverses their tonal relationship.
 - **Focus blue:** `focus` supplies the authored keyboard outline and field focus border.
 - **Status accents:** `green`/`green-bg` communicate active, accepted, approved, or passed states; `amber`/`amber-bg` communicate waiting, expired, uncertain, and synthetic evidence; `blue`/`blue-bg` communicate preparation and evidence progress; `red`/`red-bg` communicate failure, rejection, and errors. These are semantic accents, not separate brand identities.
 
-### Neutral
+#### Neutral
 
 - **Canvas and surfaces:** `canvas` is the page; `surface` is the field, dialog, neutral chip, and selected tab; `sidebar` sets the navigation plane; `muted-surface` marks table headers, selected navigation, hover, skeletons, and secondary containment.
 - **Reading hierarchy:** `ink` is primary text; `muted` is secondary text, timestamps, and inactive navigation.
@@ -290,7 +341,7 @@ The palette uses white and zinc in light mode, near-black zinc in dark mode, and
 
 **The State Color Rule.** Use green, amber, blue, and red to explain status, evidence, feedback, or focus. Keep the primary action neutral and pair every status color with visible text.
 
-## Typography
+### Typography
 
 **Text font:** The authored Apple/Segoe UI/Noto Sans SC system stack in `typography.body`. There is no decorative display font.
 
@@ -298,7 +349,7 @@ The palette uses white and zinc in light mode, near-black zinc in dark mode, and
 
 **Mono font:** Tabler’s UI monospace stack is retained for event payloads. Numeric counts and dates use tabular figures where authored.
 
-### Hierarchy
+#### Hierarchy
 
 - **Headline / headline-mobile:** The page heading. The smaller role takes effect at the small-screen breakpoint.
 - **Detail title:** The record identity inside the inspection sheet.
@@ -311,7 +362,7 @@ The palette uses white and zinc in light mode, near-black zinc in dark mode, and
 
 **The Task Scale Rule.** Use the compact headline, title, body, table, and label roles for operational hierarchy. Reserve the largest role for the page heading; do not introduce a decorative display face.
 
-## Layout
+### Layout
 
 The desktop shell has a fixed sidebar (236px), a compact sidebar state (68px), and a sticky topbar with a minimum height of (64px). Content follows the sidebar offset. Main content is centered within a maximum width of (1580px), with desktop padding of (32px 32px 20px). The spacing tokens record repeated values, rather than imposing a new uniform grid on the shipped CSS.
 
@@ -328,59 +379,59 @@ Responsive behavior uses these exact maximum-width queries:
 
 Tables scroll horizontally inside their frame. The scroll region is labeled and keyboard focusable. At the small breakpoint, the first column stays sticky, with bounded widths (180–210px); record names and identifiers truncate in the table and wrap in details. Row-name and sort controls have a minimum touch height of (44px), and sort controls have a minimum width of (44px). Standard buttons rise from a minimum height of (40px) to (44px); small pagination and column controls retain their authored (40px) mobile minimum.
 
-## Elevation & Depth
+### Elevation & Depth
 
 Depth comes mostly from borders, hover tones, and the modal backdrop. Tables and queue cards do not receive decorative shadows. The selected segmented tab has a small shadow (`0 1px 2px #0000000d`); the floating column picker has a menu shadow (`0 6px 18px #00000012`). Native dialog backdrops dim the current context (`rgb(0 0 0 / .35)`). Any remaining browser or Tabler defaults are not additional authored elevation tokens.
 
 **The Border First Rule.** At-rest tables and queue containers use thin borders and tonal separation. Small shadows identify a selected tab or a floating column menu.
 
-## Shapes
+### Shapes
 
 Controls and data containers use the shared control radius. Navigation, feedback, and menus use the navigation radius; status badges and command results use the badge radius; counts and selected tabs use the small radius. Centered dialogs use the dialog radius, while full-height side sheets and mobile navigation have square edges. Borders are ordinarily (1px); semantic status badges replace the neutral border with a transparent border. The small loading bar and keyboard-key hint use a local radius of (3px), and the welcome panel uses (8px); these local values do not extend the reusable radius scale.
 
-## Components
+### Components
 
-### Buttons
+#### Buttons
 
 Compact actions combine the control type role, shared control radius, an icon/text gap of (8px), and library padding. Primary actions use neutral fill and inverse text. Their authored hover and active treatment uses `brightness(.86)`. Secondary actions use surface fill with a line border, changing to muted surface and input border on hover. Destructive outlines use red and gain the red tint on hover. Icon buttons are (40px) wide with no horizontal padding, muted icons, and a transparent border; hover reveals a muted surface.
 
 The authored transition is background color (150ms, ease). Authored disabled controls use opacity (.45) and a not-allowed cursor. Tabler additionally suppresses pointer events on disabled buttons. **Implementation exception:** Tabler’s disabled and focus-visible button rules still resolve library variant colors, including blue on primary actions, and its button focus outline uses library focus variables. Those inherited colors are not primary-palette tokens and are not canonized as neutral-theme states.
 
-### Inputs / Fields
+#### Inputs / Fields
 
 Fields use surface fill, ink text, the stronger input border, shared control radius, and field padding. Placeholders use muted text at full opacity. Focus changes the border and outline to the focus token, with an outline width of (2px) and offset of (2px). Disabled text fields use muted surface and text. Tabler retains a (150ms, ease-in-out) border, outline, and shadow transition; authored focus removes its field shadow. Errors appear as visible feedback associated with the active surface rather than an invented red-field variant.
 
-### Navigation
+#### Navigation
 
 Navigation rows are muted at rest, gain ink and muted surface on hover, and retain those colors with weight (600) on the current page. The active route uses `aria-current="page"`. Rows have a minimum height of (42px), an icon/text gap of (10px), and compact count pills. Desktop collapse keeps the SVG symbols and accessible title; mobile navigation uses a native dialog with a visible close control.
 
-### Status Chips and Progress
+#### Status Chips and Progress
 
 Status chips are compact, softly rounded, single-line labels using paired semantic colors. Neutral status uses a surface fill and line border. Status mapping follows the record state: accepted/active/approved are green; waiting/reconciliation/expiry are amber; failed/rejected are red; preparing/claimed/materializing are blue. Capability risk labels remain neutral. Synthetic evidence carries a separate amber text label. The five-step progress strip uses line-colored top rules, green completed steps, and a blue current step with `aria-current="step"`.
 
-### Cards / Containers and Tables
+#### Cards / Containers and Tables
 
 Data frames and queue containers use the shared control radius and quiet line border. Frames clip their internal scroll region; queue padding is (17px), reduced to (15px) on small screens. Tables use muted headers, light row dividers, and a muted-surface hover. Header padding is (11px 14px); cell padding is (14px), reduced to (12px) on small screens. Record-name controls can open details, sort buttons expose `aria-sort` through their column header, and column selection uses native details/checkbox controls. Paging supports (10), (25), or (50) rows, with unavailable previous/next controls disabled.
 
-### Segmented Tabs
+#### Segmented Tabs
 
 A muted-surface track contains compact tabs. The selected tab uses surface fill, ink text, and the selected-tab shadow. Tabs implement `tablist`, `tab`, and `tabpanel` relationships, one selected tab in the tab order, and left/right/Home/End navigation.
 
-### Dialogs and Detail Sheets
+#### Dialogs and Detail Sheets
 
 Centered create and search dialogs use the dialog radius and a viewport-bounded width: creation (480px), search (560px), each capped at viewport width minus (32px). The detail sheet attaches to the right at up to (490px), fills (100dvh), and becomes full-width on small screens. Its header stays sticky; record fields use label/value columns (115px / remaining width). Detail content wraps long identifiers and payloads.
 
 Native modal behavior contains focus and supports Escape. Close controls and outside-backdrop clicks dismiss dialogs. Command search opens with Ctrl/Cmd K, focuses its query, and uses up/down arrows and Enter to select/open results. The command shortcut does not open over creation, details, or mobile navigation. Detail navigation supports related-record backtracking and restores the originating control, or the page heading, when closed. Escape also closes the column picker and returns focus to its summary. A visible skip link moves keyboard users into main content.
 
-### Feedback, Permissions, Empty and Loading States
+#### Feedback, Permissions, Empty and Loading States
 
 Feedback uses quiet neutral containment, green success, or red error. Permission and uncertain-state banners use amber. Status messages are polite, atomic live regions in the page and in create/detail dialogs, so feedback remains visible in the active modal. In-dialog errors expose a read-state recovery action; unavailable writes remain disabled with a textual permission explanation. Empty and disconnected states provide short guidance with real next actions. Loading uses five compact skeleton rows and `aria-busy`; the placeholder pulse lasts (1.2s, ease-in-out, infinite), reaching opacity (.45) at its midpoint.
 
 The authored global keyboard focus is a (2px) focus-colored outline with offset (3px); library button focus is the exception described above. All animations and transitions are removed under `prefers-reduced-motion: reduce`. Icons use authored inline SVGs on a (24px) coordinate grid, stroke width (1.7), rounded caps/joins, and current text color. Normal icons render at (18px), table sort icons at (14px), and brand/empty-state icons at (28px). Decorative SVGs are hidden from assistive technology; icon-only buttons receive a localized accessible name.
 
-## Do's and Don'ts
+### Do's and Don'ts
 
-### Do:
+#### Do:
 
 - **Do** use the active theme’s semantic tokens for surfaces, text, borders, focus, and status.
 - **Do** preserve visible status words, synthetic-evidence labels, permission explanations, and in-dialog recovery feedback.
@@ -389,7 +440,7 @@ The authored global keyboard focus is a (2px) focus-colored outline with offset 
 - **Do** preserve keyboard focus, filter state, sort state, column selection, and pagination when inspecting a record.
 - **Do** check both languages and themes, and disable animation and transitions for reduced-motion preferences.
 
-### Don't:
+#### Don't:
 
 - **Don’t** use semantic status colors as decorative brand accents or replace the neutral primary action with a blue brand color.
 - **Don’t** rely on color alone to communicate state, permission, or an operation result.

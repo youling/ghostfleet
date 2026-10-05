@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:youling-fleet:schema:instance-projection:1.0.0",
+  "title": "Fleet instance projection identity 1.0.0",
+  "description": "Accepted T0 contract interface; the runtime loader is not implemented by #166 and this is not proof of authorization. Digest covers exact projection artifact bytes, never secret values.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "product_source_revision", "instance_overlay_revision", "projection_digest"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "product_source_revision": {"$ref": "#/$defs/revision"},
+    "instance_overlay_revision": {"$ref": "#/$defs/revision"},
+    "projection_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "$defs": {
+    "revision": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"}
+  }
+}

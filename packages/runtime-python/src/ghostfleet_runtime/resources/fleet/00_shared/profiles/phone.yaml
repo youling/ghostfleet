@@ -1,0 +1,26 @@
+name: phone
+description: >
+  iOS/Android mobile device. Asset-only in Fleet; no remote automation.
+  Treated as thin client.
+
+management:
+  required_paths:
+    - primary  # physical / user-managed
+  optional_paths: []
+
+recovery:
+  reboot_verified: false
+  independent_recovery_path: false
+  backup_before_destroy: false
+
+automation:
+  eligible: false
+  tool: null
+  transport: null
+  requirements: []
+
+targeting:
+  os_family: [ios, android]
+  asset_types: [phone]
+  required_capabilities: []
+  excluded_os: []

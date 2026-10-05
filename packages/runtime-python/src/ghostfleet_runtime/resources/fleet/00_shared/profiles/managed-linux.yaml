@@ -1,0 +1,31 @@
+name: managed-linux
+description: >
+  Linux server/VPS with SSH access, suitable for remote automation.
+  Requires primary management path (e.g. Tailscale) and break-glass recovery.
+
+management:
+  required_paths:
+    - primary    # Tailscale SSH or equivalent
+    - break-glass  # Provider console / physical LAN / rescue
+  optional_paths:
+    - secondary  # Cloudflare Tunnel or independent backup
+
+recovery:
+  reboot_verified: true
+  independent_recovery_path: true
+  backup_before_destroy: false  # v1: no mandatory backup for VPS
+
+automation:
+  eligible: true
+  tool: ansible-core
+  transport: ssh
+  requirements:
+    - python3 on managed node
+    - ssh key-based auth from control node
+    - sudo or root for package management
+
+targeting:
+  os_family: [debian, ubuntu, centos, rocky, almalinux]
+  asset_types: [server, vps, execution-node]
+  required_capabilities: []  # no capability gate for base linux profile
+  excluded_os: [windows, macos, ios, android]

@@ -5,6 +5,10 @@ selected_at: `2026-10-04`
 
 ## 中文版
 
+<!-- topic:reference -->
+
+
+
 ### 选择
 
 GhostFleet V0 官方 Console 保留 **Tabler** core CSS 作为组件基础，GhostFleet 自己实现模块壳、表格和详情交互。用户选择 [shadcn-admin](https://github.com/satnaing/shadcn-admin) 的专业后台风格；具体参考版本与边界见 [Console](CONSOLE.md)。
@@ -33,13 +37,18 @@ GhostFleet 自己负责：
 - Enrollment / Node / Capability / Event 领域模型；
 - HumanGate UX；
 - API/view model；
-- authority boundary。
+- 授权 boundary。
 
-绝不复用第三方后台自己的 credential、identity、ACL 或 lifecycle 语义覆盖 GhostFleet contract。
+绝不复用第三方后台自己的 凭据、身份、ACL 或 生命周期 语义覆盖 GhostFleet contract。
 
 ---
 
+
 ## English Version
+
+<!-- topic:reference -->
+
+
 
 ### Selection
 

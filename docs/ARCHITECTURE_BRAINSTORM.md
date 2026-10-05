@@ -6,7 +6,11 @@ Status: `HISTORICAL_BRAINSTORM` — implementation baseline is `docs/ARCHITECTUR
 
 ---
 
-# 中文版
+## 中文版
+
+<!-- topic:reference -->
+
+
 
 ## 1. 核心原则
 
@@ -186,7 +190,12 @@ GhostFleet
 
 ---
 
-# English Version
+
+## English Version
+
+<!-- topic:reference -->
+
+
 
 ## 1. Core Principle
 

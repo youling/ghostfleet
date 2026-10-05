@@ -1,0 +1,32 @@
+name: android-edge
+description: >
+  Android device with an explicit controller relationship. Not a plain
+  phone.yaml asset-only device: controller binding, reconnect and recovery
+  are explicit managed facts. USB ADB discovery is only discovery evidence
+  and never implies remote ENROLLED/MANAGED. A future Lenovo TB376FC-style
+  unit may consume this profile, but this ticket creates no node or asset
+  facts. Having an Android runtime does not make the device an Execution
+  node or Agent Host. Targets Android phones and tablets, not arbitrary
+  Android appliances.
+
+management:
+  required_paths:
+    - primary  # explicit controller relationship
+  optional_paths: []
+
+recovery:
+  reboot_verified: false
+  independent_recovery_path: false
+  backup_before_destroy: false
+
+automation:
+  eligible: false
+  tool: null
+  transport: null
+  requirements: []
+
+targeting:
+  os_family: [android]
+  asset_types: [phone, tablet]
+  required_capabilities: []
+  excluded_os: []

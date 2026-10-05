@@ -3,6 +3,10 @@
   "version": "0.1.0-dev",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "packages/typed-control",
+    "packages/bootstrap"
+  ],
   "description": "Open-source AI-native device fleet control plane",
   "engines": {
     "node": ">=22"
@@ -15,7 +19,19 @@
     "dev": "wrangler dev --local --ip 127.0.0.1 --port 8791 --inspector-port 0",
     "smoke:cloud": "node scripts/smoke-cloud.mjs",
     "build:worker": "wrangler deploy --dry-run --outdir dist/worker",
-    "verify:cloud": "node scripts/verify-cloud.mjs"
+    "verify:cloud": "node scripts/verify-cloud.mjs",
+    "test:typed": "npm run test --workspace @ghostfleet/typed-control",
+    "test:bootstrap": "npm run test --workspace @ghostfleet/bootstrap",
+    "test:python": "python -m pytest packages/runtime-python/tests",
+    "test:all": "npm test && npm run test:typed && npm run test:bootstrap && npm run test:python",
+    "check:typed": "npm run check --workspace @ghostfleet/typed-control",
+    "check:bootstrap": "npm run check --workspace @ghostfleet/bootstrap",
+    "build:typed": "npm run build --workspace @ghostfleet/typed-control",
+    "check:publication": "node scripts/publication-guard.mjs",
+    "check:docs": "node scripts/docs-check.mjs",
+    "check:all": "npm run check && npm run check:typed && npm run check:bootstrap && npm run check:publication && npm run check:docs",
+    "verify:python-artifact": "python scripts/verify-python-artifact.py",
+    "verify:ai-client-neutral": "node scripts/verify-ai-client-neutral.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.0",

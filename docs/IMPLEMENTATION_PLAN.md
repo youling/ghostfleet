@@ -4,6 +4,10 @@ status: `IN_PROGRESS`
 
 ## 中文版
 
+<!-- topic:reference -->
+
+
+
 ### Phase 0 — 架构冻结
 
 - `fleet#289` 作为来源；
@@ -12,13 +16,13 @@ status: `IN_PROGRESS`
 
 ### Phase 1 — Core vertical slice
 
-- EnrollmentAttempt state machine；
+- EnrollmentAttempt 状态 machine；
 - HumanGate；
 - Evidence contract；
-- Node admission；
-- Capability Registry metadata；
+- Node 准入；
+- Capability Registry 元数据；
 - Event stream；
-- public-safe payload guard。
+- 公开-safe payload guard。
 
 验收：Node deterministic tests 全部 PASS。
 
@@ -27,32 +31,32 @@ status: `IN_PROGRESS`
 - typed HTTP API；
 - serializable store；
 - Cloudflare Durable Object reference adapter；
-- ambiguous outcome → reconcile state。
+- ambiguous outcome → 对账 状态。
 
-验收：HTTP contract tests PASS；控制平面重载后 state 可由 store snapshot 恢复。
+验收：HTTP contract tests PASS；控制平面重载后 状态 可由 store snapshot 恢复。
 
 ### Phase 3 — Console
 
 - 单入口；
 - Nodes / Enrollment / Human Gates / Capabilities / Events；
 - Tabler UI shell；
-- 浏览器不处理 provider root credential。
+- 浏览器不处理 提供方 root 凭据。
 
 ### Phase 4 — AI surface
 
-- read-only MCP inspection tools；
-- mutation interface 只定义 adapter/policy contract，不在 core 内暴露万能执行接口。
+- 读取-only MCP inspection tools；
+- 变更 interface 只定义 adapter/策略 contract，不在 core 内暴露万能执行接口。
 
 ### Phase 5 — Linux live canary
 
 把现有私有 Fleet Linux 能力按公共 adapter contract 接入，并使用真实测试节点验证：
 
 - canonical launcher；
-- enrollment state 全程可见；
-- evidence 完整；
+- enrollment 状态 全程可见；
+- 证据 完整；
 - zero-delta repeat；
-- reboot recovery；
-- admission 后 Console/API/MCP 看到同一 NodeIdentity。
+- reboot 恢复；
+- 准入 后 Console/API/MCP 看到同一 NodeIdentity。
 
 ### Phase 6 — independent second canary
 
@@ -64,17 +68,26 @@ status: `IN_PROGRESS`
 
 ### Release gates
 
-- test/CI PASS；
+- 测试/CI PASS；
 - live Linux canary PASS；
 - independent second canary PASS；
-- public/private provenance review；
-- security review；
+- 公开/私有 provenance 审阅；
+- security 审阅；
 - OSS license 已按 Human 选择冻结为 AGPL-3.0-only；
 - third-party notices 完整。
 
 ---
 
+
+### 当前 source-preview 与可选模块
+
+Publiccandidate包含typed-control、bootstrap、Pythonplatformruntime与显式authorizationbuildingblocks；具体entry/components/tests见[exportmanifest](export-manifest.json)。默认MCP四只读工具、Console生命周期对象管理不启用设备executionbackend。生产OAuth/Pagehosting/第二independenthardware不由源码搬迁完成。Core/API/permission与标准AIclient无关，不需OpenAI/ChatGPTconfig；专有profile/redirect/actor/scope只optional并保持exactbinding。细节见[操作参考](OPERATIONS.md)、[授权机制](AUTHORIZATION.md)、[迁移](MIGRATION.md)。
+
 ## English Version
+
+<!-- topic:reference -->
+
+
 
 ### Phase 0 — Architecture freeze
 
@@ -136,3 +149,8 @@ Implement platform adapters under the same core contract; do not fork lifecycle 
 - security review;
 - OSS license frozen as AGPL-3.0-only by the owner;
 - complete third-party notices.
+
+
+### Current source preview and optional modules
+
+The public candidate includes typed control, bootstrap, Python platform runtimes and explicit authorization building blocks. See the [export manifest](export-manifest.json) for entries/components/tests. The default four read-only MCP tools and Console lifecycle-object management enable no device-execution backend. Source extraction does not complete production OAuth/Pages or independent second-device acceptance. Core/API/authority are standard AI-client-neutral without OpenAI/ChatGPT configuration; proprietary profile/redirect/actor/scope compatibility is optional and keeps exact binding. See [Operations](OPERATIONS.md), [Authorization](AUTHORIZATION.md) and [Migration](MIGRATION.md).

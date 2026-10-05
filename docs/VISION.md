@@ -4,7 +4,11 @@
 
 ---
 
-# 中文版
+## 中文版
+
+<!-- topic:reference -->
+
+
 
 ## 概述
 
@@ -78,7 +82,12 @@ GhostFleet 不计划成为：
 
 ---
 
-# English Version
+
+## English Version
+
+<!-- topic:reference -->
+
+
 
 ## Overview
 

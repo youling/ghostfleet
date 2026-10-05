@@ -1,0 +1,32 @@
+{
+  "name": "@ghostfleet/typed-control",
+  "version": "0.1.0-dev",
+  "private": true,
+  "type": "module",
+  "description": "Opt-in AI-client-neutral typed device control with injected trusted backends",
+  "license": "AGPL-3.0-only",
+  "engines": { "node": ">=22" },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./authorization": { "types": "./dist/authorization/index.d.ts", "import": "./dist/authorization/index.js" },
+    "./cloudflare": { "types": "./dist/cloudflareBackend.d.ts", "import": "./dist/cloudflareBackend.js" }
+  },
+  "files": ["dist", "src", "LICENSE", "THIRD_PARTY_NOTICES.md"],
+  "scripts": {
+    "check": "tsc --noEmit",
+    "build": "tsc",
+    "test": "vitest run --testTimeout=30000"
+  },
+  "dependencies": {
+    "@microsoft/dev-tunnels-ssh": "3.12.42",
+    "@microsoft/dev-tunnels-ssh-keys": "3.12.42",
+    "buffer": "6.0.3",
+    "jose": "6.2.12",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.7",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}

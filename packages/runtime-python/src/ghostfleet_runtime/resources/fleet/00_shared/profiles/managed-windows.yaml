@@ -1,0 +1,32 @@
+name: managed-windows
+description: >
+  Windows workstation/mobile-workstation managed over Windows OpenSSH with a
+  canonical PowerShell 7 runtime baseline on an existing management network/overlay. Tailscale (where present) is
+  overlay/reachability only and is never a Windows SSH server. Requires an
+  independent break-glass path and verified reboot recovery before any
+  VERIFIED/MANAGED consideration. v1 is enrollment/preflight only:
+  automation is not eligible and WinRM is not required.
+
+management:
+  required_paths:
+    - primary    # Windows OpenSSH over an existing management network/overlay
+    - break-glass  # independent recovery: physical console / WinRE / human-held device
+  optional_paths:
+    - secondary  # deferred candidate only (e.g. WinRM observation); never required in v1
+
+recovery:
+  reboot_verified: true
+  independent_recovery_path: true
+  backup_before_destroy: false  # v1: no mandatory backup for workstation enrollment
+
+automation:
+  eligible: false
+  tool: null
+  transport: null
+  requirements: []
+
+targeting:
+  os_family: [windows]
+  asset_types: [workstation, secondary-workstation, mobile-workstation]
+  required_capabilities: []
+  excluded_os: []
