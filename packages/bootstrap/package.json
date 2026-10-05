@@ -1,0 +1,19 @@
+{
+  "name": "@ghostfleet/bootstrap",
+  "version": "0.1.0-dev",
+  "private": true,
+  "type": "module",
+  "description": "Opt-in deployment-configured Linux bootstrap and convergence payload generation",
+  "license": "AGPL-3.0-only",
+  "engines": { "node": ">=22" },
+  "exports": {
+    ".": "./src/index.js",
+    "./bootstrap": "./src/bootstrap.js",
+    "./convergence": "./src/convergence.js"
+  },
+  "files": ["src", "LICENSE", "THIRD_PARTY_NOTICES.md"],
+  "scripts": {
+    "check": "node --check src/index.js && node --check src/bootstrap.js && node --check src/convergence.js",
+    "test": "node --test --test-timeout=30000 test/*.test.js"
+  }
+}

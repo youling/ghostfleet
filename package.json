@@ -1,0 +1,44 @@
+{
+  "name": "ghostfleet",
+  "version": "0.1.0-dev",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/typed-control",
+    "packages/bootstrap"
+  ],
+  "description": "Open-source AI-native device fleet control plane",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "node --check src/core/model.js && node --check src/core/state-machine.js && node --check src/core/security.js && node --check src/core/capabilities.js && node --check src/core/evidence.js && node --check src/control-plane/store.js && node --check src/control-plane/controller.js && node --check src/control-plane/http.js && node --check src/integrations/mcp.js && node --check src/adapters/cloudflare/worker.js && node --check src/adapters/cloudflare/auth.js && node --check src/adapters/linux/index.js && node --check src/adapters/linux/receipt.js && node --check console/app.js && node --check console/i18n.js && node --check src/integrations/mcp-http.js && node --check console/appearance.js && node --check console/icons.js && node --check console/table-model.js",
+    "build:console": "node scripts/build-console.mjs",
+    "dev:init": "node scripts/init-local.mjs",
+    "dev": "wrangler dev --local --ip 127.0.0.1 --port 8791 --inspector-port 0",
+    "smoke:cloud": "node scripts/smoke-cloud.mjs",
+    "build:worker": "wrangler deploy --dry-run --outdir dist/worker",
+    "verify:cloud": "node scripts/verify-cloud.mjs",
+    "test:typed": "npm run test --workspace @ghostfleet/typed-control",
+    "test:bootstrap": "npm run test --workspace @ghostfleet/bootstrap",
+    "test:python": "python -m pytest packages/runtime-python/tests",
+    "test:all": "npm test && npm run test:typed && npm run test:bootstrap && npm run test:python",
+    "check:typed": "npm run check --workspace @ghostfleet/typed-control",
+    "check:bootstrap": "npm run check --workspace @ghostfleet/bootstrap",
+    "build:typed": "npm run build --workspace @ghostfleet/typed-control",
+    "check:publication": "node scripts/publication-guard.mjs",
+    "check:docs": "node scripts/docs-check.mjs",
+    "check:all": "npm run check && npm run check:typed && npm run check:bootstrap && npm run check:publication && npm run check:docs",
+    "verify:python-artifact": "python scripts/verify-python-artifact.py",
+    "verify:ai-client-neutral": "node scripts/verify-ai-client-neutral.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.0",
+    "@tabler/core": "1.6.1"
+  },
+  "devDependencies": {
+    "wrangler": "4.147.0"
+  },
+  "license": "AGPL-3.0-only"
+}

@@ -1,0 +1,27 @@
+name: workstation
+description: >
+  Windows/macOS development workstation. Registered node without remote
+  automation in Fleet; no remote automation, treated as thin client for
+  project work.
+
+management:
+  required_paths:
+    - primary  # local access only
+  optional_paths: []
+
+recovery:
+  reboot_verified: false
+  independent_recovery_path: false
+  backup_before_destroy: false
+
+automation:
+  eligible: false
+  tool: null
+  transport: null
+  requirements: []
+
+targeting:
+  os_family: [windows, macos]
+  asset_types: [workstation, secondary-workstation, mobile-workstation]
+  required_capabilities: []
+  excluded_os: []

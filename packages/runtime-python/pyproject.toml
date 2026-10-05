@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ghostfleet-runtime"
+version = "0.1.0.dev0"
+description = "Optional AI-client-neutral device runtime mechanisms and deployment-configured helpers"
+requires-python = ">=3.10"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+dependencies = ["PyYAML==6.0.3"]
+
+[project.optional-dependencies]
+test = ["pytest==8.4.2"]
+android = ["uiautomator2==3.7.0"]
+
+[project.scripts]
+ghostfleet-converge = "ghostfleet_runtime.linux.cli:main"
+ghostfleet-enroll = "ghostfleet_runtime.linux.enroll_cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ghostfleet_runtime = ["resources/**/*"]
+
+[tool.setuptools.exclude-package-data]
+ghostfleet_runtime = ["**/__pycache__/*", "**/*.pyc", "**/*.pyo", "**/*.pyd"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

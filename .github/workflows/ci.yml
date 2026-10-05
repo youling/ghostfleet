@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: python -m pip install -e "packages/runtime-python[test]"
+      - run: python scripts/verify-python-artifact.py
+      - run: npm run test:all
+      - run: npm run check:all
+      - run: npm run check:publication
+      - run: npm run check:docs
+      - run: npm run build:console
+      - run: npm run build:typed
+      - run: node examples/typed-control-synthetic.mjs
+      - run: npm run build:worker
+        env:
+          WRANGLER_SEND_METRICS: "false"
+      - run: npm run verify:cloud
+        if: runner.os == 'Linux'
+      - run: npm run verify:ai-client-neutral

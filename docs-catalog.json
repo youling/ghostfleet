@@ -1,0 +1,247 @@
+{
+  "version": 1,
+  "documents": [
+    {
+      "path": "docs/GETTING_STARTED.md",
+      "topics": [
+        "requirements",
+        "startup",
+        "verify",
+        "recovery"
+      ]
+    },
+    {
+      "path": "docs/CONTROL.md",
+      "topics": [
+        "boundary",
+        "policy",
+        "backend",
+        "receipts"
+      ]
+    },
+    {
+      "path": "docs/PLUGIN_DEVELOPMENT.md",
+      "topics": [
+        "ownership",
+        "design",
+        "extension",
+        "review"
+      ]
+    },
+    {
+      "path": "docs/RECOVERY.md",
+      "topics": [
+        "uncertainty",
+        "restart",
+        "rollback"
+      ]
+    },
+    {
+      "path": "docs/TESTING.md",
+      "topics": [
+        "layers",
+        "commands",
+        "ci",
+        "acceptance"
+      ]
+    },
+    {
+      "path": "README.md",
+      "topics": [
+        "product",
+        "startup",
+        "capabilities",
+        "development"
+      ]
+    },
+    {
+      "path": "docs/README.md",
+      "topics": [
+        "navigation",
+        "status"
+      ]
+    },
+    {
+      "path": "docs/PLATFORMS.md",
+      "topics": [
+        "install",
+        "linux",
+        "windowsandroid",
+        "limitations"
+      ]
+    },
+    {
+      "path": "docs/PUBLICATION.md",
+      "topics": [
+        "snapshot",
+        "guard",
+        "exceptions",
+        "review"
+      ]
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "topics": [
+        "scope",
+        "workflow",
+        "license"
+      ]
+    },
+    {
+      "path": "SECURITY.md",
+      "topics": [
+        "report",
+        "contents",
+        "model"
+      ]
+    },
+    {
+      "path": "docs/adr/001-public-canonical-packages.md",
+      "topics": [
+        "decision",
+        "clients",
+        "consequences"
+      ]
+    },
+    {
+      "path": "docs/MIGRATION.md",
+      "topics": [
+        "ownership",
+        "matrix",
+        "retained",
+        "checklist",
+        "rollback"
+      ]
+    },
+    {
+      "path": "docs/PROVENANCE.md",
+      "topics": [
+        "origin",
+        "license",
+        "ui",
+        "manifest"
+      ]
+    },
+    {
+      "path": "docs/MCP.md",
+      "topics": [
+        "protocol",
+        "tools",
+        "client",
+        "errors"
+      ]
+    },
+    {
+      "path": "docs/DEPLOYMENT.md",
+      "topics": [
+        "architecture",
+        "build",
+        "secrets",
+        "acceptance"
+      ]
+    },
+    {
+      "path": "docs/CLOUD_DEVELOPMENT.md",
+      "topics": [
+        "setup",
+        "runtime",
+        "boundaries"
+      ]
+    },
+    {
+      "path": "docs/CONSOLE.md",
+      "topics": [
+        "session",
+        "workflow",
+        "preview"
+      ]
+    },
+    {
+      "path": "docs/AUTHORIZATION.md",
+      "topics": [
+        "entry",
+        "profile",
+        "ingress",
+        "family"
+      ]
+    },
+    {
+      "path": "docs/OPERATIONS.md",
+      "topics": [
+        "install",
+        "inputs",
+        "results",
+        "jobs",
+        "privileged"
+      ]
+    },
+    {
+      "path": "docs/LINUX_ADAPTER.md",
+      "topics": [
+        "contract"
+      ]
+    },
+    {
+      "path": "docs/API.md",
+      "topics": [
+        "reference"
+      ]
+    },
+    {
+      "path": "docs/ARCHITECTURE.md",
+      "topics": [
+        "reference"
+      ]
+    },
+    {
+      "path": "docs/SECURITY.md",
+      "topics": [
+        "reference"
+      ]
+    },
+    {
+      "path": "docs/UI_REUSE.md",
+      "topics": [
+        "reference"
+      ]
+    },
+    {
+      "path": "docs/VISION.md",
+      "topics": [
+        "reference"
+      ]
+    },
+    {
+      "path": "docs/ARCHITECTURE_BRAINSTORM.md",
+      "topics": [
+        "reference"
+      ]
+    },
+    {
+      "path": "docs/IMPLEMENTATION_PLAN.md",
+      "topics": [
+        "reference"
+      ]
+    },
+    {
+      "path": "PRODUCT.md",
+      "topics": [
+        "purpose",
+        "implemented",
+        "limits"
+      ]
+    },
+    {
+      "path": "DESIGN.md",
+      "topics": [
+        "design"
+      ]
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "topics": [
+        "notices"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "schema": "ghostfleet.public-export-manifest.v1",
+  "stage": "source-preview-candidate",
+  "release_ready": false,
+  "ai_client_neutral": true,
+  "default_surface": {
+    "http": "src/control-plane/http.js",
+    "http_mode": "control-plane-record-operations-protected-by-read-or-operator-credentials",
+    "console_mode": "control-plane-record-operations-protected-by-read-or-operator-credentials",
+    "mcp": "src/integrations/mcp-http.js",
+    "mcp_mode": "inspection-only",
+    "mcp_tools": [
+      "ghostfleet_list_nodes",
+      "ghostfleet_list_enrollment_attempts",
+      "ghostfleet_inspect_enrollment_attempt",
+      "ghostfleet_list_capabilities"
+    ],
+    "device_execution_backend": "none",
+    "operator_credential_grants_device_execution": false,
+    "requires_openai_configuration": false,
+    "requires_chatgpt_client": false
+  },
+  "packages": [
+    {
+      "name": "@ghostfleet/typed-control",
+      "path": "packages/typed-control",
+      "entry": "packages/typed-control/src/index.ts",
+      "optional_entries": ["packages/typed-control/src/cloudflareBackend.ts", "packages/typed-control/src/authorization/index.ts"],
+      "mode": "explicit-opt-in-library",
+      "default_backend": "reject-before-contact",
+      "components": ["typed-operations", "policy", "exact-targets", "absolute-deadlines", "jobs-rpc", "sessions-rpc", "privileged-rpc", "native-backend-injection", "cloudflare-ssh-adapter", "optional-authorization-ingress", "owner-consent", "pkce", "exact-client-profile-validation"],
+      "oauth_issuer_store": "deployment-supplied-not-delivered",
+      "oauth_refresh_and_revocation_server": "not-delivered",
+      "compatibility_scopes": ["fleet.read", "fleet.operate", "fleet.exec", "fleet.privileged"],
+      "check": "npm run check:typed",
+      "test": "npm run test:typed",
+      "build": "npm run build:typed",
+      "validation": "candidate-pending-review"
+    },
+    {
+      "name": "@ghostfleet/bootstrap",
+      "path": "packages/bootstrap",
+      "entry": "packages/bootstrap/src/index.js",
+      "mode": "explicit-opt-in-payload-generation",
+      "components": ["linux-bootstrap", "convergence-payload"],
+      "check": "npm run check:bootstrap",
+      "test": "npm run test:bootstrap",
+      "validation": "candidate-pending-review"
+    },
+    {
+      "name": "ghostfleet-runtime",
+      "path": "packages/runtime-python",
+      "entry": "packages/runtime-python/src/ghostfleet_runtime/__init__.py",
+      "resource_root": "packages/runtime-python/src/ghostfleet_runtime/resources",
+      "mode": "explicit-opt-in-platform-runtime",
+      "components": ["identity-validation", "registry-validation", "profiles", "instance-projections", "linux-enrollment", "linux-convergence", "jobs-helper", "sessions-helper", "privileged-helpers", "windows-runtime", "android-runtime", "optional-android-device-adapter"],
+      "optional_dependencies": ["android"],
+      "test": "npm run test:python",
+      "artifact_check": "python scripts/verify-python-artifact.py",
+      "validation": "candidate-pending-review"
+    }
+  ],
+  "publication": {
+    "private_history_included": false,
+    "private_inventory_included": false,
+    "provider_credentials_included": false,
+    "guard": "npm run check:publication",
+    "documentation_check": "npm run check:docs"
+  },
+  "remaining_release_gates": [
+    "independent-second-device-live-validation",
+    "production-hosting-and-identity-review",
+    "capability-specific-consumer-cutover-before-private-retirement"
+  ]
+}

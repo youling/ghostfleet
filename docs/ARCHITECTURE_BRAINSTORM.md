@@ -1,12 +1,16 @@
 # GhostFleet Architecture Brainstorm
 
-Status: Draft for Astra review
+Status: `HISTORICAL_BRAINSTORM` — implementation baseline is `docs/ARCHITECTURE.md`
 
-> 中文版与英文版分离，避免中英交错影响架构审查。
+> 本文保留早期头脑风暴记录。当前实施以 `docs/ARCHITECTURE.md` 为准。中文与英文版本继续分离，避免交错阅读。
 
 ---
 
-# 中文版
+## 中文版
+
+<!-- topic:reference -->
+
+
 
 ## 1. 核心原则
 
@@ -186,7 +190,12 @@ GhostFleet
 
 ---
 
-# English Version
+
+## English Version
+
+<!-- topic:reference -->
+
+
 
 ## 1. Core Principle
 

@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:youling-fleet:schema:remote-maintenance-evidence:1.0.0",
+  "title": "Fleet remote maintenance evidence 1.0.0",
+  "description": "Linux reference-profile private evidence envelope. Shape validation does not prove currentness, authentication, security version or a live canary. This is not lifecycle.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "node_uid", "projection", "profile_generation", "REMOTE_MAINTENANCE_READY", "HUMAN_REAUTH_CAPABILITY", "HUMAN_PRIVILEGED_PATH", "MACHINE_PRIVILEGED_PATH", "CONTROLLER_FALLBACK", "INDEPENDENT_RECOVERY", "REBOOT_RECOVERY", "SECURITY_GATE", "RECOVERY_CLASS", "shared_failure_domains"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "node_uid": {"type": "string", "pattern": "^node-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "projection": {"$ref": "urn:youling-fleet:schema:instance-projection:1.0.0"},
+    "profile_generation": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "REMOTE_MAINTENANCE_READY": {"enum": ["PASS", "BLOCKED", "UNKNOWN"]},
+    "HUMAN_REAUTH_CAPABILITY": {
+      "enum": ["CHECK_PERIOD_ALWAYS", "ALTERNATIVE_ACCEPTED", "UNAVAILABLE", "UNKNOWN"],
+      "description": "Deployment evidence for the Human re-auth profile. CHECK_PERIOD_ALWAYS requires provider support for explicit every-connection checks; ALTERNATIVE_ACCEPTED references a separately accepted Human-only privileged profile. Capability does not grant authority."
+    },
+    "HUMAN_PRIVILEGED_PATH": {"$ref": "#/$defs/gate"},
+    "MACHINE_PRIVILEGED_PATH": {"$ref": "#/$defs/gate"},
+    "CONTROLLER_FALLBACK": {"$ref": "#/$defs/gate"},
+    "INDEPENDENT_RECOVERY": {"$ref": "#/$defs/gate", "description": "evidence_ref resolves to private proof of actual capability and independence, including the detailed class for OTHER_PROVEN_CLASS. A pointer alone is not proof."},
+    "REBOOT_RECOVERY": {"$ref": "#/$defs/gate"},
+    "SECURITY_GATE": {"$ref": "#/$defs/gate"},
+    "RECOVERY_CLASS": {"enum": ["INDEPENDENT_CONSOLE", "RESCUE", "REINSTALL_ONLY", "OTHER_PROVEN_CLASS"]},
+    "shared_failure_domains": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"enum": ["HOST_POWER_STORAGE", "TAILSCALE", "IDP", "CLOUDFLARE", "CONTROLLER", "PROVIDER", "OTHER_DOCUMENTED"]}
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {
+        "HUMAN_PRIVILEGED_PATH": {"properties": {"status": {"const": "PASS"}}},
+        "MACHINE_PRIVILEGED_PATH": {"properties": {"status": {"const": "PASS"}}},
+        "CONTROLLER_FALLBACK": {"properties": {"status": {"const": "PASS"}}},
+        "INDEPENDENT_RECOVERY": {"properties": {"status": {"const": "PASS"}}},
+        "REBOOT_RECOVERY": {"properties": {"status": {"const": "PASS"}}},
+        "SECURITY_GATE": {"properties": {"status": {"const": "PASS"}}}
+      }},
+      "then": {"properties": {"REMOTE_MAINTENANCE_READY": {"const": "PASS"}}},
+      "else": {
+        "if": {"anyOf": [
+          {"properties": {"HUMAN_PRIVILEGED_PATH": {"properties": {"status": {"const": "BLOCKED"}}}}},
+          {"properties": {"MACHINE_PRIVILEGED_PATH": {"properties": {"status": {"const": "BLOCKED"}}}}},
+          {"properties": {"CONTROLLER_FALLBACK": {"properties": {"status": {"const": "BLOCKED"}}}}},
+          {"properties": {"INDEPENDENT_RECOVERY": {"properties": {"status": {"const": "BLOCKED"}}}}},
+          {"properties": {"REBOOT_RECOVERY": {"properties": {"status": {"const": "BLOCKED"}}}}},
+          {"properties": {"SECURITY_GATE": {"properties": {"status": {"const": "BLOCKED"}}}}}
+        ]},
+        "then": {"properties": {"REMOTE_MAINTENANCE_READY": {"const": "BLOCKED"}}},
+        "else": {"properties": {"REMOTE_MAINTENANCE_READY": {"const": "UNKNOWN"}}}
+      }
+    },
+    {
+      "if": {"properties": {"RECOVERY_CLASS": {"const": "REINSTALL_ONLY"}}},
+      "then": {"properties": {"INDEPENDENT_RECOVERY": {"properties": {"status": {"const": "BLOCKED"}}}, "REMOTE_MAINTENANCE_READY": {"const": "BLOCKED"}}}
+    },
+    {
+      "if": {"properties": {"HUMAN_REAUTH_CAPABILITY": {"const": "UNAVAILABLE"}}},
+      "then": {"properties": {"HUMAN_PRIVILEGED_PATH": {"properties": {"status": {"const": "BLOCKED"}}}}}
+    },
+    {
+      "if": {"properties": {"HUMAN_REAUTH_CAPABILITY": {"const": "UNKNOWN"}}},
+      "then": {"properties": {"HUMAN_PRIVILEGED_PATH": {"properties": {"status": {"const": "UNKNOWN"}}}}}
+    }
+  ],
+  "$defs": {
+    "gate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "evidence_ref"],
+      "properties": {
+        "status": {"enum": ["PASS", "BLOCKED", "UNKNOWN"]},
+        "evidence_ref": {"type": ["string", "null"], "pattern": "^evidence:[A-Za-z0-9._-]{1,128}$"}
+      },
+      "if": {"properties": {"status": {"const": "PASS"}}},
+      "then": {"properties": {"evidence_ref": {"type": "string"}}}
+    }
+  }
+}

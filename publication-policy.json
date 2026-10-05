@@ -1,0 +1,661 @@
+{
+  "version": 1,
+  "max_file_bytes": 10000000,
+  "max_total_bytes": 50000000,
+  "fixture_exceptions": [
+    {
+      "path": "test/linux-adapter.test.js",
+      "rule": "credential-literal",
+      "sha256": "3281cd551b9723887d83eabd30cf8c6ca3efb46a887ff5e1a7678c4768bb4586",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic forbidden-field rejection fixture; no usable key or credential."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/resources/fleet/10_platforms/windows/common/onboarding/enrollment/managed-windows-enroll.ps1",
+      "rule": "instance-ip",
+      "line_sha256": "2929d71d58bcb2c0d44869afe0604029bc9c29b50877ff77f3eb76f768f91912",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Windows OpenSSH capability version constant, not an endpoint."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/resources/fleet/10_platforms/windows/common/onboarding/enrollment/managed-windows-enroll.ps1",
+      "rule": "instance-ip",
+      "line_sha256": "b30de36fe64ce2dec95a9ef30f3c39fcd74d894f1fc6db177946f5555eeb8e20",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Rejects wildcard and broadcast addresses; no configured locator."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/resources/fleet/10_platforms/windows/common/onboarding/enrollment/managed-windows-enroll.ps1",
+      "rule": "instance-ip",
+      "line_sha256": "854cc0b55220f0d0d0a9ded5a17c6ef21a3af3382a560927d6d0ff2f03f76f19",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Windows OpenSSH capability version constant, not an endpoint."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/resources/fleet/10_platforms/windows/common/onboarding/enrollment/managed-windows-enroll.ps1",
+      "rule": "instance-ipv6",
+      "line_sha256": "918e1bd19da1296506daff34d877e59f14be22f19c5fc56c27338bcb4109aaaa",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Rejects an unspecified IPv6 network; not an endpoint."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/resources/fleet/10_platforms/windows/common/onboarding/enrollment/managed-windows-enroll.ps1",
+      "rule": "instance-ipv6",
+      "line_sha256": "7804a0c21ab70ce3bd0dce23cb77ab156bdde5efa45e828570c078511932e875",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Rejects unspecified IPv6 input; not an endpoint."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/resources/fleet/10_platforms/windows/common/onboarding/enrollment/managed-windows-enroll.ps1",
+      "rule": "instance-ipv6",
+      "line_sha256": "b30de36fe64ce2dec95a9ef30f3c39fcd74d894f1fc6db177946f5555eeb8e20",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Rejects unspecified IPv6 input; not an endpoint."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/windows/windows_enrollment.py",
+      "rule": "instance-ip",
+      "line_sha256": "0476c386b68cbcce3c28e4c315e2f28b8d72951b40a7d7833e834d39dfcb9caa",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Rejects wildcard and broadcast addresses; not an endpoint."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/windows/windows_enrollment.py",
+      "rule": "instance-ipv6",
+      "line_sha256": "a8a800a02bc251e6df5c25490fe85c3704d22e83c86006c3aa436efbe5270490",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Documents rejected unspecified IPv6 input; not a locator."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/windows/windows_enrollment.py",
+      "rule": "instance-ipv6",
+      "line_sha256": "d8717bddfb79fe30cf9560e240ce1374a972d1de91a929dea7295aa807cd825b",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Rejects an unspecified IPv6 network; not an endpoint."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/windows/windows_enrollment.py",
+      "rule": "instance-ipv6",
+      "line_sha256": "3d77164e6b98dd82306b74f7f95a57c9485142ffee82cf33883858840c7e6f6c",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Rejects unspecified IPv6 input; not an endpoint."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/windows/windows_enrollment.py",
+      "rule": "instance-ipv6",
+      "line_sha256": "0476c386b68cbcce3c28e4c315e2f28b8d72951b40a7d7833e834d39dfcb9caa",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Rejects unspecified IPv6 input; not an endpoint."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/windows/windows_enrollment.py",
+      "rule": "instance-ipv6",
+      "line_sha256": "1d5057955a12ef52e5d8fccbdffd058801184aef19c152fbaab029e816fa90a4",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Matches forbidden unspecified network input in a detector."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/core/ssh_identity.py",
+      "rule": "instance-ipv6",
+      "line_sha256": "1a08b3eaa475a4c337ca7120fa38bf954d1db3669cdb2df069a0a269baf54dfd",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Docstring punctuation interpreted as IPv6 syntax; no locator."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/resources/fleet/10_platforms/linux/common/operations/jobs/fleet-jobctl.py",
+      "rule": "instance-ipv6",
+      "line_sha256": "3e3c134e5fd2da980f3d92cc6824c1c843a6269c1dac206e7e69739617d0e400",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Linux unified cgroup record prefix, not an IPv6 locator."
+    },
+    {
+      "path": "packages/typed-control/src/sshClient.ts",
+      "rule": "secret-material",
+      "line_sha256": "38596d071f1c523fb66368a57b96d885be9ca0c885198a76db57fdeb7fa8010b",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Private-key format detector marker only; no key body."
+    },
+    {
+      "path": "packages/typed-control/test/control.test.ts",
+      "rule": "node-identity",
+      "line_sha256": "42e10a84b55cf1f50542460c557d744eafd685f788f19398f23351e6636328d1",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Independent synthetic UUID, not copied from a live node."
+    },
+    {
+      "path": "packages/typed-control/test/control.test.ts",
+      "rule": "node-identity",
+      "line_sha256": "322ee52b173f4f9d94b08d996e316592678cc22691371700d2b8ad09245240ba",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Independent synthetic UUID for unknown-subject negative test."
+    },
+    {
+      "path": "test/publication-guard.test.js",
+      "rule": "instance-ipv6",
+      "line_sha256": "ef075bb949cf29a65e463ffd55f25efc713895a182dabeba6dc3afe60466ddab",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic documentation/private/link-local address classification test; no transport."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/compat/sites.py",
+      "rule": "ai-client-specific-runtime",
+      "line_sha256": "2f10f2f513edec78450589875849614be821e6f1924ae4fa367a11e2dbf32214",
+      "kind": "reviewed-optional-client-compatibility",
+      "optional_profile": "Explicit legacy Sites handoff adapter; no default client inference.",
+      "review": "Exact URL, HTTPS, path and credential gate inspected in the optional compatibility module.",
+      "reason": "Preserves exact legacy client matching; does not enable it for generic clients or default endpoints."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_boundaries.py",
+      "rule": "node-identity",
+      "line_sha256": "bc0f25325fe0099907314e8400645c783c357d8c230437a2120c6fbea0490059",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_boundaries.py",
+      "rule": "node-identity",
+      "line_sha256": "db741527e9edbdb65959c67f603223d2ae6531984dba5c1bd5a30f971e5f6408",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_helpers.py",
+      "rule": "node-identity",
+      "line_sha256": "bc0f25325fe0099907314e8400645c783c357d8c230437a2120c6fbea0490059",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_runtime.py",
+      "rule": "node-identity",
+      "line_sha256": "bc0f25325fe0099907314e8400645c783c357d8c230437a2120c6fbea0490059",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_runtime.py",
+      "rule": "unreviewed-endpoint",
+      "line_sha256": "866a91f8a3faad26745042b252c04e11a7688d9aeea5468441263d1a251c2d06",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_runtime.py",
+      "rule": "ai-client-specific-runtime",
+      "line_sha256": "866a91f8a3faad26745042b252c04e11a7688d9aeea5468441263d1a251c2d06",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_runtime.py",
+      "rule": "unreviewed-endpoint",
+      "line_sha256": "9ca22877ed8626ec820a35858f5f9483fe27a8aa73c2d6fe275c1252d1ad07e5",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_runtime.py",
+      "rule": "ai-client-specific-runtime",
+      "line_sha256": "9ca22877ed8626ec820a35858f5f9483fe27a8aa73c2d6fe275c1252d1ad07e5",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_runtime.py",
+      "rule": "ai-client-specific-runtime",
+      "line_sha256": "10e6f1212a0234b22c2dc76ac0cd892e956b20633f28ac1948a2d5ef892676ff",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "packages/typed-control/test/authorization.test.ts",
+      "rule": "credential-literal",
+      "line_sha256": "e2945e1d2ca6e0b1626c5662d74f0c0d1f43062c72bf0f9dac9696caad037026",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "packages/typed-control/test/ssh.test.ts",
+      "rule": "secret-material",
+      "line_sha256": "f685d0662ba356b0ebeca2c3917a4dfbcc6c9a0624fd845653c8bfa35084619f",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "test/cloud-security.test.js",
+      "rule": "unreviewed-endpoint",
+      "line_sha256": "4269270a4e7b8798438d51bf81e50aaea4a0371b3f298cbf5dd7ab586fa9e1d1",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "test/cloud-security.test.js",
+      "rule": "unreviewed-endpoint",
+      "line_sha256": "9ba6e47608b0a0581c82a7277f993a01c5315ee61f598f088d89abee487af8aa",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "test/cloud-security.test.js",
+      "rule": "unreviewed-endpoint",
+      "line_sha256": "4a15dd7541199aebf29eaf6a3fb35af23645b0a83b111ecf0be3f9791c4cf0f9",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "test/cloud-security.test.js",
+      "rule": "unreviewed-endpoint",
+      "line_sha256": "f48ed59e76f54fe8bb7bbafe024290bc4ce759e6bce089978670b1a71d2dbf6e",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "test/http.test.js",
+      "rule": "unreviewed-endpoint",
+      "line_sha256": "9dfd6b5ac0a341e6c5307a3ae573145fc45fd923ceec04fd9d7dbc1283adc26a",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "test/http.test.js",
+      "rule": "unreviewed-endpoint",
+      "line_sha256": "ac0c9df112316b22eacd2f6949b2fb8df5077661d8d6467ede7dd04846157a04",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "test/http.test.js",
+      "rule": "unreviewed-endpoint",
+      "line_sha256": "3ea00d3a4ba92211298bed659f674114bd3ace31ba5dc83346b9c49ef901011f",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "test/http.test.js",
+      "rule": "unreviewed-endpoint",
+      "line_sha256": "2c3ee37c734ca0ca9e89e706c894521e830e9e07efc43dbea412b6bc0b6d353b",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "test/http.test.js",
+      "rule": "unreviewed-endpoint",
+      "line_sha256": "216e7f83805da78f6365ab67a93651051bb67d9ee7793fd0913ffdd39cff95c8",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "test/http.test.js",
+      "rule": "unreviewed-endpoint",
+      "line_sha256": "9bf5af994718ddb7ef1d8fa4070e6c1027f395fd289a1c7b39b419cea9da9e1b",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "test/mcp-http.test.js",
+      "rule": "unreviewed-endpoint",
+      "line_sha256": "8e1cd78a19afb54647d4adb9f59f7c6d57da1483a29c1e781be59e8667c27ad1",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "test/mcp-http.test.js",
+      "rule": "unreviewed-endpoint",
+      "line_sha256": "d196dda26103c93354076f7ee5e0fea3937271a548a9fdd648b758b376357321",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "test/mcp-http.test.js",
+      "rule": "unreviewed-endpoint",
+      "line_sha256": "266296908f3d0839651479cab1d5eeaa0a590c30565749f06d07a0bc138591f3",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "test/publication-guard.test.js",
+      "rule": "credential-url",
+      "line_sha256": "9a63bc15a1d56caae6376a9aaf200ef1c8b44a2feeb9398ad41dc7e3239ebfce",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "test/publication-guard.test.js",
+      "rule": "unreviewed-endpoint",
+      "line_sha256": "076bdb6b91112182560cf3a98d2b340c9baa341c9656bc4bc5d8bb47ded4ecb9",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "test/publication-guard.test.js",
+      "rule": "unreviewed-endpoint",
+      "line_sha256": "ddd06467617fd36ef0b66502e51e6ee753a882c00b9401f139ac993c0adad71f",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "test/publication-guard.test.js",
+      "rule": "credential-url",
+      "line_sha256": "8c1678740efa0603a4b4072a7f412e8351414f33fb9fed88eeaa682073ce2c95",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_boundaries.py",
+      "rule": "instance-ipv6",
+      "line_sha256": "d0c7547130f0ab057af0d4a736d5ced53010820fcf42894396fb1ba94aeb2c29",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic negative wildcard/unspecified network-scope rejection test; no transport."
+    },
+    {
+      "path": "packages/typed-control/test/access.test.ts",
+      "rule": "unreviewed-endpoint",
+      "line_sha256": "3c6af2ca45df40ef188cbdf9f6d784ec9448f93bf0db4f4e3e9a4a0cfbbd9997",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic Access issuer for local-JWK tests only; zero network, no real team binding."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_android_runtime.py",
+      "rule": "node-identity",
+      "line_sha256": "bc0f25325fe0099907314e8400645c783c357d8c230437a2120c6fbea0490059",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Independent synthetic Android identity; fake adapter only."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_enrollment_safety.py",
+      "rule": "node-identity",
+      "line_sha256": "bc0f25325fe0099907314e8400645c783c357d8c230437a2120c6fbea0490059",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Independent synthetic enrollment identity; isolated fake claim/system."
+    },
+    {
+      "path": "packages/typed-control/test/consent-origin.test.ts",
+      "rule": "credential-literal",
+      "line_sha256": "5014f2dfd4d93bc8daf1933e46ecda02ae0b33310c4b97944eb389185564fe10",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Inert synthetic HMAC test label for origin/expiry/tamper rejection; no production key."
+    }
+  ],
+  "binary_reviews": [
+    {
+      "path": "docs/images/console-dark.png",
+      "sha256": "eee3c2de76787c54cc9f71ac3a1c164f79697a82be7dffea9bec0f29629abb68",
+      "purpose": "Synthetic Console preview only; no real device/provider inventory.",
+      "review": "Reviewed by the extraction reviewer and coordinating Foreman before this policy was added."
+    },
+    {
+      "path": "docs/images/console-desktop.png",
+      "sha256": "7860b0feb50025082c25026244e17032fc8991e9051d8e27cd1af251d91ac43a",
+      "purpose": "Synthetic Console preview only; no real device/provider inventory.",
+      "review": "Reviewed by the extraction reviewer and coordinating Foreman before this policy was added."
+    },
+    {
+      "path": "docs/images/console-detail.png",
+      "sha256": "0924d466f129cfb3e203fd9a010d7ff5164ee2fabe462560d6f5723590e666e9",
+      "purpose": "Synthetic Console preview only; no real device/provider inventory.",
+      "review": "Reviewed by the extraction reviewer and coordinating Foreman before this policy was added."
+    },
+    {
+      "path": "docs/images/console-devices.png",
+      "sha256": "2408a01e629f4f8d239c4180f7fa281319a2563aa4e671ec4ea252134e96fdb2",
+      "purpose": "Synthetic Console preview only; no real device/provider inventory.",
+      "review": "Reviewed by the extraction reviewer and coordinating Foreman before this policy was added."
+    },
+    {
+      "path": "docs/images/console-english.png",
+      "sha256": "591f647bda6ab712455b1b449c7dce412196029300917d92f43ac4e0d3df829f",
+      "purpose": "Synthetic Console preview only; no real device/provider inventory.",
+      "review": "Reviewed by the extraction reviewer and coordinating Foreman before this policy was added."
+    },
+    {
+      "path": "docs/images/console-mobile-devices.png",
+      "sha256": "36ae9e8f21e5b6fe6db8263f444b9b1ae1d22fc7b1629e57d8e8e4677bd6d0f2",
+      "purpose": "Synthetic Console preview only; no real device/provider inventory.",
+      "review": "Reviewed by the extraction reviewer and coordinating Foreman before this policy was added."
+    },
+    {
+      "path": "docs/images/console-mobile.png",
+      "sha256": "407ed78df2706329674a2426a5364710d52ad91301501aa905afbaa1700a71a0",
+      "purpose": "Synthetic Console preview only; no real device/provider inventory.",
+      "review": "Reviewed by the extraction reviewer and coordinating Foreman before this policy was added."
+    }
+  ],
+  "public_contacts": [],
+  "url_reviews": [
+    {
+      "path": "package-lock.json",
+      "sha256": "e6eca8b022e01d5fe5459efc12462703acf9b7f8e8864f2ebbadc08e798609ee",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "120dc10fcf086b3f0564a885ce86afdafd93d5c647dc5fdd26ad0603e09b9735",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "983417723d0ffdaf7af119463b9fa126aa68c9dc7824b2cf6f80a0ec0d1505b7",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "cd08e9f05f33b7cbefd523f24b7772174894a029c5b8821b0d669be7b9bc464b",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "2cf2d8a0cbc472736ac272fff8fcba1f794590419b28f2b6eaa381316c382737",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "6cf5ed7625deec1b1053407be4a41e21278d6b20686fcf5c1776881258dfb6c0",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "266348628228ea9de60dc287fdaf18a4b3a917ccb2ecdd478ed0c4f43383428f",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "61302c9e01e51c6888e8096ae025ed310f675d1d323c30bee60ba1edb5caa6be",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "4deabb458c5a2be1a36b1254b4b2b3959f67e61d3053262d1886186941eb3867",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "491ca017eebe985f300da035601eb0cc7ae913d048ff35b21721444815e14a13",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "e1e71f2ab342190424bc83396cfdfad347550a1e3deb30403b632a4b4a12d893",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "ed094e477db66fc035a740fb418c62daa17c9d6f6886969017bb301030012a83",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "12f4d6ac018634640391560ed8940b8ddbdab98440ed041a06b3f31809108023",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "cd16f517109bc716a910570df4b0b9b3bf4628f0a816ef8c1b40a4d227ecb961",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "afdace2e648a3b0626954e6eaad06366aed2417a193542f7612004b28f3b3d93",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "24fdbb4e47dad57fd78d966cdfa5ae199387c0e57f62a25ab5a219a205aaa21c",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "ac34d0a1f84be18c2bda7b72e9b6767738ea9ed3ee2fc708ad7abd152d34b321",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "dcc1b3867d0f1599c784c89a312ad1409a27068c2087c4e6ca58bf3f4d836fc2",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "6f2c2f4d948907558d01f0353172481a13894ceb70ae02d785dbbcdedefeaf1b",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "125add47d3e7dbc97080725e6e51af92c5078f9f1f74de1ab0c88b9c28831a6b",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "0a7f4ccb0a828b0112380bc422949f22680af2a4430a7dc7896136b3e04263e3",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "fa39603cec19d7b6fa05d610f26351b673b3c11b8fdb26a3df464425d6cc5404",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "e52c648060bfedd03686ba12c574f6b66f4162fb5204ee7be5a178eecbcd4f07",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "6b51830b8ef4e14fce81553b3967c520d3d9730db5ca930ab3816d67b18a776d",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "c840bff9f169ab9b63aabc0d53db12df214b40ce9eb79ae091510bf102ad7fa8",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "c5a5afbad2872dc6959f0715f802f003966d3c7938d78c0ce6b01192c44e9874",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "5c2bf743426a4df4c9103796a9d072147843b271fd158355bea948aece1fa336",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "a3aa0ac68fa658bdcf51f7ddf8b0607e445aa46c3ec741eacd14602c18df2c19",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "d777e32c2870c146f49cdfb496cc108133f081e0d0d7aeb1b4bef16356502f11",
+      "reason": "Public dependency funding metadata, not a runtime endpoint.",
+      "review": "Exact URL and funding field reviewed against the public dependency lock."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/control/enrollment_proof.py",
+      "sha256": "0bc5b0718fc3e613cac54c549b3830a392dcd0ec7801065fdb0e4e5981cd86cf",
+      "reason": "Official public provider API/download base; instance identity and credentials are separately injected.",
+      "review": "Static provider protocol base reviewed; not a private deployment URL."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/control/enrollment_v2_minter.py",
+      "sha256": "6b5421ae9eaa9026c1d727e1aca16b9d20e18ec0046707b6dfdce22d64b28374",
+      "reason": "Official public provider API/download base; instance identity and credentials are separately injected.",
+      "review": "Static provider protocol base reviewed; not a private deployment URL."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/resources/fleet/10_platforms/linux/common/onboarding/bootstrap/bootstrap.sh",
+      "sha256": "9b54f6207807dd5029207f2d6e99d24fdc6be455f5e5fc9957a04723ed7513da",
+      "reason": "Cloudflare official package signing key; public dependency mechanism, not an instance locator.",
+      "review": "Primary official installation documentation checked for this source-preview policy.",
+      "official_source": "https://pkg.cloudflare.com/index.html"
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/resources/fleet/10_platforms/linux/common/onboarding/bootstrap/bootstrap.sh",
+      "sha256": "7ad57fb29f5f2745eccfa20f9150c357db391d8f27461b6c106bcf459330b5ab",
+      "reason": "Cloudflare official package repository; public dependency mechanism, not an instance locator.",
+      "review": "Primary official installation documentation checked for this source-preview policy.",
+      "official_source": "https://pkg.cloudflare.com/index.html"
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/resources/fleet/10_platforms/linux/common/onboarding/bootstrap/bootstrap.sh",
+      "sha256": "ad29ccea16a241d2de603f405eaa6378a6b538aa9d814f7efd4e849cdf4230b5",
+      "reason": "Cloudflare official RPM repository configuration; public dependency mechanism, not an instance locator.",
+      "review": "Primary official installation documentation checked for this source-preview policy.",
+      "official_source": "https://pkg.cloudflare.com/index.html"
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/resources/fleet/10_platforms/linux/common/onboarding/bootstrap/bootstrap.sh",
+      "sha256": "4c54cf553ab08cf08bb429c9f9ceaf8c13b2a32d148acd2ecd3d202b16b840a0",
+      "reason": "GitHub CLI official archive signing key; public dependency mechanism, not an instance locator.",
+      "review": "Primary official installation documentation checked for this source-preview policy.",
+      "official_source": "https://github.com/cli/cli/blob/trunk/docs/install_linux.md"
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/resources/fleet/10_platforms/linux/common/onboarding/bootstrap/bootstrap.sh",
+      "sha256": "c2d6a48690aaf14b8ce932cc237c7e99e725e78e361c41d9887f45c2b8d80a34",
+      "reason": "GitHub CLI official apt repository; public dependency mechanism, not an instance locator.",
+      "review": "Primary official installation documentation checked for this source-preview policy.",
+      "official_source": "https://github.com/cli/cli/blob/trunk/docs/install_linux.md"
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/resources/fleet/10_platforms/linux/common/onboarding/bootstrap/bootstrap.sh",
+      "sha256": "a20146ea0c1ca91f24eb13e7ef3f6a07f06727bcf0f882468fa7f3ccf3cb92e3",
+      "reason": "GitHub CLI official RPM repository configuration; public dependency mechanism, not an instance locator.",
+      "review": "Primary official installation documentation checked for this source-preview policy.",
+      "official_source": "https://github.com/cli/cli/blob/trunk/docs/install_linux.md"
+    },
+    {
+      "path": "publication-policy.json",
+      "sha256": "66b619c114469038ff670389e9cf2cfc7855620691f048f30a62679fcb2c5bbb",
+      "reason": "Official installation documentation cited as the reviewed source for exact public package URLs.",
+      "review": "Cloudflare primary package documentation inspected; no instance URL allowance."
+    }
+  ]
+}

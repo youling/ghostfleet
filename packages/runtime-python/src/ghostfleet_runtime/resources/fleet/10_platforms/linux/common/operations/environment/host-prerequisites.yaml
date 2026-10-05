@@ -1,0 +1,243 @@
+# Fleet Linux host prerequisites 1.0.0
+#
+# Single declarative source for "what a managed-Linux host must already have"
+# before a given downstream step can run.
+#
+# This is a PLAN record, not a runtime state store. It declares requirements and
+# how each is probed; it never asserts that a host satisfies them, and it never
+# installs anything. `prereq_check.py` is the read-only consumer.
+#
+# Why this exists: the requirement lists were previously implicit and duplicated.
+# `operations/backup/system-only-backup.sh` hardcodes 14 required commands inline
+# (exit 69 when missing) plus a set of optional capture commands; the container
+# baseline path had no list at all. Convergence means one place to read, not one
+# place to change behaviour.
+kind: FLEET_LINUX_HOST_PREREQUISITES
+schema_version: 1.0.0
+platform: linux
+owner: "youling/ghostfleet"
+status: proposed
+live_node_contact: NONE
+mutates_host: false
+
+# required_by groups, in the order a fresh node meets them.
+groups:
+  enrollment:
+    description: >-
+      One-click enrollment courier on a fresh Debian-family host
+      (GET /v1/bootstrap.sh). Probed before any credential is consumed.
+    canonical_ref: docs/runbooks/ONE_CLICK_ENROLLMENT.md
+  baseline-backup:
+    description: >-
+      Clean managed-system recovery baseline. Must pass before container
+      workloads are moved onto the host.
+    canonical_ref: docs/runbooks/MANAGED_LINUX_SYSTEM_BACKUP.md
+  container-baseline:
+    description: Docker/Compose substrate and the first rebuildable workload.
+    canonical_ref: docs/runbooks/MANAGED_LINUX_CONTAINER_WORKLOAD.md
+  management-automation:
+    description: Fleet typed operations / ansible automation eligibility.
+    canonical_ref: docs/runbooks/MANAGED_NODE_ONBOARDING.md
+
+# installable_by_repo: whether any code in this repository installs it today.
+# "false" is not a defect verdict; it records that the operator or a separately
+# reviewed mechanism must provide it. Mutating a host runtime is deliberately
+# not done from a prerequisite checker.
+prerequisites:
+  # --- enrollment ---------------------------------------------------------
+  - id: cmd-dpkg-query
+    kind: command
+    probe: {type: command, name: dpkg-query}
+    required_by: [enrollment]
+    required: true
+    installable_by_repo: true
+    installed_by: enrollment courier script
+    note: Debian/Ubuntu only; the courier fails closed on other families.
+  - id: cmd-curl-or-wget
+    kind: command
+    probe: {type: any_command, names: [curl, wget]}
+    required_by: [enrollment]
+    required: true
+    installable_by_repo: true
+    installed_by: enrollment courier script
+    note: The Human launcher uses whichever downloader already exists.
+  - id: path-dev-tty
+    kind: path
+    probe: {type: path, path: /dev/tty, require_char_device: true}
+    required_by: [enrollment]
+    required: true
+    installable_by_repo: false
+    note: Masked enrollment-code input needs a character device.
+  - id: path-ssh-host-key
+    kind: path
+    probe: {type: path, path: /etc/ssh/ssh_host_ed25519_key.pub}
+    required_by: [enrollment]
+    required: true
+    installable_by_repo: false
+    note: >-
+      Read to capture ssh_host_key_sha256. If absent the courier still
+      succeeds and the fingerprint is silently empty, so check it explicitly
+      rather than trusting a successful run.
+  - id: path-dmi-sys
+    kind: path
+    probe: {type: path, path: /sys/class/dmi/id/product_name}
+    required_by: [enrollment]
+    required: false
+    installable_by_repo: false
+    note: Only needed to emit provisional hardware evidence.
+
+  # --- baseline backup (mirrors system-only-backup.sh:87-92) ------------
+  - id: cmd-tar
+    kind: command
+    probe: {type: command, name: tar}
+    required_by: [baseline-backup]
+    required: true
+    installable_by_repo: false
+  - id: cmd-zstd
+    kind: command
+    probe: {type: command, name: zstd}
+    required_by: [baseline-backup]
+    required: true
+    installable_by_repo: false
+    note: Hard requirement for archive creation and -t verification.
+  - id: cmd-sha256sum
+    kind: command
+    probe: {type: command, name: sha256sum}
+    required_by: [baseline-backup]
+    required: true
+    installable_by_repo: false
+  - id: cmd-findmnt
+    kind: command
+    probe: {type: command, name: findmnt}
+    required_by: [baseline-backup]
+    required: true
+    installable_by_repo: false
+  - id: cmd-lsblk
+    kind: command
+    probe: {type: command, name: lsblk}
+    required_by: [baseline-backup]
+    required: true
+    installable_by_repo: false
+  - id: cmd-blkid
+    kind: command
+    probe: {type: command, name: blkid}
+    required_by: [baseline-backup]
+    required: true
+    installable_by_repo: false
+  - id: cmd-sfdisk
+    kind: command
+    probe: {type: command, name: sfdisk}
+    required_by: [baseline-backup]
+    required: true
+    installable_by_repo: false
+  - id: cmd-dpkg-query-backup
+    kind: command
+    probe: {type: command, name: dpkg-query}
+    required_by: [baseline-backup]
+    required: true
+    installable_by_repo: false
+  - id: cmd-apt-mark
+    kind: command
+    probe: {type: command, name: apt-mark}
+    required_by: [baseline-backup]
+    required: true
+    installable_by_repo: false
+  - id: cmd-systemctl
+    kind: command
+    probe: {type: command, name: systemctl}
+    required_by: [baseline-backup]
+    required: true
+    installable_by_repo: false
+  - id: cmd-python3
+    kind: command
+    probe: {type: command, name: python3}
+    required_by: [baseline-backup]
+    required: true
+    installable_by_repo: false
+  - id: cmd-realpath
+    kind: command
+    probe: {type: command, name: realpath}
+    required_by: [baseline-backup]
+    required: true
+    installable_by_repo: false
+  - id: cmd-sgdisk
+    kind: command
+    probe: {type: command, name: sgdisk}
+    required_by: [baseline-backup]
+    required: false
+    installable_by_repo: false
+    note: Optional; enables disk.gpt capture when present.
+  - id: cmd-vgcfgbackup
+    kind: command
+    probe: {type: command, name: vgcfgbackup}
+    required_by: [baseline-backup]
+    required: false
+    installable_by_repo: false
+  - id: cmd-mokutil
+    kind: command
+    probe: {type: command, name: mokutil}
+    required_by: [baseline-backup]
+    required: false
+    installable_by_repo: false
+  - id: cmd-efibootmgr
+    kind: command
+    probe: {type: command, name: efibootmgr}
+    required_by: [baseline-backup]
+    required: false
+    installable_by_repo: false
+
+  # --- container baseline -------------------------------------------------
+  - id: cmd-docker
+    kind: command
+    probe: {type: command, name: docker}
+    required_by: [container-baseline]
+    required: true
+    installable_by_repo: false
+    note: >-
+      No installer exists anywhere in this repository. Docker administration is
+      root-equivalent authority (MANAGED_LINUX_CONTAINER_WORKLOAD.md section 8),
+      so installing the runtime is a separate reviewed decision, not a side
+      effect of a readiness check.
+  - id: cmd-docker-compose
+    kind: command
+    probe: {type: any_command, names: [docker, docker-compose]}
+    required_by: [container-baseline]
+    required: true
+    installable_by_repo: false
+    note: Satisfied by the docker CLI with the compose plugin, or the standalone binary.
+  - id: cmd-containerd
+    kind: command
+    probe: {type: command, name: containerd}
+    required_by: [container-baseline]
+    required: false
+    installable_by_repo: false
+    note: Only required when capturing runtime storage in a baseline backup.
+  - id: path-usr-bin-opencode
+    kind: path
+    probe: {type: path, path: /usr/local/bin/opencode, glob: true}
+    required_by: [container-baseline]
+    required: false
+    installable_by_repo: false
+    note: >-
+      The AI runtime is a container workload, not a host install. Recorded here
+      so the host-readiness view does not imply otherwise.
+
+  # --- management / automation -------------------------------------------
+  - id: cmd-ssh
+    kind: command
+    probe: {type: command, name: ssh}
+    required_by: [management-automation]
+    required: true
+    installable_by_repo: true
+    installed_by: openssh-client
+    note: Control-node requirement for the ansible automation lane.
+  - id: cmd-ansible
+    kind: command
+    probe: {type: command, name: ansible-playbook}
+    required_by: [management-automation]
+    required: false
+    installable_by_repo: false
+    note: >-
+      Control-node only (ansible-core >= 2.16). Not installed by repository code.
+      Note this is only reachable once fleet_state is MANAGED, because
+      automation eligibility requires it.
