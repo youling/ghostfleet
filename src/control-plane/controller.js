@@ -277,7 +277,9 @@ export class GhostFleetController {
   recordConsumerSignal(id, signal, detail = {}) {
     const next = recordConsumerSignal(this.getConsumerAcceptance(id), signal, detail);
     this.store.putConsumerAcceptance(next);
-    this.emit(EventType.CONSUMER_ACCEPTANCE_EVIDENCE_UPDATED, id, { signal });
+    // A signal is not evidence. It gets its own event type so the event stream
+    // does not reintroduce the separation this contract exists to enforce.
+    this.emit(EventType.CONSUMER_ACCEPTANCE_SIGNAL_RECORDED, id, { signal });
     return next;
   }
 
@@ -309,7 +311,7 @@ export class GhostFleetController {
     this.store.putConsumerAcceptance(next);
     this.emit(EventType.CONSUMER_ROLLBACK_COMPLETED, id, {
       removed_bindings: next.decision.removed_bindings,
-      declared_bindings: record.introduced_bindings,
+      declared_bindings: record.declared_bindings,
     });
     return next;
   }

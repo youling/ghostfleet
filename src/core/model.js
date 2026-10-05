@@ -40,6 +40,7 @@ export const EventType = Object.freeze({
   RECONCILE_REQUIRED: "ReconcileRequired",
   CONSUMER_ACCEPTANCE_OPENED: "ConsumerAcceptanceOpened",
   CONSUMER_ACCEPTANCE_EVIDENCE_UPDATED: "ConsumerAcceptanceEvidenceUpdated",
+  CONSUMER_ACCEPTANCE_SIGNAL_RECORDED: "ConsumerAcceptanceSignalRecorded",
   CONSUMER_ACCEPTANCE_DECIDED: "ConsumerAcceptanceDecided",
   CONSUMER_ROLLBACK_COMPLETED: "ConsumerRollbackCompleted",
 });
