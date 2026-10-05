@@ -50,7 +50,7 @@ Policy decision 是可审计判定，不等价 PrivilegeLease。
 <!-- topic:lease -->
 ### PrivilegeLease
 
-Lease 绑定 issuer、subject、audience/helper、node、request digest、policy/approval authority、typed operations/scope、time window、max uses 与 effect-fence。Human path 必须引用 exact digest 的 approval record；AUTO path 必须引用允许自动签发的 policy decision。
+Lease 绑定 issuer、subject、audience/helper、node、request digest、policy/approval authority、typed operations/scope、recovery mode/reference、time window、max uses 与 effect-fence。Human path 必须引用 exact digest 的 approval record；AUTO path 必须引用允许自动签发的 policy decision。
 
 Lease 不含 root credential、private key、provider token 或 arbitrary shell authority。
 
@@ -60,7 +60,8 @@ Lease 不含 root credential、private key、provider token 或 arbitrary shell 
 ```text
 PrivilegeRequest:      OPEN -> DECIDED | CANCELLED | EXPIRED
 HumanApprovalRequest:  PENDING -> APPROVED | DENIED | EXPIRED | SUPERSEDED
-PrivilegeLease:        NOT_YET_VALID -> ACTIVE -> CONSUMED | EXPIRED | REVOKED
+PrivilegeLease:        NOT_YET_VALID -> ACTIVE | REVOKED
+                       ACTIVE -> CONSUMED | EXPIRED | REVOKED
 ```
 
 `PolicyDecision`、`HumanApprovalRecord`、`PrivilegeReceipt` 是 immutable records。任何 terminal request/approval/lease 都不能复活；重新请求、重新审批、重新签发必须产生新的 id。Policy revision 变化可以让旧 authority 失效，但不得原地改写旧记录。
@@ -110,12 +111,12 @@ Policy returns `AUTO_APPROVE | HUMAN_REQUIRED | REJECT`, derived risk, reason co
 <!-- topic:lease -->
 ### PrivilegeLease
 
-A lease binds issuer, subject, helper audience, node, normalized request digest, policy/approval authority, typed operations/scope, validity, use limits, and effect fences. It contains no root credential, private key, provider token, or arbitrary shell capability.
+A lease binds issuer, subject, helper audience, node, normalized request digest, policy/approval authority, typed operations/scope, recovery mode/reference, validity, use limits, and effect fences. It contains no root credential, private key, provider token, or arbitrary shell capability.
 
 <!-- topic:lifecycle -->
 ### Lifecycle
 
-`PrivilegeRequest` closes as `DECIDED | CANCELLED | EXPIRED`. `HumanApprovalRequest` closes as `APPROVED | DENIED | EXPIRED | SUPERSEDED`. A lease moves from `NOT_YET_VALID` to `ACTIVE` and terminates as `CONSUMED | EXPIRED | REVOKED`. Terminal objects are never revived; retries/re-approval/reissuance create new identifiers. Decisions, approval records, and receipts are immutable records.
+`PrivilegeRequest` closes as `DECIDED | CANCELLED | EXPIRED`. `HumanApprovalRequest` closes as `APPROVED | DENIED | EXPIRED | SUPERSEDED`. A lease may be revoked before activation; otherwise it moves from `NOT_YET_VALID` to `ACTIVE`, then terminates as `CONSUMED | EXPIRED | REVOKED`. Terminal objects are never revived; retries/re-approval/reissuance create new identifiers. Decisions, approval records, and receipts are immutable records.
 
 <!-- topic:receipt -->
 ### PrivilegeReceipt
