@@ -23,7 +23,9 @@ intent: 安装并启用已批准服务
 operations:
   - operation_id: systemd.unit.create
     scope_ref: service/cloudflared
-    parameter_summary: bounded-public-safe-summary
+    material_parameters:
+      unit_name: cloudflared.service
+      # secret-bearing values are represented only by opaque references
 policy_revision: policy/...
 derived_risk: HIGH
 decision_reason_codes:
@@ -74,6 +76,7 @@ Human 默认看到：
 - 想完成什么意图；
 - 哪些 typed operations；
 - 精确影响范围；
+- 所有会改变实际 effect 的 public-safe material parameters；secret-bearing 参数只显示 opaque reference；
 - 最长多久、最多几次；
 - 是否改持久状态；
 - recovery mode 与计划；
@@ -96,6 +99,7 @@ AUTO policy path 不伪造 Human approval record；它使用可审计的 `Policy
 - payload 与 approval record 必须 public-safe，不含 secret plaintext；
 - Human-facing wording 可以本地化，但 canonical digest 不依赖自然语言文案；
 - UI 不得用“批准命令”掩盖 typed operation/scope；
+- 不能用模糊 summary 隐藏会改变 effect 的 material parameter；
 - approval 不能扩大 operation registry 已允许的 scope；
 - Human approval 与 production/deployment authority 仍按各自 gate 分离。
 
@@ -114,7 +118,7 @@ Approval binds the exact normalized request digest covering target, requester, o
 <!-- topic:ux -->
 ### Human presentation
 
-The Human sees target, requester/intent, typed operations, exact scope, duration/use limits, persistence impact, recovery, and why Human approval is required. The Human is not asked to transport passwords, private keys, provider tokens, secret plaintext, or opaque shell commands.
+The Human sees target, requester/intent, typed operations, exact scope, all public-safe material parameters that change the effect, duration/use limits, persistence impact, recovery, and why Human approval is required. Secret-bearing parameters are shown only as opaque references. The Human is not asked to transport passwords, private keys, provider tokens, secret plaintext, or opaque shell commands.
 
 <!-- topic:decision -->
 ### Decision
