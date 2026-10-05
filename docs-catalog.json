@@ -252,6 +252,85 @@
       "topics": [
         "notices"
       ]
+    },
+    {
+      "path": "docs/adr/003-ai-native-privilege-broker.md",
+      "topics": [
+        "context",
+        "decision",
+        "alternatives",
+        "consequences",
+        "compatibility"
+      ]
+    },
+    {
+      "path": "docs/architecture/PRIVILEGE_BROKER_V0.md",
+      "topics": [
+        "model",
+        "objects",
+        "flow",
+        "boundaries"
+      ]
+    },
+    {
+      "path": "docs/architecture/PRIVILEGE_BROKER_V0_CONTRACT.md",
+      "topics": [
+        "request",
+        "decision",
+        "lease",
+        "receipt",
+        "invariants"
+      ]
+    },
+    {
+      "path": "docs/architecture/PRIVILEGE_HELPER_IPC_V0_CONTRACT.md",
+      "topics": [
+        "boundary",
+        "request",
+        "validation",
+        "forbidden",
+        "receipt"
+      ]
+    },
+    {
+      "path": "docs/architecture/PRIVILEGE_OPERATION_TAXONOMY_V0.md",
+      "topics": [
+        "classification",
+        "recovery",
+        "forbidden",
+        "derivation"
+      ]
+    },
+    {
+      "path": "docs/architecture/PRIVILEGE_POLICY_ENGINE_V0.md",
+      "topics": [
+        "inputs",
+        "decision",
+        "risk",
+        "recovery",
+        "invariants"
+      ]
+    },
+    {
+      "path": "docs/architecture/PRIVILEGE_APPROVAL_PAYLOAD_V0.md",
+      "topics": [
+        "payload",
+        "binding",
+        "ux",
+        "decision",
+        "security"
+      ]
+    },
+    {
+      "path": "docs/architecture/PRIVILEGE_LEASE_VALIDATOR_V0.md",
+      "topics": [
+        "lease",
+        "authenticity",
+        "currentness",
+        "scope",
+        "replay",
+        "outcomes"
+      ]
     }
   ]
 }
