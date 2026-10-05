@@ -104,6 +104,16 @@
       ]
     },
     {
+      "path": "docs/adr/002-consumer-acceptance-control-path-durability.md",
+      "topics": [
+        "context",
+        "decision",
+        "alternatives",
+        "consequences",
+        "compatibility"
+      ]
+    },
+    {
       "path": "docs/MIGRATION.md",
       "topics": [
         "ownership",
