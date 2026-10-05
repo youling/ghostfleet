@@ -41,6 +41,20 @@ Agent Intent
 9. **低风险不等于一定需要 privilege lease。** 普通 agent 权限已经覆盖的 observation 直接走原只读 capability；只有确实跨 OS privilege boundary 时才进入 Broker。
 10. **Approval 不转移 secret custody。** Human 点击批准只批准 normalized capability request；deployment secret/key custody 仍由 deployment owner 管理。
 
+
+### Counterexamples / 反例判定
+
+| 反例 | 必须结果 |
+| --- | --- |
+| Caller 把 `credential.rotate` 自报为 LOW | 忽略 caller risk；按 registry 派生 CRITICAL/HUMAN |
+| Human 批准 digest A 后 Agent 扩大 scope | 旧 approval 无效；新 digest 重新审批 |
+| Lease 的 node/audience/subject 与现场不匹配 | DENY，零 side effect |
+| operation policy 要求 rollback/compensating，但没有 plan ref | REJECT |
+| 同一 effect fence 第二次提交 | 不重放 mutation；DENY 或按已有状态 reconcile |
+| RPC timeout 后 side effect 可能已发生 | `RECONCILE_REQUIRED`，禁止 blind retry |
+| 普通权限已可完成只读 observation | 不签 privilege lease，走原只读 capability |
+| Human 点击批准 | 不获得/搬运 secret；只产生 digest-bound approval record |
+
 <!-- topic:alternatives -->
 ### Alternatives
 
@@ -77,6 +91,11 @@ GhostFleet needs bounded privileged actions without giving Agents permanent root
 ### Decision
 
 GhostFleet defines `PrivilegeRequest -> PolicyDecision -> optional HumanApprovalRequest/HumanApprovalRecord -> PrivilegeLease -> Lease Validator/Helper -> typed OS action -> PrivilegeReceipt`. Risk is derived from canonical policy rather than trusted from the caller. Leases authorize typed operations and exact scope, never unrestricted shell access. Human approval binds an exact normalized request digest. Recovery is explicit as `NONE | ROLLBACK | COMPENSATING | IRREVERSIBLE`. Missing required recovery fails closed. Leases bind issuer, subject, audience, node, request digest, policy/approval references, operations, scope, validity, use limits, and replay/effect fences. Mutating v0 leases default to one use. Unknown or uncertain outcomes do not permit blind retry.
+
+
+### Counterexamples
+
+Caller risk cannot downgrade a registered operation; scope drift invalidates an approval; node/audience/subject mismatch denies execution; missing required recovery rejects the request; replayed effect fences do not repeat mutations; uncertain effects require reconciliation; unprivileged reads bypass the broker; Human approval never transfers secret custody.
 
 <!-- topic:alternatives -->
 ### Alternatives
