@@ -1,4 +1,4 @@
-# AI-native Privilege Broker v0 / AI 原生权限代理 v0
+# AI 原生权限代理 v0 / AI-native Privilege Broker v0
 
 status: Proposed  
 owner: youling/ghostfleet  
