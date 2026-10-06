@@ -93,6 +93,21 @@
       <div class="dialog-actions"><button class="btn btn-outline-secondary" type="button" data-close-dialog="create-dialog" data-i18n="close">关闭</button><button class="btn btn-primary" type="submit" disabled data-i18n="createRecord">创建纳管记录</button></div>
     </form>
   </dialog>
+  <dialog id="bootstrap-dialog" class="create-dialog" aria-labelledby="bootstrap-title">
+    <div class="dialog-heading"><h2 id="bootstrap-title" data-i18n="bootstrapDeliveryTitle">一次性纳管命令</h2><button type="button" class="btn icon-button" data-close-dialog="bootstrap-dialog" data-i18n-aria="close"><span data-icon="close"></span></button></div>
+    <div class="bootstrap-delivery">
+      <p class="authority-note" data-i18n="bootstrapDeliveryWarning">这组材料只显示一次。请立即在目标机执行命令；关闭后不能从持久状态读回。</p>
+      <label for="bootstrap-command" class="form-label" data-i18n="bootstrapCommand">Bootstrap 命令</label>
+      <textarea id="bootstrap-command" class="form-control bootstrap-command" rows="4" readonly></textarea>
+      <div class="bootstrap-copy-row"><button type="button" class="btn btn-outline-secondary" data-copy-target="bootstrap-command" data-i18n="copyCommand">复制命令</button></div>
+      <label for="bootstrap-code" class="form-label" data-i18n="enrollmentShortCode">Enrollment 短码</label>
+      <input id="bootstrap-code" class="form-control bootstrap-code" readonly>
+      <div class="bootstrap-copy-row"><button type="button" class="btn btn-outline-secondary" data-copy-target="bootstrap-code" data-i18n="copyCode">复制短码</button></div>
+      <p class="secondary help"><span data-i18n="expiresAt">有效期至</span> <span id="bootstrap-expiry"></span></p>
+      <div class="dialog-actions"><button class="btn btn-primary" type="button" data-close-dialog="bootstrap-dialog" data-i18n="close">关闭</button></div>
+    </div>
+  </dialog>
+
   <dialog id="detail-dialog" class="detail-dialog" aria-labelledby="detail-heading">
     <div class="sheet-heading"><button id="detail-back" type="button" class="btn icon-button" hidden data-i18n-aria="back"><span data-icon="left"></span></button><h2 id="detail-heading"></h2><button type="button" class="btn icon-button" data-close-dialog="detail-dialog" data-i18n-aria="close"><span data-icon="close"></span></button></div>
     <div class="sheet-feedback"><div id="detail-feedback" class="feedback" role="status" aria-live="polite" aria-atomic="true" hidden></div><div id="detail-recovery" class="dialog-recovery" hidden><button type="button" class="btn btn-outline-secondary" data-refresh-state data-i18n="readServerState">读取服务端状态</button></div></div>
