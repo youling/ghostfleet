@@ -272,6 +272,27 @@ Object.assign(en, {
   templateDigest: "Template digest",
 });
 
+Object.assign(zh, {
+  generateBootstrap: "生成一次性 Bootstrap",
+  bootstrapDeliveryTitle: "一次性纳管命令",
+  bootstrapDeliveryWarning: "这组纳管材料只显示一次。请立即在目标机执行；关闭后不能从持久状态读回。",
+  bootstrapCommand: "Bootstrap 命令",
+  enrollmentShortCode: "Enrollment 短码",
+  copyCommand: "复制命令",
+  copyCode: "复制短码",
+  providerGateNeeded: "尚未配置 deployment-owned enrollment materializer。请先完成 provider/custody Human Gate，再生成可执行 ticket。",
+});
+Object.assign(en, {
+  generateBootstrap: "Generate one-time bootstrap",
+  bootstrapDeliveryTitle: "One-time enrollment command",
+  bootstrapDeliveryWarning: "This enrollment material is shown once. Run it on the target promptly; it cannot be recovered from durable state after closing.",
+  bootstrapCommand: "Bootstrap command",
+  enrollmentShortCode: "Enrollment short code",
+  copyCommand: "Copy command",
+  copyCode: "Copy code",
+  providerGateNeeded: "No deployment-owned enrollment materializer is configured. Complete the provider/custody Human Gate before issuing an executable ticket.",
+});
+
 let language = "zh-CN";
 try { if (localStorage.getItem("ghostfleet-language") === "en") language = "en"; } catch {}
 export function getLanguage() { return language; }
