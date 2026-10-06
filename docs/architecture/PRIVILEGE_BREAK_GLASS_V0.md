@@ -61,12 +61,17 @@ Break-glass authority 与以下对象必须分离：
 ### Recovery lifecycle
 
 ```text
-CLOSED
-  -> HUMAN_AUTHORIZED
-  -> ACTIVE_RECOVERY
+CREATED
+  -> HUMAN_AUTHORIZED | DENIED | EXPIRED | CANCELLED
+HUMAN_AUTHORIZED
+  -> ACTIVE_RECOVERY | EXPIRED | CANCELLED
+ACTIVE_RECOVERY
   -> RECOVERED | FAILED | RECONCILE_REQUIRED
-  -> CLOSED_WITH_RECEIPT
+RECONCILE_REQUIRED
+  -> RECOVERED | FAILED
 ```
+
+`DENIED / EXPIRED / CANCELLED / RECOVERED / FAILED` 为终态并各自产生 durable receipt。`RECONCILE_REQUIRED` 不是终态：必须先观测真实恢复状态，再收敛到 `RECOVERED` 或 `FAILED`。
 
 每次 recovery attempt 都是独立记录；终态不可复活。重新尝试必须新建 recovery attempt/id。
 
@@ -133,7 +138,7 @@ Deployments may use local console, provider rescue, hardware recovery tokens, se
 <!-- topic:lifecycle -->
 ### Lifecycle
 
-Each recovery attempt moves from closed to Human-authorized active recovery, then to recovered/failed/reconcile-required and a durable closed receipt. Terminal attempts are never revived.
+Each recovery attempt starts at `CREATED`, may become Human-authorized, denied, expired, or cancelled, and an active recovery ends as recovered/failed or enters nonterminal `RECONCILE_REQUIRED` until observed reality converges to recovered/failed. Denied, expired, cancelled, recovered, and failed attempts are terminal and produce durable receipts; terminal attempts are never revived.
 
 <!-- topic:receipt -->
 ### Receipt
