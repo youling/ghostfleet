@@ -28,7 +28,7 @@ test("unknown create fields and invalid template overrides fail closed",async()=
   assert.throws(()=>controller.createEnrollmentAttempt({asset_hint:"x",template_binding:{template_id:"forged"}}),/CREATE_INPUT_INVALID/);
   assert.throws(()=>controller.createEnrollmentAttempt({asset_hint:"x",template_selection:{template_id:"managed-linux-standard",overrides:{"providers.tailscale.ssh":true}}}),/OVERRIDE_PATH_NOT_ALLOWED/);
   const handle=createHttpHandler(controller);
-  const response=await handle(new Request("http://ghostfleet.test/v0/enrollment-attempts",{
+  const response=await handle(new Request("http://127.0.0.1/v0/enrollment-attempts",{
     method:"POST",headers:{"content-type":"application/json"},
     body:JSON.stringify({asset_hint:"x",template_selection:{template_id:"missing",overrides:{}}}),
   }));
