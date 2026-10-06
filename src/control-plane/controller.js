@@ -111,7 +111,12 @@ export class GhostFleetController {
       this.store.putEnrollmentTicket({ ...existing, state: "REVOKED", reason_code: "REISSUED" });
     }
     if (attempt.state === EnrollmentState.CREATED) attempt = this.prepareEnrollmentAttempt(id);
-    const factors = createTicketFactors({ factorFactory: this.ticketFactorFactory, codeFactory: this.ticketCodeFactory });
+    let factors = null;
+    for (let attemptIndex = 0; attemptIndex < 3; attemptIndex += 1) {
+      const candidate = createTicketFactors({ factorFactory: this.ticketFactorFactory, codeFactory: this.ticketCodeFactory });
+      if (!this.store.findEnrollmentTicketByClaimDigest(sha256Text(candidate.claim_factor))) { factors = candidate; break; }
+    }
+    if (!factors) throw new EnrollmentTicketError("TICKET_FACTOR_COLLISION", 503);
     const ticket_id = makeId("ticket");
     const ticketExpiry = Math.min(this.clock.now() + ttl_seconds * 1000, Date.parse(attempt.expires_at));
     if (ticketExpiry <= this.clock.now()) throw new EnrollmentTicketError("TICKET_EXPIRED", 410);
