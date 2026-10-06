@@ -21,4 +21,17 @@ export class InMemoryStore {
   getCapabilityDefinition(id) { return Object.hasOwn(this.state.capability_definitions, id) ? publicClone(this.state.capability_definitions[id]) : null; }
   putCapabilityDefinition(value) { this.state.capability_definitions[value.id] = publicClone(value); return this.getCapabilityDefinition(value.id); }
   listCapabilityDefinitions() { return Object.values(this.state.capability_definitions).map(publicClone); }
+  getEnrollmentTicket(id) {
+    const tickets = this.state.enrollment_tickets || {};
+    return Object.hasOwn(tickets, id) ? publicClone(tickets[id]) : null;
+  }
+  putEnrollmentTicket(value) {
+    this.state.enrollment_tickets ||= {};
+    this.state.enrollment_tickets[value.ticket_id] = publicClone(value);
+    return this.getEnrollmentTicket(value.ticket_id);
+  }
+  listEnrollmentTickets() { return Object.values(this.state.enrollment_tickets || {}).map(publicClone); }
+  findEnrollmentTicketByAttempt(attempt_id) { return this.listEnrollmentTickets().find((ticket) => ticket.attempt_id === attempt_id) || null; }
+  findEnrollmentTicketByClaimDigest(claim_factor_digest) { return this.listEnrollmentTickets().find((ticket) => ticket.claim_factor_digest === claim_factor_digest) || null; }
+  findEnrollmentTicketByResumeDigest(resume_capability_digest) { return this.listEnrollmentTickets().find((ticket) => ticket.resume_capability_digest === resume_capability_digest) || null; }
 }
