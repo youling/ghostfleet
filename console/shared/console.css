@@ -286,3 +286,8 @@ dialog::backdrop { background: rgb(0 0 0 / .35); }
 .template-preview dt { color: var(--muted); }
 .template-preview dd { margin: 0; overflow-wrap: anywhere; }
 .authority-note { margin: 12px 0 0; color: var(--amber); font-size: 11px; }
+
+.bootstrap-delivery { padding: 22px; }
+.bootstrap-command { min-height: 112px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; line-height: 1.55; }
+.bootstrap-code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 18px; letter-spacing: .08em; font-variant-numeric: tabular-nums; }
+.bootstrap-copy-row { display: flex; justify-content: flex-end; margin: 8px 0 18px; }
