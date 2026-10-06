@@ -1,98 +1,80 @@
-# AI-native Privilege Broker v0
+# AI 原生权限代理 v0 / AI-native Privilege Broker v0
 
-## Status
+status: Proposed  
+owner: youling/ghostfleet  
+source: #9 / ADR 003
 
-Draft architecture direction. No production node mutation.
+## 中文
 
-## Principle
+<!-- topic:model -->
+### 模型
 
-After initial enrollment, Humans do not repeatedly enter elevation passwords. Agents request capabilities; Humans or policy approve intent; the system issues bounded privilege leases.
-
-## Model
-
-```
-Agent
-  |
-  | privilege request
-  v
-Privilege Broker
-  |
-  +-- Policy Engine
-  +-- Human Approval
-  +-- Audit Ledger
-  |
-  v
-Privilege Lease
-  |
-  v
-Node Privileged Helper
-  |
-  v
-OS privileged operation
+```text
+Authenticated ordinary Transport / Control Channel
+  -> Node Runtime (no ambient root)
+  -> Agent Intent
+  -> PrivilegeRequest
+  -> PolicyDecision
+  -> [Human Approval when required]
+  -> PrivilegeLease
+  -> Lease Validator / Node Privileged Helper
+  -> Typed OS Action
+  -> PrivilegeReceipt
 ```
 
-## Rules
+目标不是“让 Agent 获得 root”，而是把特定 intent 转成短时、受限、可审计 capability。
 
-- Agent is not root.
-- No permanent root SSH keys.
-- Human approves intent, not shell commands.
-- Privilege is scoped, time bounded, and auditable.
-- Every privileged operation has receipt and rollback semantics.
+<!-- topic:objects -->
+### 对象
 
-## Schemas
+- `PrivilegeRequest`：intent、typed operations、scope、requested lease bounds、recovery proposal；
+- `PolicyDecision`：derived risk、AUTO/HUMAN/REJECT、reason codes、policy revision、lease bounds；
+- `HumanApprovalRequest / HumanApprovalRecord`：对 exact normalized request digest 的待审请求与批准/拒绝；
+- `PrivilegeLease`：issuer/subject/audience/node/authority/operation/scope/time/use/effect-fence；
+- `PrivilegeReceipt`：deny/success/failure/uncertain effect 的 durable evidence。
 
-### Privilege Request
+<!-- topic:flow -->
+### Human 与 Policy 的关系
 
-```yaml
-target: node-id
-reason: install service
-operations:
-  - systemd.service.create
-ttl: 15m
-risk: high
-```
+不是所有 privileged action 都需要 Human。Canonical operation policy 可以对 bounded operation 自动批准；identity/credential/security boundary 默认 Human required。
 
-### Privilege Lease
+普通权限已足够的只读 observation 不进入 Broker。Privilege Broker 只处理真正跨 OS privilege boundary 的动作。
 
-```yaml
-lease_id: generated
-request_id: generated
-approved_by: human-or-policy
-expires_at: timestamp
-allowed_operations: []
-```
+长期 transport identity 可以存在，但它只负责连接与普通身份。`valid transport != valid privilege`：即使 SSH/RPC/tailnet session 已认证，缺少有效 PrivilegeLease 时 privileged operation 仍必须拒绝。
 
-## Node model
+<!-- topic:boundaries -->
+### 边界
 
-Preferred:
+- no recurring sudo password transport；
+- no permanent Agent root authority；
+- no arbitrary shell lease；
+- no secret plaintext in request/approval/lease/receipt；
+- no caller-controlled risk authority；
+- no blind retry after uncertain side effect；
+- public core 不硬编码 ThinkPad、Cloudflare、Tailscale 或其它私有 deployment topology；
+- credential classes 明确分为 transport identity、node identity、lease signing authority、helper trust root、secret reference、break-glass recovery authority；
+- break-glass 是 Human-gated exceptional recovery，不是普通 Agent capability。
 
-```
-normal agent
-    |
-local IPC
-    |
-privileged helper
-    |
-OS capability
-```
+ThinkPad 是 Fleet 私有部署的首个候选 consumer，实例 binding/evidence/credential custody 继续由 Fleet owner 管理。GhostFleet 不裁决 Tailscale SSH/SSH 等 transport 是否默认开启。
 
-Forbidden:
+## English
 
-```
-agent == root
-```
+<!-- topic:model -->
+### Model
 
-## ThinkPad migration
+The broker sits behind an authenticated ordinary transport/control channel and turns Agent intent into bounded, short-lived, auditable capabilities through request, policy decision, optional Human approval, lease validation, typed privileged execution, and receipts. It does not make the Agent or transport session root.
 
-ThinkPad is the first private Fleet consumer. Existing static privileged-account proposals are replaced by this model.
+<!-- topic:objects -->
+### Objects
 
-The Fleet side owns deployment binding and evidence. GhostFleet owns generic protocol, lease, helper contract, and audit semantics.
+The v0 model consists of `PrivilegeRequest`, `PolicyDecision`, optional `HumanApprovalRequest/HumanApprovalRecord`, `PrivilegeLease`, and `PrivilegeReceipt`, each bound by exact references and currentness rather than shell authority.
 
-## Initial milestones
+<!-- topic:flow -->
+### Human and policy
 
-1. Request schema.
-2. Lease schema.
-3. Helper contract.
-4. Approval UX contract.
-5. Receipt and rollback tests.
-6. Negative authority tests.
+Not every privileged action requires a Human. Canonical policy may auto-approve narrowly bounded operations. Identity/credential/security-boundary changes default to Human approval. Ordinary unprivileged reads bypass the broker. Stable transport identity can be long-lived, but valid transport without a valid lease never authorizes privileged execution.
+
+<!-- topic:boundaries -->
+### Boundaries
+
+No recurring password transport, permanent Agent root, arbitrary shell leases, secret plaintext, caller-controlled risk authority, blind retries after uncertain effects, silent credential-class collapse, ordinary-Agent break-glass, or private deployment topology in the public core.

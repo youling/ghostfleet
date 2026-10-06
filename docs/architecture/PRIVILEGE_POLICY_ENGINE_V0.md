@@ -1,128 +1,107 @@
-# Privilege Policy Engine v0
+# 权限策略引擎 v0 / Privilege Policy Engine v0
 
-## Status
+status: Proposed  
+owner: youling/ghostfleet  
+source: #9 / ADR 003
 
-Draft architecture contract. No production mutation authority.
+## 中文
 
-## Purpose
+<!-- topic:inputs -->
+### 输入
 
-The Policy Engine decides whether a PrivilegeRequest can be:
+Policy Engine 接收已经规范化的 `PrivilegeRequest` 与 canonical operation registry。请求方可以表达 intent、operation、scope、TTL/recovery proposal，但**不能通过自报 `risk` 降低策略结果**。
 
-- automatically approved;
-- approved by Human intent confirmation;
-- rejected;
-- escalated for additional review.
+Canonical operation policy 至少定义：
 
-It evaluates requested capability, target, scope, risk and rollback availability.
+```yaml
+operation_id: systemd.unit.create
+risk_floor: HIGH
+auto_approvable: false
+max_ttl_seconds: 900
+max_uses: 1
+allowed_scope_types:
+  - service
+recovery_requirement: ROLLBACK
+```
 
-## Decision model
+<!-- topic:decision -->
+### 决策
+
+v0 只有三个 authority-relevant outcome：
 
 ```text
-PrivilegeRequest
-        |
-        v
-Policy Engine
-        |
- +------+-------+--------+
- |      |       |        |
-AUTO  HUMAN  REJECT  REVIEW
+AUTO_APPROVE
+HUMAN_REQUIRED
+REJECT
 ```
 
-## Risk classes
+Policy Engine 输出 `PolicyDecision`，**不直接等价 PrivilegeLease**。Lease issuer 必须在满足 decision/approval/currentness 后另行签发 lease。
 
-### LOW
+<!-- topic:risk -->
+### 风险推导
 
-Examples:
+最终风险至少取以下事实的上界：
 
-- read node health;
-- inspect service state;
-- collect diagnostics.
+- operation registry 的 `risk_floor`；
+- scope 扩大程度；
+- 是否修改持久状态；
+- 是否涉及 identity / credential / secret / trust boundary；
+- recovery 可用性；
+- lease TTL / max uses；
+- deployment policy 的更严格约束。
 
-Default:
+Caller-provided label 只能作为非权威 hint，不能降低 derived risk。
 
-```yaml
-approval: policy
-lease: short
+LOW observation 若普通 agent 权限已经可完成，直接走现有只读 capability，不需要 Privilege Broker。只有跨越 OS privilege boundary 时才签发 lease。
+
+<!-- topic:recovery -->
+### Recovery 语义
+
+```text
+NONE          — observation / 无需恢复
+ROLLBACK      — 可回退到 prior state
+COMPENSATING  — 不能恢复原状态，但有明确补偿/恢复路径
+IRREVERSIBLE  — 无可接受恢复路径，必须 Human 明确认知并由 policy 允许
 ```
 
-### MEDIUM
+如果 operation policy 要求 `ROLLBACK` 或 `COMPENSATING` 而请求缺少对应 plan/evidence ref，结果直接 `REJECT`；不能仅“升一级风险”后放行。
 
-Examples:
+`IRREVERSIBLE` 永不 AUTO_APPROVE。
 
-- restart a known service;
-- attach an approved mount;
-- refresh a non-secret runtime state.
+<!-- topic:invariants -->
+### 不变量
 
-Default:
+- capability，不是 shell；
+- unknown operation -> `REJECT`；
+- auto approval 只允许 operation registry 明确标记的 bounded operation；
+- Human approval 绑定 normalized request digest；
+- approval 不转移 secret custody；
+- lease 过期/撤销/漂移后不可复用；
+- production/deployment gate 不从 policy decision 自动继承。
 
-```yaml
-approval: human_or_policy
-lease: bounded
-```
+## English
 
-### HIGH
+<!-- topic:inputs -->
+### Inputs
 
-Examples:
+The engine evaluates normalized requests against a canonical operation registry. Caller-provided risk is non-authoritative and cannot lower policy results.
 
-- install packages;
-- create system services;
-- modify firewall rules;
-- change persistent runtime configuration.
+<!-- topic:decision -->
+### Decisions
 
-Default:
+v0 outcomes are `AUTO_APPROVE | HUMAN_REQUIRED | REJECT`. A `PolicyDecision` is not itself a lease; issuance happens only after all decision, approval, and currentness requirements are satisfied.
 
-```yaml
-approval: human
-lease: explicit_scope
-rollback_required: true
-```
+<!-- topic:risk -->
+### Risk derivation
 
-### CRITICAL
+Derived risk is the upper bound of operation risk floor, scope, persistent impact, identity/credential/secret/trust-boundary involvement, recovery availability, requested lease bounds, and stricter deployment policy. Unprivileged observations bypass the broker when ordinary read capabilities already suffice.
 
-Examples:
+<!-- topic:recovery -->
+### Recovery
 
-- credential rotation;
-- identity changes;
-- SSH authorization changes;
-- secret materialization;
-- security boundary changes.
+Recovery is explicit as `NONE | ROLLBACK | COMPENSATING | IRREVERSIBLE`. Missing required rollback/compensating plans causes `REJECT`. Irreversible actions are never auto-approved.
 
-Default:
+<!-- topic:invariants -->
+### Invariants
 
-```yaml
-approval: human
-second_confirmation: possible
-rollback_required: mandatory
-```
-
-## Policy invariants
-
-- The engine approves capabilities, never unrestricted shell access.
-- A lease must contain exact operations and scope.
-- Unknown operations fail closed.
-- Missing rollback plan increases risk classification.
-- Agent intent explanation is mandatory for Human approval.
-- Approval does not transfer custody of secrets.
-- Expired leases cannot be reused.
-
-## Future UI contract
-
-Human should see:
-
-- target node;
-- requested intent;
-- operations;
-- scope;
-- duration;
-- rollback plan;
-- expected impact.
-
-Human should not need to understand sudo, SSH keys or shell commands.
-
-## Implementation order
-
-1. static policy evaluator;
-2. lease validation;
-3. approval payload;
-4. audit ledger;
-5. first ThinkPad consumer.
+Unknown operations fail closed; auto approval is registry-controlled; Human approval binds an exact digest; secret custody remains deployment-owned; stale/expired authority is unusable; policy approval never implies production deployment authority.
