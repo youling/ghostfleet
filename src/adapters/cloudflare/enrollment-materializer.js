@@ -2,7 +2,11 @@ import { assertPublicSafe } from "../../core/security.js";
 
 export function createEnrollmentClaimMaterializer(env) {
   const service = env?.GHOSTFLEET_ENROLLMENT_CLAIM_MATERIALIZER;
-  if (!service || typeof service.fetch !== "function") return null;
+  const ready = env?.GHOSTFLEET_ENROLLMENT_CLAIM_READY === "1";
+  if (!ready || !service || typeof service.fetch !== "function") return null;
+  // Contract: this service resolves already-authorized/pre-materialized one-time
+  // enrollment material from private deployment custody. It MUST NOT rely on
+  // callback retries to mint irreversible provider state.
   return async ({ attempt, ticket, preflight_digest }) => {
     const payload = {
       protocol: "ghostfleet-enrollment-claim-material/v1",
