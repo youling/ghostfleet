@@ -5,13 +5,15 @@ import { CORE_OWNED_EVIDENCE, EnrollmentState, EventType, HumanGateState, NodeLi
 import { assertPublicSafe, publicClone } from "../core/security.js";
 import { InvalidTransitionError, transitionAttempt } from "../core/state-machine.js";
 import { InMemoryStore } from "./store.js";
+import { createEnrollmentTemplateCatalog } from "./enrollment-templates.js";
 
 function required(value, message) { if (!value) throw new Error(message); return value; }
 
 export class GhostFleetController {
-  constructor({ store = new InMemoryStore(), clock = Date } = {}) {
+  constructor({ store = new InMemoryStore(), clock = Date, enrollmentTemplates = createEnrollmentTemplateCatalog() } = {}) {
     this.store = store;
     this.clock = clock;
+    this.enrollmentTemplates = enrollmentTemplates;
   }
 
   now() { return isoNow(this.clock); }
@@ -36,15 +38,20 @@ export class GhostFleetController {
     return next;
   }
 
-  createEnrollmentAttempt({ asset_hint = null, desired_state = NodeLifecycle.ACTIVE, ttl_seconds = 600 } = {}) {
-    assertPublicSafe(asset_hint);
+  createEnrollmentAttempt(input = {}) {
+    assertPublicSafe(input);
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("CREATE_INPUT_INVALID");
+    if (Object.keys(input).some((key) => !["asset_hint", "desired_state", "ttl_seconds", "template_selection"].includes(key))) throw new Error("CREATE_INPUT_INVALID");
+    const { asset_hint = null, desired_state = NodeLifecycle.ACTIVE, ttl_seconds = 600, template_selection = null } = input;
     if (desired_state !== NodeLifecycle.ACTIVE) throw new Error("DESIRED_STATE_INVALID");
     if (!Number.isInteger(ttl_seconds) || ttl_seconds < 30 || ttl_seconds > 3600) throw new Error("TTL_INVALID");
+    const template = template_selection ? this.enrollmentTemplates.resolveSelection(template_selection) : null;
     const now = this.now();
     const attempt = {
       attempt_id: makeId("attempt"),
       asset_hint,
       desired_state,
+      template_binding: template?.binding ?? null,
       state: EnrollmentState.CREATED,
       revision: 0,
       reconcile_required: false,
@@ -63,6 +70,7 @@ export class GhostFleetController {
 
   getEnrollmentAttempt(id) { return required(this.store.getAttempt(id), "ATTEMPT_NOT_FOUND"); }
   listEnrollmentAttempts() { return this.store.listAttempts(); }
+  listEnrollmentTemplates() { return this.enrollmentTemplates.list(); }
   prepareEnrollmentAttempt(id) { return this.transitionAttempt(this.getEnrollmentAttempt(id), EnrollmentState.PREPARING, "prepare"); }
   claimEnrollmentAttempt(id) {
     const attempt = this.getEnrollmentAttempt(id);
