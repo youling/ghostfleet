@@ -98,6 +98,7 @@ GhostFleet generic core 只要求：
 - least-privileged ordinary access；
 - revocable/scoped channel policy；
 - transport session 不带 ambient root/sudo；
+- ordinary transport principal 不得拥有绕过 Broker 的 privilege-equivalent surface，例如 passwordless elevation、可写 privileged enforcement config、或等价 root/admin 的 daemon/socket/group membership；
 - privileged operation 即使来自一个已认证 transport session，也必须另过 lease/helper gate。
 
 因此：
@@ -130,7 +131,7 @@ Bootstrap 是显式、高权限 ceremony；完成后，routine Agent 工作不�
 | 场景 | 必须结果 |
 | --- | --- |
 | 普通 SSH/session 已认证，但无 lease | privileged op DENIED |
-| transport credential 被窃取 | 最多获得该普通 transport policy 的能力；不得自动获得 helper/root |
+| transport credential 被窃取 | 最多获得该普通 transport policy 的能力；不得自动获得 helper/root，也不得通过 ambient root-equivalent side channel 绕过 Broker |
 | lease 签给其它 node/helper/audience | DENIED |
 | transport session 仍在线，但 lease 已过期/revoked | DENIED |
 | Agent 尝试修改 helper trust root 或导出 helper/lease signer private material | 无 generic mutation/export surface；DENY |
@@ -159,7 +160,7 @@ No credential silently satisfies multiple classes. Shared higher-level hardware/
 <!-- topic:transport -->
 ### Transport/control channel
 
-A valid transport session without a valid lease cannot authorize a privileged operation. GhostFleet remains transport-neutral and does not require Tailscale SSH, SSH, or any other concrete transport to be enabled by default; those are deployment choices.
+A valid transport session without a valid lease cannot authorize a privileged operation. The ordinary transport principal must also lack ambient privilege-equivalent bypasses such as passwordless elevation, writable privileged enforcement configuration, or root/admin-equivalent daemon/socket/group access. GhostFleet remains transport-neutral and does not require Tailscale SSH, SSH, or any other concrete transport to be enabled by default; those are deployment choices.
 
 <!-- topic:bootstrap -->
 ### Bootstrap
