@@ -48,10 +48,12 @@ AUTO path 必须绑定允许自动授权的 `PolicyDecision`。HUMAN path 必须
 <!-- topic:currentness -->
 ### Currentness
 
+Transport/session authentication is not a lease precondition substitute。即使 transport identity 已通过，以下 lease checks 仍必须全部通过。
+
 执行前至少验证：
 
 - `node_uid` 与当前目标一致；
-- `subject_ref` 与请求执行者一致；
+- `subject_ref` 与经过 ordinary transport/runtime authentication 后的请求执行者一致；
 - `audience_ref` 与当前 helper 一致；
 - request digest 未漂移；
 - lease 本身未撤销；
@@ -75,7 +77,7 @@ ACTIVE -> CONSUMED | EXPIRED | REVOKED
 
 Helper 收到的 operation 必须精确出现在 `allowed_operations`，target resource 必须落在 scope 内，参数必须通过该 operation 的 canonical schema 与 constraints。Lease 不能把“允许 service.restart”解释成“允许任意 service command”。
 
-Agent 提供的 risk label 不参与 validator 的 authority 判定。
+Agent 提供的 risk label 不参与 validator 的 authority 判定。Transport identity/session success 也不参与 privilege authority 判定；它不能填补缺失、过期或不匹配的 lease。
 
 <!-- topic:replay -->
 ### Replay / effect fence
@@ -120,12 +122,12 @@ The validator must machine-verify a trusted issuer and lease authenticity. Self-
 <!-- topic:currentness -->
 ### Currentness
 
-Target, subject, audience, digest, lease revocation state, policy/authority revision, time window, currentness, and remaining uses must all match. A lease may be revoked before activation; otherwise it moves `NOT_YET_VALID -> ACTIVE`, then terminates as `CONSUMED | EXPIRED | REVOKED`. Terminal leases are never revived. Missing or unknown facts fail closed.
+Transport authentication does not substitute for lease authority. Target, subject, audience, digest, lease revocation state, policy/authority revision, time window, currentness, and remaining uses must all match. A lease may be revoked before activation; otherwise it moves `NOT_YET_VALID -> ACTIVE`, then terminates as `CONSUMED | EXPIRED | REVOKED`. Terminal leases are never revived. Missing or unknown facts fail closed.
 
 <!-- topic:scope -->
 ### Scope and parameters
 
-The requested operation must be explicitly leased, the resource must be inside the bound scope, and parameters must satisfy canonical operation schemas/constraints. Caller-provided risk labels never grant authority.
+The requested operation must be explicitly leased, the resource must be inside the bound scope, and parameters must satisfy canonical operation schemas/constraints. Caller-provided risk labels and successful transport sessions never grant privilege authority.
 
 <!-- topic:replay -->
 ### Replay and effect fences
