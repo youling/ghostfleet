@@ -4,9 +4,11 @@ set -eu
 BROKER_ORIGIN="\${GHOSTFLEET_BROKER_ORIGIN:-}"
 ENROLLMENT_URL="\${GHOSTFLEET_ENROLLMENT_URL:-}"
 if [ -n "$ENROLLMENT_URL" ]; then
+  ENROLLMENT_SCHEME="\${ENROLLMENT_URL%%:*}"
+  [ "$ENROLLMENT_SCHEME" = https ] || { printf '%s\\n' 'fleet-enroll: invalid one-time enrollment URL scheme' >&2; exit 1; }
   case "$ENROLLMENT_URL" in
-    https://*/v1/enrollment-tickets/*) ;;
-    *) printf '%s\\n' 'fleet-enroll: invalid one-time enrollment URL' >&2; exit 1 ;;
+    */v1/enrollment-tickets/*) ;;
+    *) printf '%s\\n' 'fleet-enroll: invalid one-time enrollment URL path' >&2; exit 1 ;;
   esac
   [ -n "$BROKER_ORIGIN" ] || BROKER_ORIGIN="\${ENROLLMENT_URL%%/v1/enrollment-tickets/*}"
 fi
