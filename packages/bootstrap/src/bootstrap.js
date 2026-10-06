@@ -2,6 +2,16 @@ export const BOOTSTRAP_SH = `#!/bin/sh
 set -eu
 
 BROKER_ORIGIN="\${GHOSTFLEET_BROKER_ORIGIN:-}"
+ENROLLMENT_URL="\${GHOSTFLEET_ENROLLMENT_URL:-}"
+if [ -n "$ENROLLMENT_URL" ]; then
+  ENROLLMENT_SCHEME="\${ENROLLMENT_URL%%:*}"
+  [ "$ENROLLMENT_SCHEME" = https ] || { printf '%s\\n' 'fleet-enroll: invalid one-time enrollment URL scheme' >&2; exit 1; }
+  case "$ENROLLMENT_URL" in
+    */v1/enrollment-tickets/*) ;;
+    *) printf '%s\\n' 'fleet-enroll: invalid one-time enrollment URL path' >&2; exit 1 ;;
+  esac
+  [ -n "$BROKER_ORIGIN" ] || BROKER_ORIGIN="\${ENROLLMENT_URL%%/v1/enrollment-tickets/*}"
+fi
 CHECKPOINT_DIR="\${GHOSTFLEET_CHECKPOINT_DIR:-/var/lib/fleet}"
 CHECKPOINT_FILE="$CHECKPOINT_DIR/enrollment-checkpoint.json"
 
@@ -136,7 +146,7 @@ if [ "$(id -u)" -ne 0 ]; then
     fail 'root privileges are required; use the published downloader-to-file launcher so bootstrap can elevate safely'
   fi
   if command -v sudo >/dev/null 2>&1; then
-    exec sudo sh "$FLEET_BOOTSTRAP_SELF"
+    exec sudo env GHOSTFLEET_BROKER_ORIGIN="$BROKER_ORIGIN" GHOSTFLEET_ENROLLMENT_URL="$ENROLLMENT_URL" sh "$FLEET_BOOTSTRAP_SELF"
   fi
   if command -v su >/dev/null 2>&1; then
     export FLEET_BOOTSTRAP_SELF
@@ -291,6 +301,8 @@ fi
 
 [ -n "$ENROLL_CODE" ] || fail 'Enrollment Code must not be empty'
 
+CLAIM_URL="$BROKER_ORIGIN/v1/enroll/claim"
+[ -n "$ENROLLMENT_URL" ] && CLAIM_URL="$ENROLLMENT_URL/claim"
 if ! CLAIM_JSON="$(printf '%s' "$ENROLL_CODE" | curl -fsS \\
   --connect-timeout 10 \\
   --max-time 30 \\
@@ -299,7 +311,7 @@ if ! CLAIM_JSON="$(printf '%s' "$ENROLL_CODE" | curl -fsS \\
   --header "x-fleet-os-id: $OS_ID" \\
   --header "x-ghostfleet-preflight-digest: $PRECHECK_DIGEST" \\
   --data-binary @- \\
-  "$BROKER_ORIGIN/v1/enroll/claim")"; then
+  "$CLAIM_URL")"; then
   unset ENROLL_CODE
   fail 'claim denied: Enrollment Code is invalid, expired, replayed, or does not match this OS profile'
 fi

@@ -201,6 +201,30 @@ function renderCreateTemplateControls() {
     '<dt>' + text("rootCeremony") + '</dt><dd>' + h(summary.root_ceremony) + '</dd>' +
     '</dl>';
 }
+function clearBootstrapDelivery() {
+  const command = $("#bootstrap-command");
+  const code = $("#bootstrap-code");
+  const expiry = $("#bootstrap-expiry");
+  if (command) command.value = "";
+  if (code) code.value = "";
+  if (expiry) expiry.textContent = "";
+}
+function showBootstrapDelivery(delivery) {
+  if (!delivery?.command || !delivery?.short_code) throw new Error("TICKET_DELIVERY_INVALID");
+  if ($("#detail-dialog").open) $("#detail-dialog").close();
+  $("#bootstrap-command").value = delivery.command;
+  $("#bootstrap-code").value = delivery.short_code;
+  $("#bootstrap-expiry").textContent = delivery.expires_at ? date(delivery.expires_at, true) : "";
+  $("#bootstrap-dialog").showModal();
+  $("#bootstrap-command").focus();
+}
+async function copyBootstrapField(id) {
+  const field = $("#" + id);
+  if (!field?.value) return;
+  try { await navigator.clipboard.writeText(field.value); }
+  catch { field.focus(); field.select?.(); }
+}
+
 function createTemplateSelection() {
   const template = selectedCreateTemplate();
   if (!template) throw new Error("TEMPLATE_NOT_FOUND");
@@ -340,8 +364,8 @@ function attemptActions(attempt) {
   if (finalStates.has(attempt.state) || expired(attempt)) return "";
   const button = (action, label, primary = false) => '<button type="button" class="btn ' + (primary ? "btn-primary" : "btn-outline-secondary") +
     '" aria-label="' + h(t(label) + " · " + attemptName(attempt)) + '" data-attempt="' + h(attempt.attempt_id) + '" data-action="' + action + '"' + disabled() + ">" + text(label) + "</button>";
-  if (attempt.state === "CREATED") return button("prepare", "prepare", true);
-  if (attempt.state === "PREPARING") return button("human-gates", "requestGate", true) + button("claim", "claim");
+  if (attempt.state === "CREATED") return button("ticket", "generateBootstrap", true) + button("prepare", "prepare");
+  if (attempt.state === "PREPARING") return button("ticket", "generateBootstrap", true) + button("human-gates", "requestGate") + button("claim", "claim");
   if (attempt.state === "CLAIMED") return button("materialize", "materialize", true);
   return "";
 }
@@ -488,6 +512,7 @@ function clearSession() {
   $("#command-query").value = "";
   $("#command-results").replaceChildren();
   $("#new-attempt").reset();
+  clearBootstrapDelivery();
   for (const dialog of document.querySelectorAll("dialog[open]")) dialog.close();
   $("#detail-content").replaceChildren();
 }
@@ -495,6 +520,8 @@ function errorKey(error, connecting = false) {
   if (error.message === "UNAUTHORIZED") return "errorUnauthorized";
   if (error.message === "AUTH_NOT_CONFIGURED") return "errorConfig";
   if (error.message === "READ_ONLY_CREDENTIAL") return "errorReadOnly";
+  if (error.message === "PROVIDER_CLAIM_MATERIAL_UNAVAILABLE") return "providerGateNeeded";
+  if (error.message === "TICKET_ALREADY_ISSUED" || error.message === "TICKET_NOT_REVOCABLE") return "errorConflict";
   if (error.message.includes("EXPIRED")) return "errorExpired";
   if (error.message === "ACCEPTANCE_EVIDENCE_MISSING") return "errorEvidence";
   if (error.message.includes("STATE") || error.message.includes("RESOLVED") || error.message.includes("TRANSITION") || error.message === "HUMAN_GATE_APPROVAL_REQUIRED") return "errorConflict";
@@ -595,6 +622,7 @@ $("#navigation-dialog").addEventListener("close", renderShell);
 $("#open-search").addEventListener("click", openSearch);
 $("#command-query").addEventListener("input", renderCommands);
 $("#detail-back").addEventListener("click", () => { if (detailStack.length > 1) { detailStack.pop(); renderDetail(); } });
+$("#bootstrap-dialog").addEventListener("close", clearBootstrapDelivery);
 $("#detail-dialog").addEventListener("close", () => {
   detailStack = [];
   $("#detail-content").replaceChildren();
@@ -633,6 +661,7 @@ document.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!event.target.closest(".column-picker") && $(".column-picker")) $(".column-picker").open = false;
   if (!button || button.disabled) return;
+  if (button.dataset.copyTarget) { copyBootstrapField(button.dataset.copyTarget); return; }
   if (button.dataset.closeDialog) { $("#" + button.dataset.closeDialog)?.close(); return; }
   if (button.hasAttribute("data-refresh-state")) {
     const recoveringCreation = uncertain && $("#create-dialog").open;
@@ -664,11 +693,16 @@ document.addEventListener("click", (event) => {
     const { attempt: id, action } = button.dataset;
     const attempt = entryFor("attempt", id);
     if (!attempt || expired(attempt)) { showFeedback("errorExpired", "error"); render(); return; }
-    if (!["prepare", "human-gates", "claim", "materialize"].includes(action)) return;
-    task(() => post("/v0/enrollment-attempts/" + encodeURIComponent(id) + "/" + action), {
+    if (!["prepare", "human-gates", "claim", "materialize", "ticket"].includes(action)) return;
+    const path = action === "ticket"
+      ? "/v0/enrollment-attempts/" + encodeURIComponent(id) + "/ticket"
+      : "/v0/enrollment-attempts/" + encodeURIComponent(id) + "/" + action;
+    const payload = action === "ticket" ? { replace: true } : {};
+    task(() => post(path, payload), {
       mutation: true,
       onSuccess: (result) => {
         if (action === "human-gates" && $("#detail-dialog").open && detailStack.at(-1)?.id === id) openDetail("gate", result.gate.gate_id);
+        if (action === "ticket") showBootstrapDelivery(result.delivery);
       },
     });
   } else if (button.dataset.gate) {

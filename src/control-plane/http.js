@@ -10,7 +10,7 @@ async function body(request) {
 
 function errorResponse(error) {
   const code = error?.code || (error instanceof SyntaxError ? "INVALID_JSON" : error?.message) || "INTERNAL_ERROR";
-  const status = code.includes("NOT_FOUND") ? 404 : code.includes("INVALID") || code.includes("MISSING") ? 409 : 400;
+  const status = Number.isInteger(error?.status) ? error.status : code.includes("NOT_FOUND") ? 404 : code.includes("INVALID") || code.includes("MISSING") ? 409 : 400;
   const payload = { ok: false, error: code };
   if (Array.isArray(error?.missing)) payload.missing = error.missing;
   return json(payload, status);
@@ -33,6 +33,28 @@ export function createHttpHandler(controller) {
 
       let match = /^\/v0\/enrollment-attempts\/([^/]+)$/.exec(path);
       if (request.method === "GET" && match) return json({ ok: true, attempt: controller.getEnrollmentAttempt(match[1]) });
+
+      match = /^\/v0\/enrollment-attempts\/([^/]+)\/ticket$/.exec(path);
+      if (request.method === "GET" && match) return json({ ok: true, ticket: controller.getEnrollmentTicket(match[1]) });
+      if (request.method === "POST" && match) {
+        const input = await body(request);
+        return json({ ok: true, ...controller.issueEnrollmentTicket(match[1], { ...input, public_origin: url.origin }) }, 201);
+      }
+
+      match = /^\/v0\/enrollment-attempts\/([^/]+)\/ticket\/revoke$/.exec(path);
+      if (request.method === "POST" && match) return json({ ok: true, ticket: controller.revokeEnrollmentTicket(match[1]) });
+
+      match = /^\/v1\/enrollment-tickets\/([^/]+)\/claim$/.exec(path);
+      if (request.method === "POST" && match) {
+        const short_code = (await request.text()).trim();
+        const preflight_digest = request.headers.get("x-ghostfleet-preflight-digest") || "";
+        return json({ ok: true, ...(await controller.claimEnrollmentTicket({ ticket_id: decodeURIComponent(match[1]), short_code, preflight_digest })) });
+      }
+
+      if (request.method === "POST" && path === "/v1/enroll/complete") {
+        const input = await body(request);
+        return json({ ok: true, ...controller.completeEnrollmentTicket(input) });
+      }
 
       match = /^\/v0\/enrollment-attempts\/([^/]+)\/([^/]+)$/.exec(path);
       if (request.method === "POST" && match) {

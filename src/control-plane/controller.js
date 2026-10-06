@@ -6,14 +6,26 @@ import { assertPublicSafe, publicClone } from "../core/security.js";
 import { InvalidTransitionError, transitionAttempt } from "../core/state-machine.js";
 import { InMemoryStore } from "./store.js";
 import { createEnrollmentTemplateCatalog } from "./enrollment-templates.js";
+import {
+  EnrollmentTicketError, completionDigest, createTicketDelivery, createTicketFactors,
+  createTicketRecord, publicTicketMetadata, sha256Text, validateClaimMaterial, verifyTicketClaim,
+} from "./tickets.js";
 
 function required(value, message) { if (!value) throw new Error(message); return value; }
 
 export class GhostFleetController {
-  constructor({ store = new InMemoryStore(), clock = Date, enrollmentTemplates = createEnrollmentTemplateCatalog() } = {}) {
+  constructor({
+    store = new InMemoryStore(),
+    clock = Date,
+    enrollmentTemplates = createEnrollmentTemplateCatalog(),
+    enrollmentClaimMaterializer = null,
+    ticketCodeFactory = undefined,
+  } = {}) {
     this.store = store;
     this.clock = clock;
     this.enrollmentTemplates = enrollmentTemplates;
+    this.enrollmentClaimMaterializer = enrollmentClaimMaterializer;
+    this.ticketCodeFactory = ticketCodeFactory;
   }
 
   now() { return isoNow(this.clock); }
@@ -78,6 +90,124 @@ export class GhostFleetController {
       throw new Error("HUMAN_GATE_APPROVAL_REQUIRED");
     }
     return this.transitionAttempt(attempt, EnrollmentState.CLAIMED, "claim");
+  }
+  #assertEnrollmentClaimAuthorized(attempt) {
+    if (attempt.human_gate_ids.some((gateId) => this.store.getGate(gateId)?.state !== HumanGateState.APPROVED)) {
+      throw new EnrollmentTicketError("HUMAN_GATE_APPROVAL_REQUIRED", 409);
+    }
+  }
+
+  issueEnrollmentTicket(id, { public_origin, ttl_seconds = 600, replace = false } = {}) {
+    if (!this.enrollmentClaimMaterializer) throw new EnrollmentTicketError("PROVIDER_CLAIM_MATERIAL_UNAVAILABLE", 503);
+    let attempt = this.requireLiveAttempt(this.getEnrollmentAttempt(id));
+    if (!attempt.template_binding?.template_digest) throw new EnrollmentTicketError("TEMPLATE_BINDING_REQUIRED", 409);
+    if (![EnrollmentState.CREATED, EnrollmentState.PREPARING].includes(attempt.state)) throw new EnrollmentTicketError("TICKET_ATTEMPT_STATE_INVALID", 409);
+    if (!Number.isInteger(ttl_seconds) || ttl_seconds < 60 || ttl_seconds > 900) throw new EnrollmentTicketError("TICKET_TTL_INVALID", 409);
+    const existing = this.store.findEnrollmentTicketByAttempt(id);
+    if (existing && existing.state === "ISSUED") {
+      if (!replace) throw new EnrollmentTicketError("TICKET_ALREADY_ISSUED", 409);
+      this.store.putEnrollmentTicket({ ...existing, state: "REVOKED", reason_code: "REISSUED" });
+    }
+    if (attempt.state === EnrollmentState.CREATED) attempt = this.prepareEnrollmentAttempt(id);
+    const factors = createTicketFactors({ codeFactory: this.ticketCodeFactory });
+    const ticket_id = makeId("ticket");
+    const ticketExpiry = Math.min(this.clock.now() + ttl_seconds * 1000, Date.parse(attempt.expires_at));
+    if (ticketExpiry <= this.clock.now()) throw new EnrollmentTicketError("TICKET_EXPIRED", 410);
+    const record = createTicketRecord({
+      ticket_id, attempt, short_code: factors.short_code,
+      issued_at: this.now(), expires_at: new Date(ticketExpiry).toISOString(),
+    });
+    this.store.putEnrollmentTicket(record);
+    return {
+      ticket: publicTicketMetadata(record),
+      delivery: createTicketDelivery({ record, short_code: factors.short_code, public_origin }),
+    };
+  }
+
+  getEnrollmentTicket(id) {
+    return publicTicketMetadata(required(this.store.findEnrollmentTicketByAttempt(id), "TICKET_NOT_FOUND"));
+  }
+
+  revokeEnrollmentTicket(id) {
+    const record = required(this.store.findEnrollmentTicketByAttempt(id), "TICKET_NOT_FOUND");
+    if (!["ISSUED", "RECONCILE_REQUIRED"].includes(record.state)) throw new EnrollmentTicketError("TICKET_NOT_REVOCABLE", 409);
+    const next = { ...record, state: "REVOKED", reason_code: "OPERATOR_REVOKED" };
+    this.store.putEnrollmentTicket(next);
+    return publicTicketMetadata(next);
+  }
+
+  async claimEnrollmentTicket({ ticket_id, short_code, preflight_digest }) {
+    if (!this.enrollmentClaimMaterializer) throw new EnrollmentTicketError("PROVIDER_CLAIM_MATERIAL_UNAVAILABLE", 503);
+    if (typeof ticket_id !== "string" || !/^ticket-[0-9a-f-]{36}$/.test(ticket_id)) throw new EnrollmentTicketError("TICKET_ID_INVALID", 403);
+    const record = this.store.getEnrollmentTicket(ticket_id);
+    const verification = verifyTicketClaim(record, { short_code, preflight_digest, now_ms: this.clock.now() });
+    if (!verification.ok) {
+      this.store.putEnrollmentTicket(verification.record);
+      throw new EnrollmentTicketError(verification.code, verification.status);
+    }
+    let attempt = this.requireLiveAttempt(this.getEnrollmentAttempt(record.attempt_id));
+    if (attempt.template_binding?.template_digest !== record.template_digest ||
+        String(attempt.template_binding?.template_generation) !== String(record.template_generation)) {
+      this.store.putEnrollmentTicket({ ...record, state: "REVOKED", reason_code: "TEMPLATE_BINDING_STALE" });
+      throw new EnrollmentTicketError("TICKET_TEMPLATE_STALE", 409);
+    }
+    if (attempt.state !== EnrollmentState.PREPARING) throw new EnrollmentTicketError("TICKET_ATTEMPT_STATE_INVALID", 409);
+    this.#assertEnrollmentClaimAuthorized(attempt);
+    const material = validateClaimMaterial(await this.enrollmentClaimMaterializer({
+      attempt, ticket: publicTicketMetadata(record), preflight_digest,
+    }));
+    if (!material || material.outcome === "BLOCKED") {
+      throw new EnrollmentTicketError(material?.code || "PROVIDER_CLAIM_MATERIAL_UNAVAILABLE", 503);
+    }
+    if (material.outcome === "UNKNOWN") {
+      this.store.putEnrollmentTicket({ ...record, state: "RECONCILE_REQUIRED", preflight_digest, reason_code: material.reason_code || "CLAIM_MATERIALIZER_OUTCOME_UNKNOWN" });
+      throw new EnrollmentTicketError("TICKET_CLAIM_RECONCILE_REQUIRED", 409);
+    }
+    if (material.outcome !== "READY") throw new EnrollmentTicketError("CLAIM_MATERIAL_INVALID", 502);
+    attempt = this.claimEnrollmentAttempt(attempt.attempt_id);
+    const delivery = material.delivery;
+    this.store.putEnrollmentTicket({
+      ...record, state: "CONSUMED", preflight_digest, consumed_at: this.now(),
+      resume_capability_digest: sha256Text(delivery.resume_session),
+      identity_kind: delivery.identity_kind, enrollment_id: delivery.enrollment_id ?? null,
+      node_id: delivery.node_id, node_uid: delivery.node_uid ?? null, reason_code: null,
+    });
+    return {
+      protocol: "ghostfleet-enrollment-claim/v1", ticket_id: record.ticket_id, template_digest: record.template_digest,
+      resume_session: delivery.resume_session, auth_key: delivery.auth_key, identity_kind: delivery.identity_kind,
+      enrollment_id: delivery.enrollment_id ?? null, node_id: delivery.node_id, node_uid: delivery.node_uid ?? null,
+    };
+  }
+
+  completeEnrollmentTicket({ resume_session, report }) {
+    if (typeof resume_session !== "string" || resume_session.length < 32 || resume_session.length > 256) throw new EnrollmentTicketError("TICKET_RESUME_INVALID", 403);
+    assertPublicSafe(report);
+    if (!report || typeof report !== "object" || Array.isArray(report) || JSON.stringify(report).length > 131072) throw new EnrollmentTicketError("BOOTSTRAP_REPORT_INVALID", 409);
+    const record = this.store.findEnrollmentTicketByResumeDigest(sha256Text(resume_session));
+    if (!record) throw new EnrollmentTicketError("TICKET_RESUME_NOT_FOUND", 404);
+    const digest = completionDigest(report);
+    if (record.state === "COMPLETED") {
+      if (record.completion_digest !== digest) throw new EnrollmentTicketError("BOOTSTRAP_COMPLETION_CONFLICT", 409);
+      return { ticket: publicTicketMetadata(record), attempt: this.getEnrollmentAttempt(record.attempt_id) };
+    }
+    if (record.state !== "CONSUMED") throw new EnrollmentTicketError("TICKET_NOT_COMPLETABLE", 409);
+    if (report.node_id !== record.node_id || (report.identity_kind && report.identity_kind !== record.identity_kind) ||
+        (record.enrollment_id && report.enrollment_id !== record.enrollment_id)) {
+      throw new EnrollmentTicketError("BOOTSTRAP_IDENTITY_MISMATCH", 409);
+    }
+    let attempt = this.getEnrollmentAttempt(record.attempt_id);
+    if (attempt.state === EnrollmentState.CLAIMED) {
+      attempt = this.startMaterialization(attempt.attempt_id, { node_id: record.node_id, platform: "linux" });
+    } else if (attempt.state !== EnrollmentState.MATERIALIZING) {
+      throw new EnrollmentTicketError("BOOTSTRAP_ATTEMPT_STATE_INVALID", 409);
+    }
+    const completed = { ...record, state: "COMPLETED", completed_at: this.now(), completion_digest: digest, reason_code: null };
+    this.store.putEnrollmentTicket(completed);
+    this.recordEvidence(record.attempt_id, {
+      type: "BOOTSTRAP_COMPLETION", source: "ghostfleet-bootstrap",
+      data: { status: "PASS", preflight_digest: record.preflight_digest, completion_digest: digest },
+    });
+    return { ticket: publicTicketMetadata(completed), attempt: this.getEnrollmentAttempt(record.attempt_id) };
   }
   #provisionalNode(attempt) {
     const node = attempt.node_uid && this.store.getNode(attempt.node_uid);
