@@ -7,7 +7,7 @@
 
 GhostFleet 是开源设备管理控制面，与 AI 客户端无关。人工操作员和标准 HTTP/MCP 客户端共享生命周期、能力、权限、人工确认和证据对象。通用实现由公开仓维护；具体部署保留自己的配置、凭据和真实设备事实。许可证为 **AGPL-3.0-only**。
 
-当前源码包含可运行的核心、Console、HTTP API、只读 MCP、Linux 回执校验器，以及可选的类型化控制、bootstrap 和 Python 运行时包。默认界面不会安装、重启或控制设备；高权限操作必须由部署集成者明确配置并验收。目前是源码开发版本，不宣称已经发布 npm/PyPI 插件或正式生产服务。
+当前源码包含可运行的核心、Console、HTTP API、只读 MCP、Linux 回执校验器，以及可选的类型化控制、bootstrap 和 Python 运行时包。根目录一级 `console/` 是 Control Panel 的 canonical Human-facing 产品目录，Enrollment、Nodes、Capabilities、Privilege、Recovery、Settings 等 UI 域从这里继续演化。默认界面不会安装、重启或控制设备；高权限操作必须由部署集成者明确配置并验收。目前是源码开发版本，不宣称已经发布 npm/PyPI 插件或正式生产服务。
 
 <!-- topic:startup -->
 ### 开始开发
@@ -63,7 +63,7 @@ npm run verify:cloud
 
 GhostFleet is an open-source, AI-client-neutral device fleet control plane. Humans and standard HTTP/MCP clients share lifecycle, capability, permission, HumanGate and evidence objects. The public implementation owns generic mechanisms; deployments own configuration, credentials and real device facts. Licensed under **AGPL-3.0-only**.
 
-The source includes a runnable core/Console/HTTP/read-only MCP surface, Linux receipt validation and explicit optional typed-control/bootstrap/Python runtime packages. The default UI neither installs nor reboots nor controls hardware. Deployment integrators must explicitly configure and validate high-authority operations. This is a source-development version, not a claim of published npm/PyPI plugins or a formal production service.
+The source includes a runnable core/Console/HTTP/read-only MCP surface, Linux receipt validation and explicit optional typed-control/bootstrap/Python runtime packages. The top-level `console/` directory is the canonical Human-facing Control Panel product surface; Enrollment, Nodes, Capabilities, Privilege, Recovery and Settings UI domains evolve there. The default UI neither installs nor reboots nor controls hardware. Deployment integrators must explicitly configure and validate high-authority operations. This is a source-development version, not a claim of published npm/PyPI plugins or a formal production service.
 
 <!-- topic:startup -->
 ### Start development

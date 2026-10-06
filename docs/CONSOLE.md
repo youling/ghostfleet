@@ -1,4 +1,4 @@
-# Console usage / 控制台使用
+# 控制台使用 / Console usage
 
 ## 中文
 
@@ -22,6 +22,13 @@
 ### 设计、合成图片与验证
 
 界面使用 Tabler CSS 和原生 JavaScript，参考公开布局，不额外依赖 React 或图表库。设计变量见 [DESIGN](../DESIGN.md)，产品边界见 [PRODUCT](../PRODUCT.md)，许可见 [第三方说明](../THIRD_PARTY_NOTICES.md)。认证、权限范围、有效期、批准/状态与准入由服务端决定，界面标签不授予权限。
+
+<!-- topic:structure -->
+### 源码目录与产品 ownership
+
+根目录一级 `console/` 是 GhostFleet **Control Panel 的 canonical Human-facing product surface**，不是第二控制平面。当前入口与装配层保留在 `console/index.html` / `console/app.js`；复用展示基础位于 `console/shared/`；产品域按 `enrollment / nodes / capabilities / privilege / recovery / settings` 分目录。域目录中的 README 只冻结 ownership 与未来落点，不表示该功能已经实现。
+
+Enrollment 模板、纳管模式、provider option 选择属于 `console/enrollment/` 产品域；服务端 lifecycle、authority、secret custody 仍由 core/control-plane/provider adapter 决定，目录结构本身不授予权限。
 
 七张图片均来自隔离的合成预览，不证明生产 Pages 或真实设备试验已完成：
 
@@ -53,6 +60,13 @@ The capability directory displays definitions/risks without execution. Source-la
 ### Design, synthetic images and validation
 
 The UI uses Tabler CSS/native JavaScript with public layout references and no additional React/chart dependency. See [DESIGN](../DESIGN.md) for tokens, [PRODUCT](../PRODUCT.md) for boundaries and [third-party notices](../THIRD_PARTY_NOTICES.md) for licensing. Server authority determines authentication, scope, TTL, gates/state and admission; UI labels grant no authority.
+
+<!-- topic:structure -->
+### Source layout and product ownership
+
+The top-level `console/` directory is the canonical Human-facing **GhostFleet Control Panel** product surface, not a second control plane. `console/index.html` and `console/app.js` remain the shell/assembly entry points; reusable presentation helpers live under `console/shared/`; product domains are organized under `enrollment / nodes / capabilities / privilege / recovery / settings`. Domain README files reserve ownership and future placement only; they do not claim implementation.
+
+Enrollment templates, management modes and provider-option selection belong to the `console/enrollment/` product domain. Server lifecycle, authority and secret custody remain owned by core/control-plane/provider adapters; source layout grants no authority.
 
 All seven images are isolated synthetic previews, not production Pages or a real canary:
 

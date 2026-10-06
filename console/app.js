@@ -1,7 +1,7 @@
-import { applyLocale, getLanguage, setLanguage, t } from "./i18n.js";
+import { applyLocale, getLanguage, setLanguage, t } from "./shared/i18n.js";
 import { DEFAULT_ACCEPTANCE_EVIDENCE as requiredEvidence } from "./model.js";
-import { enrollmentDisplayName, selectRows } from "./table-model.js";
-import { icon } from "./icons.js";
+import { enrollmentDisplayName, selectRows } from "./shared/table-model.js";
+import { icon } from "./shared/icons.js";
 
 // The UI owns presentation only. Authority, transitions and admission stay on the server.
 const routes = ["overview", "devices", "enrollment", "approvals", "capabilities", "activity", "settings"];
