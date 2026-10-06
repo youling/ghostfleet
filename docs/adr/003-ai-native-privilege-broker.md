@@ -58,9 +58,11 @@ Agent Intent
 | 普通权限已可完成只读 observation | 不签 privilege lease，走原只读 capability |
 | Human 点击批准 | 不获得/搬运 secret；只产生 digest-bound approval record |
 | 普通 transport/SSH session 有效但没有 lease | privileged op DENIED |
-| 普通 transport identity 被窃取 | 不自动获得 helper/root/lease signing authority |
+| 普通 transport identity 被窃取 | 不自动获得 helper/root/lease signing authority；ordinary principal 也不得存在 passwordless elevation / root-equivalent daemon/socket 等 Broker bypass |
 | transport 仍在线但 lease 已 expired/revoked | privileged op DENIED |
 | Agent 请求 break-glass 作为普通 fallback | DENY；只能进入独立 Human recovery gate |
+| 普通 caller 通过 Helper API 请求导出 private authority | DENY；无 generic export surface |
+| root-owned Helper 本体已被完全攻陷 | 视为 trust-boundary incident；停止普通 acceptance，进入 rebuild/re-key/recovery，不虚假宣称协议仍能约束已获 root 的攻击者 |
 | 一个 universal controller key 同时承担 transport/root/signer/recovery | 架构非法，必须拆分 credential classes |
 
 <!-- topic:alternatives -->
@@ -103,7 +105,7 @@ GhostFleet defines `PrivilegeRequest -> PolicyDecision -> optional HumanApproval
 
 ### Counterexamples
 
-Caller risk cannot downgrade a registered operation; scope drift invalidates an approval; node/audience/subject mismatch denies execution; missing required recovery rejects the request; replayed effect fences do not repeat mutations; uncertain effects require reconciliation; unprivileged reads bypass the broker; Human approval never transfers secret custody; valid transport without a lease cannot elevate; ordinary transport credentials cannot become helper/root/signing authority; break-glass cannot be invoked as an ordinary Agent fallback.
+Caller risk cannot downgrade a registered operation; scope drift invalidates an approval; node/audience/subject mismatch denies execution; missing required recovery rejects the request; replayed effect fences do not repeat mutations; uncertain effects require reconciliation; unprivileged reads bypass the broker; Human approval never transfers secret custody; valid transport without a lease cannot elevate; ordinary transport principals cannot retain passwordless/root-equivalent bypass surfaces; ordinary transport credentials cannot become helper/root/signing authority; private-authority export via the Helper API is denied; full compromise of the root-owned Helper is treated as an incident requiring rebuild/re-key/recovery rather than falsely claimed fail-closed containment; break-glass cannot be invoked as an ordinary Agent fallback.
 
 <!-- topic:alternatives -->
 ### Alternatives
