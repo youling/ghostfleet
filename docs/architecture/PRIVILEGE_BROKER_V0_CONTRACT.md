@@ -94,7 +94,10 @@ recovery_ref: optional
 - no Builder/session/chat custody of privileged secrets；
 - Human approval binds exact digest；
 - policy auto-approval 只作用于 canonical operation registry 明确允许的 bounded operation；
-- deployment/production authority 不从 lease 自动继承。
+- deployment/production authority 不从 lease 自动继承；
+- authenticated transport/session 不等于 privilege authority；无有效 lease 时 privileged op 必须拒绝；
+- `TRANSPORT_IDENTITY / NODE_IDENTITY / LEASE_SIGNING_AUTHORITY / NODE_HELPER_TRUST_ROOT / SECRET_REFERENCE / BREAK_GLASS_RECOVERY_AUTHORITY` 不得静默合并；
+- break-glass 不属于普通 operation registry，不可被 AUTO policy 或普通 Agent workflow 调用。
 
 ## English
 
@@ -126,4 +129,4 @@ Every accepted, denied, failed, or uncertain execution emits a receipt. Uncertai
 <!-- topic:invariants -->
 ### Invariants
 
-Agents do not become root; approval is intent/digest bound; privileged secrets never move into Builder/session/chat custody; auto approval is registry-controlled; lease authority does not imply deployment or production authority.
+Agents do not become root; approval is intent/digest bound; privileged secrets never move into Builder/session/chat custody; auto approval is registry-controlled; authenticated transport alone never grants privilege; transport/node/signing/helper-trust/secret-reference/break-glass classes do not silently collapse; break-glass is outside ordinary Agent operations; lease authority does not imply deployment or production authority.
