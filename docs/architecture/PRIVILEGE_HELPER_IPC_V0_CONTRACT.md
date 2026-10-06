@@ -9,7 +9,7 @@ source: #9 / ADR 003
 <!-- topic:boundary -->
 ### 边界
 
-节点侧 Privilege Helper 是唯一允许跨越 OS privilege boundary 的通用组件。Agent Runtime 只通过本地 authenticated IPC 提交 typed operation；Helper 不暴露 root shell。
+节点侧 Privilege Helper 是唯一允许跨越 OS privilege boundary 的通用组件。Agent Runtime 只通过本地 authenticated IPC 提交 typed operation；Helper 不暴露 root shell。上游 SSH/RPC/tailnet transport session 即使已认证，也只提供 ordinary caller context，不构成 Helper authority。
 
 ```text
 Agent Runtime
@@ -43,6 +43,7 @@ Helper 不接受 raw shell command 作为 generic operation。
 Helper 必须通过 Lease Validator 检查：
 
 - trusted issuer / authenticity；
+- transport/session identity 只作为 caller context，不得替代 lease authority；
 - subject / audience / node identity；
 - request digest / policy / approval currentness；
 - time window / max uses；
@@ -60,6 +61,7 @@ v0 Helper 不暴露：
 - unrestricted sudo/root shell；
 - root SSH access；
 - credential export；
+- helper trust root / issuer private authority export；
 - privileged file browser；
 - security-control bypass；
 - 未注册 typed contract 的 operation。
@@ -76,7 +78,7 @@ Typed adapter 内部可以调用 OS command/API，但 command implementation 不
 <!-- topic:boundary -->
 ### Boundary
 
-The node-side Privilege Helper is the only generic component crossing the OS privilege boundary. Agents submit typed operations over authenticated local IPC; the Helper never exposes a root shell.
+The node-side Privilege Helper is the only generic component crossing the OS privilege boundary. Agents submit typed operations over authenticated local IPC; upstream SSH/RPC/tailnet authentication is caller context, not Helper authority. The Helper never exposes a root shell.
 
 <!-- topic:request -->
 ### Request
@@ -86,12 +88,12 @@ Requests bind a lease, typed operation, exact resource, validated public-safe pa
 <!-- topic:validation -->
 ### Validation
 
-Before execution the Helper verifies lease authenticity/currentness, subject/audience/node binding, request digest, policy/approval authority, time/use limits, operation/scope/parameters, and replay/effect fences. Failed preconditions deny with zero side effects.
+Before execution the Helper verifies lease authenticity/currentness, subject/audience/node binding, request digest, policy/approval authority, time/use limits, operation/scope/parameters, and replay/effect fences. A valid transport session cannot substitute for a valid lease. Failed preconditions deny with zero side effects.
 
 <!-- topic:forbidden -->
 ### Forbidden interfaces
 
-No arbitrary shell, unrestricted sudo/root shell, root SSH, credential export, privileged file browser, security bypass, or unregistered operation surface.
+No arbitrary shell, unrestricted sudo/root shell, root SSH, credential/helper-trust/issuer-private-authority export, privileged file browser, security bypass, or unregistered operation surface.
 
 <!-- topic:receipt -->
 ### Receipts and uncertainty
