@@ -332,6 +332,29 @@
         "replay",
         "outcomes"
       ]
+    },
+    {
+      "path": "docs/architecture/PRIVILEGE_AUTHORITY_PLANES_V0.md",
+      "topics": [
+        "planes",
+        "classes",
+        "separation",
+        "transport",
+        "bootstrap",
+        "counterexamples"
+      ]
+    },
+    {
+      "path": "docs/architecture/PRIVILEGE_BREAK_GLASS_V0.md",
+      "topics": [
+        "purpose",
+        "authority",
+        "custody",
+        "lifecycle",
+        "receipt",
+        "return",
+        "counterexamples"
+      ]
     }
   ]
 }
