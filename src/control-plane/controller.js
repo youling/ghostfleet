@@ -19,14 +19,12 @@ export class GhostFleetController {
     clock = Date,
     enrollmentTemplates = createEnrollmentTemplateCatalog(),
     enrollmentClaimMaterializer = null,
-    ticketFactorFactory = undefined,
     ticketCodeFactory = undefined,
   } = {}) {
     this.store = store;
     this.clock = clock;
     this.enrollmentTemplates = enrollmentTemplates;
     this.enrollmentClaimMaterializer = enrollmentClaimMaterializer;
-    this.ticketFactorFactory = ticketFactorFactory;
     this.ticketCodeFactory = ticketCodeFactory;
   }
 
@@ -111,23 +109,18 @@ export class GhostFleetController {
       this.store.putEnrollmentTicket({ ...existing, state: "REVOKED", reason_code: "REISSUED" });
     }
     if (attempt.state === EnrollmentState.CREATED) attempt = this.prepareEnrollmentAttempt(id);
-    let factors = null;
-    for (let attemptIndex = 0; attemptIndex < 3; attemptIndex += 1) {
-      const candidate = createTicketFactors({ factorFactory: this.ticketFactorFactory, codeFactory: this.ticketCodeFactory });
-      if (!this.store.findEnrollmentTicketByClaimDigest(sha256Text(candidate.claim_factor))) { factors = candidate; break; }
-    }
-    if (!factors) throw new EnrollmentTicketError("TICKET_FACTOR_COLLISION", 503);
+    const factors = createTicketFactors({ codeFactory: this.ticketCodeFactory });
     const ticket_id = makeId("ticket");
     const ticketExpiry = Math.min(this.clock.now() + ttl_seconds * 1000, Date.parse(attempt.expires_at));
     if (ticketExpiry <= this.clock.now()) throw new EnrollmentTicketError("TICKET_EXPIRED", 410);
     const record = createTicketRecord({
-      ticket_id, attempt, claim_factor: factors.claim_factor, short_code: factors.short_code,
+      ticket_id, attempt, short_code: factors.short_code,
       issued_at: this.now(), expires_at: new Date(ticketExpiry).toISOString(),
     });
     this.store.putEnrollmentTicket(record);
     return {
       ticket: publicTicketMetadata(record),
-      delivery: createTicketDelivery({ record, claim_factor: factors.claim_factor, short_code: factors.short_code, public_origin }),
+      delivery: createTicketDelivery({ record, short_code: factors.short_code, public_origin }),
     };
   }
 
@@ -143,10 +136,10 @@ export class GhostFleetController {
     return publicTicketMetadata(next);
   }
 
-  async claimEnrollmentTicket({ claim_factor, short_code, preflight_digest }) {
+  async claimEnrollmentTicket({ ticket_id, short_code, preflight_digest }) {
     if (!this.enrollmentClaimMaterializer) throw new EnrollmentTicketError("PROVIDER_CLAIM_MATERIAL_UNAVAILABLE", 503);
-    if (typeof claim_factor !== "string" || claim_factor.length > 128) throw new EnrollmentTicketError("TICKET_FACTOR_INVALID", 403);
-    const record = this.store.findEnrollmentTicketByClaimDigest(sha256Text(claim_factor));
+    if (typeof ticket_id !== "string" || !/^ticket-[0-9a-f-]{36}$/.test(ticket_id)) throw new EnrollmentTicketError("TICKET_ID_INVALID", 403);
+    const record = this.store.getEnrollmentTicket(ticket_id);
     const verification = verifyTicketClaim(record, { short_code, preflight_digest, now_ms: this.clock.now() });
     if (!verification.ok) {
       this.store.putEnrollmentTicket(verification.record);
