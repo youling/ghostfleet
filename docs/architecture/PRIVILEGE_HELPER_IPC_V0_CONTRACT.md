@@ -69,6 +69,8 @@ v0 Helper 不暴露：
 
 Typed adapter 内部可以调用 OS command/API，但 command implementation 不是 Agent 可控的 authority surface。
 
+本 contract 的 fail-closed 保证针对**未跨越 Helper trust boundary 的调用方**。如果 root-owned Helper 本体或其 OS execution context 已被攻陷，属于 trust-boundary/incident failure；不能声称同一 Helper 还能从内部约束已经取得 root/system execution 的攻击者。此时必须停止普通 acceptance，进入 incident/rebuild/re-key/break-glass recovery。
+
 <!-- topic:receipt -->
 ### Receipt / uncertainty
 
@@ -95,6 +97,8 @@ Before execution the Helper verifies lease authenticity/currentness, subject/aud
 ### Forbidden interfaces
 
 No arbitrary shell, unrestricted sudo/root shell, root SSH, credential/helper-private/issuer-private-authority export, ordinary-Agent mutation of helper trust roots, privileged file browser, security bypass, or unregistered operation surface.
+
+These fail-closed guarantees apply while the Helper trust boundary itself remains intact. Full compromise of the root-owned Helper or its OS execution context is an incident/trust-boundary failure requiring rebuild/re-key/recovery; the protocol does not falsely claim to constrain an attacker that already controls the privileged enforcement component.
 
 <!-- topic:receipt -->
 ### Receipts and uncertainty
