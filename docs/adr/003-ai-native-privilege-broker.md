@@ -40,6 +40,9 @@ Agent Intent
 8. **Mutation 默认 one-shot。** 对有副作用的 v0 lease 默认 `max_uses=1`；重复 effect fence 不重放。若执行结果不确定，receipt 为 `RECONCILE_REQUIRED`，禁止 blind retry。
 9. **低风险不等于一定需要 privilege lease。** 普通 agent 权限已经覆盖的 observation 直接走原只读 capability；只有确实跨 OS privilege boundary 时才进入 Broker。
 10. **Approval 不转移 secret custody。** Human 点击批准只批准 normalized capability request；deployment secret/key custody 仍由 deployment owner 管理。
+11. **Transport 与 privilege 分离。** 长期 authenticated transport 可以存在，但 transport/session identity 只获得 ordinary channel policy；没有有效 lease 时 privileged operation 必须 DENY。Routine root authority 不通过可复用 root SSH key/sudo password 向 Agent 分发。
+12. **Credential classes 显式分离。** 至少区分 `TRANSPORT_IDENTITY / NODE_IDENTITY / LEASE_SIGNING_AUTHORITY / NODE_HELPER_TRUST_ROOT / SECRET_REFERENCE / BREAK_GLASS_RECOVERY_AUTHORITY`；任何 credential 不得静默跨 class 复用。
+13. **Break-glass 是独立 Human recovery plane。** 它不是 super-lease、不是 AUTO policy outcome、不是普通 Agent fallback；恢复成功也不能自动关闭 consumer acceptance 或 broker trust。
 
 
 ### Counterexamples / 反例判定
@@ -54,6 +57,11 @@ Agent Intent
 | RPC timeout 后 side effect 可能已发生 | `RECONCILE_REQUIRED`，禁止 blind retry |
 | 普通权限已可完成只读 observation | 不签 privilege lease，走原只读 capability |
 | Human 点击批准 | 不获得/搬运 secret；只产生 digest-bound approval record |
+| 普通 transport/SSH session 有效但没有 lease | privileged op DENIED |
+| 普通 transport identity 被窃取 | 不自动获得 helper/root/lease signing authority |
+| transport 仍在线但 lease 已 expired/revoked | privileged op DENIED |
+| Agent 请求 break-glass 作为普通 fallback | DENY；只能进入独立 Human recovery gate |
+| 一个 universal controller key 同时承担 transport/root/signer/recovery | 架构非法，必须拆分 credential classes |
 
 <!-- topic:alternatives -->
 ### Alternatives
@@ -73,12 +81,12 @@ Agent Intent
 
 收益：authority 绑定具体 operation/scope/time/use；Human 审批不再等价密码搬运；节点 helper 能独立验证；policy auto-approval 与 Human gate 共存；replay/uncertain effect 有统一 fail-closed 语义。
 
-成本：需要 canonical operation registry、policy revision、approval record、lease issuer/validator、effect-fence store 与 audit ledger；deployment 还需单独选择真实 signing/custody 实现。
+成本：需要 canonical operation registry、policy revision、approval record、lease issuer/validator、effect-fence store 与 audit ledger；deployment 还需单独选择真实 transport、signing/custody 与 break-glass 实现，并维护这些 credential class 的独立生命周期。
 
 <!-- topic:compatibility -->
 ### Compatibility
 
-本 ADR 不改变现有默认只读 MCP、NodeIdentity lifecycle 或 consumer acceptance。ThinkPad 只是 Fleet 私有 deployment 的首个候选 consumer，不能把真实节点/credential/provider topology 写入公共 GhostFleet。现有五个 direct-main 文档在本 ADR/PR 通过前均视为 provisional source；其历史保留，不重写。
+本 ADR 不改变现有默认只读 MCP、NodeIdentity lifecycle 或 consumer acceptance。GhostFleet 只冻结 transport-neutral 的 authority separation，不规定 SSH/Tailscale SSH/mTLS 等具体 transport 是否默认开启；这些属于 deployment policy。ThinkPad 只是 Fleet 私有 deployment 的首个候选 consumer，不能把真实节点/credential/provider topology 写入公共 GhostFleet。现有五个 direct-main 文档在本 ADR/PR 通过前均视为 provisional source；其历史保留，不重写。
 
 ## English
 
@@ -90,12 +98,12 @@ GhostFleet needs bounded privileged actions without giving Agents permanent root
 <!-- topic:decision -->
 ### Decision
 
-GhostFleet defines `PrivilegeRequest -> PolicyDecision -> optional HumanApprovalRequest/HumanApprovalRecord -> PrivilegeLease -> Lease Validator/Helper -> typed OS action -> PrivilegeReceipt`. Risk is derived from canonical policy rather than trusted from the caller. Leases authorize typed operations and exact scope, never unrestricted shell access. Human approval binds an exact normalized request digest. Recovery is explicit as `NONE | ROLLBACK | COMPENSATING | IRREVERSIBLE`. Missing required recovery fails closed. Leases bind issuer, subject, audience, node, request digest, policy/approval references, operations, scope, validity, use limits, and replay/effect fences. Mutating v0 leases default to one use. Unknown or uncertain outcomes do not permit blind retry.
+GhostFleet defines `PrivilegeRequest -> PolicyDecision -> optional HumanApprovalRequest/HumanApprovalRecord -> PrivilegeLease -> Lease Validator/Helper -> typed OS action -> PrivilegeReceipt`. Risk is derived from canonical policy rather than trusted from the caller. Leases authorize typed operations and exact scope, never unrestricted shell access. Human approval binds an exact normalized request digest. Recovery is explicit as `NONE | ROLLBACK | COMPENSATING | IRREVERSIBLE`. Missing required recovery fails closed. Leases bind issuer, subject, audience, node, request digest, policy/approval references, operations, scope, validity, use limits, and replay/effect fences. Mutating v0 leases default to one use. Unknown or uncertain outcomes do not permit blind retry. Stable transport identity is explicitly separate from JIT privilege: a valid SSH/RPC/tailnet session without a valid lease cannot authorize privileged execution. The contract distinguishes transport identity, node identity, lease-signing authority, helper trust root, secret references, and break-glass recovery authority. Break-glass is a separate Human-gated recovery plane, never an ordinary Agent fallback.
 
 
 ### Counterexamples
 
-Caller risk cannot downgrade a registered operation; scope drift invalidates an approval; node/audience/subject mismatch denies execution; missing required recovery rejects the request; replayed effect fences do not repeat mutations; uncertain effects require reconciliation; unprivileged reads bypass the broker; Human approval never transfers secret custody.
+Caller risk cannot downgrade a registered operation; scope drift invalidates an approval; node/audience/subject mismatch denies execution; missing required recovery rejects the request; replayed effect fences do not repeat mutations; uncertain effects require reconciliation; unprivileged reads bypass the broker; Human approval never transfers secret custody; valid transport without a lease cannot elevate; ordinary transport credentials cannot become helper/root/signing authority; break-glass cannot be invoked as an ordinary Agent fallback.
 
 <!-- topic:alternatives -->
 ### Alternatives
@@ -110,4 +118,4 @@ The model requires an operation registry, policy revisioning, approval records, 
 <!-- topic:compatibility -->
 ### Compatibility
 
-This ADR does not change the default read-only MCP surface, NodeIdentity lifecycle, or consumer-acceptance semantics. ThinkPad remains a private Fleet deployment concern and no private topology or credential material enters the public contract.
+This ADR does not change the default read-only MCP surface, NodeIdentity lifecycle, or consumer-acceptance semantics. GhostFleet remains transport-neutral and does not mandate Tailscale SSH, SSH, or any other transport default. ThinkPad remains a private Fleet deployment concern and no private topology or credential material enters the public contract.
