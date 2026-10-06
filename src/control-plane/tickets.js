@@ -1,7 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
-const FACTOR_RE = /^[A-Za-z0-9_-]{40,96}$/;
 const CODE_RE = /^[0-9]{8}$/;
 
 export class EnrollmentTicketError extends Error {
@@ -24,17 +23,14 @@ function safeDigestEqual(left, right) {
 }
 
 export function createTicketFactors({
-  factorFactory = () => randomBytes(32).toString("base64url"),
   codeFactory = () => String(randomBytes(4).readUInt32BE(0) % 100000000).padStart(8, "0"),
 } = {}) {
-  const claim_factor = String(factorFactory());
   const short_code = String(codeFactory());
-  if (!FACTOR_RE.test(claim_factor)) throw new EnrollmentTicketError("TICKET_FACTOR_INVALID");
   if (!CODE_RE.test(short_code)) throw new EnrollmentTicketError("TICKET_SHORT_CODE_INVALID");
-  return Object.freeze({ claim_factor, short_code });
+  return Object.freeze({ short_code });
 }
 
-export function createTicketRecord({ ticket_id, attempt, claim_factor, short_code, issued_at, expires_at }) {
+export function createTicketRecord({ ticket_id, attempt, short_code, issued_at, expires_at }) {
   if (!ticket_id || !attempt?.attempt_id || !attempt?.template_binding?.template_digest) throw new EnrollmentTicketError("TICKET_BINDING_REQUIRED");
   return Object.freeze({
     ticket_id,
@@ -43,7 +39,6 @@ export function createTicketRecord({ ticket_id, attempt, claim_factor, short_cod
     template_generation: attempt.template_binding.template_generation,
     template_digest: attempt.template_binding.template_digest,
     state: "ISSUED",
-    claim_factor_digest: sha256Text(claim_factor),
     short_code_digest: sha256Text(short_code),
     failed_claims: 0,
     issued_at,
@@ -63,7 +58,7 @@ export function createTicketRecord({ ticket_id, attempt, claim_factor, short_cod
 
 export function publicTicketMetadata(record) {
   if (!record) throw new EnrollmentTicketError("TICKET_NOT_FOUND", 404);
-  const claim_material_state = record.state === "ISSUED" ? "PRESENT_ONCE_IN_DELIVERY" :
+  const claim_material_state = record.state === "ISSUED" ? "SHORT_CODE_PRESENT_ONCE_IN_DELIVERY" :
     ["CONSUMED", "COMPLETED"].includes(record.state) ? "CONSUMED" : "DESTROYED_OR_INVALID";
   return Object.freeze({
     ticket_id: record.ticket_id,
@@ -91,9 +86,9 @@ export function validatePublicOrigin(value) {
   return url.origin;
 }
 
-export function createTicketDelivery({ record, claim_factor, short_code, public_origin }) {
+export function createTicketDelivery({ record, short_code, public_origin }) {
   const origin = validatePublicOrigin(public_origin);
-  const one_time_url = origin + "/v1/enrollment-tickets/" + encodeURIComponent(claim_factor);
+  const one_time_url = origin + "/v1/enrollment-tickets/" + encodeURIComponent(record.ticket_id);
   const bootstrap_script_url = origin + "/v1/bootstrap.sh";
   return Object.freeze({
     one_time_url,
