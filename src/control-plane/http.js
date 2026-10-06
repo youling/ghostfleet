@@ -48,7 +48,7 @@ export function createHttpHandler(controller) {
       if (request.method === "POST" && match) {
         const short_code = (await request.text()).trim();
         const preflight_digest = request.headers.get("x-ghostfleet-preflight-digest") || "";
-        return json({ ok: true, ...(await controller.claimEnrollmentTicket({ claim_factor: decodeURIComponent(match[1]), short_code, preflight_digest })) });
+        return json({ ok: true, ...(await controller.claimEnrollmentTicket({ ticket_id: decodeURIComponent(match[1]), short_code, preflight_digest })) });
       }
 
       if (request.method === "POST" && path === "/v1/enroll/complete") {
