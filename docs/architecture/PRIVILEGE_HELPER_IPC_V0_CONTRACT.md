@@ -61,7 +61,8 @@ v0 Helper 不暴露：
 - unrestricted sudo/root shell；
 - root SSH access；
 - credential export；
-- helper trust root / issuer private authority export；
+- helper/issuer private authority export；
+- ordinary Agent 对 helper trust root 的修改/替换；
 - privileged file browser；
 - security-control bypass；
 - 未注册 typed contract 的 operation。
@@ -93,7 +94,7 @@ Before execution the Helper verifies lease authenticity/currentness, subject/aud
 <!-- topic:forbidden -->
 ### Forbidden interfaces
 
-No arbitrary shell, unrestricted sudo/root shell, root SSH, credential/helper-trust/issuer-private-authority export, privileged file browser, security bypass, or unregistered operation surface.
+No arbitrary shell, unrestricted sudo/root shell, root SSH, credential/helper-private/issuer-private-authority export, ordinary-Agent mutation of helper trust roots, privileged file browser, security bypass, or unregistered operation surface.
 
 <!-- topic:receipt -->
 ### Receipts and uncertainty
