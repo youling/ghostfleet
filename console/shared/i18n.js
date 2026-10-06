@@ -239,6 +239,39 @@ Object.assign(en, {
   errorAmbiguous: "No definite operation result arrived; the server may have acted. Read the current state and check the record before acting again.",
 });
 
+Object.assign(zh, {
+  enrollmentTemplate: "纳管模式",
+  noEnrollmentTemplates: "当前控制平面没有可用纳管模板。",
+  tailscale: "Tailscale",
+  tailscaleSsh: "Tailscale SSH",
+  tailscaleSshOption: "启用 Tailscale SSH（仅连接能力，不授予 root）",
+  jitPrivilege: "JIT 提权",
+  breakGlass: "灾备恢复",
+  acceptanceMode: "验收模式",
+  rootCeremony: "首次 root ceremony",
+  enabled: "启用",
+  disabled: "关闭",
+  connectivityPrivilegeNote: "连接能力不等于提权权限；Tailscale SSH 不授予 root。",
+  templateGeneration: "模板代次",
+  templateDigest: "模板摘要",
+});
+Object.assign(en, {
+  enrollmentTemplate: "Management mode",
+  noEnrollmentTemplates: "This control plane has no enrollment templates available.",
+  tailscale: "Tailscale",
+  tailscaleSsh: "Tailscale SSH",
+  tailscaleSshOption: "Enable Tailscale SSH (connectivity only; does not grant root)",
+  jitPrivilege: "JIT privilege",
+  breakGlass: "Break-glass recovery",
+  acceptanceMode: "Acceptance mode",
+  rootCeremony: "Initial root ceremony",
+  enabled: "Enabled",
+  disabled: "Disabled",
+  connectivityPrivilegeNote: "Connectivity is not privilege; Tailscale SSH does not grant root.",
+  templateGeneration: "Template generation",
+  templateDigest: "Template digest",
+});
+
 let language = "zh-CN";
 try { if (localStorage.getItem("ghostfleet-language") === "en") language = "en"; } catch {}
 export function getLanguage() { return language; }

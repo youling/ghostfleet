@@ -276,3 +276,13 @@ dialog::backdrop { background: rgb(0 0 0 / .35); }
   .welcome { padding: 24px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+.enrollment-template-label { margin-top: 18px; }
+.template-options { margin-top: 12px; }
+.template-option { display: flex; align-items: center; gap: 8px; min-height: 36px; font-size: 12px; }
+.template-option input { accent-color: var(--primary); }
+.template-preview { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--muted-surface); }
+.template-preview dl { display: grid; grid-template-columns: minmax(120px, .8fr) minmax(0,1fr); gap: 7px 12px; margin: 0; font-size: 11px; }
+.template-preview dt { color: var(--muted); }
+.template-preview dd { margin: 0; overflow-wrap: anywhere; }
+.authority-note { margin: 12px 0 0; color: var(--amber); font-size: 11px; }

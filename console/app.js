@@ -2,6 +2,7 @@ import { applyLocale, getLanguage, setLanguage, t } from "./shared/i18n.js";
 import { DEFAULT_ACCEPTANCE_EVIDENCE as requiredEvidence } from "./model.js";
 import { enrollmentDisplayName, selectRows } from "./shared/table-model.js";
 import { icon } from "./shared/icons.js";
+import { templateDisplay, templatePostureSummary, templateSelectionPayload } from "./enrollment/templates/model.js";
 
 // The UI owns presentation only. Authority, transitions and admission stay on the server.
 const routes = ["overview", "devices", "enrollment", "approvals", "capabilities", "activity", "settings"];
@@ -18,6 +19,7 @@ let session = new AbortController();
 let view = routes.includes(location.hash.slice(1)) ? location.hash.slice(1) : "overview";
 let detailStack = [], detailOrigin = null;
 let tableStates = createTableStates();
+let createTemplateId = "", createTemplateOverrides = {};
 const appearance = window.GhostFleetAppearance;
 try { document.documentElement.dataset.navigation = localStorage.getItem("ghostfleet-nav-collapsed") === "true" ? "compact" : "full"; } catch {}
 
@@ -99,11 +101,11 @@ async function api(path, options = {}) {
 }
 const post = (path, payload = {}) => api(path, { method: "POST", body: JSON.stringify(payload) });
 async function readSnapshot() {
-  const [permissions, attempts, gates, nodes, events, capabilities] = await Promise.all([
-    api("/v0/access"), api("/v0/enrollment-attempts"), api("/v0/human-gates"), api("/v0/nodes"), api("/v0/events"), api("/v0/capabilities"),
+  const [permissions, attempts, gates, nodes, events, capabilities, templates] = await Promise.all([
+    api("/v0/access"), api("/v0/enrollment-attempts"), api("/v0/human-gates"), api("/v0/nodes"), api("/v0/events"), api("/v0/capabilities"), api("/v0/enrollment-templates"),
   ]);
   if (!["operator", "read_only"].includes(permissions.access)) throw new Error("UNAUTHORIZED");
-  return { access: permissions.access, attempts: attempts.attempts, gates: gates.gates, nodes: nodes.nodes, events: events.events, capabilities: capabilities.capabilities };
+  return { access: permissions.access, attempts: attempts.attempts, gates: gates.gates, nodes: nodes.nodes, events: events.events, capabilities: capabilities.capabilities, templates: templates.templates };
 }
 
 function navigation() {
@@ -134,6 +136,8 @@ function renderShell() {
   $("#connect-button").textContent = t(busy && !snapshot ? "connecting" : "connect");
   $("#disconnect").disabled = !accessToken;
   $("#asset-hint").disabled = !writable();
+  $("#template-select").disabled = !writable();
+  $("#template-tailscale-ssh")?.toggleAttribute("disabled", !writable());
   $("#new-attempt button[type=submit]").disabled = !writable();
   $("#create-permission").textContent = writable() ? "" : t(permissionKey());
   $("#connection-access").textContent = snapshot ? t(access === "operator" ? "permissionOperator" : "permissionReadOnly") : "";
@@ -143,6 +147,64 @@ function renderShell() {
   $("#navigation-toggle").setAttribute("aria-expanded", String(innerWidth <= 900 ? $("#navigation-dialog").open : document.documentElement.dataset.navigation !== "compact"));
   $("#theme-toggle").innerHTML = icon(appearance.isDark() ? "sun" : "moon");
   $("#theme-preference").value = appearance.getPreference();
+}
+
+function selectedCreateTemplate() {
+  const templates = snapshot?.templates ?? [];
+  return templates.find((item) => item.template_id === createTemplateId) ?? templates[0] ?? null;
+}
+function renderCreateTemplateControls() {
+  const select = $("#template-select");
+  const preview = $("#template-preview");
+  const options = $("#template-options");
+  const description = $("#template-description");
+  if (!select || !preview || !options || !description) return;
+  const templates = snapshot?.templates ?? [];
+  if (!templates.length) {
+    select.replaceChildren();
+    select.disabled = true;
+    description.textContent = t("noEnrollmentTemplates");
+    preview.replaceChildren();
+    options.replaceChildren();
+    return;
+  }
+  if (!templates.some((item) => item.template_id === createTemplateId)) {
+    createTemplateId = templates[0].template_id;
+    createTemplateOverrides = {};
+  }
+  select.innerHTML = templates.map((item) => {
+    const display = templateDisplay(item, getLanguage());
+    return '<option value="' + h(item.template_id) + '">' + h(display.name) + '</option>';
+  }).join("");
+  select.value = createTemplateId;
+  select.disabled = !writable();
+
+  const template = selectedCreateTemplate();
+  const display = templateDisplay(template, getLanguage());
+  description.textContent = display.description;
+  const sshPath = "providers.tailscale.ssh";
+  const sshAllowed = template.allowed_override_paths?.includes(sshPath);
+  const defaultSsh = template.effective_posture?.providers?.tailscale?.ssh === true;
+  const sshValue = Object.hasOwn(createTemplateOverrides, sshPath) ? createTemplateOverrides[sshPath] : defaultSsh;
+  options.innerHTML = sshAllowed
+    ? '<label class="template-option"><input id="template-tailscale-ssh" type="checkbox"' + (sshValue ? " checked" : "") + (writable() ? "" : " disabled") + '><span>' + text("tailscaleSshOption") + '</span></label>'
+    : "";
+
+  const summary = templatePostureSummary(template, createTemplateOverrides);
+  const yesNo = (value) => text(value ? "enabled" : "disabled");
+  preview.innerHTML = '<dl>' +
+    '<dt>' + text("tailscale") + '</dt><dd>' + yesNo(summary.tailscale_enabled) + '</dd>' +
+    '<dt>' + text("tailscaleSsh") + '</dt><dd>' + yesNo(summary.tailscale_ssh) + '</dd>' +
+    '<dt>' + text("jitPrivilege") + '</dt><dd>' + yesNo(summary.privilege_broker && summary.privileged_helper) + '</dd>' +
+    '<dt>' + text("breakGlass") + '</dt><dd>' + yesNo(summary.break_glass) + '</dd>' +
+    '<dt>' + text("acceptanceMode") + '</dt><dd>' + h(summary.consumer_acceptance) + '</dd>' +
+    '<dt>' + text("rootCeremony") + '</dt><dd>' + h(summary.root_ceremony) + '</dd>' +
+    '</dl>';
+}
+function createTemplateSelection() {
+  const template = selectedCreateTemplate();
+  if (!template) throw new Error("TEMPLATE_NOT_FOUND");
+  return templateSelectionPayload(template, createTemplateOverrides);
 }
 
 function inspectButton(kind, id, label = "viewDetails") {
@@ -305,12 +367,17 @@ function detailBody(kind, row) {
   if (kind === "attempt") {
     const state = attemptState(row), actions = attemptActions(row);
     const gates = snapshot.gates.filter((gate) => gate.subject_id === row.attempt_id);
+    const templateFields = row.template_binding ? [
+      ["enrollmentTemplate", row.template_binding.template_id],
+      ["templateGeneration", row.template_binding.template_generation],
+      ["templateDigest", row.template_binding.template_digest],
+    ] : [];
     return '<h3 class="detail-title">' + h(attemptName(row)) + "</h3>" + badge(state) +
       '<div class="record-id">' + h(row.attempt_id) + "</div>" + progress(row) +
       '<p class="detail-message">' + text(state === "EXPIRED" ? "nextExpired" : "next." + row.state) + "</p>" +
       (actions ? '<div class="record-actions">' + actions + "</div>" : "") +
       (!writable() && !finalStates.has(row.state) ? '<p class="permission-note">' + text(permissionKey()) + "</p>" : "") +
-      fields([["createdAt", date(row.created_at, true)], ["expiresAt", date(row.expires_at, true)], ["revision", row.revision]]) +
+      fields([...templateFields, ["createdAt", date(row.created_at, true)], ["expiresAt", date(row.expires_at, true)], ["revision", row.revision]]) +
       (gates.length ? section("relatedApprovals", '<div class="detail-related">' + gates.map((gate) => inspectButton("gate", gate.gate_id, "viewRequest")).join("") + "</div>") : "") +
       evidence(row) + section("transitionHistory", row.history?.length ? '<ol class="detail-history">' + row.history.slice().reverse().map((change) =>
         "<li>" + text("state." + change.from) + " → " + text("state." + change.to) + '<span class="secondary">' + h(date(change.at, true)) + "</span></li>").join("") + "</ol>" : '<p class="secondary">' + text("noTransitions") + "</p>");
@@ -416,6 +483,7 @@ function clearSession() {
   accessToken = ""; access = null; snapshot = null; lastRead = null;
   busy = false; uncertain = false; detailStack = [];
   tableStates = createTableStates();
+  createTemplateId = ""; createTemplateOverrides = {};
   $("#api-token").value = "";
   $("#command-query").value = "";
   $("#command-results").replaceChildren();
@@ -482,6 +550,7 @@ $("#session-link").addEventListener("click", () => navigate("settings"));
 $("#open-create").addEventListener("click", () => {
   if (!writable()) return;
   feedback = null; renderFeedback();
+  renderCreateTemplateControls();
   $("#create-dialog").showModal(); $("#asset-hint").focus();
 });
 $("#new-attempt").addEventListener("submit", (event) => {
@@ -489,16 +558,27 @@ $("#new-attempt").addEventListener("submit", (event) => {
   if (!writable()) return;
   const asset_hint = $("#asset-hint").value.trim();
   if (!asset_hint) { $("#asset-hint").focus(); return; }
-  task(() => post("/v0/enrollment-attempts", { asset_hint }), {
+  let template_selection;
+  try { template_selection = createTemplateSelection(); }
+  catch { $("#template-select").focus(); return; }
+  task(() => post("/v0/enrollment-attempts", { asset_hint, template_selection }), {
     mutation: true, success: "createdNotice",
     onSuccess: (result) => {
       const stillOpen = $("#create-dialog").open;
       $("#new-attempt").reset();
+      createTemplateId = ""; createTemplateOverrides = {};
       if (stillOpen) { $("#create-dialog").close(); navigate("enrollment"); openDetail("attempt", result.attempt.attempt_id); }
     },
   });
 });
-$("#language").addEventListener("change", (event) => { setLanguage(event.target.value); render(); });
+$("#language").addEventListener("change", (event) => { setLanguage(event.target.value); render(); renderCreateTemplateControls(); });
+$("#template-select").addEventListener("change", (event) => { createTemplateId = event.target.value; createTemplateOverrides = {}; renderCreateTemplateControls(); });
+$("#template-options").addEventListener("change", (event) => {
+  if (event.target.id === "template-tailscale-ssh") {
+    createTemplateOverrides = { ...createTemplateOverrides, "providers.tailscale.ssh": event.target.checked };
+    renderCreateTemplateControls();
+  }
+});
 $("#theme-toggle").addEventListener("click", () => appearance.setPreference(appearance.isDark() ? "light" : "dark"));
 $("#theme-preference").addEventListener("change", (event) => appearance.setPreference(event.target.value));
 window.addEventListener("ghostfleet-appearance", renderShell);

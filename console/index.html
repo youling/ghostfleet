@@ -81,6 +81,12 @@
       <div id="create-recovery" class="dialog-recovery" hidden><button type="button" class="btn btn-outline-secondary" data-refresh-state data-i18n="readServerState">读取服务端状态</button></div>
       <label for="asset-hint" class="form-label" data-i18n="deviceLabel">设备名称</label>
       <input id="asset-hint" name="asset_hint" class="form-control" required maxlength="120" data-i18n-placeholder="devicePlaceholder">
+      <label for="template-select" class="form-label enrollment-template-label" data-i18n="enrollmentTemplate">纳管模式</label>
+      <select id="template-select" class="form-select" required></select>
+      <p id="template-description" class="secondary help"></p>
+      <div id="template-options" class="template-options"></div>
+      <div id="template-preview" class="template-preview" aria-live="polite"></div>
+      <p class="authority-note" data-i18n="connectivityPrivilegeNote">连接能力不等于提权权限；Tailscale SSH 不授予 root。</p>
       <p class="secondary help" data-i18n="recordScope"></p>
       <p class="secondary help" data-i18n="defaultExpiry">记录默认有效期为 10 分钟，请在有效期内完成流程。</p>
       <p id="create-permission" class="permission-note"></p>
