@@ -32,6 +32,5 @@ export class InMemoryStore {
   }
   listEnrollmentTickets() { return Object.values(this.state.enrollment_tickets || {}).map(publicClone); }
   findEnrollmentTicketByAttempt(attempt_id) { return this.listEnrollmentTickets().findLast((ticket) => ticket.attempt_id === attempt_id) || null; }
-  findEnrollmentTicketByClaimDigest(claim_factor_digest) { return this.listEnrollmentTickets().find((ticket) => ticket.claim_factor_digest === claim_factor_digest) || null; }
   findEnrollmentTicketByResumeDigest(resume_capability_digest) { return this.listEnrollmentTickets().find((ticket) => ticket.resume_capability_digest === resume_capability_digest) || null; }
 }
