@@ -169,6 +169,35 @@ case " $OS_ID $OS_ID_LIKE " in
   *) fail "unsupported OS family: id=$OS_ID id_like=$OS_ID_LIKE" ;;
 esac
 
+# One-click v0 Phase 0: local read-only safety/compatibility preflight.
+# This runs after the single root ceremony but before package install/update,
+# provider claim, service mutation, credential request or network mutation.
+bootstrap_phase0_preflight() {
+  command -v systemctl >/dev/null 2>&1 || fail 'preflight failed: systemd/systemctl is required'
+  [ -d /run/systemd/system ] || fail 'preflight failed: systemd is not the active init system'
+  command -v sha256sum >/dev/null 2>&1 || fail 'preflight failed: sha256sum is required'
+
+  APPLIANCE_KIND=generic-linux
+  if [ -e /etc/openmediavault/config.xml ] || [ -d /etc/openmediavault ]; then
+    APPLIANCE_KIND=openmediavault
+  fi
+
+  DOCKER_SOCKET_HINT=absent
+  [ -S /var/run/docker.sock ] && DOCKER_SOCKET_HINT=present
+
+  NOPASSWD_HINT=absent
+  if grep -Rqs -- 'NOPASSWD' /etc/sudoers /etc/sudoers.d 2>/dev/null; then
+    NOPASSWD_HINT=present
+  fi
+
+  PREFLIGHT_MATERIAL="$(printf '%s\n' "$OS_FAMILY" "$OS_ID" "$OS_VERSION_ID" "$(uname -m)" "$APPLIANCE_KIND" "$DOCKER_SOCKET_HINT" "$NOPASSWD_HINT")"
+  PRECHECK_DIGEST="sha256:$(printf '%s' "$PREFLIGHT_MATERIAL" | sha256sum | awk '{print $1}')"
+  unset PREFLIGHT_MATERIAL
+
+  printf '%s\n' "fleet-enroll: preflight PASS os=$OS_ID/$OS_VERSION_ID arch=$(uname -m) appliance=$APPLIANCE_KIND docker_socket=$DOCKER_SOCKET_HINT nopasswd_hint=$NOPASSWD_HINT" >&2
+}
+bootstrap_phase0_preflight
+
 bootstrap_transport_baseline() {
   if command -v curl >/dev/null 2>&1 && package_installed ca-certificates; then
     return 0
@@ -268,6 +297,7 @@ if ! CLAIM_JSON="$(printf '%s' "$ENROLL_CODE" | curl -fsS \\
   --header 'content-type: text/plain' \\
   --header "x-fleet-os-family: $OS_FAMILY" \\
   --header "x-fleet-os-id: $OS_ID" \\
+  --header "x-ghostfleet-preflight-digest: $PRECHECK_DIGEST" \\
   --data-binary @- \\
   "$BROKER_ORIGIN/v1/enroll/claim")"; then
   unset ENROLL_CODE

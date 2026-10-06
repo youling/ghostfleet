@@ -1,6 +1,9 @@
 /** Optional launcher source; importing it never enrolls or contacts a provider. */
 export {BOOTSTRAP_SH} from "./bootstrap.js";
 export {CONVERGENCE_PHASES, COMPONENT_STATES, detectSystemFacts, classifyComponents, planConvergence, sanitizeCheckpoint, isSecretFreeCheckpoint} from "./convergence.js";
+export {createEnrollmentTicketStore} from "./ticket.js";
+export {evaluateBootstrapPreflight} from "./preflight.js";
+export {createBootstrapSession, recordRootCeremony, attachPreflight, attachClaim, completeBootstrap, assertNoPostBootstrapPasswordPrompt, createBootstrapReceipt} from "./session.js";
 import {BOOTSTRAP_SH} from "./bootstrap.js";
 
 /** Render only deployment-supplied coordinates; never perform an enrollment. */
