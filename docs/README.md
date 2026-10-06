@@ -8,7 +8,7 @@
 | 任务 | 文档 |
 | --- | --- |
 | 新用户安装/本地开发 | [快速开始](GETTING_STARTED.md)、[云端开发](CLOUD_DEVELOPMENT.md)、[控制台](CONSOLE.md) |
-| 理解数据、权限与流程 | [架构](ARCHITECTURE.md)、[API](API.md)、[MCP](MCP.md)、[安全模型](SECURITY.md)、[Privilege Broker v0](architecture/PRIVILEGE_BROKER_V0.md)、[审批载荷](architecture/PRIVILEGE_APPROVAL_PAYLOAD_V0.md)、[租约验证](architecture/PRIVILEGE_LEASE_VALIDATOR_V0.md) |
+| 理解数据、权限与流程 | [架构](ARCHITECTURE.md)、[API](API.md)、[MCP](MCP.md)、[安全模型](SECURITY.md)、[Privilege Broker v0](architecture/PRIVILEGE_BROKER_V0.md)、[权限/凭据平面](architecture/PRIVILEGE_AUTHORITY_PLANES_V0.md)、[审批载荷](architecture/PRIVILEGE_APPROVAL_PAYLOAD_V0.md)、[租约验证](architecture/PRIVILEGE_LEASE_VALIDATOR_V0.md)、[Break-glass 恢复](architecture/PRIVILEGE_BREAK_GLASS_V0.md) |
 | 插件和设备执行集成 | [插件开发](PLUGIN_DEVELOPMENT.md)、[类型化控制](CONTROL.md)、[平台](PLATFORMS.md)、[Linux 回执](LINUX_ADAPTER.md) |
 | 测试、恢复、发布 | [测试](TESTING.md)、[恢复](RECOVERY.md)、[发布清理](PUBLICATION.md)、[部署](DEPLOYMENT.md) |
 | 通用代码迁移与归属 | [ADR 001：公开包归属](adr/001-public-canonical-packages.md)、[ADR 002：消费者验收与控制路径持久性](adr/002-consumer-acceptance-control-path-durability.md)、[ADR 003：AI 原生权限代理](adr/003-ai-native-privilege-broker.md)、[迁移](MIGRATION.md)、[来源](PROVENANCE.md)、[导出清单](export-manifest.json) |
@@ -31,7 +31,7 @@
 | Task | Documentation |
 | --- | --- |
 | Installation/local development | [Getting started](GETTING_STARTED.md), [Cloud development](CLOUD_DEVELOPMENT.md), [Console](CONSOLE.md) |
-| Objects, authority and workflow | [Architecture](ARCHITECTURE.md), [API](API.md), [MCP](MCP.md), [Security model](SECURITY.md), [Privilege Broker v0](architecture/PRIVILEGE_BROKER_V0.md), [Approval payload](architecture/PRIVILEGE_APPROVAL_PAYLOAD_V0.md), [Lease validator](architecture/PRIVILEGE_LEASE_VALIDATOR_V0.md) |
+| Objects, authority and workflow | [Architecture](ARCHITECTURE.md), [API](API.md), [MCP](MCP.md), [Security model](SECURITY.md), [Privilege Broker v0](architecture/PRIVILEGE_BROKER_V0.md), [Authority/credential planes](architecture/PRIVILEGE_AUTHORITY_PLANES_V0.md), [Approval payload](architecture/PRIVILEGE_APPROVAL_PAYLOAD_V0.md), [Lease validator](architecture/PRIVILEGE_LEASE_VALIDATOR_V0.md), [Break-glass recovery](architecture/PRIVILEGE_BREAK_GLASS_V0.md) |
 | Plugin/device execution integration | [Plugin development](PLUGIN_DEVELOPMENT.md), [Typed control](CONTROL.md), [Platforms](PLATFORMS.md), [Linux receipts](LINUX_ADAPTER.md) |
 | Testing, recovery and publication | [Testing](TESTING.md), [Recovery](RECOVERY.md), [Publication](PUBLICATION.md), [Deployment](DEPLOYMENT.md) |
 | Extraction and ownership | [ADR 001: public canonical packages](adr/001-public-canonical-packages.md), [ADR 002: consumer acceptance durability](adr/002-consumer-acceptance-control-path-durability.md), [ADR 003: AI-native privilege broker](adr/003-ai-native-privilege-broker.md), [Migration](MIGRATION.md), [Provenance](PROVENANCE.md), [Export manifest](export-manifest.json) |
