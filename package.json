@@ -5,7 +5,8 @@
   "type": "module",
   "workspaces": [
     "packages/typed-control",
-    "packages/bootstrap"
+    "packages/bootstrap",
+    "packages/enrollment-template"
   ],
   "description": "Open-source AI-native device fleet control plane",
   "engines": {
@@ -23,15 +24,17 @@
     "test:typed": "npm run test --workspace @ghostfleet/typed-control",
     "test:bootstrap": "npm run test --workspace @ghostfleet/bootstrap",
     "test:python": "python -m pytest packages/runtime-python/tests",
-    "test:all": "npm test && npm run test:typed && npm run test:bootstrap && npm run test:python",
+    "test:all": "npm test && npm run test:typed && npm run test:bootstrap && npm run test:python && npm run test:enrollment-template",
     "check:typed": "npm run check --workspace @ghostfleet/typed-control",
     "check:bootstrap": "npm run check --workspace @ghostfleet/bootstrap",
     "build:typed": "npm run build --workspace @ghostfleet/typed-control",
     "check:publication": "node scripts/publication-guard.mjs",
     "check:docs": "node scripts/docs-check.mjs",
-    "check:all": "npm run check && npm run check:typed && npm run check:bootstrap && npm run check:publication && npm run check:docs",
+    "check:all": "npm run check && npm run check:typed && npm run check:bootstrap && npm run check:publication && npm run check:docs && npm run check:enrollment-template",
     "verify:python-artifact": "python scripts/verify-python-artifact.py",
-    "verify:ai-client-neutral": "node scripts/verify-ai-client-neutral.mjs"
+    "verify:ai-client-neutral": "node scripts/verify-ai-client-neutral.mjs",
+    "test:enrollment-template": "npm run test --workspace @ghostfleet/enrollment-template",
+    "check:enrollment-template": "npm run check --workspace @ghostfleet/enrollment-template"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.0",

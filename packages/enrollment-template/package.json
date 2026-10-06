@@ -1,0 +1,23 @@
+{
+  "name": "@ghostfleet/enrollment-template",
+  "version": "0.1.0-dev",
+  "private": true,
+  "type": "module",
+  "description": "Enrollment Template v0: lifecycle-neutral, provider-neutral management posture contract (schema + invariants only)",
+  "license": "AGPL-3.0-only",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./schema": "./src/schema.js"
+  },
+  "files": [
+    "src",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "node --check src/schema.js && node --check src/normalize.js && node --check src/digest.js && node --check src/resolver.js && node --check src/validate.js && node --check src/index.js",
+    "test": "node --test \"test/*.test.js\""
+  }
+}
