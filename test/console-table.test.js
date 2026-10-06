@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { enrollmentDisplayName, selectRows } from "../console/table-model.js";
+import { enrollmentDisplayName, selectRows } from "../console/shared/table-model.js";
 
 test("structured enrollment hints display only the node bound to that attempt", () => {
   const attempt = { attempt_id: "attempt-1", node_uid: "node-1", asset_hint: { enrollment_ref: "opaque-ref", assets_join: "UNBOUND" } };
