@@ -31,7 +31,7 @@ Break-glass / Recovery Plane
 
 > stable connectivity != stable elevation
 
-长期连接可以存在；日常 root/system privilege 不以长期 ambient authority 存在。
+长期连接可以存在；**Agent 的日常 root/system execution privilege 不以长期 ambient authority 存在。** Broker signer、节点 Helper 的本地 system authority、独立 break-glass custody 可以长期存在，但它们都必须留在各自 enforcement/custody boundary 内，不能转成 Agent 常驻 root。
 
 <!-- topic:classes -->
 ### 六类 identity / credential
@@ -61,7 +61,7 @@ Broker/issuer 用于产生可验证 PrivilegeLease 的 signing/issuing authority
 
 #### NODE_HELPER_TRUST_ROOT
 
-节点本地 Privileged Helper 用于判断哪些 issuer/lease authenticity 可接受的 trust anchor/reference。它属于节点 enforcement boundary，不可通过普通 Agent API 导出。
+节点本地 Privileged Helper 用于判断哪些 issuer/lease authenticity 可接受的 trust anchor/reference。它属于节点 enforcement boundary，普通 Agent 不得修改/替换它。若实现使用 public key/certificate 作为 verification anchor，该 public verification material 可以按 deployment policy 可见；任何 helper-side private authority 仍不得导出。
 
 #### SECRET_REFERENCE
 
@@ -133,7 +133,7 @@ Bootstrap 是显式、高权限 ceremony；完成后，routine Agent 工作不�
 | transport credential 被窃取 | 最多获得该普通 transport policy 的能力；不得自动获得 helper/root |
 | lease 签给其它 node/helper/audience | DENIED |
 | transport session 仍在线，但 lease 已过期/revoked | DENIED |
-| Agent 尝试导出 helper trust root / lease signer private material | 无 generic export surface；DENY |
+| Agent 尝试修改 helper trust root 或导出 helper/lease signer private material | 无 generic mutation/export surface；DENY |
 | Agent 尝试调用 break-glass 作为普通 operation | DENY / Human recovery gate only |
 | 一个“fleet-controller-key”想同时做 transport + root + signer + recovery | 架构非法，必须拆分 |
 
@@ -142,14 +142,14 @@ Bootstrap 是显式、高权限 ceremony；完成后，routine Agent 工作不�
 <!-- topic:planes -->
 ### Three authority planes
 
-GhostFleet separates stable transport/control connectivity, JIT privilege authority, and break-glass recovery. Stable connectivity never implies stable elevation.
+GhostFleet separates stable transport/control connectivity, JIT privilege authority, and break-glass recovery. Stable connectivity never implies ambient Agent elevation. Durable broker/helper/recovery authorities may exist only inside their own enforcement/custody boundaries and never become reusable Agent root authority.
 
 <!-- topic:classes -->
 ### Credential classes
 
 The generic contract distinguishes `TRANSPORT_IDENTITY`, `NODE_IDENTITY`, `LEASE_SIGNING_AUTHORITY`, `NODE_HELPER_TRUST_ROOT`, `SECRET_REFERENCE`, and `BREAK_GLASS_RECOVERY_AUTHORITY`.
 
-Transport identity authenticates an ordinary channel; node identity names the managed node; signing authority issues leases; the helper trust root verifies allowed issuers; secret references point to deployment-owned custody without carrying plaintext; break-glass authority is exceptional Human-gated recovery authority.
+Transport identity authenticates an ordinary channel; node identity names the managed node; signing authority issues leases; the helper trust root verifies allowed issuers and is not writable by ordinary Agents; secret references point to deployment-owned custody without carrying plaintext; break-glass authority is exceptional Human-gated recovery authority.
 
 <!-- topic:separation -->
 ### No silent class collapse
@@ -169,4 +169,4 @@ Initial bootstrap may establish node identity, ordinary transport trust, the pri
 <!-- topic:counterexamples -->
 ### Counterexamples
 
-A stolen ordinary transport identity remains ordinary; wrong-node/helper leases are denied; expired/revoked leases remain denied while transport stays connected; helper/signing authority is not exportable; break-glass is not an ordinary Agent capability; a universal controller/root/signer/recovery key is invalid architecture.
+A stolen ordinary transport identity remains ordinary; wrong-node/helper leases are denied; expired/revoked leases remain denied while transport stays connected; helper/signing private authority is not exportable and helper trust roots are not ordinary-Agent mutable; break-glass is not an ordinary Agent capability; a universal controller/root/signer/recovery key is invalid architecture.
