@@ -99,26 +99,59 @@ export interface GateResult {
   dispatch_state?: DispatchState;
 }
 
+function candidateForBinding(binding: PlaneBinding): Candidate {
+  if (binding.plane === "tailnet") {
+    return {
+      plane: binding.plane,
+      endpoint: { kind: "tailscale_ssh" },
+      target_proof: { method: "provider_binding_tag" },
+      locator_kind: "provider_ref",
+      failure_domain: "tailnet",
+    };
+  }
+  if (binding.plane === "cloudflare-vpc") {
+    return {
+      plane: binding.plane,
+      endpoint: { kind: "cloudflared_forwarded_sshd" },
+      target_proof: { method: "pinned_host_key" },
+      locator_kind: "binding_name",
+      failure_domain: "worker_vpc",
+    };
+  }
+  return {
+    plane: binding.plane,
+    endpoint: { kind: "native_sshd" },
+    target_proof: { method: "pinned_host_key" },
+    locator_kind: "explicit_ip",
+    failure_domain: "lan",
+  };
+}
+
 export function evaluateGate(request: TransportRequest): GateResult {
   const purpose = requirePurpose(request);
   const state = requireDispatchState(request);
   if (state !== "NOT_DISPATCHED") {
     return { candidates: [], reason: "reconcile_required", dispatch_state: state, purpose };
   }
+  if (request.authority.scope !== purpose) {
+    return { candidates: [], reason: "authority_mismatch", dispatch_state: state, purpose };
+  }
   const allowed: Record<Purpose, Plane[]> = {
     "machine-control": ["cloudflare-vpc", "tailnet"],
     "human-maintenance": ["tailnet"],
     recovery: ["native-lan"],
   };
-  const candidates = request.plane_bindings
-    .filter((b) => allowed[purpose].includes(b.plane))
-    .map((b) => ({
-      plane: b.plane,
-      endpoint: { kind: "tailscale_ssh" as EndpointKind },
-      target_proof: { method: "provider_binding_tag" as TargetProofMethod },
-      locator_kind: "provider_ref" as LocatorKind,
-      failure_domain: "tailnet" as FailureDomain,
-    }));
+  const candidates: Candidate[] = [];
+  for (const binding of request.plane_bindings) {
+    if (!allowed[purpose].includes(binding.plane)) continue;
+    if (!tagPolicySatisfied(binding.required_tags, binding.runtime_tags)) continue;
+    candidates.push(candidateForBinding(binding));
+  }
+  if (candidates.length === 0) {
+    const hasPlaneMatch = request.plane_bindings.some((b) => allowed[purpose].includes(b.plane));
+    const reason = hasPlaneMatch ? "tag_policy_unsatisfied" : "no_candidate_for_purpose";
+    return { candidates: [], reason, purpose, dispatch_state: state };
+  }
   return { candidates, reason: "ok", purpose };
 }
 

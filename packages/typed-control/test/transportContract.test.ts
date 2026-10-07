@@ -91,4 +91,63 @@ describe("transportContract", () => {
     expect(reloaded.get("node-1")).toBe("MAY_HAVE_EXECUTED");
     expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ "node-1": "MAY_HAVE_EXECUTED" });
   });
+
+  it("RF-2: cloudflare binding uses cloudflare not tailnet facts", () => {
+    const result = evaluateGate(
+      baseRequest({
+        purpose: "machine-control",
+        dispatch_state: "NOT_DISPATCHED",
+        authority: { scope: "machine-control", policy_revision: "rev-1" },
+        plane_bindings: [
+          {
+            plane: "cloudflare-vpc",
+            provider: "cloudflare",
+            provider_ref: "cf-binding-1",
+            required_tags: [],
+            runtime_tags: [],
+          },
+        ],
+      }),
+    );
+    expect(result.reason).toBe("ok");
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0].plane).toBe("cloudflare-vpc");
+    expect(result.candidates[0].endpoint.kind).toBe("cloudflared_forwarded_sshd");
+    expect(result.candidates[0].target_proof.method).toBe("pinned_host_key");
+    expect(result.candidates[0].locator_kind).toBe("binding_name");
+    expect(result.candidates[0].failure_domain).toBe("worker_vpc");
+  });
+
+  it("RF-3: cross-authority yields no candidate", () => {
+    const result = evaluateGate(
+      baseRequest({
+        purpose: "machine-control",
+        dispatch_state: "NOT_DISPATCHED",
+        authority: { scope: "human-maintenance", policy_revision: "rev-1" },
+      }),
+    );
+    expect(result.candidates).toHaveLength(0);
+    expect(result.reason).toBe("authority_mismatch");
+  });
+
+  it("RF-3: missing required tag yields no candidate", () => {
+    const result = evaluateGate(
+      baseRequest({
+        purpose: "machine-control",
+        dispatch_state: "NOT_DISPATCHED",
+        authority: { scope: "machine-control", policy_revision: "rev-1" },
+        plane_bindings: [
+          {
+            plane: "tailnet",
+            provider: "tailscale",
+            provider_ref: "ref-1",
+            required_tags: ["tag:fleet-ssh-target"],
+            runtime_tags: ["tag:other"],
+          },
+        ],
+      }),
+    );
+    expect(result.candidates).toHaveLength(0);
+    expect(result.reason).toBe("tag_policy_unsatisfied");
+  });
 });

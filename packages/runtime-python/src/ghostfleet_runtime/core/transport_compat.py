@@ -37,7 +37,7 @@ def _legacy_provider_to_plane(provider: str) -> Plane:
         return Plane.TAILNET
     if normalized in ("cloudflare", "cloudflare-vpc", "workers-vpc", "tunnel"):
         return Plane.CLOUDFLARE_VPC
-    return Plane.NATIVE_LAN
+    raise ValueError(f"unknown provider plane: {provider!r}")
 
 
 def python_legacy_to_contract(
@@ -55,13 +55,15 @@ def python_legacy_to_contract(
     ``None`` is preserved so the contract's ``evaluate_gate`` can fail closed.
     ``observed_tags`` are runtime observations and never merged into
     ``PlaneBinding.required_tags``.
+
+    The legacy Python path is always Tailscale/tailnet; ``provider_ref`` is an
+    opaque node binding, never a provider name to parse for plane.
     """
     from .transport_resolution import TransportMode as LegacyMode
 
-    plane = _legacy_provider_to_plane(getattr(legacy, "provider_ref", "") or "")
-    # The legacy request's ``management_profile`` is not authority; it is only
-    # retained as a durable binding hint. The real ``Authority`` comes from the
-    # caller-supplied ``authority``.
+    # RF-1 fix: opaque provider_ref must not be parsed as a provider name.
+    # The legacy Python adapter is Tailscale-only; plane is always TAILNET.
+    plane = Plane.TAILNET
     required_tags: tuple[str, ...]
     if getattr(legacy, "mode", None) is LegacyMode.NORMAL:
         required_tags = ("tag:fleet-ssh-target",)
@@ -70,8 +72,8 @@ def python_legacy_to_contract(
 
     provider_ref = getattr(legacy, "provider_ref", None) or ""
     binding = PlaneBinding(
-        plane=plane if provider_ref else Plane.TAILNET,
-        provider="tailscale" if provider_ref else "tailscale",
+        plane=plane,
+        provider="tailscale",
         provider_ref=provider_ref,
         required_tags=required_tags,
         runtime_tags=tuple(observed_tags),
@@ -97,7 +99,9 @@ def ts_control_target_to_contract(
     observed_tags: tuple[str, ...] = (),
 ) -> TransportRequest:
     """Map a legacy TS ``ControlTarget.transport_mode`` entry to a contract request."""
-    plane = _LEGACY_TS_MODE_TO_PLANE.get(transport_mode, Plane.NATIVE_LAN)
+    if transport_mode not in _LEGACY_TS_MODE_TO_PLANE:
+        raise ValueError(f"unknown transport_mode: {transport_mode!r} — fail closed, no fallback")
+    plane = _LEGACY_TS_MODE_TO_PLANE[transport_mode]
     provider = "cloudflare" if plane is Plane.CLOUDFLARE_VPC else "native"
     required_tags: tuple[str, ...] = ()
     # Never synthesize purpose or dispatch_state here.

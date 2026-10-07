@@ -118,3 +118,65 @@ def test_json_file_dispatch_state_store_survives_restart(tmp_path):
     assert reloaded.get("node-1") is DispatchState.MAY_HAVE_EXECUTED
     raw = json.loads(store_path.read_text(encoding="utf-8"))
     assert raw == {"node-1": "MAY_HAVE_EXECUTED"}
+
+
+# RF-2: provider-neutral gate must not fake tailnet facts for a cloudflare binding.
+
+def test_rf2_cloudflare_binding_uses_cloudflare_not_tailnet_facts():
+    request = _request(
+        purpose=Purpose.MACHINE_CONTROL,
+        dispatch_state=DispatchState.NOT_DISPATCHED,
+        authority=Authority(scope="machine-control", policy_revision="rev-1"),
+        plane_bindings=(
+            PlaneBinding(
+                plane=Plane.CLOUDFLARE_VPC,
+                provider="cloudflare",
+                provider_ref="cf-binding-1",
+                required_tags=(),
+                runtime_tags=(),
+            ),
+        ),
+    )
+    result = evaluate_gate(request)
+    assert result["reason"] == "ok"
+    assert len(result["candidates"]) == 1
+    cand = result["candidates"][0]
+    assert cand.plane is Plane.CLOUDFLARE_VPC
+    assert cand.endpoint.kind.value == "cloudflared_forwarded_sshd"
+    assert cand.target_proof.method.value == "pinned_host_key"
+    assert cand.locator_kind.value == "binding_name"
+    assert cand.failure_domain.value == "worker_vpc"
+
+
+# RF-3: gate must enforce authority scope and required_tags policy.
+
+
+def test_rf3_cross_authority_yields_no_candidate():
+    request = _request(
+        purpose=Purpose.MACHINE_CONTROL,
+        dispatch_state=DispatchState.NOT_DISPATCHED,
+        authority=Authority(scope="human-maintenance", policy_revision="rev-1"),
+    )
+    result = evaluate_gate(request)
+    assert result["candidates"] == []
+    assert result["reason"] == "authority_mismatch"
+
+
+def test_rf3_missing_required_tag_yields_no_candidate():
+    request = _request(
+        purpose=Purpose.MACHINE_CONTROL,
+        dispatch_state=DispatchState.NOT_DISPATCHED,
+        authority=Authority(scope="machine-control", policy_revision="rev-1"),
+        plane_bindings=(
+            PlaneBinding(
+                plane=Plane.TAILNET,
+                provider="tailscale",
+                provider_ref="ref-1",
+                required_tags=("tag:fleet-ssh-target",),
+                runtime_tags=("tag:other",),
+            ),
+        ),
+    )
+    result = evaluate_gate(request)
+    assert result["candidates"] == []
+    assert result["reason"] == "tag_policy_unsatisfied"

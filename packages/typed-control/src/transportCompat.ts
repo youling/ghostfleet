@@ -6,14 +6,15 @@
  * missing values remain fail-closed and are never defaulted.
  */
 
-import type {
-  Authority,
-  Caller,
-  DispatchState,
-  Plane,
-  PlaneBinding,
-  Purpose,
-  TransportRequest,
+import {
+  ContractValidationError,
+  type Authority,
+  type Caller,
+  type DispatchState,
+  type Plane,
+  type PlaneBinding,
+  type Purpose,
+  type TransportRequest,
 } from "./transportContract.js";
 
 const LEGACY_MODE_TO_PLANE: Record<string, Plane> = {
@@ -31,7 +32,12 @@ export function tsControlTargetToContract(args: {
   authority: Authority;
   observedTags?: string[];
 }): TransportRequest {
-  const plane = LEGACY_MODE_TO_PLANE[args.transportMode] ?? "native-lan";
+  const plane = LEGACY_MODE_TO_PLANE[args.transportMode];
+  if (!plane) {
+    throw new ContractValidationError(
+      `unknown transport_mode: ${args.transportMode} — fail closed, no fallback`,
+    );
+  }
   const provider = plane === "cloudflare-vpc" ? "cloudflare" : "native";
   const binding: PlaneBinding = {
     plane,

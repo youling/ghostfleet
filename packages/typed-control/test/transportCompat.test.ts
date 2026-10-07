@@ -63,4 +63,32 @@ describe("transportCompat", () => {
     expect(request.plane_bindings[0].required_tags).toEqual(["tag:fleet-ssh-target"]);
     expect(request.plane_bindings[0].runtime_tags).toEqual(["tag:other"]);
   });
+
+  it("RF-1: opaque provider_ref maps to tailnet not native-lan", () => {
+    const request = pythonLegacyToContract({
+      nodeUid: "node-11111111-1111-4111-8111-111111111111",
+      providerRef: "opaque-tailscale-ref-xyz-123",
+      legacyMode: "NORMAL",
+      purpose: "machine-control",
+      dispatchState: "NOT_DISPATCHED",
+      caller: caller(),
+      authority: authority(),
+    });
+    expect(request.plane_bindings[0].plane).toBe("tailnet");
+    expect(request.plane_bindings[0].provider).toBe("tailscale");
+    expect(request.plane_bindings[0].provider_ref).toBe("opaque-tailscale-ref-xyz-123");
+  });
+
+  it("RF-4: unknown transport_mode fails closed", () => {
+    expect(() =>
+      tsControlTargetToContract({
+        nodeUid: "node-11111111-1111-4111-8111-111111111111",
+        transportMode: "unknown_mode_xyz",
+        purpose: "machine-control",
+        dispatchState: "NOT_DISPATCHED",
+        caller: caller(),
+        authority: authority(),
+      }),
+    ).toThrow(/unknown transport_mode/);
+  });
 });

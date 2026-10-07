@@ -181,8 +181,44 @@ def derive_purpose_for_legacy_machine_control_entry() -> Purpose:
     return Purpose.MACHINE_CONTROL
 
 
+def _candidate_for_binding(binding: PlaneBinding) -> Candidate:
+    """Provider-specific materialization belongs to the adapter, but the
+    scaffold must not fake tailnet facts for a cloudflare binding (RF-2).
+    This helper keeps the scaffold's candidate summaries honest per plane.
+    """
+    if binding.plane is Plane.TAILNET:
+        return Candidate(
+            plane=binding.plane,
+            endpoint=Endpoint(kind=EndpointKind.TAILSCALE_SSH),
+            target_proof=TargetProof(method=TargetProofMethod.PROVIDER_BINDING_TAG),
+            locator_kind=LocatorKind.PROVIDER_REF,
+            failure_domain=FailureDomain.TAILNET,
+        )
+    if binding.plane is Plane.CLOUDFLARE_VPC:
+        return Candidate(
+            plane=binding.plane,
+            endpoint=Endpoint(kind=EndpointKind.CLOUDFLARED_FORWARDED_SSHD),
+            target_proof=TargetProof(method=TargetProofMethod.PINNED_HOST_KEY),
+            locator_kind=LocatorKind.BINDING_NAME,
+            failure_domain=FailureDomain.WORKER_VPC,
+        )
+    # NATIVE_LAN / recovery
+    return Candidate(
+        plane=binding.plane,
+        endpoint=Endpoint(kind=EndpointKind.NATIVE_SSHD),
+        target_proof=TargetProof(method=TargetProofMethod.PINNED_HOST_KEY),
+        locator_kind=LocatorKind.EXPLICIT_IP,
+        failure_domain=FailureDomain.LAN,
+    )
+
+
 def evaluate_gate(request: TransportRequest) -> dict[str, object]:
-    """Return candidates or an empty list with a fail-closed reason."""
+    """Return candidates or an empty list with a fail-closed reason.
+
+    The gate is provider-neutral: it only does purpose/effect/authority policy
+    fencing (RF-3). Provider-specific candidate materialization is left to the
+    adapter via ``_candidate_for_binding`` and never faked across planes (RF-2).
+    """
     purpose = request.require_purpose()
     state = request.require_dispatch_state()
     if state is not DispatchState.NOT_DISPATCHED:
@@ -192,22 +228,34 @@ def evaluate_gate(request: TransportRequest) -> dict[str, object]:
             "dispatch_state": state.value,
             "purpose": purpose.value,
         }
+    # RF-3: authority scope must be consistent with purpose; cross-authority
+    # requests produce no candidates instead of silently succeeding.
+    if request.authority.scope != purpose.value:
+        return {
+            "candidates": [],
+            "reason": "authority_mismatch",
+            "dispatch_state": state.value,
+            "purpose": purpose.value,
+        }
     allowed = {
         Purpose.MACHINE_CONTROL: (Plane.CLOUDFLARE_VPC, Plane.TAILNET),
         Purpose.HUMAN_MAINTENANCE: (Plane.TAILNET,),
         Purpose.RECOVERY: (Plane.NATIVE_LAN,),
     }[purpose]
-    candidates = [
-        Candidate(
-            plane=b.plane,
-            endpoint=Endpoint(kind=EndpointKind.TAILSCALE_SSH),
-            target_proof=TargetProof(method=TargetProofMethod.PROVIDER_BINDING_TAG),
-            locator_kind=LocatorKind.PROVIDER_REF,
-            failure_domain=FailureDomain.TAILNET,
-        )
-        for b in request.plane_bindings
-        if b.plane in allowed
-    ]
+    candidates: list[Candidate] = []
+    for binding in request.plane_bindings:
+        if binding.plane not in allowed:
+            continue
+        # RF-3: required_tags is durable policy; runtime_tags is observation.
+        # Missing required tag fails closed for that binding.
+        if not tag_policy_satisfied(binding.required_tags, binding.runtime_tags):
+            continue
+        candidates.append(_candidate_for_binding(binding))
+    if not candidates:
+        # Distinguish empty due to tag policy vs no matching plane.
+        has_plane_match = any(b.plane in allowed for b in request.plane_bindings)
+        reason = "tag_policy_unsatisfied" if has_plane_match else "no_candidate_for_purpose"
+        return {"candidates": [], "reason": reason, "purpose": purpose.value}
     return {"candidates": candidates, "reason": "ok", "purpose": purpose.value}
 
 
