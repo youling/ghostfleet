@@ -55,9 +55,9 @@
 | --- | --- | --- |
 | Cloudflare Tunnel | https://developers.cloudflare.com/tunnel/ | cloudflared 是节点主动建立的出站 connector；Tunnel 本身不要求节点开放公网入站端口。 |
 | Workers VPC | https://developers.cloudflare.com/workers-vpc/ | Workers 可通过 VPC binding/网络连接私网资源；provider、plane、origin endpoint 不能压成一个 locator 字符串。 |
-| Tailscale SSH | https://tailscale.com/kb/1193/tailscale-ssh | Tailscale SSH 在 Tailscale IP:22 上由 tailscaled 处理，认证/授权来自 Tailscale；它与 native OpenSSH 是不同 authority plane。 |
-| Tailscale DERP | https://tailscale.com/kb/1118/derp | DERP 是连接路径 fallback，不是节点 identity 或 authorization 边界。 |
-| OpenSSH sshd | https://man.openbsd.org/sshd_config | ListenAddress/Port 描述 listener；host key 与 authorized_keys/CA 等承担不同身份与授权职责。 |
+| Tailscale SSH | `tailscale.com/kb/1193/tailscale-ssh` | Tailscale SSH 在 Tailscale IP:22 上由 tailscaled 处理，认证/授权来自 Tailscale；它与 native OpenSSH 是不同 authority plane。 |
+| Tailscale DERP | `tailscale.com/kb/1118/derp` | DERP 是连接路径 fallback，不是节点 identity 或 authorization 边界。 |
+| OpenSSH sshd | `man.openbsd.org/sshd_config` | ListenAddress/Port 描述 listener；host key 与 authorized_keys/CA 等承担不同身份与授权职责。 |
 
 ## 4. Phase 1 冻结不变量
 
