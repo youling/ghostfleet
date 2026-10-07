@@ -43,6 +43,47 @@ test("access metadata reports the authenticated scope without touching storage",
   assert.equal((await worker.fetch(request("POST", reader, "/v0/access"), env)).status, 403);
 });
 
+test("provider setup readiness is read-only and secret-safe", async () => {
+  let storageCalls = 0;
+  const privateService = {
+    async fetch(request) {
+      assert.equal(new URL(request.url).pathname, "/readiness");
+      return Response.json({
+        authority: { provider: "tailscale", generation: "ghostfleet-tailscale-auth-v1" },
+        secrets: {
+          TAILSCALE_ENROLL_OAUTH_CLIENT_ID: "PRESENT",
+          TAILSCALE_ENROLL_OAUTH_CLIENT_SECRET: "PRESENT",
+        },
+        forbidden_value: undefined,
+      });
+    },
+  };
+  const env = {
+    GHOSTFLEET_OPERATOR_TOKEN: operator,
+    GHOSTFLEET_READ_TOKEN: reader,
+    GHOSTFLEET_ENROLLMENT_CLAIM_READY: "1",
+    GHOSTFLEET_ENROLLMENT_CLAIM_MATERIALIZER: privateService,
+    GHOSTFLEET_STATE: { idFromName() { storageCalls++; throw new Error("provider setup must not access state"); } },
+  };
+  const response = await worker.fetch(request("GET", reader, "/v0/providers/setup"), env);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const body = await response.json();
+  assert.equal(body.providers.tailscale.status, "READY");
+  assert.equal(body.providers.tailscale.authority_generation, "ghostfleet-tailscale-auth-v1");
+  assert.equal(body.providers.tailscale.secret_state.client_secret, "PRESENT");
+  assert.equal(JSON.stringify(body).includes("synthetic-secret"), false);
+  assert.equal(storageCalls, 0);
+
+  const missing = await worker.fetch(request("GET", reader, "/v0/providers/setup"), {
+    GHOSTFLEET_OPERATOR_TOKEN: operator,
+    GHOSTFLEET_READ_TOKEN: reader,
+    GHOSTFLEET_STATE: env.GHOSTFLEET_STATE,
+  });
+  assert.equal((await missing.json()).providers.tailscale.status, "MISSING");
+  assert.equal(storageCalls, 0);
+});
+
 test("Durable Object reloads committed state between requests", async () => {
   const values = new Map();
   const storage = { transaction: (fn) => fn({ get: async (key) => structuredClone(values.get(key)), put: async (key, value) => values.set(key, structuredClone(value)) }) };

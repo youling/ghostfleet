@@ -698,6 +698,12 @@
       "sha256": "66b619c114469038ff670389e9cf2cfc7855620691f048f30a62679fcb2c5bbb",
       "reason": "Official installation documentation cited as the reviewed source for exact public package URLs.",
       "review": "Cloudflare primary package documentation inspected; no instance URL allowance."
+    },
+    {
+      "path": "console/index.html",
+      "sha256": "91ed7ad38ce642956b00fca74ac9af5c47e5ddf2490b533e84fb9136be45ffba",
+      "reason": "Official Tailscale admin-console OAuth credential creation entry used by the novice Provider Setup wizard; no secret, query string, or deployment locator.",
+      "review": "Tailscale OAuth client setup documentation reviewed; the exact HTTPS URL opens provider-native credential creation and carries no credential material."
     }
   ]
 }

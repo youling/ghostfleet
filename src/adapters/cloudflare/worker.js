@@ -6,6 +6,7 @@ import { handleMcpRequest } from "../../integrations/mcp-http.js";
 import { BOOTSTRAP_SH } from "../../../packages/bootstrap/src/bootstrap.js";
 import { createEnrollmentClaimMaterializer, createEnrollmentClaimPreparer } from "./enrollment-materializer.js";
 import { createDeploymentEnrollmentTemplateCatalog } from "./deployment-templates.js";
+import { providerSetupSnapshot } from "./provider-setup.js";
 
 export class GhostFleetState {
   constructor(state, env) { this.state = state; this.env = env; }
@@ -37,6 +38,11 @@ export default {
     const isEnrollmentComplete = request.method === "POST" && path === "/v1/enroll/complete";
     if (request.method === "GET" && path === "/v1/bootstrap.sh") {
       return new Response(BOOTSTRAP_SH, { headers: { "content-type": "text/x-shellscript; charset=utf-8", "cache-control": "no-store" } });
+    }
+    if (path === "/v0/providers/setup" && request.method === "GET") {
+      const denial = await authorizeApi(request, env, { readOnly: true });
+      if (denial) return denial;
+      return Response.json(await providerSetupSnapshot(env), { headers: { "cache-control": "no-store" } });
     }
     if (path.startsWith("/v0/") || isMcp) {
       const denial = await authorizeApi(request, env, { readOnly: isMcp });

@@ -291,3 +291,21 @@ dialog::backdrop { background: rgb(0 0 0 / .35); }
 .bootstrap-command { min-height: 112px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; line-height: 1.55; }
 .bootstrap-code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 18px; letter-spacing: .08em; font-variant-numeric: tabular-nums; }
 .bootstrap-copy-row { display: flex; justify-content: flex-end; margin: 8px 0 18px; }
+
+
+.provider-panel { display: flex; flex-direction: column; gap: 14px; }
+.provider-heading { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.provider-generation { font-size: 11px; }
+.provider-fields { margin-top: 0; }
+.provider-fields code { font-size: 11px; color: var(--ink); background: var(--muted-surface); padding: 2px 5px; border-radius: 4px; }
+.provider-scope-note { border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; background: var(--muted-surface); }
+.provider-scope-note strong { display: block; font-size: 12px; margin-bottom: 5px; }
+.provider-scope-note p { margin: 0; font-size: 11px; }
+.provider-ready-note { margin: 0; }
+.provider-setup-body { padding: 22px; }
+.provider-steps { margin: 18px 0 0; padding-left: 22px; }
+.provider-steps li { padding: 0 0 20px 5px; }
+.provider-steps li:last-child { padding-bottom: 0; }
+.provider-steps strong { display: block; font-size: 13px; margin-bottom: 6px; }
+.provider-steps p { margin: 6px 0 10px; }
+.provider-next-note { border-left: 3px solid var(--blue); padding-left: 10px; font-size: 11px; color: var(--muted); }

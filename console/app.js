@@ -3,6 +3,7 @@ import { DEFAULT_ACCEPTANCE_EVIDENCE as requiredEvidence } from "./model.js";
 import { enrollmentDisplayName, selectRows } from "./shared/table-model.js";
 import { icon } from "./shared/icons.js";
 import { templateDisplay, templatePostureSummary, templateSelectionPayload } from "./enrollment/templates/model.js";
+import { renderProviders } from "./providers/view.js";
 
 // The UI owns presentation only. Authority, transitions and admission stay on the server.
 const routes = ["overview", "devices", "enrollment", "approvals", "capabilities", "activity", "settings"];
@@ -101,11 +102,11 @@ async function api(path, options = {}) {
 }
 const post = (path, payload = {}) => api(path, { method: "POST", body: JSON.stringify(payload) });
 async function readSnapshot() {
-  const [permissions, attempts, gates, nodes, events, capabilities, templates] = await Promise.all([
-    api("/v0/access"), api("/v0/enrollment-attempts"), api("/v0/human-gates"), api("/v0/nodes"), api("/v0/events"), api("/v0/capabilities"), api("/v0/enrollment-templates"),
+  const [permissions, attempts, gates, nodes, events, capabilities, templates, providers] = await Promise.all([
+    api("/v0/access"), api("/v0/enrollment-attempts"), api("/v0/human-gates"), api("/v0/nodes"), api("/v0/events"), api("/v0/capabilities"), api("/v0/enrollment-templates"), api("/v0/providers/setup"),
   ]);
   if (!["operator", "read_only"].includes(permissions.access)) throw new Error("UNAUTHORIZED");
-  return { access: permissions.access, attempts: attempts.attempts, gates: gates.gates, nodes: nodes.nodes, events: events.events, capabilities: capabilities.capabilities, templates: templates.templates };
+  return { access: permissions.access, attempts: attempts.attempts, gates: gates.gates, nodes: nodes.nodes, events: events.events, capabilities: capabilities.capabilities, templates: templates.templates, providers };
 }
 
 function navigation() {
@@ -335,11 +336,20 @@ function renderRows() {
     "</select><span>" + text("pageCount", selected) + '</span><button class="btn icon-button" type="button" data-page="-1" aria-label="' + text("previousPage") + '"' + (selected.page === 1 ? " disabled" : "") + ">" + icon("left") +
     '</button><button class="btn icon-button" type="button" data-page="1" aria-label="' + text("nextPage") + '"' + (selected.page === selected.pages ? " disabled" : "") + ">" + icon("right") + "</button></div>";
 }
+function renderSettingsProviders() {
+  const host = $("#providers-settings");
+  if (!host) return;
+  host.innerHTML = snapshot ? renderProviders(snapshot.providers) :
+    '<section class="settings-section provider-card"><div class="settings-description"><h2>' + text("providers") +
+    '</h2><p class="secondary">' + text("provider.settingsHelp") +
+    '</p></div><div class="settings-form"><p class="secondary">' + text("provider.connectControlPlaneFirst") + '</p></div></section>';
+}
+
 function renderPage() {
   $("#settings-view").hidden = view !== "settings";
   $("#page-content").hidden = view === "settings";
   $("#page-content").setAttribute("aria-busy", String(busy));
-  if (view === "settings") { $("#page-content").replaceChildren(); return; }
+  if (view === "settings") { $("#page-content").replaceChildren(); renderSettingsProviders(); return; }
   if (!snapshot) {
     $("#page-content").innerHTML = busy ? '<div class="data-frame">' + Array.from({ length: 5 }, () => '<div class="loading-row"><div class="loading-placeholder"></div></div>').join("") + "</div>" :
       '<section class="welcome">' + icon("devices") + "<h2>" + text("welcomeTitle") + "</h2><p>" + text("welcomeHelp") + '</p><button type="button" class="btn btn-primary" data-go="settings">' + text("connectControlPlane") + "</button></section>";
@@ -661,6 +671,11 @@ document.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!event.target.closest(".column-picker") && $(".column-picker")) $(".column-picker").open = false;
   if (!button || button.disabled) return;
+  if (button.dataset.providerSetup === "tailscale") {
+    $("#provider-setup-dialog")?.showModal();
+    $("#provider-setup-dialog [data-close-dialog]")?.focus({ preventScroll: true });
+    return;
+  }
   if (button.dataset.copyTarget) { copyBootstrapField(button.dataset.copyTarget); return; }
   if (button.dataset.closeDialog) { $("#" + button.dataset.closeDialog)?.close(); return; }
   if (button.hasAttribute("data-refresh-state")) {

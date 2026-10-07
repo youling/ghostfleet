@@ -49,6 +49,8 @@
             <p id="connection-access" class="secondary help"></p>
           </form>
         </div>
+
+        <div id="providers-settings"></div>
         <div class="settings-section">
           <div class="settings-description"><h2 data-i18n="appearance">外观</h2><p class="secondary" data-i18n="appearanceHelp">匹配当前使用环境，外观偏好仅保存在本浏览器。</p></div>
           <div class="settings-form"><label for="theme-preference" class="form-label" data-i18n="theme">主题</label><select id="theme-preference" class="form-select"><option value="system" data-i18n="systemTheme">跟随系统</option><option value="light" data-i18n="lightTheme">浅色</option><option value="dark" data-i18n="darkTheme">深色</option></select></div>
@@ -105,6 +107,40 @@
       <div class="bootstrap-copy-row"><button type="button" class="btn btn-outline-secondary" data-copy-target="bootstrap-code" data-i18n="copyCode">复制短码</button></div>
       <p class="secondary help"><span data-i18n="expiresAt">有效期至</span> <span id="bootstrap-expiry"></span></p>
       <div class="dialog-actions"><button class="btn btn-primary" type="button" data-close-dialog="bootstrap-dialog" data-i18n="close">关闭</button></div>
+    </div>
+  </dialog>
+
+
+  <dialog id="provider-setup-dialog" class="create-dialog provider-setup-dialog" aria-labelledby="provider-setup-title">
+    <div class="dialog-heading">
+      <h2 id="provider-setup-title" data-i18n="provider.setupTitle">连接 Tailscale 纳管权限</h2>
+      <button type="button" class="btn icon-button" data-close-dialog="provider-setup-dialog" data-i18n-aria="close"><span data-icon="close"></span></button>
+    </div>
+    <div class="provider-setup-body">
+      <p class="secondary" data-i18n="provider.setupIntro">GhostFleet 使用一个最小权限 OAuth Client，为每台新设备临时生成一次性纳管凭据。</p>
+      <ol class="provider-steps">
+        <li>
+          <strong data-i18n="provider.step1Title">在 Tailscale 创建 OAuth Client</strong>
+          <p class="secondary" data-i18n="provider.step1Help">打开 Trust credentials，选择 Credential → OAuth。</p>
+          <a class="btn btn-outline-secondary" href="https://login.tailscale.com/admin/settings/oauth" target="_blank" rel="noopener noreferrer">
+            <span data-i18n="provider.openTailscale">打开 Tailscale</span>
+          </a>
+        </li>
+        <li>
+          <strong data-i18n="provider.step2Title">只授予纳管所需权限</strong>
+          <dl class="detail-fields provider-fields">
+            <dt data-i18n="provider.scope">Scope</dt><dd><code>auth_keys</code></dd>
+            <dt data-i18n="provider.tag">设备标签</dt><dd><code>tag:fleet-ssh-target</code></dd>
+          </dl>
+          <p class="authority-note" data-i18n="provider.noExtraAuthority">不要授予 devices、DNS、ACL 或 tailnet admin 等额外权限。</p>
+        </li>
+        <li>
+          <strong data-i18n="provider.step3Title">创建后回到这里</strong>
+          <p class="secondary" data-i18n="provider.step3Help">Tailscale 只会显示 Client Secret 一次。下一步将由 GhostFleet 安全验证并交给私有 authority service 托管。</p>
+          <p class="provider-next-note" data-i18n="provider.credentialFormPending">凭据回填与验证将在下一步启用；当前页面不会接收或保存 Secret。</p>
+        </li>
+      </ol>
+      <div class="dialog-actions"><button class="btn btn-primary" type="button" data-close-dialog="provider-setup-dialog" data-i18n="close">关闭</button></div>
     </div>
   </dialog>
 
