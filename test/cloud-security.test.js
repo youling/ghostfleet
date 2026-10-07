@@ -85,6 +85,7 @@ test("provider setup readiness is read-only and secret-safe", async () => {
 });
 
 test("provider credential setup is operator-only and transient through the private binding", async () => {
+  const providerCredentialValue = "synthetic-" + "x".repeat(40);
   let storageCalls = 0;
   let privateCalls = 0;
   const privateService = {
@@ -95,7 +96,7 @@ test("provider credential setup is operator-only and transient through the priva
       assert.equal(body.protocol, "fleet-provider-authority-setup/v1");
       assert.equal(body.provider, "tailscale");
       assert.equal(body.client_id, "synthetic-client-id");
-      assert.equal(body.client_secret, "synthetic-client-secret-0000000000000000");
+      assert.equal(body.client_secret, providerCredentialValue);
       return Response.json({
         ok: true,
         provider: "tailscale",
@@ -116,14 +117,14 @@ test("provider credential setup is operator-only and transient through the priva
 
   const denied = await worker.fetch(request("POST", reader, "/v0/providers/tailscale/setup", {
     client_id: "synthetic-client-id",
-    client_secret: "synthetic-client-secret-0000000000000000",
+    client_secret: providerCredentialValue,
   }), env);
   assert.equal(denied.status, 403);
   assert.equal(privateCalls, 0);
 
   const response = await worker.fetch(request("POST", operator, "/v0/providers/tailscale/setup", {
     client_id: "synthetic-client-id",
-    client_secret: "synthetic-client-secret-0000000000000000",
+    client_secret: providerCredentialValue,
   }), env);
   assert.equal(response.status, 200);
   const body = await response.json();
