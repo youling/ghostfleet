@@ -3,11 +3,15 @@
 ## 中文
 
 <!-- topic:architecture -->
-### Worker/DO/Console 与 Pages
+### Worker / DO / Console 一体化宿主
 
-当前参考宿主由 Cloudflare Worker、SQLite Durable Object 和静态资源组成；`wrangler.jsonc` 从 `dist/console` 提供控制台构建产物。Durable Object 类与迁移标签用于持久化生命周期和证据，MCP 与 API 共享同一快照。这是可运行的参考实现，不证明已有生产 URL 或已完成 Pages 迁移。
+GhostFleet 的 canonical Cloudflare 部署形态是 **一个 Worker deployment 同时承载静态 Console、API/MCP 与 SQLite Durable Object lifecycle state**。根 `wrangler.jsonc` 已通过 Static Assets binding 从 `dist/console` 提供控制台构建产物；API、MCP、bootstrap 与 Console 因而可以使用同一 HTTPS origin、同一发布版本和同一回滚坐标。
 
-若将控制台迁至 Pages，Worker 仍负责需认证的 API/MCP 和持久化状态。必须明确 API 基址与允许的来源、禁止缓存及认证请求头、静态包不含秘密、HTTPS 与身份系统、安全审阅和回滚方案。仅上传 HTML 不构成生产迁移验收；宿主部署成功也不会安装设备或授予执行权限。
+生产部署不以 GitHub Pages 作为 canonical Control Panel 宿主。Pages 可用于文档、公开演示或独立静态预览，但把生产 Console 拆到 Pages 会额外引入前端/API 版本漂移、跨域/CORS、两套发布与回滚坐标，而不会减少 Worker/DO 的必要性。
+
+部署方可以通过非秘密 deployment config 扩展模板目录，并通过私有 Service Binding 接入 provider-specific authority/materializer。公共 GhostFleet 源码仍保持 provider-neutral；真实 service 名称、私有 catalog、账号坐标与 secret custody 属于 deployment owner。
+
+宿主部署成功本身不安装设备、不授予执行权限，也不证明真实节点验收。
 
 <!-- topic:build -->
 ### 本地验证与 dry-run
@@ -52,11 +56,15 @@ npx --no-install wrangler deploy
 ## English
 
 <!-- topic:architecture -->
-### Worker/DO/Console and Pages
+### Integrated Worker / DO / Console hosting
 
-The reference host is a Cloudflare Worker with a SQLite Durable Object and static assets; `wrangler.jsonc` serves the Console build from `dist/console`. Durable Object classes/migration tags persist lifecycle/evidence and MCP/API share a snapshot. This is a runnable reference, not evidence of a production URL or completed Pages migration.
+The canonical Cloudflare deployment is **one Worker deployment serving static Console assets, API/MCP and the SQLite Durable Object lifecycle state together**. The root `wrangler.jsonc` already serves `dist/console` through a Static Assets binding, so Console, API, MCP and bootstrap can share one HTTPS origin, one source revision and one rollback coordinate.
 
-If the Console moves to Pages, the Worker still owns authenticated API/MCP and durable state. Design exact API base/origins, no-store/auth headers, no secrets in static bundles, HTTPS/identity, security review and rollback. Uploading HTML alone does not complete production migration. A deployed host neither installs devices nor grants execution authority.
+GitHub Pages is not the canonical production Control Panel host. It remains suitable for documentation, public demos or isolated static previews. Splitting the production Console onto Pages would add frontend/API version drift, CORS/origin policy and a second deployment/rollback coordinate while the Worker/DO would still be required.
+
+Deployment owners may supply non-secret catalog extensions and attach provider-specific authority/materializers through private Service Bindings. Public GhostFleet remains provider-neutral; concrete service names, private catalogs, account coordinates and secret custody belong to the deployment owner.
+
+A successful host deployment still does not install a device, grant execution authority or prove real-node acceptance.
 
 <!-- topic:build -->
 ### Local validation and dry-run
