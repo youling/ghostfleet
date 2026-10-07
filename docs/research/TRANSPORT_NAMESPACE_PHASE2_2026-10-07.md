@@ -1,6 +1,6 @@
 # Transport Namespace & Adaptive Link Layer — Phase 2 真实链路对象建模
 
-- Issue: https://github.com/youling/ghostfleet/issues/33
+- Issue: https://github.com/youling/ghostfleet/issues/36（原 #33 已删除；Fleet commit comment `203835259` 记为历史 superseded）
 - 前置：Phase 1 研究报告（fleet `issue33-transport-namespace` 分支），Architect review commit comment `203835259`
 - 日期：2026-10-07
 - 状态：Research 阶段交付，不冻结名词/枚举，不写生产代码。
@@ -48,7 +48,7 @@
 
 | 字段 | 事实 |
 | --- | --- |
-| provider | 无（LAN / 云厂商 VNC / 救援模式） |
+| provider | native | 可能为空或为外部 recovery provider（LAN/云管理网/物理 console）；authority 不得从 provider 名称自动推出 |
 | network plane | LAN / provider 管理网 / 显式 recovery 路径 |
 | locator | 显式给定 IP/hostname（禁止作为 authority，仅 runtime locator） |
 | listener | 节点上 sshd 的实际 listener（可与 Tailscale SSH 在不同地址族上同数字端口） |
