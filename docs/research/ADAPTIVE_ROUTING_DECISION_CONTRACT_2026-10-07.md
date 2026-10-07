@@ -54,18 +54,62 @@ Human/Policy Approval (本阶段不自动切换)
 
 黑盒评分、自动切换、provider fallback 均 HOLD。
 
-## 4. 离线回放素材（下一步细化）
+## 4. Health Evidence Schema（与 evidence_ref 引用）
 
-- 超时 / 链路失败 → 应保持 eligible 为空或 reason=health_unavailable，不跨权限面切
-- 节点重启 / UNKNOWN 恢复 → 必须 reconcile_required，不自动重试
-- provider tag 漂移 → tag_policy_unsatisfied
-- credential 过期 → authority_mismatch
-- Tunnel/TAILNET 异常 → failure_domain 标注，不推出 node down
+`health_evidence` 仅观测，不产生 authority；每条带 `evidence_ref` 供 Output 引用。
 
-将基于已有 receipt / dispatch_state / failure domain / provider observation 做影子决策回放。
+```
+TransportHealthObservation {
+  plane, binding_ref, healthy: bool, failure_domain?, observed_at
+}
+TargetReachabilityObservation {
+  candidate_ref, reachable: bool, probe_method, observed_at
+}
+TargetIdentityProofObservation {
+  candidate_ref, method, verified: bool, digest_ref
+}
+AuthorityValidityObservation {
+  scope, policy_revision, valid: bool, reason?
+}
+EffectStateObservation {
+  dispatch_state, persisted: bool, evidence_ref
+}
+```
 
-## 5. 下一步
+Output 的 `evidence_refs` 仅收敛已消费的观测，不新增推断。
 
-- 细化 health_evidence schema 与 evidence_ref 引用方式
-- 给出 3 个回放用例的输入/输出示例
-- 与 #36 契约的 candidate summary 对齐，不引入 provider 细节
+## 5. 离线回放用例（影子决策，不执行链路）
+
+用例均以 #36 的 `candidate summary` 为输入候选，验证不跨权限面、不误判 UNKNOWN。
+
+### 用例 A — Tailscale 断连，machine-control 双候选
+
+- Input: purpose=machine-control, dispatch_state=NOT_DISPATCHED, candidates=[cloudflare-vpc, tailnet], health=[tailnet unhealthy]
+- Gate 已按 purpose 保留两者；Decision 层按 health 过滤后 eligible=[cloudflare-vpc]，recommendation=cloudflare-vpc，reason_code=ok，confidence=high
+- 约束：不因 tailnet 失败自动切到 human-maintenance/recovery；不推出 target down
+
+### 用例 B — 节点重启后 UNKNOWN 恢复
+
+- Input: purpose=machine-control, dispatch_state=UNKNOWN（持久化缺失，保守重建）, candidates=[tailnet]
+- 决策：eligible=[]，reason_code=reconcile_required，recommendation 为空，confidence=low，evidence_refs 指向 EffectStateObservation
+- 约束：UNKNOWN≠NOT_DISPATCHED，禁止自动重试与换链，需先 reconcile
+
+### 用例 C — provider tag 漂移
+
+- Input: purpose=machine-control, dispatch_state=NOT_DISPATCHED, candidates=[tailnet with required_tags=[tag:fleet-ssh-target], runtime_tags=[]]
+- 决策：eligible=[]，reason_code=tag_policy_unsatisfied，evidence_refs 指向 TargetIdentityProof/Tag 观测
+- 约束：不因“连接失败”改推 node down；不回退到其他 purpose 的候选
+
+## 6. 与 #36 契约对齐
+
+- candidate 仍来自 provider-neutral gate 的 `candidate summary`（plane/endpoint_kind/locator_kind/required_target_proof/failure_domain），本层不引入 provider 细节
+- 排序仅在 eligible 集合内可解释进行，本阶段不落地自动切换与评分算法
+
+## 7. 人类门禁（Human Gate）
+
+本阶段完成后请求 Architect review，门禁前不启用：
+
+- 自动评分 / 自动切换
+- 生产默认路由替换
+- 真实节点/provider mutation
+- 跨权限面 fallback
