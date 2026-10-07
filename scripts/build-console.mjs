@@ -9,6 +9,7 @@ await mkdir(resolve(out, "third-party"), { recursive: true });
 await cp(resolve("console/index.html"), resolve(out, "index.html"));
 await cp(resolve("console/app.js"), resolve(out, "app.js"));
 await cp(resolve("console/enrollment"), resolve(out, "enrollment"), { recursive: true });
+await cp(resolve("console/providers"), resolve(out, "providers"), { recursive: true });
 await cp(resolve("console/shared/console.css"), resolve(out, "shared/console.css"));
 await cp(resolve("console/shared/i18n.js"), resolve(out, "shared/i18n.js"));
 await cp(resolve("console/shared/appearance.js"), resolve(out, "shared/appearance.js"));
