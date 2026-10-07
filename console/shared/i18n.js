@@ -323,6 +323,11 @@ Object.assign(zh, {
   "provider.step3Title": "创建后回到这里",
   "provider.step3Help": "Tailscale 只会显示 Client Secret 一次。下一步将由 GhostFleet 安全验证并交给私有 authority service 托管。",
   "provider.credentialFormPending": "凭据回填与验证将在下一步启用；当前页面不会接收或保存 Secret。",
+  "provider.credentialSafety": "此凭据只用于当前验证请求，不写入浏览器存储或 GhostFleet 生命周期状态。",
+  "provider.verifyAndSave": "验证并连接",
+  providerConfiguredNotice: "Tailscale 纳管权限已验证并安全连接。",
+  providerCredentialRejected: "Tailscale 拒绝了这组凭据。请核对 Client ID、Client Secret、auth_keys 权限和设备标签后重试。",
+  providerSetupUnknown: "没有收到明确的 Provider 配置结果。请先刷新状态；如果仍未连接，再重新填写。",
 });
 Object.assign(en, {
   providers: "Providers",
@@ -353,6 +358,11 @@ Object.assign(en, {
   "provider.step3Title": "Return here after creation",
   "provider.step3Help": "Tailscale shows the Client Secret only once. The next step will validate it and hand it to the private authority service for custody.",
   "provider.credentialFormPending": "Credential entry and validation will be enabled next; this page does not accept or store the Secret yet.",
+  "provider.credentialSafety": "These credentials are used only for the current validation request and are not written to browser storage or GhostFleet lifecycle state.",
+  "provider.verifyAndSave": "Verify and connect",
+  providerConfiguredNotice: "Tailscale enrollment authority was verified and connected securely.",
+  providerCredentialRejected: "Tailscale rejected these credentials. Check the Client ID, Client Secret, auth_keys scope, and device tag, then try again.",
+  providerSetupUnknown: "The provider setup result is unclear. Refresh status first; only re-enter credentials if it is still not connected.",
 });
 
 let language = "zh-CN";
