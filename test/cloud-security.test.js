@@ -84,6 +84,62 @@ test("provider setup readiness is read-only and secret-safe", async () => {
   assert.equal(storageCalls, 0);
 });
 
+test("provider credential setup is operator-only and transient through the private binding", async () => {
+  let storageCalls = 0;
+  let privateCalls = 0;
+  const privateService = {
+    async fetch(request) {
+      privateCalls += 1;
+      assert.equal(new URL(request.url).pathname, "/v1/provider/tailscale/setup");
+      const body = await request.json();
+      assert.equal(body.protocol, "fleet-provider-authority-setup/v1");
+      assert.equal(body.provider, "tailscale");
+      assert.equal(body.client_id, "synthetic-client-id");
+      assert.equal(body.client_secret, "synthetic-client-secret-0000000000000000");
+      return Response.json({
+        ok: true,
+        provider: "tailscale",
+        status: "READY",
+        authority_generation: "ghostfleet-tailscale-auth-v1",
+        scope: "auth_keys",
+        tag: "tag:fleet-ssh-target",
+      });
+    },
+  };
+  const env = {
+    GHOSTFLEET_OPERATOR_TOKEN: operator,
+    GHOSTFLEET_READ_TOKEN: reader,
+    GHOSTFLEET_ENROLLMENT_CLAIM_READY: "1",
+    GHOSTFLEET_ENROLLMENT_CLAIM_MATERIALIZER: privateService,
+    GHOSTFLEET_STATE: { idFromName() { storageCalls++; throw new Error("provider setup must not touch lifecycle state"); } },
+  };
+
+  const denied = await worker.fetch(request("POST", reader, "/v0/providers/tailscale/setup", {
+    client_id: "synthetic-client-id",
+    client_secret: "synthetic-client-secret-0000000000000000",
+  }), env);
+  assert.equal(denied.status, 403);
+  assert.equal(privateCalls, 0);
+
+  const response = await worker.fetch(request("POST", operator, "/v0/providers/tailscale/setup", {
+    client_id: "synthetic-client-id",
+    client_secret: "synthetic-client-secret-0000000000000000",
+  }), env);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(body, {
+    ok: true,
+    provider: "tailscale",
+    status: "READY",
+    authority_generation: "ghostfleet-tailscale-auth-v1",
+    scope: "auth_keys",
+    tag: "tag:fleet-ssh-target",
+  });
+  assert.equal(JSON.stringify(body).includes("synthetic-client-secret"), false);
+  assert.equal(storageCalls, 0);
+  assert.equal(privateCalls, 1);
+});
+
 test("Durable Object reloads committed state between requests", async () => {
   const values = new Map();
   const storage = { transaction: (fn) => fn({ get: async (key) => structuredClone(values.get(key)), put: async (key, value) => values.set(key, structuredClone(value)) }) };
