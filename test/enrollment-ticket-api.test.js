@@ -34,11 +34,11 @@ function controller(options = {}) {
   });
 }
 
-test("ticket issue persists only digests/public metadata and returns one-time delivery once", () => {
+test("ticket issue persists only digests/public metadata and returns one-time delivery once", async () => {
   const store = new InMemoryStore();
   const c = controller({ store });
   const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
-  const issued = c.issueEnrollmentTicket(attempt.attempt_id, { public_origin: "https://ghostfleet.invalid" });
+  const issued = await c.issueEnrollmentTicket(attempt.attempt_id, { public_origin: "https://ghostfleet.invalid" });
   assert.equal(issued.ticket.state, "ISSUED");
   assert.equal(issued.delivery.short_code, "12345678");
   assert.equal(issued.delivery.one_time_url.split("/").at(-1), issued.ticket.ticket_id);
@@ -49,17 +49,81 @@ test("ticket issue persists only digests/public metadata and returns one-time de
   assert.equal(snapshot.includes("synthetic-one-time-provider-material"), false);
 });
 
-test("ticket issue stops at provider/custody gate when no claim materializer is configured", () => {
+test("ticket issue stops at provider/custody gate when no claim materializer is configured", async () => {
   const c = new GhostFleetController();
   const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
-  assert.throws(() => c.issueEnrollmentTicket(attempt.attempt_id, { public_origin: "https://ghostfleet.invalid" }), /PROVIDER_CLAIM_MATERIAL_UNAVAILABLE/);
+  await assert.rejects(() => c.issueEnrollmentTicket(attempt.attempt_id, { public_origin: "https://ghostfleet.invalid" }), /PROVIDER_CLAIM_MATERIAL_UNAVAILABLE/);
   assert.equal(c.getEnrollmentAttempt(attempt.attempt_id).state, "CREATED");
+});
+
+test("provider preparation completes before one-time delivery factors are created and caps ticket expiry", async () => {
+  let codeCalls = 0;
+  const seen = [];
+  const providerExpiry = "2026-10-01T00:05:00.000Z";
+  let now = Date.parse("2026-10-01T00:00:00Z");
+  class Clock extends Date {
+    constructor(value = now) { super(value); }
+    static now() { return now; }
+  }
+  const c = controller({
+    clock: Clock,
+    enrollmentClaimPreparer: async ({ attempt, requested_ttl_seconds }) => {
+      seen.push({ attempt_id: attempt.attempt_id, state: attempt.state, requested_ttl_seconds });
+      return { outcome: "READY", expires_at: providerExpiry };
+    },
+    ticketCodeFactory: () => { codeCalls += 1; return "12345678"; },
+  });
+  const attempt = c.createEnrollmentAttempt({ asset_hint: "node", ttl_seconds: 600, template_selection });
+  const issued = await c.issueEnrollmentTicket(attempt.attempt_id, { public_origin: "https://ghostfleet.invalid", ttl_seconds: 600 });
+  assert.deepEqual(seen, [{ attempt_id: attempt.attempt_id, state: "PREPARING", requested_ttl_seconds: 600 }]);
+  assert.equal(codeCalls, 1);
+  assert.equal(issued.ticket.expires_at, providerExpiry);
+});
+
+test("ambiguous provider preparation creates no GhostFleet ticket and retries on the same attempt", async () => {
+  let prepareCalls = 0;
+  let codeCalls = 0;
+  const attempts = [];
+  const c = controller({
+    enrollmentClaimPreparer: async ({ attempt }) => {
+      prepareCalls += 1;
+      attempts.push(attempt.attempt_id);
+      return prepareCalls === 1
+        ? { outcome: "UNKNOWN", reason_code: "SYNTHETIC_UNKNOWN" }
+        : { outcome: "READY", expires_at: new Date(Date.now() + 300_000).toISOString() };
+    },
+    ticketCodeFactory: () => { codeCalls += 1; return "12345678"; },
+  });
+  const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
+  await assert.rejects(
+    () => c.issueEnrollmentTicket(attempt.attempt_id, { public_origin: "https://ghostfleet.invalid" }),
+    /TICKET_PREPARATION_RECONCILE_REQUIRED/,
+  );
+  assert.equal(c.getEnrollmentAttempt(attempt.attempt_id).state, "PREPARING");
+  assert.throws(() => c.getEnrollmentTicket(attempt.attempt_id), /TICKET_NOT_FOUND/);
+  assert.equal(codeCalls, 0);
+
+  const issued = await c.issueEnrollmentTicket(attempt.attempt_id, { public_origin: "https://ghostfleet.invalid" });
+  assert.equal(issued.ticket.state, "ISSUED");
+  assert.equal(codeCalls, 1);
+  assert.deepEqual(attempts, [attempt.attempt_id, attempt.attempt_id]);
+});
+
+test("invalid public origin cannot persist an unrecoverable ticket", async () => {
+  const store = new InMemoryStore();
+  const c = controller({ store });
+  const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
+  await assert.rejects(
+    () => c.issueEnrollmentTicket(attempt.attempt_id, { public_origin: "http://example.invalid" }),
+    /PUBLIC_ORIGIN_INVALID/,
+  );
+  assert.equal(store.findEnrollmentTicketByAttempt(attempt.attempt_id), null);
 });
 
 test("wrong code is rate-limited without consuming a valid ticket", async () => {
   const c = controller();
   const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
-  c.issueEnrollmentTicket(attempt.attempt_id, { public_origin: "https://ghostfleet.invalid" });
+  await c.issueEnrollmentTicket(attempt.attempt_id, { public_origin: "https://ghostfleet.invalid" });
   for (let i = 0; i < 4; i++) {
     await assert.rejects(() => c.claimEnrollmentTicket({ ticket_id: c.getEnrollmentTicket(attempt.attempt_id).ticket_id, short_code: "00000000", preflight_digest: preflight }), /TICKET_SHORT_CODE_INVALID/);
   }
@@ -71,7 +135,7 @@ test("successful claim consumes ticket, returns raw material transiently, and de
   const store = new InMemoryStore();
   const c = controller({ store });
   const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
-  c.issueEnrollmentTicket(attempt.attempt_id, { public_origin: "https://ghostfleet.invalid" });
+  await c.issueEnrollmentTicket(attempt.attempt_id, { public_origin: "https://ghostfleet.invalid" });
   const result = await c.claimEnrollmentTicket({ ticket_id: c.getEnrollmentTicket(attempt.attempt_id).ticket_id, short_code: "12345678", preflight_digest: preflight });
   assert.equal(result.identity_kind, "provisional");
   assert.equal(result.auth_key, "synthetic-one-time-provider-material");
@@ -86,7 +150,7 @@ test("successful claim consumes ticket, returns raw material transiently, and de
 test("completion is resume-bound, materializes exact provisional identity, and is idempotent for the same report", async () => {
   const c = controller();
   const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
-  c.issueEnrollmentTicket(attempt.attempt_id, { public_origin: "https://ghostfleet.invalid" });
+  await c.issueEnrollmentTicket(attempt.attempt_id, { public_origin: "https://ghostfleet.invalid" });
   const claim = await c.claimEnrollmentTicket({ ticket_id: c.getEnrollmentTicket(attempt.attempt_id).ticket_id, short_code: "12345678", preflight_digest: preflight });
   const report = { identity_kind: "provisional", enrollment_id: claim.enrollment_id, node_id: claim.node_id, os_id: "debian", os_version_id: "13", bootstrap_version: "synthetic-v1" };
   const first = c.completeEnrollmentTicket({ resume_session: claim.resume_session, report });

@@ -25,12 +25,14 @@ export class GhostFleetController {
     store = new InMemoryStore(),
     clock = Date,
     enrollmentTemplates = createEnrollmentTemplateCatalog(),
+    enrollmentClaimPreparer = null,
     enrollmentClaimMaterializer = null,
     ticketCodeFactory = undefined,
   } = {}) {
     this.store = store;
     this.clock = clock;
     this.enrollmentTemplates = enrollmentTemplates;
+    this.enrollmentClaimPreparer = enrollmentClaimPreparer;
     this.enrollmentClaimMaterializer = enrollmentClaimMaterializer;
     this.ticketCodeFactory = ticketCodeFactory;
   }
@@ -104,7 +106,30 @@ export class GhostFleetController {
     }
   }
 
-  issueEnrollmentTicket(id, { public_origin, ttl_seconds = 600, replace = false } = {}) {
+  async #prepareEnrollmentClaim(attempt, requested_ttl_seconds) {
+    if (!this.enrollmentClaimPreparer) return null;
+    let prepared;
+    try {
+      prepared = await this.enrollmentClaimPreparer({ attempt, requested_ttl_seconds });
+    } catch {
+      throw new EnrollmentTicketError("TICKET_PREPARATION_RECONCILE_REQUIRED", 409);
+    }
+    if (!prepared || prepared.outcome === "BLOCKED") {
+      throw new EnrollmentTicketError(prepared?.code || "PROVIDER_CLAIM_PREPARATION_UNAVAILABLE", 503);
+    }
+    if (prepared.outcome === "UNKNOWN") {
+      throw new EnrollmentTicketError("TICKET_PREPARATION_RECONCILE_REQUIRED", 409);
+    }
+    if (prepared.outcome !== "READY" || typeof prepared.expires_at !== "string") {
+      throw new EnrollmentTicketError("CLAIM_PREPARATION_INVALID", 502);
+    }
+    const expiresAt = Date.parse(prepared.expires_at);
+    if (!Number.isFinite(expiresAt)) throw new EnrollmentTicketError("CLAIM_PREPARATION_INVALID", 502);
+    if (expiresAt <= this.clock.now()) throw new EnrollmentTicketError("CLAIM_PREPARATION_EXPIRED", 503);
+    return expiresAt;
+  }
+
+  async issueEnrollmentTicket(id, { public_origin, ttl_seconds = 600, replace = false } = {}) {
     if (!this.enrollmentClaimMaterializer) throw new EnrollmentTicketError("PROVIDER_CLAIM_MATERIAL_UNAVAILABLE", 503);
     let attempt = this.requireLiveAttempt(this.getEnrollmentAttempt(id));
     if (!attempt.template_binding?.template_digest) throw new EnrollmentTicketError("TEMPLATE_BINDING_REQUIRED", 409);
@@ -116,19 +141,29 @@ export class GhostFleetController {
       this.store.putEnrollmentTicket({ ...existing, state: "REVOKED", reason_code: "REISSUED" });
     }
     if (attempt.state === EnrollmentState.CREATED) attempt = this.prepareEnrollmentAttempt(id);
+
+    // If a deployment needs one-time provider authority, prepare it before any
+    // GhostFleet delivery factor exists. Retrying an ambiguous preparation uses
+    // the same attempt_id; the private preparer owns reconcile/idempotency.
+    const providerExpiry = await this.#prepareEnrollmentClaim(attempt, ttl_seconds);
+
     const factors = createTicketFactors({ codeFactory: this.ticketCodeFactory });
     const ticket_id = makeId("ticket");
-    const ticketExpiry = Math.min(this.clock.now() + ttl_seconds * 1000, Date.parse(attempt.expires_at));
+    const ticketExpiry = Math.min(
+      this.clock.now() + ttl_seconds * 1000,
+      Date.parse(attempt.expires_at),
+      providerExpiry ?? Number.POSITIVE_INFINITY,
+    );
     if (ticketExpiry <= this.clock.now()) throw new EnrollmentTicketError("TICKET_EXPIRED", 410);
     const record = createTicketRecord({
       ticket_id, attempt, short_code: factors.short_code,
       issued_at: this.now(), expires_at: new Date(ticketExpiry).toISOString(),
     });
+    // Validate the public delivery origin before persisting a ticket whose raw
+    // short code can never be recovered from durable state.
+    const delivery = createTicketDelivery({ record, short_code: factors.short_code, public_origin });
     this.store.putEnrollmentTicket(record);
-    return {
-      ticket: publicTicketMetadata(record),
-      delivery: createTicketDelivery({ record, short_code: factors.short_code, public_origin }),
-    };
+    return { ticket: publicTicketMetadata(record), delivery };
   }
 
   getEnrollmentTicket(id) {

@@ -38,7 +38,7 @@ export function createHttpHandler(controller) {
       if (request.method === "GET" && match) return json({ ok: true, ticket: controller.getEnrollmentTicket(match[1]) });
       if (request.method === "POST" && match) {
         const input = await body(request);
-        return json({ ok: true, ...controller.issueEnrollmentTicket(match[1], { ...input, public_origin: url.origin }) }, 201);
+        return json({ ok: true, ...(await controller.issueEnrollmentTicket(match[1], { ...input, public_origin: url.origin })) }, 201);
       }
 
       match = /^\/v0\/enrollment-attempts\/([^/]+)\/ticket\/revoke$/.exec(path);
