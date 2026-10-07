@@ -8,10 +8,10 @@ export async function providerSetupSnapshot(env) {
 
   if (enabled && service && typeof service.fetch === "function") {
     try {
-      const response = await service.fetch("https://service.invalid/readiness", {
+      const response = await service.fetch(new Request("https://service.invalid/readiness", {
         method: "GET",
         headers: { accept: "application/json" },
-      });
+      }));
       if (response.ok) readiness = await response.json();
     } catch {
       readiness = null;
