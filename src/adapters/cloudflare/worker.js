@@ -4,7 +4,8 @@ import { InMemoryStore } from "../../control-plane/store.js";
 import { authorizeApi, getAccessLevel } from "./auth.js";
 import { handleMcpRequest } from "../../integrations/mcp-http.js";
 import { BOOTSTRAP_SH } from "../../../packages/bootstrap/src/bootstrap.js";
-import { createEnrollmentClaimMaterializer } from "./enrollment-materializer.js";
+import { createEnrollmentClaimMaterializer, createEnrollmentClaimPreparer } from "./enrollment-materializer.js";
+import { createDeploymentEnrollmentTemplateCatalog } from "./deployment-templates.js";
 
 export class GhostFleetState {
   constructor(state, env) { this.state = state; this.env = env; }
@@ -13,7 +14,12 @@ export class GhostFleetState {
     return this.state.storage.transaction(async (txn) => {
       const snapshot = (await txn.get("ghostfleet-state")) || null;
       const store = new InMemoryStore(snapshot);
-      const controller = new GhostFleetController({ store, enrollmentClaimMaterializer: createEnrollmentClaimMaterializer(this.env) });
+      const controller = new GhostFleetController({
+        store,
+        enrollmentTemplates: createDeploymentEnrollmentTemplateCatalog(this.env),
+        enrollmentClaimPreparer: createEnrollmentClaimPreparer(this.env),
+        enrollmentClaimMaterializer: createEnrollmentClaimMaterializer(this.env),
+      });
       if (new URL(request.url).pathname.replace(/\/+$/, "") === "/mcp") return handleMcpRequest(controller, request);
       const handler = createHttpHandler(controller);
       const response = await handler(request);
