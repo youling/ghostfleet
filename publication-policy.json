@@ -375,6 +375,48 @@
       "line_sha256": "5014f2dfd4d93bc8daf1933e46ecda02ae0b33310c4b97944eb389185564fe10",
       "kind": "inert-fixture-or-detector",
       "reason": "Inert synthetic HMAC test label for origin/expiry/tamper rejection; no production key."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_transport_contract.py",
+      "rule": "node-identity",
+      "line_sha256": "5e16835d68bf6b097ffca6fabe67e65ddccf16cd4737d0f87c65c1cd18548d69",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic node identity for contract gate tests; no real locator or device."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_transport_compat.py",
+      "rule": "node-identity",
+      "line_sha256": "5e16835d68bf6b097ffca6fabe67e65ddccf16cd4737d0f87c65c1cd18548d69",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic node identity for compat adapter tests; no real locator or device."
+    },
+    {
+      "path": "packages/typed-control/test/transportContract.test.ts",
+      "rule": "node-identity",
+      "line_sha256": "ab6f98535cddf00f5c117652752d65d05ab1fb801a455aae6c40f2caecd85255",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic node identity for contract gate tests; no real locator or device."
+    },
+    {
+      "path": "packages/typed-control/test/transportCompat.test.ts",
+      "rule": "node-identity",
+      "line_sha256": "c5e0ff45b87d21e9bec42033a471615d3f5d8234ddf6abb65a4402b6965dbb9d",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic node identity for compat adapter tests; no real locator or device."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_transport_compat.py",
+      "rule": "node-identity",
+      "line_sha256": "1c00e637b9fab5820c628891c70fdccaf44b27df9af26e0b149902d3aee649a2",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic node identity for RF-4 compat test; no real locator or device."
+    },
+    {
+      "path": "packages/typed-control/test/transportCompat.test.ts",
+      "rule": "node-identity",
+      "line_sha256": "f82d951ce897624a528c5277f5bf034e4a7fc8609b38342c17f21b128fc0a3b2",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic node identity for RF-4 compat test; no real locator or device."
     }
   ],
   "binary_reviews": [
