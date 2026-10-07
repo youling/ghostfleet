@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { GhostFleetController } from "../src/control-plane/controller.js";
 import { createHttpHandler } from "../src/control-plane/http.js";
 import { InMemoryStore } from "../src/control-plane/store.js";
@@ -109,6 +110,47 @@ test("public HTTP claim route is ticket-authenticated while operator ticket issu
   const claimed = await handle(new Request("https://ghostfleet.invalid/v1/enrollment-tickets/" + ticketId + "/claim", { method: "POST", headers: { "x-ghostfleet-preflight-digest": preflight }, body: "12345678" }));
   assert.equal(claimed.status, 200);
   assert.equal((await claimed.json()).identity_kind, "provisional");
+});
+
+test("bootstrap consumes the actual formatted HTTP claim response", { skip: process.platform === "win32" }, async () => {
+  const c = controller();
+  const handle = createHttpHandler(c);
+  const created = await handle(new Request("https://ghostfleet.invalid/v0/enrollment-attempts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ asset_hint: "node", template_selection }),
+  }));
+  const attempt = (await created.json()).attempt;
+  const issued = await handle(new Request("https://ghostfleet.invalid/v0/enrollment-attempts/" + attempt.attempt_id + "/ticket", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  }));
+  const delivery = (await issued.json()).delivery;
+  const ticketId = delivery.one_time_url.split("/").at(-1);
+  const claimed = await handle(new Request("https://ghostfleet.invalid/v1/enrollment-tickets/" + ticketId + "/claim", {
+    method: "POST",
+    headers: { "x-ghostfleet-preflight-digest": preflight },
+    body: "12345678",
+  }));
+  assert.equal(claimed.status, 200);
+  const claimJson = await claimed.text();
+  assert.match(claimJson, /"resume_session":\s+"/);
+
+  const jsonGet = BOOTSTRAP_SH.match(/json_get\(\) \{\n[\s\S]*?\n\}/)?.[0];
+  assert.ok(jsonGet);
+  const parsed = spawnSync("/bin/sh", ["-c", jsonGet + '\njson_get "$CLAIM_JSON" resume_session\n'], {
+    env: { ...process.env, CLAIM_JSON: claimJson },
+    encoding: "utf8",
+  });
+  assert.equal(parsed.status, 0, parsed.stderr);
+  assert.equal(parsed.stdout.trim(), "resume_" + "r".repeat(48));
+});
+
+test("one-time ticket prompt matches the eight-digit ticket contract and keeps legacy fallback", () => {
+  assert.ok(BOOTSTRAP_SH.includes('if [ -n "$ENROLLMENT_URL" ]; then'));
+  assert.ok(BOOTSTRAP_SH.includes("Enrollment code (visible; 8 digits):"));
+  assert.ok(BOOTSTRAP_SH.includes("Enrollment code (visible; FE1-XXXX-XXXX or XXXX-XXXX):"));
 });
 
 test("bootstrap supports one-time enrollment URL while preserving legacy broker fallback", () => {

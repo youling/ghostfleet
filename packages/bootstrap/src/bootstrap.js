@@ -291,10 +291,15 @@ if [ ! -c /dev/tty ]; then
   fail '/dev/tty is required for Enrollment Code input'
 fi
 
-# FE1 is a short-lived, single-use pairing code, not a password. Keep terminal
-# echo enabled so the Human can see/correct transcription errors. Reading from
-# /dev/tty keeps the code out of shell argv and shell history.
-printf 'Enrollment code (visible; FE1-XXXX-XXXX or XXXX-XXXX): ' > /dev/tty
+# The enrollment code is short-lived and single-use, not a password. Keep
+# terminal echo enabled so the Human can see/correct transcription errors.
+# One-time ticket URLs use an eight-digit decimal code; the legacy broker
+# fallback retains its deployment-specific historical formats.
+if [ -n "$ENROLLMENT_URL" ]; then
+  printf 'Enrollment code (visible; 8 digits): ' > /dev/tty
+else
+  printf 'Enrollment code (visible; FE1-XXXX-XXXX or XXXX-XXXX): ' > /dev/tty
+fi
 if ! IFS= read -r ENROLL_CODE < /dev/tty; then
   fail 'failed to read Enrollment Code from /dev/tty'
 fi
@@ -318,7 +323,9 @@ fi
 unset ENROLL_CODE
 
 json_get() {
-  printf '%s' "$1" | grep -o '"'$2'":"[^"]*"' | sed 's/^"[^"]*":"//; s/"$//'
+  JSON_VALUE="$(printf '%s' "$1" | grep -Eo '"'$2'"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 || true)"
+  [ -n "$JSON_VALUE" ] || return 0
+  printf '%s' "$JSON_VALUE" | sed -E 's/^"[^"]*"[[:space:]]*:[[:space:]]*"//; s/"[[:space:]]*$//'
 }
 
 RESUME_SESSION="$(json_get "$CLAIM_JSON" resume_session)"
