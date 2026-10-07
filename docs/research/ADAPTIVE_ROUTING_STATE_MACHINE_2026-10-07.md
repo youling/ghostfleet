@@ -41,7 +41,23 @@ RECOVERING:       仅允许影子推荐（shadow），不自动切
 FAILED/RECONCILED: 不允许推荐，仅产出 reason_code + evidence_refs，需人工或 reconcile 后再议
 ```
 
-## 5. 下一步至人类门禁
+## 5. 状态回放用例（影子，不切链）
 
-- 给出 2 个状态转换回放用例（震荡抑制与 UNKNOWN→RECONCILED）
-- 与 #36 dispatch/effect fencing 对齐校验
+### 用例 F — 震荡抑制
+
+- 序列：HEALTHY → T1 unhealthy → DEGRADED → T2 healthy → RECOVERING（计数1）→ T3 unhealthy → FAILED → T4 healthy → RECOVERING（重置）→ T5 healthy → T6 healthy（达 3 次）→ HEALTHY
+- 约束：RECOVERING 期间虽有 healthy 但不自动推荐，仅影子记录
+
+### 用例 G — UNKNOWN→RECONCILED
+
+- 序列：HEALTHY, dispatch_state=NOT_DISPATCHED → 进程崩溃后 dispatch_state=UNKNOWN → RECONCILED（eligible 强制空，reason=reconcile_required）→ reconcile 完成且 NOT_DISPATCHED → 按新 health 重算 HEALTHY/DEGRADED
+- 约束：UNKNOWN 期间所有 healthy 观测不计入晋升计数
+
+## 6. 与 #36 fencing 对齐
+
+- RECONCILED 完全复用 #36 的 dispatch/effect fencing（仅 NOT_DISPATCHED 允许考虑）
+- 本机不新增 provider 细节，保持可审计 evidence_ref
+
+## 7. 人类门禁
+
+本阶段不启用自动切换/生产替换/真实节点变更，已达门禁条件，请求 Architect 对 Phase 5-3 review。
