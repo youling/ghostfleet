@@ -20,44 +20,25 @@
 
 ```
 CandidateSummary { candidate_ref, plane, endpoint_kind, ... }
-  ↔ evidence_refs: string[]  // 指向本决策消费的 5 层观测子集
+  ↔ evidence_refs: string[]
 ```
 
-Eligible 计算：
-- AuthorityValidity.valid
-- EffectState.dispatch_state==NOT_DISPATCHED
-- required_tags⊆runtime_tags
-- TransportHealth.healthy（若有）
+Eligible 计算要求 AuthorityValidity、EffectState、required_tags/runtime_tags、TransportHealth 满足。
 
-不满足则从 eligible 剔除并标注 reason_code。
+## 3. Explainable Ranking 规则空间
 
-## 3. Explainable Ranking 规则空间（不落地算法）
-
-仅在 eligible 集合内排序：
+仅在 eligible 集合内：
 
 ```
 Policy Filter → Candidate Set → Explainable Ranking → Human Gate
 ```
 
-示例规则：
-- machine-control 优先 cloudflare-vpc，其次 tailnet（仅研究规则）
-- human-maintenance 使用 tailnet
-- recovery 使用 native-lan
+禁止综合 score、跨 purpose fallback、基于连接失败推断 target down。
 
-禁止：单一综合 score、跨 purpose fallback、基于连接失败推断 target down。
+## 4. 冲突回放
 
-## 4. 冲突回放用例
+覆盖 health 新旧观测冲突、tag 漂移与 authority 过期叠加。均为影子决策。
 
-覆盖：
-- health 新旧观测冲突；
-- tag 漂移与 authority 过期叠加。
+## 5. 人类门禁
 
-均为影子决策，不执行链路。
-
-## 5. 与 provider-neutral contract 对齐
-
-candidate 均来自 #36 gate 的 CandidateSummary，仅本层按 Evidence 过滤，不新增 provider 细节。
-
-## 6. 人类门禁
-
-本阶段不启用自动评分/切换/生产替换/真实节点变更，请求 Architect review。
+不启用自动评分/切换/生产替换/真实节点变更。
