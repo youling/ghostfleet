@@ -6,7 +6,7 @@ import { handleMcpRequest } from "../../integrations/mcp-http.js";
 import { BOOTSTRAP_SH } from "../../../packages/bootstrap/src/bootstrap.js";
 import { createEnrollmentClaimMaterializer, createEnrollmentClaimPreparer } from "./enrollment-materializer.js";
 import { createDeploymentEnrollmentTemplateCatalog } from "./deployment-templates.js";
-import { providerSetupSnapshot } from "./provider-setup.js";
+import { configureTailscaleProvider, providerSetupSnapshot } from "./provider-setup.js";
 
 export class GhostFleetState {
   constructor(state, env) { this.state = state; this.env = env; }
@@ -43,6 +43,17 @@ export default {
       const denial = await authorizeApi(request, env, { readOnly: true });
       if (denial) return denial;
       return Response.json(await providerSetupSnapshot(env), { headers: { "cache-control": "no-store" } });
+    }
+    if (path === "/v0/providers/tailscale/setup" && request.method === "POST") {
+      const denial = await authorizeApi(request, env);
+      if (denial) return denial;
+      const length = Number(request.headers.get("content-length") || "0");
+      if (length > 4096) return Response.json({ ok: false, error: "PROVIDER_SETUP_INPUT_INVALID" }, { status: 400, headers: { "cache-control": "no-store" } });
+      let body;
+      try { body = await request.json(); }
+      catch { return Response.json({ ok: false, error: "PROVIDER_SETUP_INPUT_INVALID" }, { status: 400, headers: { "cache-control": "no-store" } }); }
+      const result = await configureTailscaleProvider(env, body);
+      return Response.json(result.payload, { status: result.status, headers: { "cache-control": "no-store" } });
     }
     if (path.startsWith("/v0/") || isMcp) {
       const denial = await authorizeApi(request, env, { readOnly: isMcp });
