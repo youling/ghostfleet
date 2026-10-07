@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { templateDisplay, templatePostureSummary, templateSelectionPayload, applyTemplatePreviewOverrides } from "../console/enrollment/templates/model.js";
 import { createEnrollmentWizard, attachBootstrapDelivery, markBootstrapRunning, markBootstrapResult, serializeWizardState } from "../console/enrollment/bootstrap/wizard.js";
+import { renderProviders } from "../console/providers/view.js";
 
 const template={
   template_id:"managed-linux-tailscale",
@@ -39,4 +40,17 @@ test("wizard keeps bootstrap delivery ephemeral when serialized",()=>{
   wizard=markBootstrapRunning(wizard);
   wizard=markBootstrapResult(wizard,"RECONCILE_REQUIRED");
   assert.equal(wizard.state,"RECONCILE_REQUIRED");
+});
+
+test("provider settings render only safe readiness metadata",()=>{
+  const html=renderProviders({providers:{tailscale:{
+    status:"MISSING",
+    requirements:{scope:"auth_keys",tag:"tag:fleet-ssh-target"},
+    authority_generation:null,
+    secret_state:{client_id:"MISSING",client_secret:"MISSING"},
+  }}});
+  assert.match(html,/auth_keys/);
+  assert.match(html,/tag:fleet-ssh-target/);
+  assert.match(html,/data-provider-setup="tailscale"/);
+  assert.equal(html.includes("client-secret-value"),false);
 });
