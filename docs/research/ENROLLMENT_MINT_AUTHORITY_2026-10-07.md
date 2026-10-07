@@ -2,7 +2,21 @@
 
 - Issue: https://github.com/youling/ghostfleet/issues/35
 - 日期：2026-10-07
-- 状态：Research 阶段交付，不冻结名词/枚举/方案，不写生产代码。候选不等于决策，需 Architect review。
+- 状态：Research 证据已完成；候选部分保留为历史研究记录。Architect 已于 2026-10-07 在 #35 作出正式裁决，见下节。
+
+## Architect review（已裁决）
+
+本报告中的 A–E 为研究时的候选空间，不再代表当前待决状态。正式架构裁决以 #35 comment 6035403489 为准：
+
+- GhostFleet Human-facing Control Plane 必须支持常驻/随时触发；GitHub Actions/WIF 不再是 canonical runtime dependency。
+- 公共 GhostFleet 不持有 Tailscale OAuth client secret；mint authority 属于 deployment-private Enrollment Authority Service。
+- Fleet v0 采用 scoped Tailscale OAuth client：仅 `auth_keys` + exact enrollment tag；动态 mint one-off、tagged、preauthorized auth key。
+- OAuth client secret 不得下发到待纳管节点；OAuth access token 与 auth key 都是瞬态/短时材料。
+- 一次性 enrollment credential 走 GhostFleet 已接受的 `prepare -> ticket -> materialize` 通道；**CF-Drop 与 typed-control 不进入首次 enrollment secret 关键路径**。
+- public seam 已由 PR #32 合并；provider-specific implementation 归 Fleet private #331。
+- WIF 保留为有原生 workload identity 的部署适配器，而不是本 Fleet deployment 的必需路径。
+
+因此，本报告中任何关于“CF-Drop 可用于 enrollment secret 投递”“直接在公共 GhostFleet runtime 中替换 WIF mint”之类的研究候选，均不得覆盖上述正式裁决。
 
 ## 0. 当前事实（从代码核实）
 
@@ -36,7 +50,7 @@
 | Zero Trust WARP 客户端 | enrollment rules（device posture / group）+ gateway policy | 客户端 OIDC/SCIM 注册到 Zero Trust org |
 | Tunnel token 分发 | API token（`Cloudflare Tunnel Write` scope）→ 创建 tunnel → 领 token → 注入节点 | 分发走 out-of-band 注入（cloud-init / 配置管理） |
 
-结论事实：Cloudflare 侧的一键纳管与 Tailscale 同构——控制面 mint per-tunnel token，`cloudflared service install` 相当于 `tailscale up --auth-key=…`。GhostFleet 侧的 CF-Drop 投递与此模式一致，两条链可以共用同一 mint-node 抽象。
+结论事实：Cloudflare 侧的一键纳管与 Tailscale 在“控制面签发 enrollment credential → 节点注册”这一抽象上同构。该相似性只用于架构比较；当前 #35 裁决明确不使用 CF-Drop 承载首次 enrollment secret。
 
 ## 3. Tailscale OAuth client vs API key vs WIF 对比
 
@@ -95,7 +109,7 @@
 
 ## 6. 结论与下一步（候选，非决策）
 
-- 最短路径：候选 A（控制节点 OAuth client + `auth_keys` scope），可直接在 `enrollment_attempt.py::run_attempt_wif_mint` 处把 `exchange_oidc_for_access_token` 替换为 client_credentials 换 token，保留 courier fence 协议。
+- 研究阶段最短候选曾为 A（控制节点 OAuth client + `auth_keys` scope）。正式裁决没有把 provider-specific mint 直接塞回公共 GhostFleet runtime，而是放入 Fleet-private Enrollment Authority Service，并通过 GhostFleet `prepare/materialize` seam 接入。
 - 若要消灭长久 secret：候选 B，但需先跑通 IdP 的可用性与备份设计。
 - 候选 C 仅 break-glass；D 长期评估；E 排除。
 - 迁移完成后从 `enrollment_console.py` 的 `PROVIDERS`/`REF_RE` 移除 `github` 项。
@@ -106,5 +120,7 @@
 - [x] 业界 Cloudflare 一键纳管调研（cloudflared service install / WARP enrollment / token 分发）
 - [x] OAuth client vs API key vs WIF 权限/审计/轮换对比
 - [x] 单控制节点自持 mint authority 端到端候选与安全 tradeoff
-- [ ] Architect review：决定采用 A/B/C 或组合，冻结 minter authority 名词与凭证存放契约
-- [ ] 决策落地后回写 issue #35 并制定 `secretref://github` 退役计划
+- [x] Architect review：已在 #35 comment 6035403489 冻结当前方向
+- [x] public prepare/materialize seam：PR #32 已合并
+- [ ] Fleet private implementation：由 Fleet #331 负责
+- [ ] `secretref://github` 退役：待 #331 完成并验证不再需要旧 WIF 路径后执行
