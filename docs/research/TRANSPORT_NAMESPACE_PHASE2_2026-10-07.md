@@ -1,7 +1,7 @@
 # Transport Namespace & Adaptive Link Layer — Phase 2 真实链路对象建模
 
 - Issue: https://github.com/youling/ghostfleet/issues/36（原 #33 已删除；Fleet commit comment `203835259` 记为历史 superseded）
-- 前置：Phase 1 研究报告（fleet `issue33-transport-namespace` 分支），Architect review commit comment `203835259`
+- 前置：本仓 `docs/research/TRANSPORT_NAMESPACE_PHASE1_2026-10-07.md`；旧 Fleet commit comment `203835259` 仅作历史 superseded 证据。
 - 日期：2026-10-07
 - 状态：Research 证据；Phase 2 已由 #36 comment 6036252158 通过，冻结事实维度与不变量，不冻结最终代码名/枚举/URI scheme/算法。
 
@@ -71,7 +71,7 @@
 | target proof | pinned host key + provider binding | JIT host key 或 pinned host key | pinned host key |
 | 自动重试/切换 | NOT_DISPATCHED 才允许 | 同约束，且仅在同 purpose 候选链内 | 人工触发 |
 | durable evidence | sanitized receipt | 同 | 同 |
-| 与 #33 `ssh:// :22` 的关系 | `cf://`（locator 是 binding/hostname，listener 落在 loopback） | `ts://`（locator 是 provider_ref，listener 是 tailnet :22） | `ssh://`（显式 recovery） |
+| 与旧 #33 研究中 `ssh:// :22` 表达候选的关系 | `cf://`（locator 是 binding/hostname，listener 落在 loopback） | `ts://`（locator 是 provider_ref，listener 是 tailnet :22） | `ssh://`（显式 recovery） |
 
 ## 5. 从事实模型反推的候选类型（不冻结名词）
 
