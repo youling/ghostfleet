@@ -137,11 +137,10 @@
         <li>
           <strong data-i18n="provider.step3Title">创建后回到这里</strong>
           <p class="secondary" data-i18n="provider.step3Help">Tailscale 只会显示 Client Secret 一次。下一步将由 GhostFleet 安全验证并交给私有 authority service 托管。</p>
-          <p class="provider-next-note" data-i18n="provider.credentialFormPending">凭据回填与验证将在下一步启用；当前页面不会接收或保存 Secret。</p>
+          <form id="tailscale-provider-form" class="provider-credential-form" autocomplete="off"><label for="tailscale-client-id" class="form-label" data-i18n="provider.clientId">Client ID</label><input id="tailscale-client-id" class="form-control" autocomplete="off" spellcheck="false" maxlength="256" required><label for="tailscale-client-secret" class="form-label" data-i18n="provider.clientSecret">Client Secret</label><input id="tailscale-client-secret" class="form-control" type="password" autocomplete="off" spellcheck="false" maxlength="1024" required><p class="provider-next-note" data-i18n="provider.credentialSafety">此凭据只用于当前验证请求，不写入浏览器存储或 GhostFleet 生命周期状态。</p><div class="dialog-actions"><button class="btn btn-outline-secondary" type="button" data-close-dialog="provider-setup-dialog" data-i18n="close">关闭</button><button class="btn btn-primary" type="submit" data-i18n="provider.verifyAndSave">验证并连接</button></div></form>
         </li>
       </ol>
-      <div class="dialog-actions"><button class="btn btn-primary" type="button" data-close-dialog="provider-setup-dialog" data-i18n="close">关闭</button></div>
-    </div>
+      </div>
   </dialog>
 
   <dialog id="detail-dialog" class="detail-dialog" aria-labelledby="detail-heading">
