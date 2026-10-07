@@ -51,6 +51,13 @@ V0 HumanGate 至少包含 `gate_id`、`gate_type`、`subject`、状态、`prompt
 
 核心拥有的身份和目录证据只能从已存储的 NodeIdentity 和投影生成，公共证据写入口不能伪造。`PROVISIONAL` 仅用于纳管观察，完整验收后才晋升 `ACTIVE`。核心投影证据不替代真实设备与适配器的绑定，也不替代传输、控制、收敛和重启证据。`ACTIVE` 和七项证据仅证明本控制面的准入；独立调用方仍须分别验收目录发现、认证配置、调用路由、正负权限、同一身份回读和回滚。
 
+### 私有目录与 provider preparation 边界
+
+- 部署专属模板目录只能通过非秘密 catalog extension 进入；公开默认模板不能被同 ID 覆盖，secret-shaped plaintext、未知 provider option 和陈旧 generation 继续拒绝。
+- provider preparation 发生在 ticket/short code 生成之前。结果为 `BLOCKED` 或 `UNKNOWN` 时不创建 GhostFleet ticket；同一 `attempt_id` 的重试必须由私有 preparer 自行对账，不能盲目再 mint。
+- claim-time materializer 只消费已经预备的一次性材料；不得把 public claim retry 当作 provider mutation retry。
+- 私有 service binding 的响应只允许把 public-safe 状态/期限返回核心；raw provider credential 只在最终成功 claim 的瞬态响应中经过既有 secret-safe 边界，不能进入 Durable Object snapshot、event 或公开日志。
+
 ### 已知 V0 限制
 
 - 尚未完成真实提供方或设备适配器的安全审阅；
@@ -112,6 +119,13 @@ Human-facing pairing codes belong to their enrollment ceremony/attempt, not the 
 State transitions and evidence are stored together. For each required evidence type, the latest observation must explicitly have `data.status = PASS`; a newer `FAIL` or `UNKNOWN` invalidates that type's older `PASS`. A command exit code of 0, installed package, active service or reachable transport alone never proves successful admission. Real adapters must also validate evidence source, subject and authority; synthetic evidence does not establish real-device acceptance.
 
 Core-owned identity/catalog proofs derive only from stored NodeIdentity/projection and cannot be forged through the public evidence endpoint. PROVISIONAL supports enrollment inspection only; full acceptance promotes it to ACTIVE. Core projection evidence does not replace binding to a real device/adapter or transport/control/convergence/reboot proofs. `ACTIVE` and seven evidence types establish admission in this control plane only. Independent consumers still need separate acceptance for catalog discovery, authentication/configuration, call routes, positive/negative permissions, same-identity readback and rollback.
+
+### Private catalog and provider-preparation boundary
+
+- Deployment-specific templates enter only through a non-secret catalog extension. Public template IDs cannot be shadowed; secret-shaped plaintext, unknown provider options and stale generations remain rejected.
+- Provider preparation happens before any GhostFleet ticket/short code is created. A `BLOCKED` or `UNKNOWN` result creates no ticket; retries on the same `attempt_id` must be reconciled by the private preparer rather than blindly minting again.
+- The claim-time materializer only consumes already-prepared one-time material. Public claim retry must never become provider-mutation retry.
+- The private service binding may return only public-safe preparation state/expiry to core. Raw provider material may cross only the existing transient successful-claim boundary and must never enter the Durable Object snapshot, event stream or public logs.
 
 ### Known V0 limits
 
