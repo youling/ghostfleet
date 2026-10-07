@@ -40,9 +40,9 @@ export default {
       return new Response(BOOTSTRAP_SH, { headers: { "content-type": "text/x-shellscript; charset=utf-8", "cache-control": "no-store" } });
     }
     if (path === "/v0/providers/setup" && request.method === "GET") {
-      const denial = await authorizeApi(request, env);
+      const denial = await authorizeApi(request, env, { readOnly: true });
       if (denial) return denial;
-      return Response.json(providerSetupSnapshot(env), { headers: { "cache-control": "no-store" } });
+      return Response.json(await providerSetupSnapshot(env), { headers: { "cache-control": "no-store" } });
     }
     if (path.startsWith("/v0/") || isMcp) {
       const denial = await authorizeApi(request, env, { readOnly: isMcp });
