@@ -6,8 +6,13 @@ import { DEFAULT_ACCEPTANCE_EVIDENCE } from "../src/core/model.js";
 
 const operator = "synthetic-operator-".repeat(3);
 const reader = "synthetic-reader-".repeat(3);
-const request = (method = "GET", token, path = "/v0/nodes") => new Request(`https://ghostfleet.test${path}`, {
-  method, headers: token ? { authorization: `Bearer ${token}` } : {},
+const request = (method = "GET", token, path = "/v0/nodes", body = undefined) => new Request(`https://ghostfleet.test${path}`, {
+  method,
+  headers: {
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+    ...(body === undefined ? {} : { "content-type": "application/json" }),
+  },
+  ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 });
 
 test("cloud API fails closed before it reaches storage", async () => {
