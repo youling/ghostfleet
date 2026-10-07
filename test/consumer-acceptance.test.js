@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { GhostFleetController } from "../src/control-plane/controller.js";
+import { InMemoryStore } from "../src/control-plane/store.js";
 import {
   ConsumerAcceptanceState,
   CustodyClass,
@@ -818,3 +819,30 @@ test("signals are rejected once the record leaves PENDING and never mutate evide
   assert.equal(withSignal.signals.length, 1);
   assert.throws(() => recordConsumerSignal(record, "not_a_signal"), /SIGNAL_UNKNOWN/);
 });
+
+test("consumer acceptance storage stays compatible with snapshots that predate the collection", () => {
+  const legacySnapshot = {
+    attempts: {},
+    gates: {},
+    nodes: {},
+    events: [],
+    capability_definitions: {},
+  };
+  const store = new InMemoryStore(legacySnapshot);
+  assert.equal(store.getConsumerAcceptance("acceptance-missing"), null);
+  assert.deepEqual(store.listConsumerAcceptances(), []);
+
+  const record = createConsumerAcceptance({
+    node_uid: makeId("node"),
+    consumer_ref: "adapter.alpha",
+    source_revision: SOURCE_REVISION,
+    config_revision: CONFIG_REVISION,
+    control_path_ref: CONTROL_PATH_REF,
+    custody: DURABLE_CUSTODY,
+    origin_executor_ref: ORIGIN_EXECUTOR,
+  });
+  store.putConsumerAcceptance(record);
+  assert.equal(store.getConsumerAcceptance(record.acceptance_id).acceptance_id, record.acceptance_id);
+  assert.equal(store.listConsumerAcceptances().length, 1);
+});
+
