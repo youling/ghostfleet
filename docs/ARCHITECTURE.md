@@ -124,6 +124,12 @@ Static Console
 
 公开仓包含通用 schema、状态机、UI、API、适配器契约、合成测试和参考部署。真实账号、私有设备清单、实际端点、长期凭据、个人策略、私有恢复坐标和内部代理治理留在部署方。
 
+### Deployment-private enrollment seams
+
+公开 GhostFleet 不保存实例私有默认值或 provider authority。Cloudflare 参考部署允许实例通过非秘密 `GHOSTFLEET_ENROLLMENT_CATALOG_JSON` 增加部署专属模板/overlay/display；未配置时公开模板目录不变，非法、冲突、陈旧或 secret-shaped 输入 fail closed。
+
+一次性 provider material 使用两阶段私有 service binding：Generate ticket 时可先调用 `/v1/prepare`，按 exact `EnrollmentAttempt` 预备并对账私有一次性 authority；只有 READY 后才生成 GhostFleet ticket/short code。节点随后 claim 时调用 `/v1/materialize`，只消费已预备材料。这样 provider mint 不依赖可重试的 public claim callback。公共 Durable Object 仍不保存原始 provider credential，私有 service 的 provider/API/custody 实现属于 deployment owner。
+
 ### 当前源码预览与可选模块
 
 公开 `main` 包含类型化控制、bootstrap、Python 平台运行时和显式可选的授权基础模块。[导出清单](export-manifest.json) 列出入口、组件和测试。默认 MCP 四个只读工具与 Console 的生命周期对象管理没有设备执行后端。生产 OAuth、Pages 托管和第二台独立硬件分别验收。核心、API、权限与标准 AI 客户端无关，无需 OpenAI/ChatGPT 配置；特定客户端的配置、重定向、身份和权限范围通过可选适配器精确绑定。详见 [操作](OPERATIONS.md)、[授权](AUTHORIZATION.md) 和 [迁移](MIGRATION.md)。
@@ -255,6 +261,12 @@ The public repository contains reusable schemas, state machine, UI, API, adapter
 
 It excludes real account IDs, private node inventory, live endpoints, long-lived credentials, user-specific policy, private recovery coordinates and internal multi-agent governance.
 
+
+### Deployment-private enrollment seams
+
+Public GhostFleet stores neither instance-private defaults nor provider authority. The Cloudflare reference deployment may add deployment-specific templates/overlays/display through the non-secret `GHOSTFLEET_ENROLLMENT_CATALOG_JSON`; without it the public catalog is unchanged, and malformed, colliding, stale or secret-shaped input fails closed.
+
+One-time provider material uses a two-phase private service binding. Ticket generation may first call `/v1/prepare` keyed to the exact `EnrollmentAttempt` so private one-time authority is prepared/reconciled before GhostFleet creates an unrecoverable short code. Node claim later calls `/v1/materialize` only to consume already-prepared material. Provider mint therefore never depends on retrying the public claim callback. Raw provider credentials remain outside the public Durable Object; provider/API/custody implementation belongs to the deployment owner.
 
 ### Current source preview and optional modules
 
