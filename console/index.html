@@ -122,12 +122,13 @@
         <li>
           <strong data-i18n="provider.step1Title">在 Tailscale 创建 OAuth Client</strong>
           <p class="secondary" data-i18n="provider.step1Help">打开 Trust credentials，选择 Credential → OAuth。</p>
-          <a class="btn btn-outline-secondary" href="https://login.tailscale.com/admin/settings/oauth" target="_blank" rel="noopener noreferrer">
+          <a class="btn btn-outline-secondary" href="https://console.tailscale.com/admin/settings/trust-credentials" target="_blank" rel="noopener noreferrer">
             <span data-i18n="provider.openTailscale">打开 Tailscale</span>
           </a>
         </li>
         <li>
           <strong data-i18n="provider.step2Title">只授予纳管所需权限</strong>
+          <p class="secondary" data-i18n="provider.step2Help">在权限列表找到 Keys → Auth Keys，选择 Write；标签只选 tag:fleet-ssh-target。若标签不存在，请先在 Tailscale 访问策略中创建。</p>
           <dl class="detail-fields provider-fields">
             <dt data-i18n="provider.scope">Scope</dt><dd><code>auth_keys</code></dd>
             <dt data-i18n="provider.tag">设备标签</dt><dd><code>tag:fleet-ssh-target</code></dd>
