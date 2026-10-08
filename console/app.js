@@ -522,6 +522,7 @@ function clearSession() {
   $("#command-query").value = "";
   $("#command-results").replaceChildren();
   $("#new-attempt").reset();
+  $("#tailscale-provider-form")?.reset();
   clearBootstrapDelivery();
   for (const dialog of document.querySelectorAll("dialog[open]")) dialog.close();
   $("#detail-content").replaceChildren();
@@ -530,7 +531,9 @@ function errorKey(error, connecting = false) {
   if (error.message === "UNAUTHORIZED") return "errorUnauthorized";
   if (error.message === "AUTH_NOT_CONFIGURED") return "errorConfig";
   if (error.message === "READ_ONLY_CREDENTIAL") return "errorReadOnly";
-  if (error.message === "PROVIDER_CLAIM_MATERIAL_UNAVAILABLE") return "providerGateNeeded";
+  if (error.message === "PROVIDER_CLAIM_MATERIAL_UNAVAILABLE" || error.message === "PROVIDER_AUTHORITY_SERVICE_UNAVAILABLE") return "providerGateNeeded";
+  if (error.message === "PROVIDER_CREDENTIAL_REJECTED") return "providerCredentialRejected";
+  if (error.message === "PROVIDER_AUTHORITY_SETUP_UNKNOWN") return "providerSetupUnknown";
   if (error.message === "TICKET_ALREADY_ISSUED" || error.message === "TICKET_NOT_REVOCABLE") return "errorConflict";
   if (error.message.includes("EXPIRED")) return "errorExpired";
   if (error.message === "ACCEPTANCE_EVIDENCE_MISSING") return "errorEvidence";
@@ -590,6 +593,23 @@ $("#open-create").addEventListener("click", () => {
   renderCreateTemplateControls();
   $("#create-dialog").showModal(); $("#asset-hint").focus();
 });
+$("#tailscale-provider-form")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!writable() || busy) return;
+  const client_id = $("#tailscale-client-id").value.trim();
+  const client_secret = $("#tailscale-client-secret").value;
+  if (!client_id || !client_secret) return;
+  $("#tailscale-provider-form").reset();
+  task(() => post("/v0/providers/tailscale/setup", { client_id, client_secret }), {
+    mutation: true,
+    success: "providerConfiguredNotice",
+    onSuccess: () => {
+      if ($("#provider-setup-dialog").open) $("#provider-setup-dialog").close();
+      navigate("settings");
+    },
+  });
+});
+
 $("#new-attempt").addEventListener("submit", (event) => {
   event.preventDefault();
   if (!writable()) return;
@@ -633,6 +653,7 @@ $("#open-search").addEventListener("click", openSearch);
 $("#command-query").addEventListener("input", renderCommands);
 $("#detail-back").addEventListener("click", () => { if (detailStack.length > 1) { detailStack.pop(); renderDetail(); } });
 $("#bootstrap-dialog").addEventListener("close", clearBootstrapDelivery);
+$("#provider-setup-dialog")?.addEventListener("close", () => $("#tailscale-provider-form")?.reset());
 $("#detail-dialog").addEventListener("close", () => {
   detailStack = [];
   $("#detail-content").replaceChildren();
