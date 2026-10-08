@@ -6,13 +6,13 @@ import { DEFAULT_ACCEPTANCE_EVIDENCE } from "../src/core/model.js";
 
 const operator = "synthetic-operator-".repeat(3);
 const reader = "synthetic-reader-".repeat(3);
-const request = (method = "GET", token, path = "/v0/nodes", body = undefined) => new Request(`https://ghostfleet.test${path}`, {
-  method,
-  headers: {
-    ...(token ? { authorization: `Bearer ${token}` } : {}),
-    ...(body === undefined ? {} : { "content-type": "application/json" }),
-  },
-  ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+const request = (method = "GET", token, path = "/v0/nodes") => new Request(`https://ghostfleet.test${path}`, {
+  method, headers: token ? { authorization: `Bearer ${token}` } : {},
+});
+const requestWithBody = (token, path, body) => new Request(request("POST", token, path), {
+  method: "POST",
+  headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+  body: JSON.stringify(body),
 });
 
 test("cloud API fails closed before it reaches storage", async () => {
@@ -120,14 +120,14 @@ test("provider credential setup is operator-only and transient through the priva
     GHOSTFLEET_STATE: { idFromName() { storageCalls++; throw new Error("provider setup must not touch lifecycle state"); } },
   };
 
-  const denied = await worker.fetch(request("POST", reader, "/v0/providers/tailscale/setup", {
+  const denied = await worker.fetch(requestWithBody(reader, "/v0/providers/tailscale/setup", {
     client_id: "synthetic-client-id",
     client_secret: providerCredentialValue,
   }), env);
   assert.equal(denied.status, 403);
   assert.equal(privateCalls, 0);
 
-  const response = await worker.fetch(request("POST", operator, "/v0/providers/tailscale/setup", {
+  const response = await worker.fetch(requestWithBody(operator, "/v0/providers/tailscale/setup", {
     client_id: "synthetic-client-id",
     client_secret: providerCredentialValue,
   }), env);
