@@ -701,9 +701,9 @@
     },
     {
       "path": "console/index.html",
-      "sha256": "91ed7ad38ce642956b00fca74ac9af5c47e5ddf2490b533e84fb9136be45ffba",
-      "reason": "Official Tailscale admin-console OAuth credential creation entry used by the novice Provider Setup wizard; no secret, query string, or deployment locator.",
-      "review": "Tailscale OAuth client setup documentation reviewed; the exact HTTPS URL opens provider-native credential creation and carries no credential material."
+      "sha256": "a41dd0d542d54081493846dbece9251a826ca46acea714e8f80d0a2af2b296e0",
+      "reason": "Current official Tailscale Trust credentials admin-console entry for creating scoped OAuth clients; no login factor, credential value, query string or instance identity.",
+      "review": "Tailscale OAuth clients primary documentation links directly to this exact HTTPS Trust credentials page. It is a public provider destination, not a Fleet runtime."
     }
   ]
 }
