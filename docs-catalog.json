@@ -204,6 +204,15 @@
       ]
     },
     {
+      "path": "docs/HANDOFF_PACKET.md",
+      "topics": [
+        "packet",
+        "evidence",
+        "limits",
+        "signing"
+      ]
+    },
+    {
       "path": "docs/API.md",
       "topics": [
         "reference"
