@@ -84,7 +84,7 @@ production pages or oauth: NOT_COVERED
 
 | 元素 | 证据引用 | 状态 | 备注 |
 | --- | --- | --- | --- |
-| identity.reference | <opaque-ref> | 待补 | 消费者身份 |
+| identity.reference | <opaque-ref> | 待补 | 既有 NodeIdentity（节点身份，非消费者身份） |
 | consumer.identity | <opaque-ref> | 待补 | 消费者主体 |
 | control_path.binding | <opaque-ref> | 待补 | 控制路径绑定 |
 | custody.durability | <opaque-ref> | 待补 | owner + attestation |
@@ -201,7 +201,7 @@ the first-run enrollment experience is described in
 
 | Element | Evidence ref | Status | Note |
 | --- | --- | --- | --- |
-| identity.reference | <opaque-ref> | pending | consumer identity |
+| identity.reference | <opaque-ref> | pending | existing NodeIdentity (node identity, not consumer identity) |
 | consumer.identity | <opaque-ref> | pending | consumer principal |
 | control_path.binding | <opaque-ref> | pending | control-path binding |
 | custody.durability | <opaque-ref> | pending | owner + attestation |
