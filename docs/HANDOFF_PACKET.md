@@ -17,10 +17,12 @@ owner: `youling/ghostfleet`
 
 ```text
 packet_ref: synthetic-handoff-example-001
-source_commit: 1d529299425c85bc31cc332af271ba814f7d8ce5
+source_commit: <exact-40-hex-sha-of-tested-source>
 created_at: 2026-10-13
 kind: synthetic-only
 ```
+
+此处 `source_commit` 必须填入本次实际测试的精确提交，示例占位不得当作已测试证据。源码提交与部署配置版本分离记录：配置版本可以不是 Git 对象。
 
 交接包包含四部分：精确提交绑定、可复现检查记录、覆盖边界声明、真实首次使用空表格。缺少任一部分视为不完整，不得记为可移交。
 
@@ -91,15 +93,16 @@ production pages or oauth: NOT_COVERED
 | executor.independence | <opaque-ref> | <opaque-ref> | <opaque-ref> | fresh 上下文见证 |
 | rollback.plan | <opaque-ref> | — | — | 旧路径恢复契约 |
 
-控制器事件样本只记录字段形状，不记录真实值：
+控制器事件只记录真实事件常量与字段形状，不记录真实值。正常决策路径为 `PENDING -> ACCEPTED`；`ACCEPTED -> ROLLED_BACK` 仅在显式调用 `completeConsumerRollback`（附回执与旧路径回读）时发生。`rollback.plan`（第九项证据）不等于已执行回滚，不得把回滚当作首次使用的必做步骤：
 
 ```text
-OPENED -> EVIDENCE_UPDATED -> DECIDED -> ROLLBACK_COMPLETED
+ConsumerAcceptanceOpened -> ConsumerAcceptanceEvidenceUpdated -> ConsumerAcceptanceDecided
+(optional, separate) -> ConsumerRollbackCompleted
 ```
 
 保密审查确认：本包不含真实节点名、地址、账号标识、秘密值、私钥、令牌、私有策略、原始日志或拓扑。公开检查只输出规则、路径与行号。
 
-签署栏：消费者验收与 break-glass 分开签署。acceptance 签署不授予 break-glass 调用权，break-glass 调用不关闭 acceptance 缺口。
+签署栏：消费者验收与 break-glass 分开签署。acceptance 签署不授予 break-glass 调用权，break-glass 调用不关闭 acceptance 缺口。break-glass 是独立可选的 Human 授权恢复门，不是公共合成移交或正常消费者 ACCEPTED 的前置条件。
 
 ```text
 consumer_acceptance_signoff: <name + date>
@@ -117,10 +120,12 @@ Each public handoff packet binds exactly one commit and reports only synthetic a
 
 ```text
 packet_ref: synthetic-handoff-example-001
-source_commit: 1d529299425c85bc31cc332af271ba814f7d8ce5
+source_commit: <exact-40-hex-sha-of-tested-source>
 created_at: 2026-10-13
 kind: synthetic-only
 ```
+
+The `source_commit` placeholder must be replaced with the exact commit actually tested; the placeholder itself is not tested evidence. Source commits and deployment config revisions are recorded separately: a config revision need not be a Git object.
 
 A complete packet has four parts: exact-commit binding, reproducible check records, coverage limits, and an empty real first-use table. A packet missing any part is incomplete and must not be recorded as handoff-ready.
 
@@ -191,15 +196,16 @@ The deployment owner and Human complete the following table in the real environm
 | executor.independence | <opaque-ref> | <opaque-ref> | <opaque-ref> | fresh-context witness |
 | rollback.plan | <opaque-ref> | — | — | prior-path restoration contract |
 
-Controller event samples record field shapes only, never real values:
+Controller events record only real event constants and field shapes, never real values. The normal decision path is `PENDING -> ACCEPTED`; `ACCEPTED -> ROLLED_BACK` happens only on explicit `completeConsumerRollback` with receipt and prior-path readback. `rollback.plan` (the 9th evidence element) is not a performed rollback; rollback must not be made a mandatory first-use step:
 
 ```text
-OPENED -> EVIDENCE_UPDATED -> DECIDED -> ROLLBACK_COMPLETED
+ConsumerAcceptanceOpened -> ConsumerAcceptanceEvidenceUpdated -> ConsumerAcceptanceDecided
+(optional, separate) -> ConsumerRollbackCompleted
 ```
 
 Confidentiality attestation: this packet contains no real node names, addresses, account identifiers, secret values, private keys, tokens, private policies, raw logs, or topology. Public checks emit only rule, path, and line numbers.
 
-Sign-off: consumer acceptance and break-glass are signed separately. Acceptance sign-off grants no break-glass invocation authority, and break-glass invocation closes no acceptance gap.
+Sign-off: consumer acceptance and break-glass are signed separately. Acceptance sign-off grants no break-glass invocation authority, and break-glass invocation closes no acceptance gap. Break-glass is an independent optional Human-authorized recovery gate, not a precondition for public synthetic handoff or normal consumer ACCEPTED.
 
 ```text
 consumer_acceptance_signoff: <name + date>
