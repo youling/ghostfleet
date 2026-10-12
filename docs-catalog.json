@@ -367,6 +367,15 @@
         "return",
         "counterexamples"
       ]
+    },
+    {
+      "path": "docs/PUBLIC_HANDOFF_PACKET.md",
+      "topics": [
+        "packet",
+        "evidence",
+        "boundary",
+        "acceptance"
+      ]
     }
   ]
 }
