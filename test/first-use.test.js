@@ -66,17 +66,31 @@ test("public first-use probe does not expose an API for secret creation or crede
 });
 
 test("first-use copy explicitly distinguishes app login tokens from deployment-admin credentials", () => {
-  const prior = getLanguage();
-  for (const language of ["zh-CN", "en"]) {
-    setLanguage(language);
-    const unknown = t("firstUseUnknownStatus");
-    const missing = t("firstUseNotInitializedHelp");
-    assert.ok(unknown.includes("GhostFleet Operator/Read"));
-    assert.match(unknown, /Cloudflare/);
-    assert.match(missing, /Cloudflare/);
-    assert.doesNotMatch(unknown, /never accepts deployment root secrets/i);
-    assert.doesNotMatch(missing, /cannot create or receive deployment root secrets/i);
-    assert.doesNotMatch(missing, /本页面不能创建或接收生产根密钥/);
+  const priorLanguage = getLanguage();
+  const previousDocument = globalThis.document;
+  // i18n.setLanguage updates the browser DOM; exercise translations under a
+  // minimal inert Node-only document without contacting any real page.
+  globalThis.document = {
+    documentElement: { lang: "" },
+    title: "",
+    querySelector: () => ({ value: "" }),
+    querySelectorAll: () => [],
+  };
+  try {
+    for (const language of ["zh-CN", "en"]) {
+      setLanguage(language);
+      const unknown = t("firstUseUnknownStatus");
+      const missing = t("firstUseNotInitializedHelp");
+      assert.ok(unknown.includes("GhostFleet Operator/Read"));
+      assert.match(unknown, /Cloudflare/);
+      assert.match(missing, /Cloudflare/);
+      assert.doesNotMatch(unknown, /never accepts deployment root secrets/i);
+      assert.doesNotMatch(missing, /cannot create or receive deployment root secrets/i);
+      assert.doesNotMatch(missing, /本页面不能创建或接收生产根密钥/);
+    }
+  } finally {
+    setLanguage(priorLanguage);
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
   }
-  setLanguage(prior);
 });
