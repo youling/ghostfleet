@@ -12,6 +12,7 @@ await cp(resolve("console/enrollment"), resolve(out, "enrollment"), { recursive:
 await cp(resolve("console/providers"), resolve(out, "providers"), { recursive: true });
 await cp(resolve("console/shared/console.css"), resolve(out, "shared/console.css"));
 await cp(resolve("console/shared/i18n.js"), resolve(out, "shared/i18n.js"));
+await cp(resolve("console/shared/first-use.js"), resolve(out, "shared/first-use.js"));
 await cp(resolve("console/shared/appearance.js"), resolve(out, "shared/appearance.js"));
 await cp(resolve("console/shared/icons.js"), resolve(out, "shared/icons.js"));
 await cp(resolve("console/shared/table-model.js"), resolve(out, "shared/table-model.js"));
