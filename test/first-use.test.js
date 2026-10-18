@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { FIRST_USE, classifyFirstUseResponse, probeFirstUse } from "../console/shared/first-use.js";
+import { getLanguage, setLanguage, t } from "../console/shared/i18n.js";
 
 const response = (status, payload, options = {}) => ({
   status,
@@ -62,4 +63,20 @@ test("public first-use probe does not expose an API for secret creation or crede
     return response(401, { ok: false, error: "UNAUTHORIZED" });
   });
   assert.equal(state, FIRST_USE.TOKEN_REQUIRED);
+});
+
+test("first-use copy explicitly distinguishes app login tokens from deployment-admin credentials", () => {
+  const prior = getLanguage();
+  for (const language of ["zh-CN", "en"]) {
+    setLanguage(language);
+    const unknown = t("firstUseUnknownStatus");
+    const missing = t("firstUseNotInitializedHelp");
+    assert.match(unknown, /GhostFleet Operator\\/Read/);
+    assert.match(unknown, /Cloudflare/);
+    assert.match(missing, /Cloudflare/);
+    assert.doesNotMatch(unknown, /never accepts deployment root secrets/i);
+    assert.doesNotMatch(missing, /cannot create or receive deployment root secrets/i);
+    assert.doesNotMatch(missing, /本页面不能创建或接收生产根密钥/);
+  }
+  setLanguage(prior);
 });
