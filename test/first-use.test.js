@@ -71,7 +71,7 @@ test("first-use copy explicitly distinguishes app login tokens from deployment-a
     setLanguage(language);
     const unknown = t("firstUseUnknownStatus");
     const missing = t("firstUseNotInitializedHelp");
-    assert.match(unknown, /GhostFleet Operator\\/Read/);
+    assert.ok(unknown.includes("GhostFleet Operator/Read"));
     assert.match(unknown, /Cloudflare/);
     assert.match(missing, /Cloudflare/);
     assert.doesNotMatch(unknown, /never accepts deployment root secrets/i);
