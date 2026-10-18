@@ -4,6 +4,7 @@ import { enrollmentDisplayName, selectRows } from "./shared/table-model.js";
 import { icon } from "./shared/icons.js";
 import { templateDisplay, templatePostureSummary, templateSelectionPayload } from "./enrollment/templates/model.js";
 import { renderProviders } from "./providers/view.js";
+import { FIRST_USE, probeFirstUse } from "./shared/first-use.js";
 
 // The UI owns presentation only. Authority, transitions and admission stay on the server.
 const routes = ["overview", "devices", "enrollment", "approvals", "capabilities", "activity", "settings"];
@@ -15,6 +16,7 @@ const expired = (record) => Date.parse(record?.expires_at) <= Date.now();
 const writable = () => access === "operator" && !!snapshot && !busy && !uncertain;
 const disabled = () => writable() ? "" : " disabled";
 let accessToken = "", access = null, snapshot = null, lastRead = null;
+let firstUseState = FIRST_USE.UNKNOWN;
 let busy = false, uncertain = false, epoch = 0, feedback = null;
 let session = new AbortController();
 let view = routes.includes(location.hash.slice(1)) ? location.hash.slice(1) : "overview";
@@ -142,6 +144,7 @@ function renderShell() {
   $("#new-attempt button[type=submit]").disabled = !writable();
   $("#create-permission").textContent = writable() ? "" : t(permissionKey());
   $("#connection-access").textContent = snapshot ? t(access === "operator" ? "permissionOperator" : "permissionReadOnly") : "";
+  $("#first-use-status").textContent = snapshot ? t("firstUseConnected") : t(firstUseState === FIRST_USE.NOT_INITIALIZED ? "firstUseNotInitializedStatus" : firstUseState === FIRST_USE.TOKEN_REQUIRED ? "firstUseTokenRequiredStatus" : "firstUseUnknownStatus");
   $("#permission-banner").hidden = !uncertain && !(snapshot && access === "read_only" && ["enrollment", "approvals"].includes(view));
   $("#permission-banner").textContent = t(uncertain ? "permissionUncertain" : "permissionReadOnly");
   $("#last-read").textContent = lastRead ? t("lastRead", { time: date(lastRead) }) : "";
@@ -352,7 +355,7 @@ function renderPage() {
   if (view === "settings") { $("#page-content").replaceChildren(); renderSettingsProviders(); return; }
   if (!snapshot) {
     $("#page-content").innerHTML = busy ? '<div class="data-frame">' + Array.from({ length: 5 }, () => '<div class="loading-row"><div class="loading-placeholder"></div></div>').join("") + "</div>" :
-      '<section class="welcome">' + icon("devices") + "<h2>" + text("welcomeTitle") + "</h2><p>" + text("welcomeHelp") + '</p><button type="button" class="btn btn-primary" data-go="settings">' + text("connectControlPlane") + "</button></section>";
+      '<section class="welcome">' + icon("devices") + "<h2>" + text(firstUseState === FIRST_USE.NOT_INITIALIZED ? "firstUseNotInitializedTitle" : "welcomeTitle") + "</h2><p>" + text(firstUseState === FIRST_USE.NOT_INITIALIZED ? "firstUseNotInitializedHelp" : "welcomeHelp") + '</p><button type="button" class="btn btn-primary" data-go="settings">' + text("connectControlPlane") + "</button></section>";
     return;
   }
   $("#page-content").innerHTML = view === "overview" ? renderOverview() : renderTablePage();
@@ -776,3 +779,11 @@ document.addEventListener("keydown", (event) => {
 for (const node of document.querySelectorAll("[data-icon]")) node.innerHTML = icon(node.dataset.icon);
 applyLocale();
 render();
+async function inspectFirstUseOnce() {
+  const ownEpoch = epoch;
+  const result = await probeFirstUse();
+  if (ownEpoch !== epoch || snapshot || accessToken) return;
+  firstUseState = result;
+  render();
+}
+void inspectFirstUseOnce();
