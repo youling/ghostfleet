@@ -6,6 +6,13 @@ import { DEFAULT_ACCEPTANCE_EVIDENCE } from "../src/core/model.js";
 
 const operator = "synthetic-operator-".repeat(3);
 const reader = "synthetic-reader-".repeat(3);
+const scopeReceipt = () => ({
+  type: "tailscale-oauth-token-scope/v1",
+  status: "VERIFIED",
+  granted_scope: "auth_keys",
+  requested_tag: "tag:fleet-ssh-target",
+  verified_at: new Date().toISOString(),
+});
 const request = (method = "GET", token, path = "/v0/nodes") => new Request(`https://ghostfleet.test${path}`, {
   method, headers: token ? { authorization: `Bearer ${token}` } : {},
 });
@@ -54,7 +61,7 @@ test("provider setup readiness is read-only and secret-safe", async () => {
     async fetch(request) {
       assert.equal(new URL(request.url).pathname, "/readiness");
       return Response.json({
-        authority: { provider: "tailscale", generation: "ghostfleet-tailscale-auth-v1" },
+        authority: { provider: "tailscale", generation: "ghostfleet-tailscale-auth-v1", scope: "auth_keys", tag: "tag:fleet-ssh-target", verification: scopeReceipt() },
         secrets: {
           TAILSCALE_ENROLL_OAUTH_CLIENT_ID: "PRESENT",
           TAILSCALE_ENROLL_OAUTH_CLIENT_SECRET: "PRESENT",
@@ -109,6 +116,7 @@ test("provider credential setup is operator-only and transient through the priva
         authority_generation: "ghostfleet-tailscale-auth-v1",
         scope: "auth_keys",
         tag: "tag:fleet-ssh-target",
+        verification: scopeReceipt(),
       });
     },
   };
