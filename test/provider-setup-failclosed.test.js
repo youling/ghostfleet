@@ -119,6 +119,15 @@ test("known deterministic 4xx preserve only exact safe error codes", async () =>
     assert.equal(res.status, status);
     assert.deepEqual(await res.json(), {ok:false,error});
   }
+
+  // Existing private adapter returns deterministic 409 without an ok field.
+  const legacyKnown = await worker.fetch(setupRequest(), envFor(Response.json({
+    error:"PROVIDER_CREDENTIAL_REJECTED",
+  }, {status:409}), {calls:0}));
+  assert.equal(legacyKnown.status,409);
+  assert.deepEqual(await legacyKnown.json(),{
+    ok:false,error:"PROVIDER_CREDENTIAL_REJECTED",
+  });
   const unsafe = await worker.fetch(setupRequest(), envFor(Response.json({
     ok:true, error:"PROVIDER_CREDENTIAL_REJECTED"
   }, {status:409}), {calls:0}));
