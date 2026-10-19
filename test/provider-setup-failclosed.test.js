@@ -32,7 +32,7 @@ const secrets = {
   TAILSCALE_ENROLL_OAUTH_CLIENT_SECRET: "PRESENT",
 };
 const setupRequest = (token = operator) => new Request(
-  "https://ghostfleet.test/v0/providers/tailscale/setup", {
+  "https://ghostfleet.example.invalid/v0/providers/tailscale/setup", {
     method: "POST",
     headers: { authorization: "Bearer " + token, "content-type": "application/json" },
     body: JSON.stringify({client_id: "synthetic-client-id", client_secret: credential}),
