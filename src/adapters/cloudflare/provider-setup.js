@@ -1,6 +1,21 @@
 const REQUIRED_SCOPE = "auth_keys";
 const REQUIRED_TAG = "tag:fleet-ssh-target";
 const SCOPE_PROOF_TYPE = "tailscale-oauth-token-scope/v1";
+const AUTHORITY_GENERATION_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const SCOPE_PROOF_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+// Only deterministic private input/credential rejections may be surfaced;
+// never relay arbitrary private error text, including credential material.
+const DETERMINISTIC_ERRORS = Object.freeze({
+  400: new Set(["PROVIDER_SETUP_INPUT_INVALID", "PROVIDER_CLIENT_ID_INVALID", "PROVIDER_CLIENT_SECRET_INVALID"]),
+  409: new Set(["PROVIDER_CREDENTIAL_REJECTED"]),
+});
+const unknownResult = () => ({ status: 503, payload: { ok: false, error: "PROVIDER_AUTHORITY_SETUP_UNKNOWN" } });
+
+function validGeneration(value) {
+  return typeof value === "string" && value !== "MISSING"
+    && AUTHORITY_GENERATION_RE.test(value);
+}
 
 // Explicit report from the Fleet-private authority service. These fields are
 // claims from a trusted service binding, NOT independent proof that Tailscale
@@ -9,15 +24,21 @@ const SCOPE_PROOF_TYPE = "tailscale-oauth-token-scope/v1";
 function hasVerifiedScopeClaim(authority) {
   const proof = authority?.verification;
   const at = proof?.verified_at;
-  const time = typeof at === "string" && at.includes("T") && at.endsWith("Z") ? Date.parse(at) : NaN;
-  return authority?.scope === REQUIRED_SCOPE
+  const time = typeof at === "string" ? Date.parse(at) : NaN;
+  // The exact ISO instant prevents accepting loosely parsed or ambiguous
+  // timestamps; 24h is a presentation freshness bound, not revocation proof.
+  const validTime = Number.isFinite(time) && new Date(time).toISOString() === at
+    && time <= Date.now() + 60_000
+    && time >= Date.now() - SCOPE_PROOF_MAX_AGE_MS;
+  return authority?.provider === "tailscale"
+    && validTime
+    && authority?.scope === REQUIRED_SCOPE
     && authority?.tag === REQUIRED_TAG
     && proof?.type === SCOPE_PROOF_TYPE
     && proof?.status === "VERIFIED"
     && proof?.granted_scope === REQUIRED_SCOPE
     && proof?.requested_tag === REQUIRED_TAG
-    && Number.isFinite(time)
-    && time <= Date.now() + 60_000;
+    && validGeneration(authority?.generation);
 }
 
 export async function providerSetupSnapshot(env) {
@@ -39,11 +60,13 @@ export async function providerSetupSnapshot(env) {
 
   const clientId = readiness?.secrets?.TAILSCALE_ENROLL_OAUTH_CLIENT_ID === "PRESENT";
   const clientSecret = readiness?.secrets?.TAILSCALE_ENROLL_OAUTH_CLIENT_SECRET === "PRESENT";
-  const generation = typeof readiness?.authority?.generation === "string"
+  const generation = validGeneration(readiness?.authority?.generation)
     ? readiness.authority.generation
     : null;
-  const configured = !!(enabled && clientId && clientSecret && generation && generation !== "MISSING");
-  const ready = configured && hasVerifiedScopeClaim(readiness?.authority);
+  // Presence is not proof of valid authority. Even with a missing/bad
+  // generation, existing custody must not be offered a blind overwrite.
+  const configured = !!(enabled && clientId && clientSecret);
+  const ready = configured && !!generation && hasVerifiedScopeClaim(readiness?.authority);
 
   return {
     providers: {
@@ -110,20 +133,24 @@ export async function configureTailscaleProvider(env, input) {
     return { status: 503, payload: { ok: false, error: "PROVIDER_AUTHORITY_SETUP_UNKNOWN" } };
   }
 
-  let data = {};
-  try { data = await response.json(); } catch {}
+  let data;
+  try { data = await response.json(); } catch { return unknownResult(); }
+
   if (!response.ok) {
-    const code = typeof data?.error === "string" ? data.error : "PROVIDER_AUTHORITY_SETUP_FAILED";
-    return { status: response.status, payload: { ok: false, error: code } };
+    // 408/5xx and unknown private replies may have followed a custody write.
+    // Only explicitly defined, deterministic 4xx statuses/codes survive.
+    const allowed = DETERMINISTIC_ERRORS[response.status];
+    if (data?.ok === false && allowed?.has(data?.error)) {
+      return { status: response.status, payload: { ok: false, error: data.error } };
+    }
+    return unknownResult();
   }
-  if (data?.status !== "READY" || data?.provider !== "tailscale" || typeof data?.authority_generation !== "string") {
-    return { status: 502, payload: { ok: false, error: "PROVIDER_AUTHORITY_SETUP_INVALID" } };
-  }
-  // A successful private POST may already have changed protected custody.
-  // Missing or overbroad scope evidence is UNKNOWN, never a success response
-  // and never an invitation to blindly submit the secret again.
-  if (!hasVerifiedScopeClaim(data)) {
-    return { status: 503, payload: { ok: false, error: "PROVIDER_AUTHORITY_SETUP_UNKNOWN" } };
+  // An apparently successful upstream response does not prove that the
+  // underlying encrypted custody write did or did not happen.
+  if (data?.ok !== true || data?.status !== "READY"
+      || data?.provider !== "tailscale" || !validGeneration(data?.authority_generation)
+      || !hasVerifiedScopeClaim({ ...data, generation: data.authority_generation })) {
+    return unknownResult();
   }
   return {
     status: 200,
