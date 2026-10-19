@@ -11,6 +11,7 @@ const escapeHtml = (value) => String(value ?? "").replace(/[&<>"\']/g, (char) =>
 export function renderProviderStatus(provider) {
   const status = provider?.status || "MISSING";
   const ready = status === "READY";
+  const unverified = status === "CONFIGURED_UNVERIFIED";
   const requirements = provider?.requirements || {};
   const secretState = provider?.secret_state || {};
   return `
@@ -38,9 +39,11 @@ export function renderProviderStatus(provider) {
           <strong>${escapeHtml(t("provider.minimumAuthority"))}</strong>
           <p class="secondary">${escapeHtml(t("provider.minimumAuthorityHelp"))}</p>
         </div>
-        ${ready
-          ? `<p class="secondary provider-ready-note">${escapeHtml(t("provider.readyHelp"))}</p>`
-          : `<button class="btn btn-primary" type="button" data-provider-setup="tailscale">${escapeHtml(t("provider.connect"))}</button>`}
+        ${unverified
+          ? `<p class="secondary provider-unverified-note">${escapeHtml(t("provider.unverifiedHelp"))}</p>`
+          : ready
+            ? `<p class="secondary provider-ready-note">${escapeHtml(t("provider.readyHelp"))}</p>`
+            : `<button class="btn btn-primary" type="button" data-provider-setup="tailscale">${escapeHtml(t("provider.connect"))}</button>`}
       </div>
     </section>`;
 }
