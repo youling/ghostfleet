@@ -9,8 +9,7 @@ const SCOPE_PROOF_TYPE = "tailscale-oauth-token-scope/v1";
 function hasVerifiedScopeClaim(authority) {
   const proof = authority?.verification;
   const at = proof?.verified_at;
-  const time = typeof at === "string" && /^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d/.test(at)
-    ? Date.parse(at) : NaN;
+  const time = typeof at === "string" && at.includes("T") && at.endsWith("Z") ? Date.parse(at) : NaN;
   return authority?.scope === REQUIRED_SCOPE
     && authority?.tag === REQUIRED_TAG
     && proof?.type === SCOPE_PROOF_TYPE
