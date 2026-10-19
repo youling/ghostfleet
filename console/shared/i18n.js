@@ -367,6 +367,25 @@ Object.assign(en, {
   providerSetupUnknown: "The provider setup result is unclear. Refresh status first; only re-enter credentials if it is still not connected.",
 });
 
+// A first-use probe is informational only: it cannot prove Cloudflare Access
+// protection, grant an operator role, or initialize a production root secret.
+Object.assign(zh, {
+  firstUseConnected: "已连接 GhostFleet 控制平面；实际权限由服务端决定。",
+  firstUseNotInitializedStatus: "尚未初始化 · 请由账户所有者通过独立、受保护的原生流程配置 Operator/Read 凭据；不要在这里填写 Cloudflare API Token。",
+  firstUseTokenRequiredStatus: "控制平面已配置鉴权 · 请使用 GhostFleet 专属 Operator 或 Read 令牌。通过 Cloudflare Access 不等于获得操作权限。",
+  firstUseUnknownStatus: "初始化状态尚未核实；请检查网络和 Cloudflare Access 会话。此处仅用于 GhostFleet Operator/Read 登录，不要填写 Cloudflare 或 Tailscale 管理凭据。",
+  firstUseNotInitializedTitle: "控制平面尚未初始化",
+  firstUseNotInitializedHelp: "服务端尚未配置 Operator/Read 登录令牌。请先完成账户所有者控制的原生安全初始化，再以 GhostFleet 专属令牌连接；此表单不会创建根令牌，也不接受 Cloudflare 部署凭据。",
+});
+Object.assign(en, {
+  firstUseConnected: "Connected to the GhostFleet control plane. Server policy remains authoritative.",
+  firstUseNotInitializedStatus: "Not initialized · The account owner must provision Operator/Read credentials through a separate protected native process. Do not enter a Cloudflare API token here.",
+  firstUseTokenRequiredStatus: "Control-plane authentication is configured. Enter a GhostFleet Operator or Read token; Cloudflare Access login alone grants no operator permission.",
+  firstUseUnknownStatus: "Initialization status could not be confirmed. Check your network and Cloudflare Access session. Use this form only for GhostFleet Operator/Read login tokens, never Cloudflare or Tailscale administrative credentials.",
+  firstUseNotInitializedTitle: "Control plane is not initialized",
+  firstUseNotInitializedHelp: "The server has no Operator/Read login tokens. Complete the account-owner native setup first, then connect with a GhostFleet token. This form cannot create root tokens and must not receive Cloudflare deployment credentials.",
+});
+
 let language = "zh-CN";
 try { if (localStorage.getItem("ghostfleet-language") === "en") language = "en"; } catch {}
 export function getLanguage() { return language; }
