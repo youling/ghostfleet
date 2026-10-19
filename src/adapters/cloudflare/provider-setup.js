@@ -1,5 +1,25 @@
 const REQUIRED_SCOPE = "auth_keys";
 const REQUIRED_TAG = "tag:fleet-ssh-target";
+const SCOPE_PROOF_TYPE = "tailscale-oauth-token-scope/v1";
+
+// Explicit report from the Fleet-private authority service. These fields are
+// claims from a trusted service binding, NOT independent proof that Tailscale
+// credentials remain valid now. The private implementation must verify scope
+// against a real successful OAuth token response, never fill these from constants.
+function hasVerifiedScopeClaim(authority) {
+  const proof = authority?.verification;
+  const at = proof?.verified_at;
+  const time = typeof at === "string" && /^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d/.test(at)
+    ? Date.parse(at) : NaN;
+  return authority?.scope === REQUIRED_SCOPE
+    && authority?.tag === REQUIRED_TAG
+    && proof?.type === SCOPE_PROOF_TYPE
+    && proof?.status === "VERIFIED"
+    && proof?.granted_scope === REQUIRED_SCOPE
+    && proof?.requested_tag === REQUIRED_TAG
+    && Number.isFinite(time)
+    && time <= Date.now() + 60_000;
+}
 
 export async function providerSetupSnapshot(env) {
   const service = env?.GHOSTFLEET_ENROLLMENT_CLAIM_MATERIALIZER;
@@ -23,14 +43,15 @@ export async function providerSetupSnapshot(env) {
   const generation = typeof readiness?.authority?.generation === "string"
     ? readiness.authority.generation
     : null;
-  const ready = enabled && clientId && clientSecret && generation && generation !== "MISSING";
+  const configured = !!(enabled && clientId && clientSecret && generation && generation !== "MISSING");
+  const ready = configured && hasVerifiedScopeClaim(readiness?.authority);
 
   return {
     providers: {
       tailscale: {
         provider: "tailscale",
         purpose: "enrollment_authority",
-        status: ready ? "READY" : "MISSING",
+        status: ready ? "READY" : configured ? "CONFIGURED_UNVERIFIED" : "MISSING",
         requirements: {
           scope: REQUIRED_SCOPE,
           tag: REQUIRED_TAG,
@@ -98,6 +119,12 @@ export async function configureTailscaleProvider(env, input) {
   }
   if (data?.status !== "READY" || data?.provider !== "tailscale" || typeof data?.authority_generation !== "string") {
     return { status: 502, payload: { ok: false, error: "PROVIDER_AUTHORITY_SETUP_INVALID" } };
+  }
+  // A successful private POST may already have changed protected custody.
+  // Missing or overbroad scope evidence is UNKNOWN, never a success response
+  // and never an invitation to blindly submit the secret again.
+  if (!hasVerifiedScopeClaim(data)) {
+    return { status: 503, payload: { ok: false, error: "PROVIDER_AUTHORITY_SETUP_UNKNOWN" } };
   }
   return {
     status: 200,
