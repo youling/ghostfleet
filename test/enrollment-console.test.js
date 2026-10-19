@@ -54,3 +54,18 @@ test("provider settings render only safe readiness metadata",()=>{
   assert.match(html,/data-provider-setup="tailscale"/);
   assert.equal(html.includes("client-secret-value"),false);
 });
+
+test("configured-but-unverified provider is not presented as ready or invited to blind retry", () => {
+  const html = renderProviders({providers:{tailscale:{
+    status:"CONFIGURED_UNVERIFIED",
+    authority_generation:"synthetic-generation",
+    requirements:{scope:"auth_keys",tag:"tag:fleet-ssh-target"},
+    secret_state:{client_id:"PRESENT",client_secret:"PRESENT"},
+  }}});
+  assert.match(html, /provider-unverified-note/);
+  assert.match(html, /已配置/);
+  assert.match(html, /未验证/);
+  assert.doesNotMatch(html, /data-provider-setup="tailscale"/);
+  assert.doesNotMatch(html, /provider-ready-note/);
+  assert.equal(html.includes("synthetic-secret-material"),false);
+});
