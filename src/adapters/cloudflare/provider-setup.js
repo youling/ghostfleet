@@ -140,14 +140,14 @@ export async function configureTailscaleProvider(env, input) {
     // 408/5xx and unknown private replies may have followed a custody write.
     // Only explicitly defined, deterministic 4xx statuses/codes survive.
     const allowed = DETERMINISTIC_ERRORS[response.status];
-    if (data?.ok === false && allowed?.has(data?.error)) {
+    if (data?.ok !== true && allowed?.has(data?.error)) {
       return { status: response.status, payload: { ok: false, error: data.error } };
     }
     return unknownResult();
   }
   // An apparently successful upstream response does not prove that the
   // underlying encrypted custody write did or did not happen.
-  if (data?.ok !== true || data?.status !== "READY"
+  if (response.status !== 200 || data?.ok !== true || data?.status !== "READY"
       || data?.provider !== "tailscale" || !validGeneration(data?.authority_generation)
       || !hasVerifiedScopeClaim({ ...data, generation: data.authority_generation })) {
     return unknownResult();
