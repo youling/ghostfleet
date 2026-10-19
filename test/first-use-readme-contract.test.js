@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { checkFirstUseReadmeContract } from "../scripts/docs-check.mjs";
+import { checkFirstUseReadmeContract } from "../scripts/first-use-doc-contract.mjs";
 
 const original = readFileSync(new URL("../console/README.md", import.meta.url), "utf8");
 const exactGeneration = "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$";
