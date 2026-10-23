@@ -13,6 +13,9 @@ test("privileged installer uses administrative PATH, Ed25519 and exact key guard
   assert.match(content,/PATH="\/usr\/sbin:\/usr\/bin:\/sbin:\/bin"/);
   assert.match(content,/ssh-ed25519\|ssh-rsa/);
   assert.match(content,/authorized_key_file_ok\(\)/);
+  assert.match(content,/omv_ssh_group_state\(\)/);
+  assert.match(content,/OMV_SSH_GROUP=\$\(omv_ssh_group_state\)/);
+  assert.doesNotMatch(content,/usermod\s+-aG\s+_ssh/);
   assert.match(content,/if authorized_key_file_ok; then/);
   assert.match(content,/stat\.S_IMODE\(info\.st_mode\) != 0o600/);
   assert.match(content,/path\.parent\.lstat\(\)/);

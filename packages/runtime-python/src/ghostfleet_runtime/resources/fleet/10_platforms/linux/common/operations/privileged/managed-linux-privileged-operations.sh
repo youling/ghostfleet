@@ -155,10 +155,27 @@ ops_account_ok() {
   [[ "$(getent passwd "$OPS_USER" | cut -d: -f7)" == /bin/sh ]] || return 1
   passwd -S "$OPS_USER" 2>/dev/null | awk '{print $2}' | grep -Eq '^(L|LK)$'
 }
+omv_ssh_group_state() {
+  # OMV's web-managed SSH policy can require membership in _ssh.
+  # This is read-only; membership is not a substitute for a real SSH canary
+  # or permission to edit OMV-owned sshd configuration.
+  if [[ ! -e /etc/openmediavault/config.xml && ! -d /etc/openmediavault ]]; then
+    echo NOT_APPLICABLE
+    return
+  fi
+  getent group _ssh >/dev/null 2>&1 || { echo UNKNOWN_GROUP; return; }
+  id "$OPS_USER" >/dev/null 2>&1 || { echo ACCOUNT_ABSENT; return; }
+  if id -nG "$OPS_USER" | tr ' ' '\n' | grep -qx '_ssh'; then
+    echo MEMBER
+  else
+    echo NOT_MEMBER
+  fi
+}
 print_state() {
   printf 'ORDINARY_USER=%s\n' "${ORDINARY_USER:-UNBOUND}"
   printf 'OPS_USER=%s\n' "$OPS_USER"
   ops_account_ok && echo 'OPS_ACCOUNT=COMPLIANT' || echo 'OPS_ACCOUNT=ABSENT_OR_DRIFT'
+  echo "OMV_SSH_GROUP=$(omv_ssh_group_state)"
   regular_root_755 "$HELPER_DST" && echo 'HELPER=COMPLIANT' || echo 'HELPER=ABSENT_OR_DRIFT'
   regular_root_755 "$ENTRY_DST" && echo 'ENTRY=COMPLIANT' || echo 'ENTRY=ABSENT_OR_DRIFT'
   if authorized_key_file_ok; then
