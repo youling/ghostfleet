@@ -6,6 +6,18 @@ import {join} from "node:path";
 import {spawnSync} from "node:child_process";
 import {BOOTSTRAP_SH,renderBootstrap} from "../src/index.js";
 
+test("Phase 0 pins a readable SSH host identity before any host effects",()=>{
+  const keyCheck=BOOTSTRAP_SH.indexOf("no readable SSH host public key");
+  const fingerprintCheck=BOOTSTRAP_SH.indexOf("SSH host public key fingerprint could not be verified");
+  const baseline=BOOTSTRAP_SH.indexOf("bootstrap_transport_baseline()\\n");
+  const claim=BOOTSTRAP_SH.indexOf("CLAIM_URL=");
+  assert.ok(keyCheck>0 && fingerprintCheck>keyCheck);
+  assert.ok(keyCheck<baseline && fingerprintCheck<claim);
+  assert.match(BOOTSTRAP_SH,/ssh_host_ed25519_key\\.pub/);
+  assert.match(BOOTSTRAP_SH,/ssh_host_ecdsa_key\\.pub/);
+  assert.match(BOOTSTRAP_SH,/ssh_host_rsa_key\\.pub/);
+});
+
 test("bootstrap has no deployment endpoint and requires a supplied HTTPS origin",()=>{
   assert.ok(BOOTSTRAP_SH.includes('GHOSTFLEET_BROKER_ORIGIN'));
   assert.throws(()=>renderBootstrap({brokerOrigin:"http://fixture.example.invalid"}),/ORIGIN_INVALID/);

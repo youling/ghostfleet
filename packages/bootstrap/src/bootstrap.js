@@ -191,6 +191,16 @@ bootstrap_phase0_preflight() {
   command -v sha256sum >/dev/null 2>&1 || fail 'preflight failed: sha256sum is required'
   command -v dpkg-query >/dev/null 2>&1 || fail 'preflight failed: dpkg-query is required'
   command -v apt-get >/dev/null 2>&1 || fail 'preflight failed: apt-get is required'
+  command -v ssh-keygen >/dev/null 2>&1 || fail 'preflight failed: ssh-keygen is required for host identity evidence'
+
+  # Verify the real host identity before package/service/provider effects.
+  SSH_HOST_KEY_PATH=
+  for candidate in /etc/ssh/ssh_host_ed25519_key.pub /etc/ssh/ssh_host_ecdsa_key.pub /etc/ssh/ssh_host_rsa_key.pub; do
+    if [ -r "$candidate" ] && [ -s "$candidate" ]; then SSH_HOST_KEY_PATH="$candidate"; break; fi
+  done
+  [ -n "$SSH_HOST_KEY_PATH" ] || fail 'preflight failed: no readable SSH host public key; identity evidence cannot be established'
+  SSH_HOST_KEY_SHA="$(ssh-keygen -lf "$SSH_HOST_KEY_PATH" 2>/dev/null | awk 'NF >= 2 {print $2; exit}')"
+  [ -n "$SSH_HOST_KEY_SHA" ] || fail 'preflight failed: SSH host public key fingerprint could not be verified'
 
   APPLIANCE_KIND=generic-linux
   if [ -e /etc/openmediavault/config.xml ] || [ -d /etc/openmediavault ]; then
@@ -395,7 +405,7 @@ else
   unset TS_AUTHKEY
 fi
 
-SSH_HOST_KEY_SHA="$(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null | awk '{print $2}' || true)"
+# SSH_HOST_KEY_PATH and SSH_HOST_KEY_SHA were verified during read-only Phase 0.
 
 IDENTITY_EVIDENCE_B64=
 IDENTITY_EVIDENCE_SHA=

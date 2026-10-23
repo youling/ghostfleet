@@ -40,7 +40,7 @@ python scripts/verify-python-artifact.py
 ghostfleet-enroll --ticket-file <ABSOLUTE_PROTECTED_TICKET_FILE>
 ```
 
-公共 Linux shell courier 在 APT/服务修改前先确认只读 Phase0、已有 Tailscale 身份和实际终端。PATH 固定包含 `/usr/sbin:/usr/bin:/sbin:/bin`。若发现现有未核验的 Tailscale 身份，会在**任何安装效果前**拒绝重新 join，要求走由控制面/部署方核验的 ADOPT/REPAIR；这不是“已支持无感接管”的声明。OMV 配置、SSH 用户规则、存储及业务服务从不归 shell courier 管理；真实 OMV8 接入需在专用管理路径内验收。
+公共 Linux shell courier 在 APT/服务修改前先确认只读 Phase0、已有 Tailscale 身份和实际终端。PATH 固定包含 `/usr/sbin:/usr/bin:/sbin:/bin`。若发现现有未核验的 Tailscale 身份，会在**任何安装效果前**拒绝重新 join，要求走由控制面/部署方核验的 ADOPT/REPAIR；这不是“已支持无感接管”的声明。OMV 配置、SSH 用户规则、存储及业务服务从不归 shell courier 管理；真实 OMV8 接入需在专用管理路径内验收。Phase 0 还必须验证 SSH 主机公钥指纹（优先 Ed25519，其次 ECDSA/RSA）；缺少公钥或 ssh-keygen 验证失败时，必须在安装、服务启动和 provider claim 前停止，禁止空指纹回执。
 
 每次收敛先核对主机、外部状态和当前提供方身份；升级已有软件包需要单独计划。派发前持久化防重复记录，未知 join 不重试，取得新鲜独立证明后才写自己拥有的描述和检查点。保留 `lifecycle_promoted:false`。实际零差异要求立即重复执行，并证明所有副作用范围都没有变化。提供方纳管标签须由部署方显式配置 `GHOSTFLEET_ENROLL_TAG`，缺少时拒绝，不携带旧实例标签。
 
@@ -114,7 +114,7 @@ ghostfleet-enroll --ticket-file <ABSOLUTE_PROTECTED_TICKET_FILE>
 
 Deployments explicitly configure `GHOSTFLEET_ENROLL_TAG`; missing tags fail closed, with no embedded previous private-instance tag.
 
-Before any APT or service mutation, the public Linux shell courier checks read-only Phase0 facts, an existing Tailscale identity and the required terminal; PATH includes standard Debian sbin paths. A foreign/unverified existing identity stops before effects and must enter a verified ADOPT/REPAIR integration rather than minting a second identity. This safety guard does **not** mean the legacy courier itself can adopt an existing machine. OMV-managed SSH/user configuration, storage and workloads remain out of the public courier's effect scope.
+Before any APT or service mutation, the public Linux shell courier checks read-only Phase0 facts, an existing Tailscale identity and the required terminal; PATH includes standard Debian sbin paths. A foreign/unverified existing identity stops before effects and must enter a verified ADOPT/REPAIR integration rather than minting a second identity. This safety guard does **not** mean the legacy courier itself can adopt an existing machine. OMV-managed SSH/user configuration, storage and workloads remain out of the public courier's effect scope. Phase 0 also requires a verifiable SSH host public key/fingerprint (Ed25519, then ECDSA/RSA); missing or invalid identity evidence stops before package, service or provider effects.
 
 Every invocation validates host, foreign state and current provider. Package upgrades need a separate plan. Persist a fence before dispatch, never retry an ambiguous join, and write owned descriptor/checkpoint only after fresh independent proof. `lifecycle_promoted:false` remains explicit. Actual zero delta requires immediate repeat and no changes across all effect surfaces.
 
