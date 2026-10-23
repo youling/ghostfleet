@@ -39,6 +39,8 @@ ghostfleet-enroll --ticket-file <ABSOLUTE_PROTECTED_TICKET_FILE>
 
 每次收敛先核对主机、外部状态和当前提供方身份；升级已有软件包需要单独计划。派发前持久化防重复记录，未知 join 不重试，取得新鲜独立证明后才写自己拥有的描述和检查点。保留 `lifecycle_promoted:false`。实际零差异要求立即重复执行，并证明所有副作用范围都没有变化。提供方纳管标签须由部署方显式配置 `GHOSTFLEET_ENROLL_TAG`，缺少时拒绝，不携带旧实例标签。
 
+特权 Linux 安装器 `managed-linux-privileged-operations.sh` 明确使用 Debian 管理路径（包含 sbin），支持现有 RSA/ECDSA 和 Ed25519 公钥。`--check` 核对现存 `authorized_keys` 必须是 root 所有、0600、唯一受限强制命令与可解析公钥；不会因为出现某段匹配前缀就错误地报告已配置。安装或账户权限调整只能在明确授权下执行，本静态契约检查不代替 OMV8 真实 SSH 试验。
+
 任务、交互会话和特权辅助程序作为包资源提供，保留旧协议/存储 ABI。部署方显式安装程序、配置 SHA、授权与权限；默认导入和 CI 不安装辅助程序到设备。
 
 <!-- topic:windowsandroid -->
@@ -103,6 +105,8 @@ ghostfleet-enroll --ticket-file <ABSOLUTE_PROTECTED_TICKET_FILE>
 Deployments explicitly configure `GHOSTFLEET_ENROLL_TAG`; missing tags fail closed, with no embedded previous private-instance tag.
 
 Every invocation validates host, foreign state and current provider. Package upgrades need a separate plan. Persist a fence before dispatch, never retry an ambiguous join, and write owned descriptor/checkpoint only after fresh independent proof. `lifecycle_promoted:false` remains explicit. Actual zero delta requires immediate repeat and no changes across all effect surfaces.
+
+The managed-Linux privileged installer uses standard Debian administrative PATH entries (including sbin), accepts RSA/ECDSA and Ed25519 keys, and verifies the *entire* root-owned mode-0600 `authorized_keys` forced-command entry during read-only `--check`. Merely finding an option prefix is not proof that the actual SSH identity is safe. Root/SSH configuration and real OMV acceptance remain separately authorized.
 
 Job/session/privileged helpers are packaged resources preserving legacy protocol/storage ABI. Deployment owners explicitly install helpers and configure helper SHA/authority or root privilege; package imports and default CI install none.
 
