@@ -3,6 +3,9 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 umask 027
+# Standard Debian administrative paths, including sudo/root non-login shells.
+PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
 
 MODE="${1:-}"
 case "$MODE" in
@@ -42,7 +45,7 @@ normalize_public_key() {
   [[ -n "$line" ]] || return 1
   IFS=$' \t' read -r alg blob extra <<<"$line"
   case "$alg" in
-    ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521) ;;
+    ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521) ;;
     *) return 1 ;;
   esac
   [[ "$blob" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || return 1
@@ -109,6 +112,31 @@ render_authorized_key() {
   printf 'restrict,command="%s" %s youling-fleet-privileged-ops\n' "$ENTRY_DST" "$1"
 }
 
+authorized_key_file_ok() {
+  [[ -r "$AUTHORIZED_KEYS" && ! -L "$AUTHORIZED_KEYS" ]] || return 1
+  python3 -I - "$AUTHORIZED_KEYS" "$ENTRY_DST" <<'PY'
+import base64, pathlib, stat, sys
+path = pathlib.Path(sys.argv[1])
+try:
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600:
+        raise ValueError("wrong owner or mode")
+    rows = [x.strip() for x in path.read_text(encoding="utf-8").splitlines()
+            if x.strip() and not x.lstrip().startswith("#")]
+    if len(rows) != 1:
+        raise ValueError("not one owned key")
+    parts = rows[0].split()
+    expected = 'restrict,command="' + sys.argv[2] + '"'
+    algorithms = {"ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256",
+                  "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521"}
+    if len(parts) != 4 or parts[0] != expected or parts[1] not in algorithms or parts[3] != "youling-fleet-privileged-ops":
+        raise ValueError("forced command or key format mismatch")
+    if not base64.b64decode(parts[2], validate=True):
+        raise ValueError("empty key")
+except (OSError, ValueError, UnicodeError):
+    sys.exit(1)
+PY
+}
 regular_root_755() {
   [[ -f "$1" && ! -L "$1" && "$(stat -c '%U:%G:%a' "$1" 2>/dev/null || true)" == root:root:755 ]]
 }
@@ -125,7 +153,7 @@ print_state() {
   ops_account_ok && echo 'OPS_ACCOUNT=COMPLIANT' || echo 'OPS_ACCOUNT=ABSENT_OR_DRIFT'
   regular_root_755 "$HELPER_DST" && echo 'HELPER=COMPLIANT' || echo 'HELPER=ABSENT_OR_DRIFT'
   regular_root_755 "$ENTRY_DST" && echo 'ENTRY=COMPLIANT' || echo 'ENTRY=ABSENT_OR_DRIFT'
-  if [[ -r "$AUTHORIZED_KEYS" ]] && grep -Fq "restrict,command=\"$ENTRY_DST\"" "$AUTHORIZED_KEYS"; then
+  if authorized_key_file_ok; then
     echo 'AUTHORIZED_KEY=CONFIGURED'
   else
     echo 'AUTHORIZED_KEY=ABSENT_OR_DRIFT'
@@ -147,7 +175,7 @@ PUB_FILE="${FLEET_CONTROL_PRIVILEGED_SSH_PUBLIC_KEY_FILE:-}"
 stored_pub=""
 if [[ -r "$AUTHORIZED_KEYS" ]]; then
   stored_pub="$(awk '{
-    for(i=1;i<=NF;i++) if($i ~ /^(ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521)$/) {print $i" "$(i+1); exit}
+    for(i=1;i<=NF;i++) if($i ~ /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521)$/) {print $i" "$(i+1); exit}
   }' "$AUTHORIZED_KEYS" || true)"
 fi
 if [[ -n "$PUB_FILE" ]]; then
