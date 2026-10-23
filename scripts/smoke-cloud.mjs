@@ -42,9 +42,10 @@ if (process.argv.includes("--verify-restart")) {
   const { nodes } = await call("/v0/nodes", { token: vars.GHOSTFLEET_READ_TOKEN });
   assert.equal(nodes.filter((node) => node.node_uid === expected.node_uid).length, 1);
   const { attempt } = await call(`/v0/enrollment-attempts/${expected.attempt_id}`);
-  assert.equal(attempt.state, "ACCEPTED");
+  assert.equal(attempt.state, "MATERIALIZING");
   assert.equal(attempt.node_uid, expected.node_uid);
-  console.log("PASS: durable state and authority survive local runtime restart (synthetic).");
+  assert.equal(nodes.find((node) => node.node_uid === expected.node_uid).lifecycle, "PROVISIONAL");
+  console.log("PASS: durable provisional identity and denied admission survive local runtime restart (synthetic).");
 } else {
   const { attempt } = await call("/v0/enrollment-attempts", { method: "POST", input: { asset_hint: "synthetic-cloud-canary" }, status: 201 });
   const path = `/v0/enrollment-attempts/${attempt.attempt_id}`;
@@ -56,12 +57,25 @@ if (process.argv.includes("--verify-restart")) {
   const { attempt: materializing } = await call(`${path}/materialize`, { method: "POST", input: { node_id: "synthetic-cloud-canary", platform: "linux" } });
   const { nodes: provisionalNodes } = await call("/v0/nodes", { token: vars.GHOSTFLEET_READ_TOKEN });
   assert.equal(provisionalNodes.find((node) => node.node_uid === materializing.node_uid)?.lifecycle, "PROVISIONAL");
-  await call(`${path}/accept`, { method: "POST", input: {}, status: 409 });
-  for (const type of DEFAULT_ACCEPTANCE_EVIDENCE.filter((type) => !["identity.materialized", "catalog.admitted"].includes(type))) await call(`${path}/evidence`, { method: "POST", input: { type, source: "synthetic-cloud-smoke", data: { status: "PASS" } }, status: 201 });
-  const { node } = await call(`${path}/accept`, { method: "POST", input: { node_id: "synthetic-cloud-canary", platform: "linux" }, status: 201 });
-  assert.equal(node.node_uid, materializing.node_uid);
-  await call(`${path}/accept`, { method: "POST", input: {}, status: 409 });
+  const before = await call(`${path}/accept`, { method: "POST", input: {}, status: 409 });
+  assert.equal(before.error, "ACCEPTANCE_EVIDENCE_MISSING");
+  const externalTypes = DEFAULT_ACCEPTANCE_EVIDENCE.filter((type) => !["identity.materialized", "catalog.admitted"].includes(type));
+  assert.deepEqual(new Set(before.missing), new Set(externalTypes));
+  for (const type of externalTypes) {
+    const denied = await call(`${path}/evidence`, { method: "POST", input: {
+      type, source: "ghostfleet-linux-adapter", data: { status: "PASS" },
+    }, status: 403 });
+    assert.equal(denied.error, "EVIDENCE_TRUSTED_INGRESS_REQUIRED");
+  }
+  const after = await call(`${path}/accept`, { method: "POST", input: {}, status: 409 });
+  assert.equal(after.error, "ACCEPTANCE_EVIDENCE_MISSING");
+  assert.deepEqual(new Set(after.missing), new Set(externalTypes));
+  const current = await call(`${path}`);
+  assert.equal(current.attempt.state, "MATERIALIZING");
+  assert.equal(current.attempt.node_uid, materializing.node_uid);
+  const { nodes: stillProvisional } = await call("/v0/nodes", { token: vars.GHOSTFLEET_READ_TOKEN });
+  assert.equal(stillProvisional.find((node) => node.node_uid === materializing.node_uid)?.lifecycle, "PROVISIONAL");
   await mkdir(".wrangler", { recursive: true });
-  await writeFile(receipt, JSON.stringify({ attempt_id: attempt.attempt_id, node_uid: node.node_uid }));
-  console.log("PASS: authenticated API, HumanGate, evidence admission and duplicate rejection (synthetic).");
+  await writeFile(receipt, JSON.stringify({ attempt_id: attempt.attempt_id, node_uid: materializing.node_uid }));
+  console.log("PASS: Operator and HumanGate routes work; untrusted HTTP evidence cannot admit a node (synthetic).");
 }
