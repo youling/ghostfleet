@@ -1,5 +1,6 @@
 import { createProviderOptionRegistry, resolveEnrollmentTemplate, applyUserOverrides } from "../../packages/enrollment-template/src/index.js";
 import { TAILSCALE_PROVIDER_MANIFEST } from "../adapters/tailscale/index.js";
+import { planManagedLinuxInstallation } from "../../packages/bootstrap/src/management-plan.js";
 
 export const PUBLIC_ENROLLMENT_TEMPLATES = Object.freeze([
   Object.freeze({
@@ -85,6 +86,7 @@ export function createEnrollmentTemplateCatalog({
       display:display[template_id] ?? null,
       effective_posture:resolved.posture,
       allowed_override_paths:resolved.allowed_override_paths,
+      installation_plan:planManagedLinuxInstallation({posture:resolved.posture}),
       binding:bindingOf(resolved),
     });
   }
