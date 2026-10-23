@@ -102,6 +102,17 @@ test("Linux Phase 0 host-key preflight exercises real fingerprints before contin
     assert.equal(result.status,0,result.stderr);
     assert.equal(await readFile(marker,"utf8"),fingerprint(edPub),"Ed25519 must take precedence");
     assert.match(fingerprint(edPub),/^SHA256:/);
+
+    // RSA is the final supported fallback when Ed25519/ECDSA are absent.
+    // Exercise the actual production Phase 0 function, not its source strings.
+    await rm(marker);
+    await rm(edPub);
+    await rm(ecdsaPub);
+    const rsaPub=join(ssh,"ssh_host_rsa_key.pub");
+    await writeFile(rsaPub,await makeKey("rsa","rsa",["-b","2048"]));
+    result=run();
+    assert.equal(result.status,0,result.stderr);
+    assert.equal(await readFile(marker,"utf8"),fingerprint(rsaPub),"RSA-only host identity must be pinned");
   } finally {await rm(root,{recursive:true,force:true});}
 });
 
