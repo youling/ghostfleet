@@ -55,6 +55,8 @@ node examples/typed-control-synthetic.mjs
 
 启动任务要求绝对可执行文件路径及参数列表：1–64 个参数，每个最多 4096 字节，合计最多 8192 字节；运行时间不得超过策略值或 14400 秒。请求使用 stdin，不拼入命令参数或 shell。`operation_id` 结合节点和调用主体决定预期句柄；`status/read/cancel` 还必须绑定 `generation`。读取游标最多 4 MiB，每次最多 32768 字节；响应核对游标、下一游标及输出上限。
 
+Linux `fleet-jobctl.py` 在 runner 已建立原子 `run.json` 后捕捉 `SIGTERM/SIGINT`，先持久化已知信号终态，待内核证实归属 cgroup 已空，才把结果归为 `FAILED / terminated_by_signal`。`SIGKILL`、掉电、cgroup 事实缺失或写盘失败不能据此推断终态，保持 `INTERRUPTED/UNKNOWN` 并对账，绝不自动重派。测试包含真实 Linux 子进程信号、原子回执、未清空 cgroup 的负例；生产 `RuntimeMaxSec`、user manager 和取消行为仍须可丢弃 systemd 环境独立验收。
+
 创建交互会话使用相同的参数和运行时间限制，另有 `rows` 10–200、`cols` 20–400、`cwd_profile:home`。输入文本最多 16384 UTF-8 字节，`control_keys` 最多 16 个且必须属于枚举，`input_seq` 为 1…2³¹−1，禁止空输入。关闭必须提供 `confirm:true`。辅助程序回执绑定操作、规格、调用主体、句柄和代次；待确认的 `pending_input_seq` 或 `UNKNOWN` 需要对账。责任方维护旧协议/存储布局、辅助程序 SHA 和私有代次，不在公开测试样本中复制真实值。
 
 <!-- topic:privileged -->
@@ -97,6 +99,8 @@ All ordinary inputs contain `operation,node_uid,timeout_seconds`. Timeouts are 1
 | `job.rpc` | job:start/status/read/cancel | Start/cancel R2/fleet.exec; reads R0 | Normal Linux, helper SHA, spec/handle/generation |
 | `session.rpc` | session:create/status/read/input/close | Create/input/close R2/fleet.exec; reads R0 | Normal Linux, helper SHA, sequence/bounded payload |
 | `runPrivilegedOperation` | Separate execute/status input | fleet.privileged | Separate policy/principal/key; never inherited from fleet.exec |
+
+The Linux `fleet-jobctl.py` runner persists a known `SIGTERM/SIGINT` exit receipt after creating its atomic run record, but only reports `FAILED / terminated_by_signal` once the owned cgroup is independently proven empty. `SIGKILL`, power loss, missing cgroup evidence or a failed receipt write remains `INTERRUPTED/UNKNOWN` and must not trigger a blind retry. Public Linux tests send a real signal to an isolated subprocess; actual `RuntimeMaxSec`, cancel, and user-manager behavior requires a separate disposable-systemd integration test.
 
 Legacy fleet.* scopes preserve compatibility: an ordinary exec grant may include ordinary observation/operation, never privileged authority. Scopes still require target/policy/source/privilege gates; callers cannot claim their own authorization.
 
