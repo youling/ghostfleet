@@ -25,7 +25,12 @@ test("actual shell provisional compliant repeat is zero delta and never claims",
     await command("id","printf 0");await command("uname","printf Linux");await command("dpkg-query","printf 'install ok installed'");
     await command("tailscale",`[ "$*" = "status --self --peers=false --json" ] || exit 90\nprintf '%s' '{"BackendState":"Running","Self":{"HostName":"${node}"}}'`);
     await command("curl","exit 91");await command("apt-get","exit 92");await command("systemctl","exit 93");
-    const script=join(root,"bootstrap.sh");await writeFile(script,BOOTSTRAP_SH);
+    // The production script pins a trusted admin PATH. Synthetic commands
+    // live in this fixture directory; inject only into this disposable source.
+    const fixture=BOOTSTRAP_SH.replace('PATH="/usr/sbin:/usr/bin:/sbin:/bin"',
+      'PATH="'+bin+':/usr/sbin:/usr/bin:/sbin:/bin"');
+    assert.notEqual(fixture,BOOTSTRAP_SH);
+    const script=join(root,"bootstrap.sh");await writeFile(script,fixture);
     async function snapshot(){return Promise.all(["enrollment-checkpoint.json","enrollment-report.json"].map(async name=>{const path=join(state,name);const info=await stat(path);return {name,body:await readFile(path,"utf8"),mtime:info.mtimeMs,mode:info.mode};}));}
     const before=await snapshot();
     for(let repeat=0;repeat<2;repeat++){
