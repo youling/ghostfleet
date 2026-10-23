@@ -9,7 +9,7 @@ import {BOOTSTRAP_SH,renderBootstrap} from "../src/index.js";
 test("Phase 0 pins a readable SSH host identity before any host effects",()=>{
   const keyCheck=BOOTSTRAP_SH.indexOf("no readable SSH host public key");
   const fingerprintCheck=BOOTSTRAP_SH.indexOf("SSH host public key fingerprint could not be verified");
-  const baseline=BOOTSTRAP_SH.indexOf("bootstrap_transport_baseline()\\n");
+  const baseline=BOOTSTRAP_SH.indexOf("\\nbootstrap_transport_baseline\\n");
   const claim=BOOTSTRAP_SH.indexOf("CLAIM_URL=");
   assert.ok(keyCheck>0 && fingerprintCheck>keyCheck);
   assert.ok(keyCheck<baseline && fingerprintCheck<claim);
