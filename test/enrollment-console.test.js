@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { templateDisplay, templatePostureSummary, templateSelectionPayload, applyTemplatePreviewOverrides, installationPlanSteps } from "../console/enrollment/templates/model.js";
 import { createEnrollmentWizard, attachBootstrapDelivery, markBootstrapRunning, markBootstrapResult, serializeWizardState } from "../console/enrollment/bootstrap/wizard.js";
 import { renderProviders } from "../console/providers/view.js";
@@ -53,6 +54,38 @@ test("provider settings render only safe readiness metadata",()=>{
   assert.match(html,/tag:fleet-ssh-target/);
   assert.match(html,/data-provider-setup="tailscale"/);
   assert.equal(html.includes("client-secret-value"),false);
+});
+
+test("configured-but-unverified provider is not presented as ready or invited to blind retry", () => {
+  const html = renderProviders({providers:{tailscale:{
+    status:"CONFIGURED_UNVERIFIED",
+    authority_generation:"synthetic-generation",
+    requirements:{scope:"auth_keys",tag:"tag:fleet-ssh-target"},
+    secret_state:{client_id:"PRESENT",client_secret:"PRESENT"},
+  }}});
+  assert.match(html, /provider-unverified-note/);
+  assert.match(html, /已配置/);
+  assert.match(html, /未验证/);
+  assert.doesNotMatch(html, /data-provider-setup="tailscale"/);
+  assert.doesNotMatch(html, /provider-ready-note/);
+  assert.equal(html.includes("synthetic-secret-material"),false);
+});
+
+test("unavailable provider never invites blind credential submission", () => {
+  const html=renderProviders({providers:{tailscale:{
+    status:"SERVICE_UNKNOWN",requirements:{scope:"auth_keys",tag:null},
+    secret_state:{client_id:"UNKNOWN",client_secret:"UNKNOWN"},
+  }}});
+  assert.match(html,/provider-unknown-note/);
+  assert.doesNotMatch(html,/data-provider-setup="tailscale"/);
+  assert.doesNotMatch(html,/provider-ready-note/);
+});
+
+test("provider setup dialog does not hardcode a private OAuth scope ceiling", () => {
+  const html = readFileSync(new URL("../console/index.html", import.meta.url), "utf8");
+  assert.doesNotMatch(html, /tag:fleet-ssh-target/);
+  assert.doesNotMatch(html, /不要授予 devices/);
+  assert.match(html, /data-i18n="provider.ownerSelectedTag"/);
 });
 
 test("Console consumes only read-only server installation-plan preview",()=>{

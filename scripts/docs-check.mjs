@@ -3,6 +3,7 @@ import { resolve, dirname, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { trackedFiles } from './publication-guard.mjs';
+import { checkFirstUseReadmeContract } from './first-use-doc-contract.mjs';
 
 function headings(text) {
   const result = new Set(), repeats = new Map(); let fence = false;
@@ -45,6 +46,12 @@ export async function checkDocuments(root, catalog, files) {
         if (stat.isSymbolicLink()) { findings.push({ path, rule: 'link-symlink' }); continue; }
         if (fragment && full.endsWith('.md') && !headings(await readFile(full, 'utf8')).has(decodeURIComponent(fragment))) findings.push({ path, rule: 'missing-anchor', target_sha256: createHash('sha256').update(target).digest('hex') });
       } catch { findings.push({ path, rule: 'missing-link-target', target_sha256: createHash('sha256').update(target).digest('hex') }); }
+    }
+  }
+  if (files.includes('console/README.md')) {
+    const source = await readFile(resolve(root, 'console/README.md'), 'utf8');
+    for (const rule of checkFirstUseReadmeContract(source)) {
+      findings.push({ path: 'console/README.md', rule });
     }
   }
   return { ok: findings.length === 0, documents: catalog.documents.length, findings, parity: 'Structure/topics checked; semantic equivalence requires review.' };
