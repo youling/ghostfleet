@@ -43,7 +43,7 @@ function hasVerifiedScopeClaim(authority, expectedTag = null) {
   const tag = authority?.tag;
   return authority?.provider === "tailscale"
     && validTime
-    && !!observed && !!verified && observed.includes(ENROLLMENT_OPERATION_SCOPE)
+    && !!observed && !!verified && (observed.includes(ENROLLMENT_OPERATION_SCOPE) || observed.includes("all"))
     && observed.length === verified.length && observed.every((scope, i) => scope === verified[i])
     && typeof tag === "string" && VALID_TAG_RE.test(tag)
     && (expectedTag === null || tag === expectedTag)

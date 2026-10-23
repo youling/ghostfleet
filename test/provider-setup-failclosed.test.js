@@ -145,6 +145,8 @@ test("scope proof freshness and authority identity are necessary for GET READY",
     ["generation bad syntax", {...authority(), generation:"not valid"}, "CONFIGURED_UNVERIFIED"],
     ["scope proof mismatch", {...authority(), scope:"auth_keys devices"}, "CONFIGURED_UNVERIFIED"],
     ["broader verified scopes", {...authority(), scope:"devices auth_keys", verification:{...validProof(),granted_scope:"auth_keys devices"}}, "READY"],
+    ["Tailscale all scope proves ability for enrollment key operation", {...authority(), scope:"all", verification:{...validProof(),granted_scope:"all"}}, "READY"],
+    ["all:read is insufficient", {...authority(), scope:"all:read", verification:{...validProof(),granted_scope:"all:read"}}, "CONFIGURED_UNVERIFIED"],
     ["required scope absent", {...authority(), scope:"devices", verification:{...validProof(),granted_scope:"devices"}}, "CONFIGURED_UNVERIFIED"],
     ["duplicate scope", {...authority(), scope:"auth_keys auth_keys", verification:{...validProof(),granted_scope:"auth_keys auth_keys"}}, "CONFIGURED_UNVERIFIED"],
     ["verified custom tag", {...authority(),tag:"tag:public-canary",verification:{...validProof(),requested_tag:"tag:public-canary"}}, "READY"],
@@ -204,6 +206,15 @@ test("scope/tag requirement may be selected per deployment without global forbid
     }},
   });
   assert.equal(mismatch.providers.tailscale.status,"CONFIGURED_UNVERIFIED");
+});
+
+test("verified all OAuth scope authorizes enrollment while all:read does not",async () => {
+  for(const [scope, expected] of [["all",200],["all:read",503]]){
+    const env=envFor(Response.json({...basePrivateResponse(),scope,
+      verification:{...validProof(),granted_scope:scope}}),{calls:0});
+    const response=await worker.fetch(setupRequest(),env);
+    assert.equal(response.status,expected,scope);
+  }
 });
 
 test("credentials present with invalid or absent generation never permits blind setup", async () => {
