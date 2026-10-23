@@ -38,13 +38,13 @@ ssh-keygen -q -t ed25519 -N '' -C 'synthetic-unapproved-rotation' -f "$private_d
 export FLEET_CONTROL_ORDINARY_USER="$ordinary"
 export FLEET_CONTROL_PRIVILEGED_SSH_PUBLIC_KEY_FILE="$private_dir/key.pub"
 
-preflight="$("$installer" --check)"
+preflight="$(bash "$installer" --check)"
 [[ "$preflight" == *"OPS_ACCOUNT=ABSENT_OR_DRIFT"* &&
    "$preflight" == *"AUTHORIZED_KEY=ABSENT_OR_DRIFT"* ]] || exit 1
 ! id ghostfleet-ops >/dev/null 2>&1 || { echo "Read-only check made an account" >&2; exit 1; }
 
-"$installer" --apply >/dev/null
-after="$("$installer" --check)"
+bash "$installer" --apply >/dev/null
+after="$(bash "$installer" --check)"
 for expected in 'OPS_ACCOUNT=COMPLIANT' 'HELPER=COMPLIANT' 'ENTRY=COMPLIANT' \
                 'AUTHORIZED_KEY=CONFIGURED' 'SUDOERS=CONFIGURED' \
                 'ORDINARY_USER_SUDO_GRANT=ABSENT' 'OMV_SSH_GROUP=NOT_APPLICABLE'; do
@@ -73,13 +73,13 @@ PY
 before_key="$(sha256sum /var/lib/ghostfleet-ops/.ssh/authorized_keys)"
 before_state="$(sha256sum /etc/youling-fleet/privileged-operations/control.json)"
 uid="$(id -u ghostfleet-ops)"
-"$installer" --apply >/dev/null
+bash "$installer" --apply >/dev/null
 [[ "$(id -u ghostfleet-ops)" == "$uid" ]] || exit 1
 [[ "$(sha256sum /var/lib/ghostfleet-ops/.ssh/authorized_keys)" == "$before_key" ]] || exit 1
 [[ "$(sha256sum /etc/youling-fleet/privileged-operations/control.json)" == "$before_state" ]] || exit 1
 
 export FLEET_CONTROL_PRIVILEGED_SSH_PUBLIC_KEY_FILE="$private_dir/other.pub"
-if "$installer" --apply >/dev/null 2>&1; then
+if bash "$installer" --apply >/dev/null 2>&1; then
   echo "Unapproved key rotation succeeded" >&2; exit 1
 fi
 [[ "$(sha256sum /var/lib/ghostfleet-ops/.ssh/authorized_keys)" == "$before_key" ]] || exit 1
