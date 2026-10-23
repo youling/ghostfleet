@@ -248,11 +248,17 @@ def main(argv: list[str] | None = None) -> int:
         description="Read-only managed-Linux host prerequisite check.",
     )
     parser.add_argument("--manifest", default=None, help="path to host-prerequisites.yaml")
-    parser.add_argument(
+    selector=parser.add_mutually_exclusive_group()
+    selector.add_argument(
         "--group",
         action="append",
         dest="groups",
-        help="group to check; repeatable. Omit to check every declared group.",
+        help="explicit group to check; repeatable. Defaults to enrollment only.",
+    )
+    selector.add_argument(
+        "--all-groups",
+        action="store_true",
+        help="explicitly inspect backup/container/control-node requirements too.",
     )
     parser.add_argument("--json", action="store_true", help="emit machine-readable output")
     args = parser.parse_args(argv)
@@ -260,7 +266,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         path = Path(args.manifest) if args.manifest else manifest_path()
         data = load_manifest(path)
-        groups = tuple(args.groups) if args.groups else tuple(data["groups"])
+        # Do not demand Docker/backup/Ansible for an ordinary one-click node.
+        # Other groups are opt-in; some apply on the control node, not target.
+        groups = tuple(data["groups"]) if args.all_groups else tuple(args.groups or ("enrollment",))
         results = check(data, groups)
     except PrerequisiteError as exc:
         print(f"prereq_check: {exc}", file=sys.stderr)

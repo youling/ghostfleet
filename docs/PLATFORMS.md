@@ -23,7 +23,10 @@ python -m pytest packages/runtime-python/tests
 python scripts/verify-python-artifact.py
 ```
 
-安装产物检查构建 wheel，并在仓库外的临时虚拟环境核对导入、配置、schema 和辅助程序资源，不安装、纳管或重启设备。仅在需要 Android 集成时显式安装 Android 扩展。各包清单定义实际检查与导出接口；源码安装不等于已经发布到 npm/PyPI。`./authorization` 提供配置与注册权限上限重验、PKCE、绑定来源的 v2 所有者同意和 JWT 校验等可选机制，具体见 [授权机制](AUTHORIZATION.md)；签发方存储、生产 OAuth 和调用方切换仍由部署集成者提供并单独验收。
+安装产物检查构建 wheel，并在仓库外的临时虚拟环境核对导入、配置、schema 和辅助程序资源，不安装、纳管或重启设备。
+只读 Linux 依赖检查器 `prereq_check.py` 默认只检查 `enrollment`。备份、Docker 和管理端 Ansible 通过 `--group` 单独选择，显式 `--all-groups` 才检查全部。控制节点的工具不能错算作 NAS 宿主必需依赖，输出也不能被误认作实机安装已完成。
+
+仅在需要 Android 集成时显式安装 Android 扩展。各包清单定义实际检查与导出接口；源码安装不等于已经发布到 npm/PyPI。`./authorization` 提供配置与注册权限上限重验、PKCE、绑定来源的 v2 所有者同意和 JWT 校验等可选机制，具体见 [授权机制](AUTHORIZATION.md)；签发方存储、生产 OAuth 和调用方切换仍由部署集成者提供并单独验收。
 
 <!-- topic:linux -->
 ### Linux 纳管、收敛和辅助程序
@@ -90,7 +93,10 @@ python -m pytest packages/runtime-python/tests
 python scripts/verify-python-artifact.py
 ```
 
-The artifact check builds a wheel and validates import/profiles/schemas/helper resources in a temporary venv outside the checkout; it does not install, enroll or reboot hardware. Install the Android extra only for a selected supported integration. Node workspace checks/builds are defined by root scripts and package manifests. Source installation does not mean a package has been published to a registry. `./authorization` provides optional profile/registered scope-ceiling revalidation, PKCE, origin-bound v2 owner consent and JWT validation; see [Authorization](AUTHORIZATION.md). Integrators still provide issuer storage, production OAuth and consumer cutover, with separate acceptance.
+The artifact check builds a wheel and validates import/profiles/schemas/helper resources in a temporary venv outside the checkout; it does not install, enroll or reboot hardware.
+The read-only Linux prerequisite checker defaults to the `enrollment` group. Backup, Docker and controller-side Ansible are selected separately with `--group` or explicitly with `--all-groups`. They are not mandatory for basic NAS enrollment, and observation is not installation acceptance.
+
+ Install the Android extra only for a selected supported integration. Node workspace checks/builds are defined by root scripts and package manifests. Source installation does not mean a package has been published to a registry. `./authorization` provides optional profile/registered scope-ceiling revalidation, PKCE, origin-bound v2 owner consent and JWT validation; see [Authorization](AUTHORIZATION.md). Integrators still provide issuer storage, production OAuth and consumer cutover, with separate acceptance.
 
 <!-- topic:linux -->
 ### Linux convergence and helpers
