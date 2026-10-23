@@ -1,5 +1,5 @@
-const REQUIRED_SCOPE = "auth_keys";
-const REQUIRED_TAG = "tag:fleet-ssh-target";
+const ENROLLMENT_OPERATION_SCOPE = "auth_keys";
+const VALID_TAG_RE = /^tag:[A-Za-z0-9_-]{1,63}$/;
 const SCOPE_PROOF_TYPE = "tailscale-oauth-token-scope/v1";
 const AUTHORITY_GENERATION_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const SCOPE_PROOF_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -21,75 +21,95 @@ function validGeneration(value) {
 // claims from a trusted service binding, NOT independent proof that Tailscale
 // credentials remain valid now. The private implementation must verify scope
 // against a real successful OAuth token response, never fill these from constants.
-function hasVerifiedScopeClaim(authority) {
+function parseGrantedScopes(value) {
+  // This describes one observed access token, not the OAuth client's maximum grants.
+  if (typeof value !== "string" || value.length > 1024 || value.trim() === "") return null;
+  const parts = value.trim().split(/\\s+/);
+  if (parts.length > 32 || parts.some((scope) => !/^[a-z][a-z0-9:_-]{1,63}$/.test(scope))) return null;
+  const unique = new Set(parts);
+  if (unique.size !== parts.length) return null;
+  return [...unique].sort();
+}
+
+function hasVerifiedScopeClaim(authority, expectedTag = null) {
   const proof = authority?.verification;
-  const at = proof?.verified_at;
-  const time = typeof at === "string" ? Date.parse(at) : NaN;
-  // The exact ISO instant prevents accepting loosely parsed or ambiguous
-  // timestamps; 24h is a presentation freshness bound, not revocation proof.
-  const validTime = Number.isFinite(time) && new Date(time).toISOString() === at
+  const timeText = proof?.verified_at;
+  const time = typeof timeText === "string" ? Date.parse(timeText) : NaN;
+  const validTime = Number.isFinite(time) && new Date(time).toISOString() === timeText
     && time <= Date.now() + 60_000
     && time >= Date.now() - SCOPE_PROOF_MAX_AGE_MS;
+  const observed = parseGrantedScopes(authority?.scope);
+  const verified = parseGrantedScopes(proof?.granted_scope);
+  const tag = authority?.tag;
   return authority?.provider === "tailscale"
     && validTime
-    && authority?.scope === REQUIRED_SCOPE
-    && authority?.tag === REQUIRED_TAG
+    && !!observed && !!verified && observed.includes(ENROLLMENT_OPERATION_SCOPE)
+    && observed.length === verified.length && observed.every((scope, i) => scope === verified[i])
+    && typeof tag === "string" && VALID_TAG_RE.test(tag)
+    && (expectedTag === null || tag === expectedTag)
     && proof?.type === SCOPE_PROOF_TYPE
     && proof?.status === "VERIFIED"
-    && proof?.granted_scope === REQUIRED_SCOPE
-    && proof?.requested_tag === REQUIRED_TAG
+    && proof?.requested_tag === tag
     && validGeneration(authority?.generation);
 }
 
 export async function providerSetupSnapshot(env) {
   const service = env?.GHOSTFLEET_ENROLLMENT_CLAIM_MATERIALIZER;
   const enabled = env?.GHOSTFLEET_ENROLLMENT_CLAIM_READY === "1";
+  const expectedTag = env?.GHOSTFLEET_ENROLL_TAG ?? null;
+  const tagConfigValid = expectedTag === null || (typeof expectedTag === "string" && VALID_TAG_RE.test(expectedTag));
   let readiness = null;
+  let serviceObserved = false;
 
   if (enabled && service && typeof service.fetch === "function") {
     try {
       const response = await service.fetch(new Request("https://service.invalid/readiness", {
-        method: "GET",
-        headers: { accept: "application/json" },
+        method: "GET", headers: { accept: "application/json" },
       }));
-      if (response.ok) readiness = await response.json();
+      if (response.ok) {
+        const data = await response.json();
+        if (data && typeof data === "object" && !Array.isArray(data)
+          && data.secrets && typeof data.secrets === "object"
+          && ["PRESENT", "MISSING"].includes(data.secrets.TAILSCALE_ENROLL_OAUTH_CLIENT_ID)
+          && ["PRESENT", "MISSING"].includes(data.secrets.TAILSCALE_ENROLL_OAUTH_CLIENT_SECRET)) {
+          readiness = data;
+          serviceObserved = true;
+        }
+      }
     } catch {
-      readiness = null;
+      // Service outage is UNKNOWN, never a claim that no credentials exist.
     }
   }
 
   const clientId = readiness?.secrets?.TAILSCALE_ENROLL_OAUTH_CLIENT_ID === "PRESENT";
   const clientSecret = readiness?.secrets?.TAILSCALE_ENROLL_OAUTH_CLIENT_SECRET === "PRESENT";
-  const generation = validGeneration(readiness?.authority?.generation)
-    ? readiness.authority.generation
-    : null;
-  // Presence is not proof of valid authority. Even with a missing/bad
-  // generation, existing custody must not be offered a blind overwrite.
-  const configured = !!(enabled && clientId && clientSecret);
-  const ready = configured && !!generation && hasVerifiedScopeClaim(readiness?.authority);
-
+  const anyCredential = clientId || clientSecret;
+  const generation = validGeneration(readiness?.authority?.generation) ? readiness.authority.generation : null;
+  const ready = serviceObserved && clientId && clientSecret && !!generation && tagConfigValid
+    && hasVerifiedScopeClaim(readiness?.authority, expectedTag);
+  const status = !serviceObserved ? "SERVICE_UNKNOWN" : ready ? "READY"
+    : anyCredential ? "CONFIGURED_UNVERIFIED" : "MISSING";
   return {
     providers: {
       tailscale: {
         provider: "tailscale",
         purpose: "enrollment_authority",
-        status: ready ? "READY" : configured ? "CONFIGURED_UNVERIFIED" : "MISSING",
+        status,
         requirements: {
-          scope: REQUIRED_SCOPE,
-          tag: REQUIRED_TAG,
-          forbidden: ["devices", "dns", "acl", "tailnet_admin"],
+          scope: ENROLLMENT_OPERATION_SCOPE,
+          tag: tagConfigValid ? (expectedTag ?? readiness?.authority?.tag ?? null) : null,
         },
+        granted_scope: ready ? readiness.authority.verification.granted_scope : null,
         authority_generation: generation,
         secret_state: {
-          client_id: clientId ? "PRESENT" : "MISSING",
-          client_secret: clientSecret ? "PRESENT" : "MISSING",
+          client_id: !serviceObserved ? "UNKNOWN" : clientId ? "PRESENT" : "MISSING",
+          client_secret: !serviceObserved ? "UNKNOWN" : clientSecret ? "PRESENT" : "MISSING",
         },
         private_authority_service: enabled && service ? "PRESENT" : "MISSING",
       },
     },
   };
 }
-
 
 function privateAuthorityService(env) {
   const service = env?.GHOSTFLEET_ENROLLMENT_CLAIM_MATERIALIZER;
@@ -145,11 +165,12 @@ export async function configureTailscaleProvider(env, input) {
     }
     return unknownResult();
   }
-  // An apparently successful upstream response does not prove that the
-  // underlying encrypted custody write did or did not happen.
+  // A private write may have happened even when its response is unknown.
+  const expectedTag = env?.GHOSTFLEET_ENROLL_TAG ?? null;
+  if (expectedTag !== null && (typeof expectedTag !== "string" || !VALID_TAG_RE.test(expectedTag))) return unknownResult();
   if (response.status !== 200 || data?.ok !== true || data?.status !== "READY"
       || data?.provider !== "tailscale" || !validGeneration(data?.authority_generation)
-      || !hasVerifiedScopeClaim({ ...data, generation: data.authority_generation })) {
+      || !hasVerifiedScopeClaim({ ...data, generation: data.authority_generation }, expectedTag)) {
     return unknownResult();
   }
   return {
