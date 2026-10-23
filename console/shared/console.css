@@ -312,3 +312,9 @@ dialog::backdrop { background: rgb(0 0 0 / .35); }
 
 .provider-credential-form { display: grid; gap: 10px; margin-top: 12px; }
 .provider-credential-form .dialog-actions { margin-top: 4px; }
+
+/* Read-only install/acceptance preflight preview: not a device-ready badge. */
+.installation-plan-preview { margin-top: 1rem; padding-top: .75rem; border-top: 1px solid var(--tblr-border-color, #ddd); }
+.installation-plan-preview summary { cursor: pointer; font-weight: 600; }
+.installation-plan-preview ul { margin: .5rem 0 0; padding-inline-start: 1.5rem; }
+.installation-plan-preview li { margin-bottom: .25rem; }

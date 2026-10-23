@@ -41,6 +41,10 @@ ghostfleet-enroll --ticket-file <ABSOLUTE_PROTECTED_TICKET_FILE>
 
 任务、交互会话和特权辅助程序作为包资源提供，保留旧协议/存储 ABI。部署方显式安装程序、配置 SHA、授权与权限；默认导入和 CI 不安装辅助程序到设备。
 
+**面板一键纳管的阶段边界（可验证）**：从 `console/` 选择公开模板或经审查的私有模板后，`installation_plan` 列出系统/身份、主通道、控制账户、SSH 接纳、用户级 systemd 与 Linger、所选 Helper、独立消费者和恢复依赖。预览由 `packages/bootstrap/src/management-plan.js` 提供，仅枚举待核验能力，不声明该节点已经符合。宿主事实未读取一律 `UNKNOWN`；只有经受权的宿主只读 Phase0 核对全部依赖后，才可形成 NEW / ADOPT / REPAIR 的受审差异计划。既有 UID、通道及不属于安装器的资源必须保留。任何 `PLAN_READY` 也不授权执行，也不证明消费者接线完成。
+
+OMV8 应作为 Debian 系统与独立受管理存储设备同时处理：管理员须验证 OMV 管理的 SSH 用户/配置与配置再生成边界，不得让通用安装器编辑 OMV 拥有的配置或全量调用 `omv-salt deploy`。前置只读检查包括管理账户、PATH、主机指纹、user bus、Linger、Helper 产物/哈希与业务资源隔离。对 OMV 新增 `omv_config_owner` / `omv_storage_isolation` 守护项；未证明两者的计划不可标记零差异或安装完成。首次 root 后免重复密码必须通过专用非业务 canary 实测，不能由模型内的计数字段证明。
+
 <!-- topic:windowsandroid -->
 ### Windows 和 Android
 
@@ -105,6 +109,10 @@ Deployments explicitly configure `GHOSTFLEET_ENROLL_TAG`; missing tags fail clos
 Every invocation validates host, foreign state and current provider. Package upgrades need a separate plan. Persist a fence before dispatch, never retry an ambiguous join, and write owned descriptor/checkpoint only after fresh independent proof. `lifecycle_promoted:false` remains explicit. Actual zero delta requires immediate repeat and no changes across all effect surfaces.
 
 Job/session/privileged helpers are packaged resources preserving legacy protocol/storage ABI. Deployment owners explicitly install helpers and configure helper SHA/authority or root privilege; package imports and default CI install none.
+
+**Control Panel one-click boundary:** The selected public or deployment-specific template includes an `installation_plan` preview for host compatibility, existing identity, transport, control account, SSH admission, user systemd/Linger, selected helper, independent consumer and recovery. The provider-neutral planner in `packages/bootstrap/src/management-plan.js` is read-only. Missing host observations are `UNKNOWN`; its NEW/ADOPT/REPAIR classification and `PLAN_READY` never grant installation authority or prove consumer acceptance. A host-side trusted preflight and a reviewed minimal-delta plan are required before any effects.
+
+**OMV8:** Treat it as Debian *and* as a managed storage appliance. Verify ownership of OMV-managed SSH configuration and regeneration, protect mounts/volumes/business services, avoid blanket `omv-salt deploy`, and require `omv_config_owner` / `omv_storage_isolation` host evidence before completion. Only a dedicated non-business privilege canary proves the selected post-bootstrap no-recurring-password ability; a model counter cannot do so.
 
 <!-- topic:windowsandroid -->
 ### Windows and Android

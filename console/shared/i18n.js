@@ -386,6 +386,49 @@ Object.assign(en, {
   firstUseNotInitializedHelp: "The server has no Operator/Read login tokens. Complete the account-owner native setup first, then connect with a GhostFleet token. This form cannot create root tokens and must not receive Cloudflare deployment credentials.",
 });
 
+Object.assign(zh, {
+  installPreviewTitle: "所选能力的安装与验收检查",
+  installPreviewUnknown: "这是安装前检查清单，不是设备已就绪证明。本机只读预检完成后，才能产生实际差异计划；主纳管成功不代表所有能力已安装。",
+  "installState.unknown": "待实机核验",
+  "installState.absent": "待安装",
+  "installState.compliant": "符合",
+  "installState.drift_repairable": "可修复",
+  "installState.conflict": "存在冲突",
+  "install.host_compatibility": "操作系统、systemd 与环境边界",
+  "install.immutable_identity": "原有节点身份与接管判定",
+  "install.primary_transport": "主连接通道",
+  "install.control_account": "专用管理账户",
+  "install.ssh_admission": "SSH 接纳及主机身份固定",
+  "install.user_manager": "用户级 systemd 管理器",
+  "install.linger": "Linger 与重启后恢复",
+  "install.privileged_helper": "受控特权 Helper",
+  "install.consumer_route": "消费者目录、鉴权与调用路由",
+  "install.recovery_path": "独立恢复路径",
+  "install.omv_config_owner": "OMV 配置归属",
+  "install.omv_storage_isolation": "存储与业务服务零误变更",
+});
+Object.assign(en, {
+  installPreviewTitle: "Selected install and acceptance checks",
+  installPreviewUnknown: "This is a preflight checklist, not proof of a ready device. The local read-only preflight must establish a real diff plan. Primary enrollment alone does not install every selected capability.",
+  "installState.unknown": "Host verification pending",
+  "installState.absent": "Install required",
+  "installState.compliant": "Compliant",
+  "installState.drift_repairable": "Repairable",
+  "installState.conflict": "Conflict",
+  "install.host_compatibility": "OS, systemd and host safety",
+  "install.immutable_identity": "Existing identity and adoption",
+  "install.primary_transport": "Primary transport",
+  "install.control_account": "Dedicated management account",
+  "install.ssh_admission": "SSH admission and host pin",
+  "install.user_manager": "User systemd manager",
+  "install.linger": "Linger and boot recovery",
+  "install.privileged_helper": "Bound privileged helper",
+  "install.consumer_route": "Consumer catalog, auth and routing",
+  "install.recovery_path": "Independent recovery path",
+  "install.omv_config_owner": "OMV configuration ownership",
+  "install.omv_storage_isolation": "No storage/workload collateral changes",
+});
+
 let language = "zh-CN";
 try { if (localStorage.getItem("ghostfleet-language") === "en") language = "en"; } catch {}
 export function getLanguage() { return language; }
