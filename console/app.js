@@ -5,6 +5,7 @@ import { icon } from "./shared/icons.js";
 import { templateDisplay, templatePostureSummary, templateSelectionPayload, installationPlanSteps } from "./enrollment/templates/model.js";
 import { renderProviders } from "./providers/view.js";
 import { FIRST_USE, probeFirstUse } from "./shared/first-use.js";
+import { enrollmentProgress, evidencePresentation } from "./enrollment/attempts/presentation.js";
 
 // The UI owns presentation only. Authority, transitions and admission stay on the server.
 const routes = ["overview", "devices", "enrollment", "approvals", "capabilities", "activity", "settings"];
@@ -256,7 +257,7 @@ function renderOverview() {
   const active = activeAttempts();
   const queue = [
     ...waiting.map((gate) => ({ kind: "gate", id: gate.gate_id, name: attemptName(attemptFor(gate), gate.subject_id), symbol: "approvals", detail: t("needsApproval") })),
-    ...active.filter((attempt) => ["CREATED", "PREPARING", "CLAIMED", "RECONCILE_REQUIRED"].includes(attempt.state)).slice().reverse().map((attempt) =>
+    ...active.filter((attempt) => ["CREATED", "PREPARING", "CLAIMED", "MATERIALIZING", "RECONCILE_REQUIRED"].includes(attempt.state)).slice().reverse().map((attempt) =>
       ({ kind: "attempt", id: attempt.attempt_id, name: attemptName(attempt), symbol: "enrollment", detail: t("state." + attempt.state) + " · " + t("continueEnrollment") })),
   ];
   const latestNodes = snapshot.nodes.slice().sort((a, b) => Date.parse(b.admitted_at) - Date.parse(a.admitted_at)).slice(0, 5);
@@ -380,6 +381,11 @@ function fields(pairs) {
 function section(title, body) { return '<section class="detail-section"><h3>' + text(title) + "</h3>" + body + "</section>"; }
 function attemptActions(attempt) {
   if (finalStates.has(attempt.state) || expired(attempt)) return "";
+  if (["MATERIALIZING", "RECONCILE_REQUIRED"].includes(attempt.state)) {
+    // Read-only refresh never validates a receipt, admits a node or retries effects.
+    return '<button type="button" class="btn btn-outline-secondary" data-refresh-state' +
+      (!snapshot || busy ? " disabled" : "") + ">" + text("readServerState") + "</button>";
+  }
   const button = (action, label, primary = false) => '<button type="button" class="btn ' + (primary ? "btn-primary" : "btn-outline-secondary") +
     '" aria-label="' + h(t(label) + " · " + attemptName(attempt)) + '" data-attempt="' + h(attempt.attempt_id) + '" data-action="' + action + '"' + disabled() + ">" + text(label) + "</button>";
   if (attempt.state === "CREATED") return button("ticket", "generateBootstrap", true) + button("prepare", "prepare");
@@ -388,16 +394,17 @@ function attemptActions(attempt) {
   return "";
 }
 function progress(attempt) {
-  if (["FAILED", "CANCELLED", "RECONCILE_REQUIRED"].includes(attempt.state) || attemptState(attempt) === "EXPIRED") return "";
-  const stage = { CREATED: 0, PREPARING: 1, WAITING_HUMAN: 2, CLAIMED: 3, MATERIALIZING: 3, ACCEPTED: 5 }[attempt.state];
-  return '<ol class="progress-steps" aria-label="' + text("enrollment") + '">' + ["created", "preparing", "claimed", "evidence", "accepted"].map((step, index) =>
-    '<li class="' + (index < stage ? "done" : index === stage ? "current" : "") + '"' + (index === stage ? ' aria-current="step"' : "") + ">" + text("step." + step) + "</li>").join("") + "</ol>";
+  const steps = enrollmentProgress(attempt);
+  if (!steps.length) return "";
+  return '<ol class="progress-steps" aria-label="' + text("enrollment") + '">' + steps.map((step) =>
+    '<li class="' + [step.complete ? "done" : "", step.current ? "current" : ""].filter(Boolean).join(" ") + '"' +
+    (step.current ? ' aria-current="step"' : "") + ">" + text(step.labelKey) + "</li>").join("") + "</ol>";
 }
 function evidence(attempt) {
   const { latest, passed } = evidenceResults(attempt);
   return section("evidence", (syntheticEvidence(attempt) ? '<p class="simulation evidence-simulation">' + text("simulation") + "</p>" : "") + '<p class="secondary">' + text("evidenceSummary", { passed, total: requiredEvidence.length }) + '</p><ul class="evidence-list">' + requiredEvidence.map((type) => {
-    const item = latest.get(type), pass = item?.data?.status === "PASS";
-    return '<li><span title="' + h(type) + '">' + text("evidence." + type) + '</span><span class="' + (pass ? "pass" : item ? "fail" : "secondary") + '">' + text(pass ? "evidencePass" : item ? "evidenceFail" : "evidenceMissing") + "</span></li>";
+    const display = evidencePresentation(latest.get(type));
+    return '<li><span title="' + h(type) + '">' + text("evidence." + type) + '</span><span class="' + display.tone + '" data-evidence-status="' + display.status + '">' + text(display.labelKey) + "</span></li>";
   }).join("") + "</ul>");
 }
 function detailBody(kind, row) {
