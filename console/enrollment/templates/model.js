@@ -38,3 +38,12 @@ export function templatePostureSummary(template,overrides={}) {
     root_ceremony:resolved.bootstrap?.root_ceremony ?? "UNKNOWN",
   });
 }
+
+// This UI consumes the server's selected-capability checklist. It cannot
+// attest an actual host state or grant permission to install components.
+export function installationPlanSteps(template) {
+  const plan=template?.installation_plan;
+  if (plan?.nature!=="READ_ONLY_PREVIEW_NOT_AUTHORITY" || !Array.isArray(plan.components)) return [];
+  return plan.components.filter(item=>typeof item.id==="string" && typeof item.state==="string")
+    .map(item=>Object.freeze({id:item.id,state:item.state}));
+}

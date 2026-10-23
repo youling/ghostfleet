@@ -3,9 +3,17 @@ import assert from "node:assert/strict";
 import worker, { GhostFleetState } from "../src/adapters/cloudflare/worker.js";
 import { GhostFleetController } from "../src/control-plane/controller.js";
 import { DEFAULT_ACCEPTANCE_EVIDENCE } from "../src/core/model.js";
+import { providerSetupSnapshot } from "../src/adapters/cloudflare/provider-setup.js";
 
 const operator = "synthetic-operator-".repeat(3);
 const reader = "synthetic-reader-".repeat(3);
+const scopeReceipt = () => ({
+  type: "tailscale-oauth-token-scope/v1",
+  status: "VERIFIED",
+  granted_scope: "auth_keys",
+  requested_tag: "tag:fleet-ssh-target",
+  verified_at: new Date().toISOString(),
+});
 const request = (method = "GET", token, path = "/v0/nodes") => new Request(`https://ghostfleet.test${path}`, {
   method, headers: token ? { authorization: `Bearer ${token}` } : {},
 });
@@ -54,7 +62,7 @@ test("provider setup readiness is read-only and secret-safe", async () => {
     async fetch(request) {
       assert.equal(new URL(request.url).pathname, "/readiness");
       return Response.json({
-        authority: { provider: "tailscale", generation: "ghostfleet-tailscale-auth-v1" },
+        authority: { provider: "tailscale", generation: "ghostfleet-tailscale-auth-v1", scope: "auth_keys", tag: "tag:fleet-ssh-target", verification: scopeReceipt() },
         secrets: {
           TAILSCALE_ENROLL_OAUTH_CLIENT_ID: "PRESENT",
           TAILSCALE_ENROLL_OAUTH_CLIENT_SECRET: "PRESENT",
@@ -85,7 +93,7 @@ test("provider setup readiness is read-only and secret-safe", async () => {
     GHOSTFLEET_READ_TOKEN: reader,
     GHOSTFLEET_STATE: env.GHOSTFLEET_STATE,
   });
-  assert.equal((await missing.json()).providers.tailscale.status, "MISSING");
+  assert.equal((await missing.json()).providers.tailscale.status, "SERVICE_UNKNOWN");
   assert.equal(storageCalls, 0);
 });
 
@@ -109,6 +117,7 @@ test("provider credential setup is operator-only and transient through the priva
         authority_generation: "ghostfleet-tailscale-auth-v1",
         scope: "auth_keys",
         tag: "tag:fleet-ssh-target",
+        verification: scopeReceipt(),
       });
     },
   };
@@ -220,5 +229,86 @@ test("prototype names cannot masquerade as existing lifecycle objects", () => {
   for (const id of ["constructor", "__proto__", "toString"]) {
     assert.throws(() => c.getEnrollmentAttempt(id), /ATTEMPT_NOT_FOUND/);
     assert.throws(() => c.getNode(id), /NODE_NOT_FOUND/);
+  }
+});
+
+test("provider readiness never upgrades stored names and constants into scoped READY", async () => {
+  const valid = {
+    provider: "tailscale",
+    generation: "ghostfleet-tailscale-auth-v1",
+    scope: "auth_keys",
+    tag: "tag:fleet-ssh-target",
+    verification: scopeReceipt(),
+  };
+  const fixtures = [
+    ["exact provider-scope evidence", valid, "READY"],
+    ["unverified old private service", {provider:"tailscale",generation:valid.generation,scope:valid.scope,tag:valid.tag}, "CONFIGURED_UNVERIFIED"],
+    ["unverified scope mismatch", {...valid,scope:"auth_keys devices"}, "CONFIGURED_UNVERIFIED"],
+    ["verified broader access token", {...valid,scope:"auth_keys devices",verification:{...scopeReceipt(),granted_scope:"devices auth_keys"}}, "READY"],
+    ["missing scope", {...valid,scope:undefined}, "CONFIGURED_UNVERIFIED"],
+    ["wrong tag", {...valid,tag:"tag:other"}, "CONFIGURED_UNVERIFIED"],
+    ["forged proof type", {...valid,verification:{...scopeReceipt(),type:"owner-asserted"}}, "CONFIGURED_UNVERIFIED"],
+    ["unproven granted scope", {...valid,verification:{...scopeReceipt(),granted_scope:"auth_keys dns"}}, "CONFIGURED_UNVERIFIED"],
+    ["wrong requested tag", {...valid,verification:{...scopeReceipt(),requested_tag:"tag:other"}}, "CONFIGURED_UNVERIFIED"],
+    ["future verification timestamp", {...valid,verification:{...scopeReceipt(),verified_at:"2999-01-01T00:00:00.000Z"}}, "CONFIGURED_UNVERIFIED"],
+  ];
+  for (const [name, authority, expectedStatus] of fixtures) {
+    const result = await providerSetupSnapshot({
+      GHOSTFLEET_ENROLLMENT_CLAIM_READY: "1",
+      GHOSTFLEET_ENROLLMENT_CLAIM_MATERIALIZER: {
+        async fetch(req) {
+          assert.equal(req.method,"GET",name);
+          assert.equal(new URL(req.url).pathname,"/readiness",name);
+          assert.equal(req.headers.get("authorization"),null,name);
+          return Response.json({authority,secrets:{
+            TAILSCALE_ENROLL_OAUTH_CLIENT_ID:"PRESENT",
+            TAILSCALE_ENROLL_OAUTH_CLIENT_SECRET:"PRESENT",
+          }});
+        },
+      },
+    });
+    assert.equal(result.providers.tailscale.status, expectedStatus, name);
+    assert.equal(result.providers.tailscale.secret_state.client_secret, "PRESENT");
+    assert.equal(JSON.stringify(result).includes("synthetic-client-secret"),false);
+  }
+});
+
+test("successful private provider write without exact scope proof returns UNKNOWN, not a false success", async () => {
+  const base = {
+    ok:true, provider:"tailscale", status:"READY",
+    authority_generation:"ghostfleet-tailscale-auth-v1",
+    scope:"auth_keys", tag:"tag:fleet-ssh-target",
+    verification:scopeReceipt(),
+  };
+  const variants = [
+    ["overbroad reported scope", {scope:"auth_keys devices"}],
+    ["missing reported scope", {scope:undefined}],
+    ["wrong requested tag", {tag:"tag:other"}],
+    ["old private response without validation proof", {verification:undefined}],
+    ["unproven scope in receipt", {verification:{...scopeReceipt(),granted_scope:"auth_keys acl"}}],
+  ];
+  const credential = "synthetic-" + "c".repeat(48);
+  for (const [name, changed] of variants) {
+    let writes = 0;
+    const env = {
+      GHOSTFLEET_OPERATOR_TOKEN:operator,
+      GHOSTFLEET_READ_TOKEN:reader,
+      GHOSTFLEET_ENROLLMENT_CLAIM_READY:"1",
+      GHOSTFLEET_ENROLLMENT_CLAIM_MATERIALIZER:{
+        async fetch(req) {
+          writes++;
+          assert.equal(req.method,"POST",name);
+          return Response.json({...base,...changed});
+        },
+      },
+    };
+    const result = await worker.fetch(requestWithBody(operator,"/v0/providers/tailscale/setup",{
+      client_id:"synthetic-client-id",client_secret:credential,
+    }),env);
+    assert.equal(writes,1,name);
+    assert.equal(result.status,503,name);
+    const payload = await result.json();
+    assert.deepEqual(payload,{ok:false,error:"PROVIDER_AUTHORITY_SETUP_UNKNOWN"},name);
+    assert.equal(JSON.stringify(payload).includes(credential),false);
   }
 });

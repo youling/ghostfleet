@@ -12,7 +12,8 @@ from pathlib import Path
 import pytest
 
 from ghostfleet_runtime.resource_paths import resource_root, resource_path
-from ghostfleet_runtime.core.profile_loader import load_profiles
+from ghostfleet_runtime.core.profile_loader import load_profiles, profile_allows_node_type
+from ghostfleet_runtime.core.automation_eligibility import is_automation_eligible
 from ghostfleet_runtime.core.node_identity import resolve_node, require_mutation_target
 from ghostfleet_runtime.core.registry_validator import validate_registry
 from ghostfleet_runtime.control.enrollment_attempt import AttemptError
@@ -102,6 +103,23 @@ def test_installed_resource_paths_are_package_relative_and_bounded():
     assert resource_path("fleet/10_platforms/linux/common/operations/jobs/fleet-jobctl.py").is_file()
     with pytest.raises((ValueError,FileNotFoundError)):
         resource_path("../../__init__.py")
+
+def test_managed_linux_laptop_eligibility_is_lifecycle_gated():
+    profiles = load_profiles()
+    managed = profiles["managed-linux"]
+    assert profile_allows_node_type(managed, "laptop")
+    assert not profile_allows_node_type(managed, "phone")
+    node = {"type": "laptop", "fleet_state": "MANAGED", "management_profile": "managed-linux"}
+    assert is_automation_eligible(node, profiles)
+    assert not is_automation_eligible({**node, "fleet_state": "VERIFIED"}, profiles)
+    assert not is_automation_eligible({**node, "management_profile": None}, profiles)
+    # NAS is a device class, not blanket permission to mutate OMV-managed data.
+    # Host-side configuration ownership/storage isolation is a separate gate.
+    nas={**node, "type":"nas"}
+    assert profile_allows_node_type(managed, "nas")
+    assert is_automation_eligible(nas, profiles)
+    assert not is_automation_eligible({**nas, "fleet_state":"ENROLLED"}, profiles)
+
 
 def enrollment_fixture():
     return {"one_time_url":"https://fixture.example.invalid/v1/enrollment-tickets/"+"a"*32,"short_code":"123456"}

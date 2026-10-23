@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   createEnrollmentTicketStore,evaluateBootstrapPreflight,createBootstrapSession,recordRootCeremony,
   attachPreflight,attachClaim,completeBootstrap,assertNoPostBootstrapPasswordPrompt,createBootstrapReceipt,BOOTSTRAP_SH,
@@ -80,4 +81,20 @@ test("failed preflight stops before claim",()=>{
   session=attachPreflight(session,evaluateBootstrapPreflight({...passFacts,os_family:"other"}));
   assert.equal(session.state,"STOPPED");
   assert.throws(()=>attachClaim(session,{ticket_id:"ticket-6"}),/CLAIM_BEFORE_PREFLIGHT_PASS/);
+});
+
+test("public shell refuses existing identity and unavailable terminal before any apt effects",()=>{
+  const preclaim=BOOTSTRAP_SH.indexOf('\ncase "$(tailscale_preclaim_state)"');
+  const baseline=BOOTSTRAP_SH.indexOf('\nbootstrap_transport_baseline\n');
+  const aptConfig=BOOTSTRAP_SH.indexOf('\nif ! tailscale_apt_compliant;');
+  const guardTTY=BOOTSTRAP_SH.indexOf("[ -c /dev/tty ] || fail");
+  assert.ok(preclaim>0 && baseline>preclaim && aptConfig>preclaim);
+  assert.ok(guardTTY>preclaim && guardTTY<baseline);
+  assert.match(BOOTSTRAP_SH,/use verified ADOPT\/REPAIR flow/);
+  assert.match(BOOTSTRAP_SH,/PATH="\/usr\/sbin:\/usr\/bin:\/sbin:\/bin"/);
+});
+test("Linux courier remains syntactically valid POSIX shell",()=>{
+  if (process.platform!=="linux") return;
+  const check=spawnSync("/bin/sh",["-n"],{input:BOOTSTRAP_SH,encoding:"utf8",timeout:5000});
+  assert.equal(check.status,0,check.stderr);
 });

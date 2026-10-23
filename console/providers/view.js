@@ -9,8 +9,10 @@ const escapeHtml = (value) => String(value ?? "").replace(/[&<>"\']/g, (char) =>
 });
 
 export function renderProviderStatus(provider) {
-  const status = provider?.status || "MISSING";
+  const status = provider?.status || "SERVICE_UNKNOWN";
   const ready = status === "READY";
+  const unverified = status === "CONFIGURED_UNVERIFIED";
+  const unknown = status === "SERVICE_UNKNOWN";
   const requirements = provider?.requirements || {};
   const secretState = provider?.secret_state || {};
   return `
@@ -28,7 +30,9 @@ export function renderProviderStatus(provider) {
           <dt>${escapeHtml(t("provider.scope"))}</dt>
           <dd><code>${escapeHtml(requirements.scope || "auth_keys")}</code></dd>
           <dt>${escapeHtml(t("provider.tag"))}</dt>
-          <dd><code>${escapeHtml(requirements.tag || "tag:fleet-ssh-target")}</code></dd>
+          <dd><code>${escapeHtml(requirements.tag || "—")}</code></dd>
+          <dt>${escapeHtml(t("provider.observedScope"))}</dt>
+          <dd><code>${escapeHtml(provider?.granted_scope || "—")}</code></dd>
           <dt>${escapeHtml(t("provider.clientId"))}</dt>
           <dd>${escapeHtml(t(`provider.secret.${String(secretState.client_id || "MISSING").toLowerCase()}`))}</dd>
           <dt>${escapeHtml(t("provider.clientSecret"))}</dt>
@@ -38,9 +42,15 @@ export function renderProviderStatus(provider) {
           <strong>${escapeHtml(t("provider.minimumAuthority"))}</strong>
           <p class="secondary">${escapeHtml(t("provider.minimumAuthorityHelp"))}</p>
         </div>
-        ${ready
-          ? `<p class="secondary provider-ready-note">${escapeHtml(t("provider.readyHelp"))}</p>`
-          : `<button class="btn btn-primary" type="button" data-provider-setup="tailscale">${escapeHtml(t("provider.connect"))}</button>`}
+        ${unknown
+          ? `<p class="secondary provider-unknown-note">${escapeHtml(t("provider.serviceUnknownHelp"))}</p>`
+          : unverified
+          ? `<p class="secondary provider-unverified-note">${escapeHtml(t("provider.unverifiedHelp"))}</p>`
+          : ready
+            ? `<p class="secondary provider-ready-note">${escapeHtml(t("provider.readyHelp"))}</p>`
+            : status === "MISSING"
+              ? `<button class="btn btn-primary" type="button" data-provider-setup="tailscale">${escapeHtml(t("provider.connect"))}</button>`
+              : `<p class="secondary provider-unknown-note">${escapeHtml(t("provider.serviceUnknownHelp"))}</p>`}
       </div>
     </section>`;
 }

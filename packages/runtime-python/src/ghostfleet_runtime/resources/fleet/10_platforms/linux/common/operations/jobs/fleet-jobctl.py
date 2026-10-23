@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import select
+import signal
 import stat
 import subprocess
 import sys
@@ -163,6 +164,20 @@ def atomic(path, value):
             os.fsync(directory)
         finally:
             os.close(directory)
+
+
+def signal_receipt_handler(directory, run):
+    """Record a known SIGTERM/SIGINT before systemd drains the owned cgroup.
+
+    Terminal state is accepted only after the kernel reports the cgroup empty.
+    SIGKILL, power loss, an atomic-write failure, or absent cgroup evidence
+    remains INTERRUPTED/UNKNOWN; it is never replayed as a new job.
+    """
+    def on_signal(signum, _frame):
+        run.update(finished=True, exit_code=128 + signum, terminated_by_signal=signum)
+        atomic(directory / "run.json", run)
+        raise SystemExit(128 + signum)
+    return on_signal
 
 
 @contextmanager
@@ -367,7 +382,10 @@ class Jobs:
                     state, reason = "CANCELLED", "owned_cgroup_empty"
                 elif run.get("finished") is True and type(run.get("exit_code")) is int:
                     code = run["exit_code"]
-                    state, reason = ("SUCCEEDED" if code == 0 else "FAILED"), "command_exited_cgroup_empty"
+                    if run.get("terminated_by_signal") in (signal.SIGTERM, signal.SIGINT) and code == 128 + run["terminated_by_signal"]:
+                        state, reason = "FAILED", "terminated_by_signal"
+                    else:
+                        state, reason = ("SUCCEEDED" if code == 0 else "FAILED"), "command_exited_cgroup_empty"
                 elif run:
                     state, reason = "INTERRUPTED", "owned_cgroup_empty_exit_receipt_missing"
             if cgroup and cgroup != meta.get("cgroup"):
@@ -626,6 +644,10 @@ def runner(root, slot, generation):
     os.close(fd)
     run = {"generation": generation, "cgroup": cgroup, "finished": False, "exit_code": None}
     atomic(directory / "run.json", run)
+    # The receipt exists before signal handling begins. A signal can now be
+    # classified without inventing completion from merely observing a timeout.
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, signal_receipt_handler(directory, run))
     try:
         verify_resources(group)
     except JobError:
