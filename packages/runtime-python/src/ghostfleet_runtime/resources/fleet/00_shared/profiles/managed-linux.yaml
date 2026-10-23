@@ -1,7 +1,9 @@
 name: managed-linux
 description: >
-  Linux server/VPS with SSH access, suitable for remote automation.
+  Linux server/VPS/laptop with SSH access, suitable for remote automation.
   Requires primary management path (e.g. Tailscale) and break-glass recovery.
+  Laptop power-off is expected; acceptance verifies convergence after power-on,
+  not an always-online uptime promise.
 
 management:
   required_paths:
@@ -26,6 +28,7 @@ automation:
 
 targeting:
   os_family: [debian, ubuntu, centos, rocky, almalinux]
-  asset_types: [server, vps, execution-node]
+  # Eligibility is not proof of current availability or operational authority.
+  asset_types: [server, vps, execution-node, laptop]
   required_capabilities: []  # no capability gate for base linux profile
   excluded_os: [windows, macos, ios, android]
