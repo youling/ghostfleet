@@ -196,6 +196,13 @@ print_state() {
 }
 if [[ "$MODE" == --check ]]; then print_state; exit 0; fi
 
+# OMV's SSH admission policy commonly requires _ssh group membership.
+# Preflight group existence before the first managed file/account effect.
+# Never create/change OMV-owned SSH groups or sshd configuration ourselves.
+if [[ -e /etc/openmediavault/config.xml || -d /etc/openmediavault ]]; then
+  getent group _ssh >/dev/null 2>&1 || die "OMV requires an existing _ssh admission group"
+fi
+
 PUB_FILE="${FLEET_CONTROL_PRIVILEGED_SSH_PUBLIC_KEY_FILE:-}"
 stored_pub=""
 if [[ -r "$AUTHORIZED_KEYS" ]]; then
@@ -265,6 +272,16 @@ if ! id "$OPS_USER" >/dev/null 2>&1; then
   useradd --system --create-home --home-dir "$OPS_HOME" --shell /bin/sh "$OPS_USER"
 fi
 [[ "$(id -u "$OPS_USER")" -ne 0 ]] || die "ops account must not be root"
+# Add only the dedicated unprivileged GhostFleet service identity to OMV's
+# already-existing SSH admission group during the one approved root ceremony.
+# Repeat applies are no-op for this group; never grant sudo/root/docker groups.
+if [[ -e /etc/openmediavault/config.xml || -d /etc/openmediavault ]]; then
+  case "$(omv_ssh_group_state)" in
+    MEMBER) ;;
+    NOT_MEMBER) usermod -a -G _ssh "$OPS_USER" || die "OMV SSH admission group update failed" ;;
+    *) die "OMV SSH admission could not be reconciled" ;;
+  esac
+fi
 usermod --home "$OPS_HOME" --shell /bin/sh "$OPS_USER"
 passwd -l "$OPS_USER" >/dev/null 2>&1 || die "cannot lock ops password"
 chown root:root "$OPS_HOME"
@@ -328,6 +345,9 @@ rm -f "$tmp_state"
 
 grep -Eq "^${ORDINARY_USER}[[:space:]]" "$SUDOERS_FILE" && die "ordinary user received Fleet sudo grant"
 ops_account_ok || die "ops account postcondition failed"
+if [[ -e /etc/openmediavault/config.xml || -d /etc/openmediavault ]]; then
+  [[ "$(omv_ssh_group_state)" == MEMBER ]] || die "OMV SSH group membership postcondition failed"
+fi
 regular_root_755 "$HELPER_DST" || die "helper postcondition failed"
 regular_root_755 "$ENTRY_DST" || die "entry postcondition failed"
 visudo -cf "$SUDOERS_FILE" >/dev/null || die "sudoers postcondition failed"
