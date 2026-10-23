@@ -46,3 +46,26 @@ jobs:
       - run: npm run verify:cloud
         if: runner.os == 'Linux'
       - run: npm run verify:ai-client-neutral
+
+  privileged-disposable:
+    # This job changes a one-use GitHub-hosted VM only. Fork PRs do not run
+    # contributor-provided root-level helper code.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Actual helper setup on disposable Ubuntu VM (not NAS)
+        shell: bash
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo -n env GITHUB_ACTIONS="$GITHUB_ACTIONS" \
+            RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            GHOSTFLEET_DISPOSABLE_TEST_CONFIRMED=1 \
+            GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            GHOSTFLEET_TEST_ORDINARY_USER="$(id -un)" \
+            bash scripts/test-privileged-disposable-linux.sh
