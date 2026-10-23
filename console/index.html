@@ -118,7 +118,7 @@
       <button type="button" class="btn icon-button" data-close-dialog="provider-setup-dialog" data-i18n-aria="close"><span data-icon="close"></span></button>
     </div>
     <div class="provider-setup-body">
-      <p class="secondary" data-i18n="provider.setupIntro">GhostFleet 使用一个最小权限 OAuth Client，为每台新设备临时生成一次性纳管凭据。</p>
+      <p class="secondary" data-i18n="provider.setupIntro">组织 OAuth Client 可用于多个已授权用途；本次纳管需验证 auth_keys 和所选设备标签。</p>
       <ol class="provider-steps">
         <li>
           <strong data-i18n="provider.step1Title">在 Tailscale 创建 OAuth Client</strong>
@@ -128,13 +128,13 @@
           </a>
         </li>
         <li>
-          <strong data-i18n="provider.step2Title">只授予纳管所需权限</strong>
-          <p class="secondary" data-i18n="provider.step2Help">在权限列表找到 Keys → Auth Keys，选择 Write；标签只选 tag:fleet-ssh-target。若标签不存在，请先在 Tailscale 访问策略中创建。</p>
+          <strong data-i18n="provider.step2Title">确认本次纳管能力</strong>
+          <p class="secondary" data-i18n="provider.step2Help">本次操作需 Keys → Auth Keys Write 和组织为纳管选定的设备标签；其他权限由账户所有者决定。</p>
           <dl class="detail-fields provider-fields">
             <dt data-i18n="provider.scope">Scope</dt><dd><code>auth_keys</code></dd>
-            <dt data-i18n="provider.tag">设备标签</dt><dd><code>tag:fleet-ssh-target</code></dd>
+            <dt data-i18n="provider.tag">设备标签</dt><dd><span data-i18n="provider.ownerSelectedTag">由实例配置确定</span></dd>
           </dl>
-          <p class="authority-note" data-i18n="provider.noExtraAuthority">不要授予 devices、DNS、ACL 或 tailnet admin 等额外权限。</p>
+          <p class="authority-note" data-i18n="provider.noExtraAuthority">组织可以按实际用途授予更多权限，GhostFleet 仅核验本次操作必需能力。</p>
         </li>
         <li>
           <strong data-i18n="provider.step3Title">创建后回到这里</strong>
