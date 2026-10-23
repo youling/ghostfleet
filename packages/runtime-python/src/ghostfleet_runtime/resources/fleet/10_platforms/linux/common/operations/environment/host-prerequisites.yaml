@@ -16,7 +16,7 @@ kind: FLEET_LINUX_HOST_PREREQUISITES
 schema_version: 1.0.0
 platform: linux
 owner: "youling/ghostfleet"
-status: proposed
+status: source-preview
 live_node_contact: NONE
 mutates_host: false
 
@@ -26,18 +26,18 @@ groups:
     description: >-
       One-click enrollment courier on a fresh Debian-family host
       (GET /v1/bootstrap.sh). Probed before any credential is consumed.
-    canonical_ref: docs/runbooks/ONE_CLICK_ENROLLMENT.md
+    canonical_ref: docs/PLATFORMS.md
   baseline-backup:
     description: >-
       Clean managed-system recovery baseline. Must pass before container
       workloads are moved onto the host.
-    canonical_ref: docs/runbooks/MANAGED_LINUX_SYSTEM_BACKUP.md
+    canonical_ref: docs/RECOVERY.md
   container-baseline:
     description: Docker/Compose substrate and the first rebuildable workload.
-    canonical_ref: docs/runbooks/MANAGED_LINUX_CONTAINER_WORKLOAD.md
+    canonical_ref: docs/PLATFORMS.md
   management-automation:
     description: Fleet typed operations / ansible automation eligibility.
-    canonical_ref: docs/runbooks/MANAGED_NODE_ONBOARDING.md
+    canonical_ref: docs/OPERATIONS.md
 
 # installable_by_repo: whether any code in this repository installs it today.
 # "false" is not a defect verdict; it records that the operator or a separately
@@ -67,7 +67,7 @@ prerequisites:
     required_by: [enrollment]
     required: true
     installable_by_repo: false
-    note: Masked enrollment-code input needs a character device.
+    note: The current courier uses a visible short-lived code; TTY is required before host effects.
   - id: path-ssh-host-key
     kind: path
     probe: {type: path, path: /etc/ssh/ssh_host_ed25519_key.pub}

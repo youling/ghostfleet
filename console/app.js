@@ -2,7 +2,7 @@ import { applyLocale, getLanguage, setLanguage, t } from "./shared/i18n.js";
 import { DEFAULT_ACCEPTANCE_EVIDENCE as requiredEvidence } from "./model.js";
 import { enrollmentDisplayName, selectRows } from "./shared/table-model.js";
 import { icon } from "./shared/icons.js";
-import { templateDisplay, templatePostureSummary, templateSelectionPayload } from "./enrollment/templates/model.js";
+import { templateDisplay, templatePostureSummary, templateSelectionPayload, installationPlanSteps } from "./enrollment/templates/model.js";
 import { renderProviders } from "./providers/view.js";
 import { FIRST_USE, probeFirstUse } from "./shared/first-use.js";
 
@@ -195,6 +195,11 @@ function renderCreateTemplateControls() {
     : "";
 
   const summary = templatePostureSummary(template, createTemplateOverrides);
+  const planned = installationPlanSteps(template);
+  const plannedHtml = planned.length ? '<details class="installation-plan-preview"><summary>' + text("installPreviewTitle") +
+    ' (' + h(planned.length) + ')</summary><p class="secondary">' + text("installPreviewUnknown") +
+    '</p><ul>' + planned.map((item) => '<li>' + text("install." + item.id) + ' · ' +
+    text("installState." + item.state.toLowerCase()) + '</li>').join("") + '</ul></details>' : "";
   const yesNo = (value) => text(value ? "enabled" : "disabled");
   preview.innerHTML = '<dl>' +
     '<dt>' + text("tailscale") + '</dt><dd>' + yesNo(summary.tailscale_enabled) + '</dd>' +
@@ -203,7 +208,7 @@ function renderCreateTemplateControls() {
     '<dt>' + text("breakGlass") + '</dt><dd>' + yesNo(summary.break_glass) + '</dd>' +
     '<dt>' + text("acceptanceMode") + '</dt><dd>' + h(summary.consumer_acceptance) + '</dd>' +
     '<dt>' + text("rootCeremony") + '</dt><dd>' + h(summary.root_ceremony) + '</dd>' +
-    '</dl>';
+    '</dl>' + plannedHtml;
 }
 function clearBootstrapDelivery() {
   const command = $("#bootstrap-command");
