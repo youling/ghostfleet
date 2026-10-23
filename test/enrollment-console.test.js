@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { templateDisplay, templatePostureSummary, templateSelectionPayload, applyTemplatePreviewOverrides } from "../console/enrollment/templates/model.js";
 import { createEnrollmentWizard, attachBootstrapDelivery, markBootstrapRunning, markBootstrapResult, serializeWizardState } from "../console/enrollment/bootstrap/wizard.js";
 import { renderProviders } from "../console/providers/view.js";
@@ -78,4 +79,11 @@ test("unavailable provider never invites blind credential submission", () => {
   assert.match(html,/provider-unknown-note/);
   assert.doesNotMatch(html,/data-provider-setup="tailscale"/);
   assert.doesNotMatch(html,/provider-ready-note/);
+});
+
+test("provider setup dialog does not hardcode a private OAuth scope ceiling", () => {
+  const html = readFileSync(new URL("../console/index.html", import.meta.url), "utf8");
+  assert.doesNotMatch(html, /tag:fleet-ssh-target/);
+  assert.doesNotMatch(html, /不要授予 devices/);
+  assert.match(html, /data-i18n="provider.ownerSelectedTag"/);
 });
