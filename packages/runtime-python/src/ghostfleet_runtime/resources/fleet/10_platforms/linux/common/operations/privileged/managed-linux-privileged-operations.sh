@@ -118,6 +118,14 @@ authorized_key_file_ok() {
 import base64, pathlib, stat, sys
 path = pathlib.Path(sys.argv[1])
 try:
+    # sshd is sensitive to each ancestor: a valid file under an
+    # untrusted symlink/writable .ssh directory is not an admitted identity.
+    home = path.parent.parent.lstat()
+    ssh_dir = path.parent.lstat()
+    if not stat.S_ISDIR(home.st_mode) or home.st_uid != 0 or stat.S_IMODE(home.st_mode) & 0o022:
+        raise ValueError("untrusted dedicated ops home")
+    if not stat.S_ISDIR(ssh_dir.st_mode) or ssh_dir.st_uid != 0 or stat.S_IMODE(ssh_dir.st_mode) != 0o700:
+        raise ValueError("untrusted dedicated ssh dir")
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600:
         raise ValueError("wrong owner or mode")

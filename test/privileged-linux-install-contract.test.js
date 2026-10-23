@@ -15,6 +15,9 @@ test("privileged installer uses administrative PATH, Ed25519 and exact key guard
   assert.match(content,/authorized_key_file_ok\(\)/);
   assert.match(content,/if authorized_key_file_ok; then/);
   assert.match(content,/stat\.S_IMODE\(info\.st_mode\) != 0o600/);
+  assert.match(content,/path\.parent\.lstat\(\)/);
+  assert.match(content,/path\.parent\.parent\.lstat\(\)/);
+  assert.match(content,/stat\.S_IMODE\(ssh_dir\.st_mode\) != 0o700/);
   assert.match(content,/expected = 'restrict,command="/);
   assert.match(content,/len\(rows\) != 1/);
   assert.doesNotMatch(content,/grep -Fq "restrict,command=/);
