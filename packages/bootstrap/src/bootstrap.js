@@ -385,7 +385,7 @@ case "$TAILSCALE_STATE" in
   *CONFLICT*|*UNKNOWN*) fail 'live ownership or identity conflict detected; refusing credential consumption' ;;
 esac
 
-SSH_HOST_KEY_SHA=
+# Preserve the Phase-0-pinned SSH host fingerprint for both completion receipts.
 
 if [ "$TAILSCALE_STATE" != COMPLIANT ]; then
   printf '%s' "$TS_AUTHKEY" > /run/fleet/ts-authkey

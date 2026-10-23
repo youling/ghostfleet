@@ -9,13 +9,25 @@ import {BOOTSTRAP_SH,renderBootstrap} from "../src/index.js";
 test("Phase 0 pins a readable SSH host identity before any host effects",()=>{
   const keyCheck=BOOTSTRAP_SH.indexOf("no readable SSH host public key");
   const fingerprintCheck=BOOTSTRAP_SH.indexOf("SSH host public key fingerprint could not be verified");
-  const baseline=BOOTSTRAP_SH.indexOf("\\nbootstrap_transport_baseline\\n");
-  const claim=BOOTSTRAP_SH.indexOf("CLAIM_URL=");
+  // Check executed calls, not the earlier function declarations.
+  const preflightCall=BOOTSTRAP_SH.indexOf("\nbootstrap_phase0_preflight\n");
+  const baselineCall=BOOTSTRAP_SH.indexOf("\nbootstrap_transport_baseline\n");
+  const claimCall=BOOTSTRAP_SH.indexOf("\nCLAIM_URL=");
   assert.ok(keyCheck>0 && fingerprintCheck>keyCheck);
-  assert.ok(keyCheck<baseline && fingerprintCheck<claim);
-  assert.match(BOOTSTRAP_SH,/ssh_host_ed25519_key\\.pub/);
-  assert.match(BOOTSTRAP_SH,/ssh_host_ecdsa_key\\.pub/);
-  assert.match(BOOTSTRAP_SH,/ssh_host_rsa_key\\.pub/);
+  assert.ok(preflightCall>fingerprintCheck && baselineCall>preflightCall && claimCall>baselineCall);
+  assert.match(BOOTSTRAP_SH,/ssh_host_ed25519_key\.pub/);
+  assert.match(BOOTSTRAP_SH,/ssh_host_ecdsa_key\.pub/);
+  assert.match(BOOTSTRAP_SH,/ssh_host_rsa_key\.pub/);
+
+  // A post-claim empty assignment used to erase the verified fingerprint.
+  const assignments=[...BOOTSTRAP_SH.matchAll(/^\s*SSH_HOST_KEY_SHA=.*$/gm)];
+  assert.equal(assignments.length,1,"Phase 0 fingerprint must never be reassigned after verification");
+  assert.match(assignments[0][0],/ssh-keygen -lf "\$SSH_HOST_KEY_PATH"/);
+  const reportStart=BOOTSTRAP_SH.indexOf('REPORT_FILE="$REPORT_DIR/enrollment-report.json"');
+  assert.ok(reportStart>claimCall);
+  const reportPath=BOOTSTRAP_SH.slice(reportStart);
+  assert.ok(reportPath.includes('"ssh_host_key_sha256": "$SSH_HOST_KEY_SHA"'),"local report must carry pinned fingerprint");
+  assert.ok(reportPath.includes('"$OS_VERSION_ID" "$SSH_HOST_KEY_SHA" "$BOOTSTRAP_VERSION"'),"completion request must carry pinned fingerprint");
 });
 
 test("bootstrap has no deployment endpoint and requires a supplied HTTPS origin",()=>{
