@@ -113,6 +113,12 @@ def test_managed_linux_laptop_eligibility_is_lifecycle_gated():
     assert is_automation_eligible(node, profiles)
     assert not is_automation_eligible({**node, "fleet_state": "VERIFIED"}, profiles)
     assert not is_automation_eligible({**node, "management_profile": None}, profiles)
+    # NAS is a device class, not blanket permission to mutate OMV-managed data.
+    # Host-side configuration ownership/storage isolation is a separate gate.
+    nas={**node, "type":"nas"}
+    assert profile_allows_node_type(managed, "nas")
+    assert is_automation_eligible(nas, profiles)
+    assert not is_automation_eligible({**nas, "fleet_state":"ENROLLED"}, profiles)
 
 
 def enrollment_fixture():
