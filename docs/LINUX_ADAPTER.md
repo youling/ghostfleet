@@ -37,11 +37,11 @@
 
 ### 控制面接线
 
-私有运行器用 `LinuxReceiptAdapter.collect(type)` 取得结果，经既有已授权证据接口保存 `result.evidence`。成功返回 `OBSERVED` 和 `PASS`；`FAILED`、`UNKNOWN`、无效回执或观察器错误返回 `RECONCILE_REQUIRED`，不泄露原始后端输出，也不内部重试。必须保存最新 `FAIL/UNKNOWN` 以使旧 `PASS` 失效，不能跳过失败结果后执行 accept。
+私有运行器用 `LinuxReceiptAdapter.collect(type)` 取得结果，由受信服务端/SDK 内部写入 `result.evidence`；**不得通过已停用的公共 Operator `/v0/.../evidence` POST**。成功返回 `OBSERVED` 和 `PASS`；`FAILED`、`UNKNOWN`、无效回执或观察器错误返回 `RECONCILE_REQUIRED`，不泄露原始后端输出，也不内部重试。必须保存最新 `FAIL/UNKNOWN` 以使旧 `PASS` 失效，不能跳过失败结果后执行 accept。
 
 整个 collect 使用最多 30 秒的绝对观察期限，覆盖后端与验证器两个阶段，并向两者传递 AbortSignal。超时返回 `UNKNOWN`，迟到的只读结果不会生成可接受证据。后端与验证器必须响应 signal 并关闭自己拥有的资源；适配器不重试。
 
-适配器不调用 controller 的 `accept`。实例中 Assets 责任方的验收、恢复和授权等准入条件仍由既有责任方契约决定；`PROVISIONAL` 投影不等于已验收的 Assets 关联，也不授予操作权限。尚未被 Assets 责任方接受的候选保持未绑定，核心不要求凭空添加非空 `asset_ref`。核心身份/目录证据仍由实际控制面存储生成。当前访问令牌和 API 允许操作员直接写证据，因此集成方必须限制真实准入的写入口或使用可信运行器；这份校验器没有强制覆盖所有 API 调用方。
+适配器不调用 controller 的 `accept`。实例中 Assets 责任方的验收、恢复和授权等准入条件仍由既有责任方契约决定；`PROVISIONAL` 投影不等于已验收的 Assets 关联，也不授予操作权限。尚未被 Assets 责任方接受的候选保持未绑定，核心不要求凭空添加非空 `asset_ref`。核心身份/目录证据仍由实际控制面存储生成。公共 Operator HTTP 证据写入口目前返回 403 `EVIDENCE_TRUSTED_INGRESS_REQUIRED`；私有实例必须接入独立真实观察器和受限的服务端 SDK 写入路径后，才允许按真实 PASS 准入。本通用校验器本身不完成私有后端接线。
 
 首次身份落地、持久化重读、对账、五项真实证明、可用时已验收的 Assets 关联、控制台/API/只读 MCP 的身份一致性和既有访问路径保留，均需对应集成验收。受保护单节点集成的历史结果不能自动证明新的部署通过。`ACTIVE` 和七项证据只证明本控制面准入，不证明独立调用方的目录、认证、路由、权限或回滚已切换。Cloudflare 或本地进程重启不等于设备重启；本适配器不改变控制台托管或部署状态。
 
@@ -76,10 +76,10 @@ Zero delta requires actual accepted-engine execution with repeat=true, execution
 
 ### Control-plane integration and limits
 
-Use `LinuxReceiptAdapter.collect(type)` and an authorized evidence seam to save result.evidence. Valid success returns OBSERVED/PASS; failure, UNKNOWN, invalid receipts or observer errors return RECONCILE_REQUIRED without raw backend output or internal retries. Persist the latest FAIL/UNKNOWN to invalidate old PASS before admission.
+Use `LinuxReceiptAdapter.collect(type)` and a protected internal server/SDK evidence seam to save result.evidence; **never** POST verified receipt status through the legacy public Operator `/v0/.../evidence` route, which now returns 403. Valid success returns OBSERVED/PASS; failure, UNKNOWN, invalid receipts or observer errors return RECONCILE_REQUIRED without raw backend output or internal retries. Persist the latest FAIL/UNKNOWN to invalidate old PASS before admission.
 
 The entire collect has an absolute deadline of at most 30 seconds, including backend and verifier. Both receive AbortSignal and must close their resources. Timeout produces UNKNOWN and late read results cannot become acceptance evidence.
 
-The adapter never calls controller accept. Instance Assets acceptance, recovery and authority gates remain owner-defined. A PROVISIONAL projection is not an accepted Assets join or operational authority; unaccepted candidates remain unbound, with no invented universal nonempty asset_ref gate. Core generates identity/catalog evidence from actual stored projections. Current operator API can directly write evidence, so integrations must enforce a trusted writer or restricted real-admission seam; this validator is not compulsory security coverage for every API caller.
+The adapter never calls controller accept. Instance Assets acceptance, recovery and authority gates remain owner-defined. A PROVISIONAL projection is not an accepted Assets join or operational authority; unaccepted candidates remain unbound, with no invented universal nonempty asset_ref gate. Core generates identity/catalog evidence from actual stored projections. The legacy Operator HTTP evidence route is fail-closed with `EVIDENCE_TRUSTED_INGRESS_REQUIRED`. Private integrators must bind an independently authenticated observer and an internal write seam before admitting a real device. The validator alone is not a live backend.
 
 First materialization, durable reload/reconcile, five real proofs, accepted Assets joins when available, same Console/API/read-only MCP identity and preserved previous access require corresponding hardware integration acceptance. Historical protected single-node results do not automatically establish acceptance of a new deployment. `ACTIVE` and seven evidence types establish admission in this control plane only, not independent consumer catalog/authentication/route/permission/rollback cutover. Restarting Cloudflare/local processes is not a device reboot. This adapter changes neither Console hosting nor deployment status.
