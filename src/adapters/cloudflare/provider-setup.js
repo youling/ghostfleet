@@ -24,7 +24,7 @@ function validGeneration(value) {
 function parseGrantedScopes(value) {
   // This describes one observed access token, not the OAuth client's maximum grants.
   if (typeof value !== "string" || value.length > 1024 || value.trim() === "") return null;
-  const parts = value.trim().split(/\\s+/);
+  const parts = value.trim().split(/\s+/);
   if (parts.length > 32 || parts.some((scope) => !/^[a-z][a-z0-9:_-]{1,63}$/.test(scope))) return null;
   const unique = new Set(parts);
   if (unique.size !== parts.length) return null;
