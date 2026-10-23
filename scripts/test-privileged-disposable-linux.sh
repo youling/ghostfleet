@@ -84,4 +84,24 @@ if bash "$installer" --apply >/dev/null 2>&1; then
 fi
 [[ "$(sha256sum /var/lib/ghostfleet-ops/.ssh/authorized_keys)" == "$before_key" ]] || exit 1
 [[ "$(sha256sum /etc/youling-fleet/privileged-operations/control.json)" == "$before_state" ]] || exit 1
-echo "PASS ephemeral Ubuntu real helper install/check/reapply/key-rotation-denial; OMV SSH, systemd and NAS NOT_RUN"
+# Exercise the OMV-specific _ssh admission branch on THIS synthetic runner.
+# An empty marker directory is not OMV; never create it outside this VM.
+export FLEET_CONTROL_PRIVILEGED_SSH_PUBLIC_KEY_FILE="$private_dir/key.pub"
+before_ordinary_groups="$(id -nG "$ordinary")"
+install -d -m 0755 /etc/openmediavault
+if ! getent group _ssh >/dev/null 2>&1; then
+  # Missing group must prevent apply; no sudoers/key drift may result.
+  if bash "$installer" --apply >/dev/null 2>&1; then
+    echo "OMV marker with missing _ssh group was accepted" >&2; exit 1
+  fi
+  [[ "$(sha256sum /var/lib/ghostfleet-ops/.ssh/authorized_keys)" == "$before_key" ]] || exit 1
+  groupadd --system _ssh
+fi
+pre_omv="$(bash "$installer" --check)"
+[[ "$pre_omv" == *"OMV_SSH_GROUP=NOT_MEMBER"* ]] || exit 1
+bash "$installer" --apply >/dev/null
+post_omv="$(bash "$installer" --check)"
+[[ "$post_omv" == *"OMV_SSH_GROUP=MEMBER"* ]] || exit 1
+id -nG ghostfleet-ops | tr ' ' '\n' | grep -qx '_ssh'
+[[ "$(id -nG "$ordinary")" == "$before_ordinary_groups" ]] || exit 1
+echo "PASS ephemeral Ubuntu real helper install/check/reapply/key-rotation-denial and synthetic OMV _ssh branch; actual OMV SSH/systemd/NAS NOT_RUN"
