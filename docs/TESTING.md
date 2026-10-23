@@ -28,6 +28,8 @@ npm run verify:ai-client-neutral
 
 仅在 Linux 上另行运行 `npm run verify:cloud`；Windows 不运行该 Linux 专用检查。根目录 `test:all` 包含核心、类型化控制、初始纳管和 Python 测试，Python 实际入口为 `python -m pytest packages/runtime-python/tests`。可选包还有各自的 TypeScript 检查、构建与测试，具体以根脚本、各包清单和 [平台](PLATFORMS.md) 为准。未执行的检查不能计为通过。`build:worker` 是 dry-run，不创建线上 URL。
 
+本轮 Linux 一键纳管的 `installation_plan` 单元测试只检查定向缺项、NEW/ADOPT/REPAIR、UNKNOWN/冲突阻止，以及 OMV 的配置/存储隔离守护。**不是**系统包、root、Ansible/systemd、真实浏览器/Control Panel、消费者 cutover 或真实 NAS 测试。生产验收需另跑同一发布产物的全新安装、已有机器接管、中断恢复、重复零差异、非目标节点不变及独立客户端真实操作正负例；未运行必须标 `NOT_RUN`，测试 skip 不计通过。
+
 <!-- topic:ci -->
 ### CI 与资源
 
@@ -69,6 +71,8 @@ npm run verify:ai-client-neutral
 ```
 
 Run `npm run verify:cloud` additionally on Linux only; Windows does not run this Linux-only check. Root `test:all` includes core, typed-control, bootstrap and Python tests. The actual Python entry is `python -m pytest packages/runtime-python/tests`. Optional packages also define individual TypeScript checks/builds/tests; consult root scripts, package manifests and [Platforms](PLATFORMS.md). Never count an unexecuted check as passing. `build:worker` is a dry-run and creates no online URL.
+
+The `installation_plan` unit tests verify selected prerequisites, NEW/ADOPT/REPAIR, UNKNOWN/conflict closure and OMV configuration/storage guards only. They do **not** execute root/system packages, Ansible/systemd, a real browser, a consumer cutover or NAS. Production acceptance separately requires the same built release artifact to pass fresh/adopt/interruption/no-delta/non-target invariance and real independent consumer positive/negative calls. Unexecuted checks are `NOT_RUN`; skips are not passes.
 
 <!-- topic:ci -->
 ### CI and resources

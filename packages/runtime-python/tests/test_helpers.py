@@ -2,6 +2,8 @@
 import importlib.util
 import json
 import os
+import signal
+import subprocess
 import stat
 import sys
 import time
@@ -24,6 +26,71 @@ def test_job_atomic_receipt_keeps_old_reader_and_publishes_new_generation(tmp_pa
         module.atomic(path,{"generation":"new"})
         assert json.load(old)=={"generation":"old"}
     assert module.load(path)=={"generation":"new"}
+
+@pytest.mark.skipif(sys.platform!="linux",reason="real POSIX SIGTERM/subprocess test requires Linux")
+def test_job_real_sigterm_persists_terminal_receipt_before_process_exit(tmp_path):
+    """Send an actual kernel signal to an isolated runner-like subprocess."""
+    module_path=resource_path(BASE+"jobs/fleet-jobctl.py")
+    slot=tmp_path/"slot"
+    slot.mkdir(mode=0o700)
+    script = """
+import importlib.util, pathlib, signal, sys
+source, directory = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("isolated_job_signal", source)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+folder = pathlib.Path(directory)
+run = {"generation":"b"*32,"cgroup":"/synthetic/owned-unit","finished":False,"exit_code":None}
+module.atomic(folder/"run.json",run)
+signal.signal(signal.SIGTERM,module.signal_receipt_handler(folder,run))
+(folder/"ready").write_text("ready")
+signal.pause()
+"""
+    process=subprocess.Popen([sys.executable,"-c",script,str(module_path),str(slot)],
+                             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+    try:
+        deadline=time.monotonic()+10
+        while not (slot/"ready").exists() and process.poll() is None and time.monotonic()<deadline:
+            time.sleep(0.02)
+        assert (slot/"ready").exists(), process.communicate(timeout=2)[1].decode()
+        os.kill(process.pid,signal.SIGTERM)
+        assert process.wait(timeout=5)==143
+        payload=json.loads((slot/"run.json").read_text())
+        assert payload["finished"] is True
+        assert payload["exit_code"]==143
+        assert payload["terminated_by_signal"]==int(signal.SIGTERM)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
+def test_job_signal_receipt_requires_empty_owned_cgroup_for_known_failure(tmp_path):
+    module=helper("jobs/fleet-jobctl.py")
+    class Backend:
+        def submit(self,*args):pass
+        def inspect(self,meta,deadline):
+            return {"ControlGroup":"/user-1001.slice/fleet-job-"+meta["generation"]+".service","ActiveState":"inactive"}
+        def empty(self,cgroup,unit):return self.empty_result
+    backend=Backend()
+    backend.empty_result=None
+    engine=module.Jobs(tmp_path/"jobs",UID,backend,"synthetic-boot",now=lambda:1700000000)
+    spec={"argv":["/usr/bin/true"],"runtime_seconds":10}
+    request={"protocol":"fleet-job/v1","node_uid":UID,"actor_ref":"a"*64,"action":"start",
+             "operation_id":"oj1-1700000000000-00000000-0000-4000-8000-000000000001",
+             **spec,"spec_digest":module.digest(spec)}
+    created=engine.start(request,time.monotonic()+5)
+    slot,meta=engine.locate(created["handle"])
+    module.atomic(engine.path(slot,"run.json"),
+                  {"generation":meta["generation"],"cgroup":"/synthetic/owned-unit",
+                   "finished":True,"exit_code":143,"terminated_by_signal":15})
+    waiting=engine.snapshot(slot,meta,time.monotonic()+5)
+    assert waiting["state"]=="UNKNOWN" and waiting["reconcile_required"] is True
+    backend.empty_result=True
+    finished=engine.snapshot(slot,meta,time.monotonic()+5)
+    assert finished["state"]=="FAILED" and finished["reason"]=="terminated_by_signal"
+    assert finished["exit_code"]==143 and finished["reconcile_required"] is False
+
 
 def test_job_actual_engine_uncertain_start_is_never_resubmitted_and_actor_isolated(tmp_path):
     module=helper("jobs/fleet-jobctl.py")

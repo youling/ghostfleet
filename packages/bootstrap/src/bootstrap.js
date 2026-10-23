@@ -1,5 +1,8 @@
 export const BOOTSTRAP_SH = `#!/bin/sh
 set -eu
+# Debian-family admin tools commonly live under sbin, including in sudo shells.
+PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
 
 BROKER_ORIGIN="\${GHOSTFLEET_BROKER_ORIGIN:-}"
 ENROLLMENT_URL="\${GHOSTFLEET_ENROLLMENT_URL:-}"
@@ -186,6 +189,8 @@ bootstrap_phase0_preflight() {
   command -v systemctl >/dev/null 2>&1 || fail 'preflight failed: systemd/systemctl is required'
   [ -d /run/systemd/system ] || fail 'preflight failed: systemd is not the active init system'
   command -v sha256sum >/dev/null 2>&1 || fail 'preflight failed: sha256sum is required'
+  command -v dpkg-query >/dev/null 2>&1 || fail 'preflight failed: dpkg-query is required'
+  command -v apt-get >/dev/null 2>&1 || fail 'preflight failed: apt-get is required'
 
   APPLIANCE_KIND=generic-linux
   if [ -e /etc/openmediavault/config.xml ] || [ -d /etc/openmediavault ]; then
@@ -207,6 +212,23 @@ bootstrap_phase0_preflight() {
   printf '%s\n' "fleet-enroll: preflight PASS os=$OS_ID/$OS_VERSION_ID arch=$(uname -m) appliance=$APPLIANCE_KIND docker_socket=$DOCKER_SOCKET_HINT nopasswd_hint=$NOPASSWD_HINT" >&2
 }
 bootstrap_phase0_preflight
+
+# The next steps can update APT source or start a daemon. Refuse an existing
+# foreign/unproven Tailscale session before ANY package or service mutation.
+# Existing machines must use a verified ADOPT/REPAIR plan instead of a new join.
+if checkpoint_is_compliant; then
+  printf '%s\\n' 'fleet-enroll: already converged; no enrollment credentials requested' >&2
+  exit 0
+fi
+case "$(tailscale_preclaim_state)" in
+  FRESH) ;;
+  EXISTING) fail 'existing Tailscale identity detected; use verified ADOPT/REPAIR flow; no new enrollment effects attempted' ;;
+  *) fail 'Tailscale identity unknown before setup; reconcile before enrollment effects' ;;
+esac
+[ -c /dev/tty ] || fail '/dev/tty required before any enrollment package effects'
+if [ -e /etc/openmediavault/config.xml ] || [ -d /etc/openmediavault ]; then
+  printf '%s\\n' 'fleet-enroll: OMV-owned SSH/storage configuration is outside this bootstrap scope' >&2
+fi
 
 bootstrap_transport_baseline() {
   if command -v curl >/dev/null 2>&1 && package_installed ca-certificates; then
@@ -254,12 +276,8 @@ ensure_tailscale_apt_source() {
   APT_UPDATE_NEEDED=true
 }
 
-if checkpoint_is_compliant; then
-  printf '%s\\n' 'fleet-enroll: already converged; no enrollment credentials requested' >&2
-  exit 0
-fi
-
-# Credential-free host preparation before claim to minimize key hold time (R0 #88: 600s expiry)
+# Credential-free host preparation after read-only preclaim guards, before
+# the short-lived key is minted (R0 #88: 600s expiry).
 APT_UPDATE_NEEDED=false
 if ! tailscale_apt_compliant; then
   ensure_tailscale_apt_source
@@ -279,17 +297,7 @@ elif ! systemctl is-active --quiet tailscaled 2>/dev/null; then
   systemctl enable --now tailscaled
 fi
 
-case "$(tailscale_preclaim_state)" in
-  FRESH) ;;
-  EXISTING) fail 'existing Tailscale identity/state detected before claim; reconcile it before enrollment' ;;
-  *) fail 'cannot prove fresh Tailscale state before claim; refusing Enrollment Code consumption' ;;
-esac
-
 install -d -m 0700 -o root -g root /run/fleet
-
-if [ ! -c /dev/tty ]; then
-  fail '/dev/tty is required for Enrollment Code input'
-fi
 
 # The enrollment code is short-lived and single-use, not a password. Keep
 # terminal echo enabled so the Human can see/correct transcription errors.

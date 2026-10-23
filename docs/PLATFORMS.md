@@ -23,7 +23,10 @@ python -m pytest packages/runtime-python/tests
 python scripts/verify-python-artifact.py
 ```
 
-安装产物检查构建 wheel，并在仓库外的临时虚拟环境核对导入、配置、schema 和辅助程序资源，不安装、纳管或重启设备。仅在需要 Android 集成时显式安装 Android 扩展。各包清单定义实际检查与导出接口；源码安装不等于已经发布到 npm/PyPI。`./authorization` 提供配置与注册权限上限重验、PKCE、绑定来源的 v2 所有者同意和 JWT 校验等可选机制，具体见 [授权机制](AUTHORIZATION.md)；签发方存储、生产 OAuth 和调用方切换仍由部署集成者提供并单独验收。
+安装产物检查构建 wheel，并在仓库外的临时虚拟环境核对导入、配置、schema 和辅助程序资源，不安装、纳管或重启设备。
+只读 Linux 依赖检查器 `prereq_check.py` 默认只检查 `enrollment`。备份、Docker 和管理端 Ansible 通过 `--group` 单独选择，显式 `--all-groups` 才检查全部。控制节点的工具不能错算作 NAS 宿主必需依赖，输出也不能被误认作实机安装已完成。
+
+仅在需要 Android 集成时显式安装 Android 扩展。各包清单定义实际检查与导出接口；源码安装不等于已经发布到 npm/PyPI。`./authorization` 提供配置与注册权限上限重验、PKCE、绑定来源的 v2 所有者同意和 JWT 校验等可选机制，具体见 [授权机制](AUTHORIZATION.md)；签发方存储、生产 OAuth 和调用方切换仍由部署集成者提供并单独验收。
 
 <!-- topic:linux -->
 ### Linux 纳管、收敛和辅助程序
@@ -37,9 +40,15 @@ python scripts/verify-python-artifact.py
 ghostfleet-enroll --ticket-file <ABSOLUTE_PROTECTED_TICKET_FILE>
 ```
 
+公共 Linux shell courier 在 APT/服务修改前先确认只读 Phase0、已有 Tailscale 身份和实际终端。PATH 固定包含 `/usr/sbin:/usr/bin:/sbin:/bin`。若发现现有未核验的 Tailscale 身份，会在**任何安装效果前**拒绝重新 join，要求走由控制面/部署方核验的 ADOPT/REPAIR；这不是“已支持无感接管”的声明。OMV 配置、SSH 用户规则、存储及业务服务从不归 shell courier 管理；真实 OMV8 接入需在专用管理路径内验收。
+
 每次收敛先核对主机、外部状态和当前提供方身份；升级已有软件包需要单独计划。派发前持久化防重复记录，未知 join 不重试，取得新鲜独立证明后才写自己拥有的描述和检查点。保留 `lifecycle_promoted:false`。实际零差异要求立即重复执行，并证明所有副作用范围都没有变化。提供方纳管标签须由部署方显式配置 `GHOSTFLEET_ENROLL_TAG`，缺少时拒绝，不携带旧实例标签。
 
 任务、交互会话和特权辅助程序作为包资源提供，保留旧协议/存储 ABI。部署方显式安装程序、配置 SHA、授权与权限；默认导入和 CI 不安装辅助程序到设备。
+
+**面板一键纳管的阶段边界（可验证）**：从 `console/` 选择公开模板或经审查的私有模板后，`installation_plan` 列出系统/身份、主通道、控制账户、SSH 接纳、用户级 systemd 与 Linger、所选 Helper、独立消费者和恢复依赖。预览由 `packages/bootstrap/src/management-plan.js` 提供，仅枚举待核验能力，不声明该节点已经符合。宿主事实未读取一律 `UNKNOWN`；只有经受权的宿主只读 Phase0 核对全部依赖后，才可形成 NEW / ADOPT / REPAIR 的受审差异计划。既有 UID、通道及不属于安装器的资源必须保留。任何 `PLAN_READY` 也不授权执行，也不证明消费者接线完成。
+
+OMV8 应作为 Debian 系统与独立受管理存储设备同时处理：管理员须验证 OMV 管理的 SSH 用户/配置与配置再生成边界，不得让通用安装器编辑 OMV 拥有的配置或全量调用 `omv-salt deploy`。前置只读检查包括管理账户、PATH、主机指纹、user bus、Linger、Helper 产物/哈希与业务资源隔离。对 OMV 新增 `omv_config_owner` / `omv_storage_isolation` 守护项；未证明两者的计划不可标记零差异或安装完成。首次 root 后免重复密码必须通过专用非业务 canary 实测，不能由模型内的计数字段证明。
 
 <!-- topic:windowsandroid -->
 ### Windows 和 Android
@@ -86,7 +95,10 @@ python -m pytest packages/runtime-python/tests
 python scripts/verify-python-artifact.py
 ```
 
-The artifact check builds a wheel and validates import/profiles/schemas/helper resources in a temporary venv outside the checkout; it does not install, enroll or reboot hardware. Install the Android extra only for a selected supported integration. Node workspace checks/builds are defined by root scripts and package manifests. Source installation does not mean a package has been published to a registry. `./authorization` provides optional profile/registered scope-ceiling revalidation, PKCE, origin-bound v2 owner consent and JWT validation; see [Authorization](AUTHORIZATION.md). Integrators still provide issuer storage, production OAuth and consumer cutover, with separate acceptance.
+The artifact check builds a wheel and validates import/profiles/schemas/helper resources in a temporary venv outside the checkout; it does not install, enroll or reboot hardware.
+The read-only Linux prerequisite checker defaults to the `enrollment` group. Backup, Docker and controller-side Ansible are selected separately with `--group` or explicitly with `--all-groups`. They are not mandatory for basic NAS enrollment, and observation is not installation acceptance.
+
+ Install the Android extra only for a selected supported integration. Node workspace checks/builds are defined by root scripts and package manifests. Source installation does not mean a package has been published to a registry. `./authorization` provides optional profile/registered scope-ceiling revalidation, PKCE, origin-bound v2 owner consent and JWT validation; see [Authorization](AUTHORIZATION.md). Integrators still provide issuer storage, production OAuth and consumer cutover, with separate acceptance.
 
 <!-- topic:linux -->
 ### Linux convergence and helpers
@@ -102,9 +114,15 @@ ghostfleet-enroll --ticket-file <ABSOLUTE_PROTECTED_TICKET_FILE>
 
 Deployments explicitly configure `GHOSTFLEET_ENROLL_TAG`; missing tags fail closed, with no embedded previous private-instance tag.
 
+Before any APT or service mutation, the public Linux shell courier checks read-only Phase0 facts, an existing Tailscale identity and the required terminal; PATH includes standard Debian sbin paths. A foreign/unverified existing identity stops before effects and must enter a verified ADOPT/REPAIR integration rather than minting a second identity. This safety guard does **not** mean the legacy courier itself can adopt an existing machine. OMV-managed SSH/user configuration, storage and workloads remain out of the public courier's effect scope.
+
 Every invocation validates host, foreign state and current provider. Package upgrades need a separate plan. Persist a fence before dispatch, never retry an ambiguous join, and write owned descriptor/checkpoint only after fresh independent proof. `lifecycle_promoted:false` remains explicit. Actual zero delta requires immediate repeat and no changes across all effect surfaces.
 
 Job/session/privileged helpers are packaged resources preserving legacy protocol/storage ABI. Deployment owners explicitly install helpers and configure helper SHA/authority or root privilege; package imports and default CI install none.
+
+**Control Panel one-click boundary:** The selected public or deployment-specific template includes an `installation_plan` preview for host compatibility, existing identity, transport, control account, SSH admission, user systemd/Linger, selected helper, independent consumer and recovery. The provider-neutral planner in `packages/bootstrap/src/management-plan.js` is read-only. Missing host observations are `UNKNOWN`; its NEW/ADOPT/REPAIR classification and `PLAN_READY` never grant installation authority or prove consumer acceptance. A host-side trusted preflight and a reviewed minimal-delta plan are required before any effects.
+
+**OMV8:** Treat it as Debian *and* as a managed storage appliance. Verify ownership of OMV-managed SSH configuration and regeneration, protect mounts/volumes/business services, avoid blanket `omv-salt deploy`, and require `omv_config_owner` / `omv_storage_isolation` host evidence before completion. Only a dedicated non-business privilege canary proves the selected post-bootstrap no-recurring-password ability; a model counter cannot do so.
 
 <!-- topic:windowsandroid -->
 ### Windows and Android

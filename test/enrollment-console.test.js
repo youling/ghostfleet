@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { templateDisplay, templatePostureSummary, templateSelectionPayload, applyTemplatePreviewOverrides } from "../console/enrollment/templates/model.js";
+import { templateDisplay, templatePostureSummary, templateSelectionPayload, applyTemplatePreviewOverrides, installationPlanSteps } from "../console/enrollment/templates/model.js";
 import { createEnrollmentWizard, attachBootstrapDelivery, markBootstrapRunning, markBootstrapResult, serializeWizardState } from "../console/enrollment/bootstrap/wizard.js";
 import { renderProviders } from "../console/providers/view.js";
 
@@ -86,4 +86,12 @@ test("provider setup dialog does not hardcode a private OAuth scope ceiling", ()
   assert.doesNotMatch(html, /tag:fleet-ssh-target/);
   assert.doesNotMatch(html, /不要授予 devices/);
   assert.match(html, /data-i18n="provider.ownerSelectedTag"/);
+});
+
+test("Console consumes only read-only server installation-plan preview",()=>{
+  const item={installation_plan:{nature:"READ_ONLY_PREVIEW_NOT_AUTHORITY",
+    components:[{id:"privileged_helper",state:"UNKNOWN"},{id:"consumer_route",state:"UNKNOWN"}]}};
+  assert.deepEqual(installationPlanSteps(item),[
+    {id:"privileged_helper",state:"UNKNOWN"},{id:"consumer_route",state:"UNKNOWN"}]);
+  assert.deepEqual(installationPlanSteps({installation_plan:{nature:"UNTRUSTED",components:item.installation_plan.components}}),[]);
 });

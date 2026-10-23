@@ -3,6 +3,7 @@ export {BOOTSTRAP_SH} from "./bootstrap.js";
 export {CONVERGENCE_PHASES, COMPONENT_STATES, detectSystemFacts, classifyComponents, planConvergence, sanitizeCheckpoint, isSecretFreeCheckpoint} from "./convergence.js";
 export {createEnrollmentTicketStore} from "./ticket.js";
 export {evaluateBootstrapPreflight} from "./preflight.js";
+export {planManagedLinuxInstallation} from "./management-plan.js";
 export {createBootstrapSession, recordRootCeremony, attachPreflight, attachClaim, completeBootstrap, assertNoPostBootstrapPasswordPrompt, createBootstrapReceipt} from "./session.js";
 import {BOOTSTRAP_SH} from "./bootstrap.js";
 
