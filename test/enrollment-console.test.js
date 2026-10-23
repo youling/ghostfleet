@@ -69,3 +69,13 @@ test("configured-but-unverified provider is not presented as ready or invited to
   assert.doesNotMatch(html, /provider-ready-note/);
   assert.equal(html.includes("synthetic-secret-material"),false);
 });
+
+test("unavailable provider never invites blind credential submission", () => {
+  const html=renderProviders({providers:{tailscale:{
+    status:"SERVICE_UNKNOWN",requirements:{scope:"auth_keys",tag:null},
+    secret_state:{client_id:"UNKNOWN",client_secret:"UNKNOWN"},
+  }}});
+  assert.match(html,/provider-unknown-note/);
+  assert.doesNotMatch(html,/data-provider-setup="tailscale"/);
+  assert.doesNotMatch(html,/provider-ready-note/);
+});

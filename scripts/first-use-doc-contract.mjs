@@ -22,6 +22,7 @@ export function checkFirstUseReadmeContract(source) {
   if (!source.includes(tick + pattern + tick)
     || !source.includes('Authority generation')
     || !source.includes('CONFIGURED_UNVERIFIED')
+    || !source.includes('SERVICE_UNKNOWN')
     || !source.includes('PROVIDER_AUTHORITY_SETUP_UNKNOWN')
     || !source.includes('发布门禁顺序')) {
     findings.push('first-use-broken-security-contract');

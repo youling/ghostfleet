@@ -93,7 +93,7 @@ test("provider setup readiness is read-only and secret-safe", async () => {
     GHOSTFLEET_READ_TOKEN: reader,
     GHOSTFLEET_STATE: env.GHOSTFLEET_STATE,
   });
-  assert.equal((await missing.json()).providers.tailscale.status, "MISSING");
+  assert.equal((await missing.json()).providers.tailscale.status, "SERVICE_UNKNOWN");
   assert.equal(storageCalls, 0);
 });
 
@@ -243,7 +243,8 @@ test("provider readiness never upgrades stored names and constants into scoped R
   const fixtures = [
     ["exact provider-scope evidence", valid, "READY"],
     ["unverified old private service", {provider:"tailscale",generation:valid.generation,scope:valid.scope,tag:valid.tag}, "CONFIGURED_UNVERIFIED"],
-    ["overbroad scope", {...valid,scope:"auth_keys devices"}, "CONFIGURED_UNVERIFIED"],
+    ["unverified scope mismatch", {...valid,scope:"auth_keys devices"}, "CONFIGURED_UNVERIFIED"],
+    ["verified broader access token", {...valid,scope:"auth_keys devices",verification:{...scopeReceipt(),granted_scope:"devices auth_keys"}}, "READY"],
     ["missing scope", {...valid,scope:undefined}, "CONFIGURED_UNVERIFIED"],
     ["wrong tag", {...valid,tag:"tag:other"}, "CONFIGURED_UNVERIFIED"],
     ["forged proof type", {...valid,verification:{...scopeReceipt(),type:"owner-asserted"}}, "CONFIGURED_UNVERIFIED"],

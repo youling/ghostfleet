@@ -143,7 +143,11 @@ test("scope proof freshness and authority identity are necessary for GET READY",
     ["generation empty", {...authority(), generation:""}, "CONFIGURED_UNVERIFIED"],
     ["generation spaces", {...authority(), generation:"    "}, "CONFIGURED_UNVERIFIED"],
     ["generation bad syntax", {...authority(), generation:"not valid"}, "CONFIGURED_UNVERIFIED"],
-    ["scope broad", {...authority(), scope:"auth_keys devices"}, "CONFIGURED_UNVERIFIED"],
+    ["scope proof mismatch", {...authority(), scope:"auth_keys devices"}, "CONFIGURED_UNVERIFIED"],
+    ["broader verified scopes", {...authority(), scope:"devices auth_keys", verification:{...validProof(),granted_scope:"auth_keys devices"}}, "READY"],
+    ["required scope absent", {...authority(), scope:"devices", verification:{...validProof(),granted_scope:"devices"}}, "CONFIGURED_UNVERIFIED"],
+    ["duplicate scope", {...authority(), scope:"auth_keys auth_keys", verification:{...validProof(),granted_scope:"auth_keys auth_keys"}}, "CONFIGURED_UNVERIFIED"],
+    ["verified custom tag", {...authority(),tag:"tag:public-canary",verification:{...validProof(),requested_tag:"tag:public-canary"}}, "READY"],
     ["2000 receipt", {...authority(), verification:{...validProof(),verified_at:"2000-01-01T00:00:00.000Z"}}, "CONFIGURED_UNVERIFIED"],
     ["26h receipt", {...authority(), verification:{...validProof(),verified_at:new Date(Date.now()-26*3600000).toISOString()}}, "CONFIGURED_UNVERIFIED"],
     ["future receipt", {...authority(), verification:{...validProof(),verified_at:"2999-01-01T00:00:00.000Z"}}, "CONFIGURED_UNVERIFIED"],
@@ -168,6 +172,40 @@ test("scope proof freshness and authority identity are necessary for GET READY",
   }
 });
 
+test("private service outage never masquerades as missing credentials", async () => {
+  const p = await providerSetupSnapshot({
+    GHOSTFLEET_ENROLLMENT_CLAIM_READY: "1",
+    GHOSTFLEET_ENROLLMENT_CLAIM_MATERIALIZER: {async fetch() {return Response.json({error:"DOWN"}, {status:503});}},
+  });
+  assert.equal(p.providers.tailscale.status,"SERVICE_UNKNOWN");
+  assert.equal(p.providers.tailscale.secret_state.client_id,"UNKNOWN");
+  const html=renderProviders(p);
+  assert.match(html,/provider-unknown-note/);
+  assert.doesNotMatch(html,/data-provider-setup="tailscale"/);
+});
+
+test("scope/tag requirement may be selected per deployment without global forbiddens", async () => {
+  const p=await providerSetupSnapshot({
+    GHOSTFLEET_ENROLLMENT_CLAIM_READY: "1", GHOSTFLEET_ENROLL_TAG: "tag:public-canary",
+    GHOSTFLEET_ENROLLMENT_CLAIM_MATERIALIZER: {async fetch() {
+      return Response.json({authority:{...authority(),scope:"auth_keys devices",tag:"tag:public-canary",
+        verification:{...validProof(),granted_scope:"devices auth_keys",requested_tag:"tag:public-canary"}},secrets});
+    }},
+  });
+  assert.equal(p.providers.tailscale.status,"READY");
+  assert.equal(p.providers.tailscale.requirements.tag,"tag:public-canary");
+  assert.equal(p.providers.tailscale.granted_scope,"devices auth_keys");
+  assert.equal("forbidden" in p.providers.tailscale.requirements,false);
+  const mismatch=await providerSetupSnapshot({
+    GHOSTFLEET_ENROLLMENT_CLAIM_READY: "1", GHOSTFLEET_ENROLL_TAG: "tag:other",
+    GHOSTFLEET_ENROLLMENT_CLAIM_MATERIALIZER: {async fetch() {
+      return Response.json({authority:{...authority(),scope:"auth_keys devices",tag:"tag:public-canary",
+        verification:{...validProof(),granted_scope:"devices auth_keys",requested_tag:"tag:public-canary"}},secrets});
+    }},
+  });
+  assert.equal(mismatch.providers.tailscale.status,"CONFIGURED_UNVERIFIED");
+});
+
 test("credentials present with invalid or absent generation never permits blind setup", async () => {
   for (const gen of ["MISSING", "", "  ", null, undefined]) {
     const p = await providerSetupSnapshot({
@@ -182,6 +220,23 @@ test("credentials present with invalid or absent generation never permits blind 
     assert.equal(p.providers.tailscale.authority_generation,null);
     assert.equal(renderProviders(p).includes('data-provider-setup="tailscale"'), false);
   }
+});
+
+test("private provider setup accepts verified broad token scopes and selected tag", async () => {
+  const response=Response.json({...basePrivateResponse(),scope:"auth_keys devices",tag:"tag:public-canary",
+    verification:{...validProof(),granted_scope:"devices auth_keys",requested_tag:"tag:public-canary"}});
+  const env=envFor(response,{calls:0});
+  env.GHOSTFLEET_ENROLL_TAG="tag:public-canary";
+  const allowed=await worker.fetch(setupRequest(),env);
+  assert.equal(allowed.status,200);
+  const body=await allowed.json();
+  assert.equal(body.scope,"auth_keys devices");
+  assert.equal(body.tag,"tag:public-canary");
+  const wrongTag=envFor(Response.json({...basePrivateResponse(),scope:"auth_keys devices",tag:"tag:public-canary",
+    verification:{...validProof(),granted_scope:"devices auth_keys",requested_tag:"tag:public-canary"}}),{calls:0});
+  wrongTag.GHOSTFLEET_ENROLL_TAG="tag:elsewhere";
+  const denied=await worker.fetch(setupRequest(),wrongTag);
+  assert.equal(denied.status,503);
 });
 
 test("read-only credential cannot call private provider setup, and valid operator proof remains accepted", async () => {
