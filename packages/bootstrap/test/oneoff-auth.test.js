@@ -157,3 +157,71 @@ test("failed one-off auth persists key-free attempt fence; no retry on next run"
     assert.equal(await readFile(counter, "utf8"), "x", "retry must not reauthenticate");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+
+test("successful one-off join preserves VERIFY identity and refuses re-join while completion is pending", { skip: linuxOnly }, async () => {
+  // A successful tailscale up is not the same as a successful broker
+  // /complete. This simulates an interrupted completion without contacting
+  // a provider, a real host, or using real credentials.
+  const root = await mkdtemp(join(tmpdir(), "ghostfleet-oneoff-joined-"));
+  try {
+    const checkpoint = join(root, "enrollment-checkpoint.json");
+    const keyPath = join(root, "ephemeral-key");
+    const counter = join(root, "tailscale-up-calls");
+    const authStart = BOOTSTRAP_SH.indexOf('if [ "$TAILSCALE_STATE" != COMPLIANT ]; then\n  # The one-time claim');
+    const authEndMarker = "\nelse\n  unset TS_AUTHKEY\nfi";
+    const authEnd = BOOTSTRAP_SH.indexOf(authEndMarker, authStart);
+    assert.ok(authStart >= 0 && authEnd > authStart, "production auth branch must exist");
+    const joinBlock = BOOTSTRAP_SH.slice(authStart, authEnd + authEndMarker.length)
+      .replaceAll("/run/fleet/ts-authkey", keyPath);
+    const joined = [
+      "CHECKPOINT_DIR=" + safePath(root),
+      'CHECKPOINT_FILE="$CHECKPOINT_DIR/enrollment-checkpoint.json"',
+      "NODE_ID=fleet-bootstrap-000000000002",
+      "NODE_UID=",
+      "IDENTITY_KIND=provisional",
+      "ENROLLMENT_ID=enroll-00000000-0000-4000-8000-000000000002",
+      "OS_FAMILY=debian-family", "OS_ID=debian", "OS_VERSION_ID=13",
+      "SSH_HOST_KEY_SHA=SHA256:synthetic-host",
+      "PACKAGES_STATE=COMPLIANT", "TAILSCALE_STATE=ABSENT",
+      "TS_AUTHKEY=synthetic-unique-credential",
+      "FAKE_COUNTER=" + safePath(counter),
+      'install() { :; }', // no host-root mutations: temp directory exists
+      'chown() { :; }',
+      'tailscale() { printf x >> "$FAKE_COUNTER"; return 0; }',
+      'live_tailscale_ready() { return 0; }',
+      'fail() { printf "%s\n" "$*" >&2; exit 78; }',
+      functionSource("checkpoint_write", "refuse_unresolved_previous_enrollment"),
+      joinBlock,
+      // Here the broker /complete has not yet returned: leave VERIFY pending.
+    ].join("\n");
+    const first = await runShell(root, "first-join.sh", joined);
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(await readFile(counter, "utf8"), "x");
+    await assert.rejects(stat(keyPath), { code: "ENOENT" });
+    const checkpointText = await readFile(checkpoint, "utf8");
+    const state = JSON.parse(checkpointText);
+    assert.deepEqual([state.phase, state.status, state.components.tailscale], ["VERIFY", "IN_PROGRESS", "COMPLIANT"]);
+    assert.deepEqual([state.identity_kind, state.node_id, state.enrollment_id], [
+      "provisional", "fleet-bootstrap-000000000002",
+      "enroll-00000000-0000-4000-8000-000000000002",
+    ]);
+    assert.equal((await stat(checkpoint)).mode & 0o777, 0o600);
+    assert.ok(!checkpointText.includes("synthetic-unique-credential"));
+
+    const guard = functionSource("refuse_unresolved_previous_enrollment", "fail");
+    const rerun = [
+      "CHECKPOINT_DIR=" + safePath(root),
+      'CHECKPOINT_FILE="$CHECKPOINT_DIR/enrollment-checkpoint.json"',
+      'fail() { printf "%s\n" "$*" >&2; exit 78; }',
+      guard,
+      "refuse_unresolved_previous_enrollment",
+      "printf BAD_SECOND_JOIN",
+    ].join("\n");
+    const refused = await runShell(root, "repeated-join.sh", rerun);
+    assert.equal(refused.status, 78, refused.stderr);
+    assert.match(refused.stderr, /prior enrollment state unresolved/);
+    assert.equal(await readFile(counter, "utf8"), "x", "completion retry must not reauth");
+    assert.equal(await readFile(checkpoint, "utf8"), checkpointText, "unresolved state remains untouched");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
