@@ -41,6 +41,7 @@ test("preclaim and original attempt guard execute BEFORE any package/provider ef
     preclaim < baseline && baseline < claim && claim < fence && fence < keyfile &&
     keyfile < up && up < verify);
   assert.match(BOOTSTRAP_SH.slice(up, verify), /<\/dev\/null >\/dev\/null 2>&1/);
+  assert.match(BOOTSTRAP_SH.slice(up, verify), /--timeout=90s <\/dev\/null/);
   assert.doesNotMatch(BOOTSTRAP_SH.slice(up, verify), /force-reauth|tailscale login/);
 });
 
