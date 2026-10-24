@@ -58,6 +58,27 @@ line="$(cat /var/lib/ghostfleet-ops/.ssh/authorized_keys)"
 [[ "$line" == restrict,command=\"/usr/local/libexec/youling-fleet/fleet-privileged-ssh-entry\"' ssh-ed25519 '* ]] || exit 1
 visudo -cf /etc/sudoers.d/90-youling-fleet-privileged-operations >/dev/null
 
+# Real negative evidence on this disposable VM: a valid restricted key
+# must not conceal an extra unrestricted key or unsafe file permissions.
+keys=/var/lib/ghostfleet-ops/.ssh/authorized_keys
+cp "$keys" "$private_dir/authorized_keys.original"
+cat "$private_dir/other.pub" >> "$keys"
+unsafe="$(bash "$installer" --check)"
+[[ "$unsafe" == *"AUTHORIZED_KEY=ABSENT_OR_DRIFT"* ]] || {
+  echo "FAIL: extra unrestricted authorized key was reported configured" >&2
+  exit 1
+}
+install -o root -g root -m 0600 "$private_dir/authorized_keys.original" "$keys"
+[[ "$(bash "$installer" --check)" == *"AUTHORIZED_KEY=CONFIGURED"* ]] || exit 1
+chmod 0644 "$keys"
+unsafe="$(bash "$installer" --check)"
+[[ "$unsafe" == *"AUTHORIZED_KEY=ABSENT_OR_DRIFT"* ]] || {
+  echo "FAIL: group-readable authorized_keys was reported configured" >&2
+  exit 1
+}
+chmod 0600 "$keys"
+[[ "$(bash "$installer" --check)" == *"AUTHORIZED_KEY=CONFIGURED"* ]] || exit 1
+
 python3 -I - <<'PY'
 import hashlib, json, pathlib
 state=json.loads(pathlib.Path('/etc/youling-fleet/privileged-operations/control.json').read_text())
