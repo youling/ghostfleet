@@ -3,6 +3,9 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 umask 027
+# Standard Debian administrative paths, including sudo/root non-login shells.
+PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
 
 MODE="${1:-}"
 case "$MODE" in
@@ -42,7 +45,7 @@ normalize_public_key() {
   [[ -n "$line" ]] || return 1
   IFS=$' \t' read -r alg blob extra <<<"$line"
   case "$alg" in
-    ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521) ;;
+    ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521) ;;
     *) return 1 ;;
   esac
   [[ "$blob" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || return 1
@@ -109,6 +112,39 @@ render_authorized_key() {
   printf 'restrict,command="%s" %s youling-fleet-privileged-ops\n' "$ENTRY_DST" "$1"
 }
 
+authorized_key_file_ok() {
+  [[ -r "$AUTHORIZED_KEYS" && ! -L "$AUTHORIZED_KEYS" ]] || return 1
+  python3 -I - "$AUTHORIZED_KEYS" "$ENTRY_DST" <<'PY'
+import base64, pathlib, stat, sys
+path = pathlib.Path(sys.argv[1])
+try:
+    # sshd is sensitive to each ancestor: a valid file under an
+    # untrusted symlink/writable .ssh directory is not an admitted identity.
+    home = path.parent.parent.lstat()
+    ssh_dir = path.parent.lstat()
+    if not stat.S_ISDIR(home.st_mode) or home.st_uid != 0 or stat.S_IMODE(home.st_mode) & 0o022:
+        raise ValueError("untrusted dedicated ops home")
+    if not stat.S_ISDIR(ssh_dir.st_mode) or ssh_dir.st_uid != 0 or stat.S_IMODE(ssh_dir.st_mode) != 0o700:
+        raise ValueError("untrusted dedicated ssh dir")
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600:
+        raise ValueError("wrong owner or mode")
+    rows = [x.strip() for x in path.read_text(encoding="utf-8").splitlines()
+            if x.strip() and not x.lstrip().startswith("#")]
+    if len(rows) != 1:
+        raise ValueError("not one owned key")
+    parts = rows[0].split()
+    expected = 'restrict,command="' + sys.argv[2] + '"'
+    algorithms = {"ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256",
+                  "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521"}
+    if len(parts) != 4 or parts[0] != expected or parts[1] not in algorithms or parts[3] != "youling-fleet-privileged-ops":
+        raise ValueError("forced command or key format mismatch")
+    if not base64.b64decode(parts[2], validate=True):
+        raise ValueError("empty key")
+except (OSError, ValueError, UnicodeError):
+    sys.exit(1)
+PY
+}
 regular_root_755() {
   [[ -f "$1" && ! -L "$1" && "$(stat -c '%U:%G:%a' "$1" 2>/dev/null || true)" == root:root:755 ]]
 }
@@ -119,13 +155,30 @@ ops_account_ok() {
   [[ "$(getent passwd "$OPS_USER" | cut -d: -f7)" == /bin/sh ]] || return 1
   passwd -S "$OPS_USER" 2>/dev/null | awk '{print $2}' | grep -Eq '^(L|LK)$'
 }
+omv_ssh_group_state() {
+  # OMV's web-managed SSH policy can require membership in _ssh.
+  # This is read-only; membership is not a substitute for a real SSH canary
+  # or permission to edit OMV-owned sshd configuration.
+  if [[ ! -e /etc/openmediavault/config.xml && ! -d /etc/openmediavault ]]; then
+    echo NOT_APPLICABLE
+    return
+  fi
+  getent group _ssh >/dev/null 2>&1 || { echo UNKNOWN_GROUP; return; }
+  id "$OPS_USER" >/dev/null 2>&1 || { echo ACCOUNT_ABSENT; return; }
+  if id -nG "$OPS_USER" | tr ' ' '\n' | grep -qx '_ssh'; then
+    echo MEMBER
+  else
+    echo NOT_MEMBER
+  fi
+}
 print_state() {
   printf 'ORDINARY_USER=%s\n' "${ORDINARY_USER:-UNBOUND}"
   printf 'OPS_USER=%s\n' "$OPS_USER"
   ops_account_ok && echo 'OPS_ACCOUNT=COMPLIANT' || echo 'OPS_ACCOUNT=ABSENT_OR_DRIFT'
+  echo "OMV_SSH_GROUP=$(omv_ssh_group_state)"
   regular_root_755 "$HELPER_DST" && echo 'HELPER=COMPLIANT' || echo 'HELPER=ABSENT_OR_DRIFT'
   regular_root_755 "$ENTRY_DST" && echo 'ENTRY=COMPLIANT' || echo 'ENTRY=ABSENT_OR_DRIFT'
-  if [[ -r "$AUTHORIZED_KEYS" ]] && grep -Fq "restrict,command=\"$ENTRY_DST\"" "$AUTHORIZED_KEYS"; then
+  if authorized_key_file_ok; then
     echo 'AUTHORIZED_KEY=CONFIGURED'
   else
     echo 'AUTHORIZED_KEY=ABSENT_OR_DRIFT'
@@ -143,11 +196,18 @@ print_state() {
 }
 if [[ "$MODE" == --check ]]; then print_state; exit 0; fi
 
+# OMV's SSH admission policy commonly requires _ssh group membership.
+# Preflight group existence before the first managed file/account effect.
+# Never create/change OMV-owned SSH groups or sshd configuration ourselves.
+if [[ -e /etc/openmediavault/config.xml || -d /etc/openmediavault ]]; then
+  getent group _ssh >/dev/null 2>&1 || die "OMV requires an existing _ssh admission group"
+fi
+
 PUB_FILE="${FLEET_CONTROL_PRIVILEGED_SSH_PUBLIC_KEY_FILE:-}"
 stored_pub=""
 if [[ -r "$AUTHORIZED_KEYS" ]]; then
   stored_pub="$(awk '{
-    for(i=1;i<=NF;i++) if($i ~ /^(ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521)$/) {print $i" "$(i+1); exit}
+    for(i=1;i<=NF;i++) if($i ~ /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521)$/) {print $i" "$(i+1); exit}
   }' "$AUTHORIZED_KEYS" || true)"
 fi
 if [[ -n "$PUB_FILE" ]]; then
@@ -212,6 +272,16 @@ if ! id "$OPS_USER" >/dev/null 2>&1; then
   useradd --system --create-home --home-dir "$OPS_HOME" --shell /bin/sh "$OPS_USER"
 fi
 [[ "$(id -u "$OPS_USER")" -ne 0 ]] || die "ops account must not be root"
+# Add only the dedicated unprivileged GhostFleet service identity to OMV's
+# already-existing SSH admission group during the one approved root ceremony.
+# Repeat applies are no-op for this group; never grant sudo/root/docker groups.
+if [[ -e /etc/openmediavault/config.xml || -d /etc/openmediavault ]]; then
+  case "$(omv_ssh_group_state)" in
+    MEMBER) ;;
+    NOT_MEMBER) usermod -a -G _ssh "$OPS_USER" || die "OMV SSH admission group update failed" ;;
+    *) die "OMV SSH admission could not be reconciled" ;;
+  esac
+fi
 usermod --home "$OPS_HOME" --shell /bin/sh "$OPS_USER"
 passwd -l "$OPS_USER" >/dev/null 2>&1 || die "cannot lock ops password"
 chown root:root "$OPS_HOME"
@@ -275,6 +345,9 @@ rm -f "$tmp_state"
 
 grep -Eq "^${ORDINARY_USER}[[:space:]]" "$SUDOERS_FILE" && die "ordinary user received Fleet sudo grant"
 ops_account_ok || die "ops account postcondition failed"
+if [[ -e /etc/openmediavault/config.xml || -d /etc/openmediavault ]]; then
+  [[ "$(omv_ssh_group_state)" == MEMBER ]] || die "OMV SSH group membership postcondition failed"
+fi
 regular_root_755 "$HELPER_DST" || die "helper postcondition failed"
 regular_root_755 "$ENTRY_DST" || die "entry postcondition failed"
 visudo -cf "$SUDOERS_FILE" >/dev/null || die "sudoers postcondition failed"
