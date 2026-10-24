@@ -75,7 +75,7 @@ tailscale_preclaim_state() {
     printf '%s' UNKNOWN
     return 0
   fi
-  PRECLAIM_BACKEND="$(printf '%s' "$TS_PRECLAIM" | grep -Eo '"BackendState"[[:space:]]*:[[:space:]]*"[^"]+"' | head -n1 | sed -E 's/^[^:]+:[[:space:]]*"([^"]+)"$/\1/')"
+  PRECLAIM_BACKEND="$(printf '%s' "$TS_PRECLAIM" | grep -Eo '"BackendState"[[:space:]]*:[[:space:]]*"[^"]+"' | head -n1 | sed -E 's/^[^:]+:[[:space:]]*"([^"]+)"$/\\1/')"
   case "$PRECLAIM_BACKEND" in
     Running|Stopped) printf '%s' EXISTING ;;
     *) printf '%s' UNKNOWN ;;
