@@ -133,6 +133,23 @@ if bash "$installer" --apply >/dev/null 2>&1; then
 fi
 [[ "$(sha256sum /var/lib/ghostfleet-ops/.ssh/authorized_keys)" == "$before_key" ]] || exit 1
 [[ "$(sha256sum /etc/youling-fleet/privileged-operations/control.json)" == "$before_state" ]] || exit 1
+
+# The generation/profile identity pair must be well formed before ANY apply
+# effect. Use the original approved key here so rotation denial cannot mask
+# an incorrectly accepted malformed generation pin.
+export FLEET_CONTROL_PRIVILEGED_SSH_PUBLIC_KEY_FILE="$private_dir/key.pub"
+if bad_pin_log="$(FLEET_PRIVILEGED_GENERATION="$(printf '%064d' 0)" \
+  FLEET_PRIVILEGED_PROFILE_GENERATION='sha256:invalid' \
+  bash "$installer" --apply 2>&1)"; then
+  echo "Malformed v3 identity pin unexpectedly accepted" >&2
+  exit 1
+fi
+[[ "$bad_pin_log" == *"invalid v3 generation pins"* ]] || {
+  echo "Malformed v3 identity pin rejected for an unexpected reason" >&2
+  exit 1
+}
+[[ "$(sha256sum /var/lib/ghostfleet-ops/.ssh/authorized_keys)" == "$before_key" ]] || exit 1
+[[ "$(sha256sum /etc/youling-fleet/privileged-operations/control.json)" == "$before_state" ]] || exit 1
 # Exercise the OMV-specific _ssh admission branch on THIS synthetic runner.
 # An empty marker directory is not OMV; never create it outside this VM.
 export FLEET_CONTROL_PRIVILEGED_SSH_PUBLIC_KEY_FILE="$private_dir/key.pub"
