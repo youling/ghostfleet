@@ -59,12 +59,19 @@ export function createHttpHandler(controller) {
       match = /^\/v0\/enrollment-attempts\/([^/]+)\/([^/]+)$/.exec(path);
       if (request.method === "POST" && match) {
         const [, id, action] = match;
+        // Public Operator authentication is not proof of the Linux target's
+        // transport, installation, control canary, zero-delta or recovery.
+        // The old operator-writable evidence route could fabricate PASS and
+        // then call /accept. Trusted observers must instead enter through
+        // a separately authenticated server integration, never this route.
+        if (action === "evidence") {
+          return json({ ok: false, error: "EVIDENCE_TRUSTED_INGRESS_REQUIRED" }, 403);
+        }
         const input = await body(request);
         if (action === "prepare") return json({ ok: true, attempt: controller.prepareEnrollmentAttempt(id) });
         if (action === "claim") return json({ ok: true, attempt: controller.claimEnrollmentAttempt(id) });
         if (action === "materialize") return json({ ok: true, attempt: controller.startMaterialization(id, input) });
         if (action === "human-gates") return json({ ok: true, gate: controller.requireEnrollmentHumanGate(id, input) }, 201);
-        if (action === "evidence") return json({ ok: true, evidence: controller.recordEvidence(id, input) }, 201);
         if (action === "reconcile-required") return json({ ok: true, attempt: controller.markReconcileRequired(id, input.reason) });
         if (action === "reconcile") return json({ ok: true, attempt: controller.resumeFromReconcile(id, input.resume_state) });
         if (action === "accept") return json({ ok: true, node: controller.acceptEnrollment(id, input) }, 201);

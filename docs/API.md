@@ -28,12 +28,12 @@ Cloudflare 参考宿主另提供 `GET /v0/access`，返回当前已认证访问�
 - `POST /v0/human-gates/:gate_id/resolve`；
 - `POST /v0/enrollment-attempts/:id/claim`；
 - `POST /v0/enrollment-attempts/:id/materialize`；
-- `POST /v0/enrollment-attempts/:id/evidence`；
+- `POST /v0/enrollment-attempts/:id/evidence` — **旧公开写入口停用，返回 403 `EVIDENCE_TRUSTED_INGRESS_REQUIRED`**；
 - `POST /v0/enrollment-attempts/:id/reconcile-required`；
 - `POST /v0/enrollment-attempts/:id/reconcile`；
 - `POST /v0/enrollment-attempts/:id/accept`。
 
-`materialize` 可接收 `{ "node_id": "lab-device", "platform": "linux" }`，返回带稳定 `node_uid` 的尝试；`GET /v0/nodes` 包含 `PROVISIONAL` 纳管投影。该身份尚未完成验收，也没有操作授权。身份和目录证据由核心生成，`evidence` 拒绝这两类输入及伪造的 `ghostfleet-core` 来源。`accept` 不创建新身份，请求体可省略；兼容的 `node_id/platform` 参数只能匹配 materialize 时的值。旧的“accept 时设置身份”调用须将这些字段移至 materialize。
+`materialize` 可接收 `{ "node_id": "lab-device", "platform": "linux" }`，返回带稳定 `node_uid` 的尝试；`GET /v0/nodes` 包含 `PROVISIONAL` 纳管投影。该身份尚未完成验收，也没有操作授权。身份和目录证据由核心生成。旧 `evidence` HTTP POST 对 Operator 亦返回 403：Operator 并非可签发真实 Linux 五项验收 PASS 的独立观察者；受保护的 SDK/私有后端应先验证来源、node_uid、回执、主体和新鲜度，随后在服务器可信写入边界持久化。当前公共 HTTP 不提供凭空填 PASS 的替代入口；没有可信 observer 接线时仍保持 MATERIALIZING。`accept` 不创建新身份，请求体可省略；兼容的 `node_id/platform` 参数只能匹配 materialize 时的值。旧的“accept 时设置身份”调用须将这些字段移至 materialize。
 
 `ACTIVE` 与七项证据仅证明本控制面准入，不证明独立调用方已经切换目录、认证配置、调用路由、权限或回滚。每个调用方须复用既有身份，分别验收其可发现性、实际调用、正负权限、身份回读和回滚；不能通过新建身份或扩大权限来弥补目录缺口。
 
@@ -84,12 +84,12 @@ The Cloudflare reference host also provides authenticated `GET /v0/access`, retu
 - `POST /v0/human-gates/:gate_id/resolve`
 - `POST /v0/enrollment-attempts/:id/claim`
 - `POST /v0/enrollment-attempts/:id/materialize`
-- `POST /v0/enrollment-attempts/:id/evidence`
+- `POST /v0/enrollment-attempts/:id/evidence` — **deprecated untrusted HTTP writer; returns 403 `EVIDENCE_TRUSTED_INGRESS_REQUIRED`**
 - `POST /v0/enrollment-attempts/:id/reconcile-required`
 - `POST /v0/enrollment-attempts/:id/reconcile`
 - `POST /v0/enrollment-attempts/:id/accept`
 
-`materialize` accepts optional `{ "node_id": "lab-device", "platform": "linux" }` and returns an attempt with its stable `node_uid`; `GET /v0/nodes` includes PROVISIONAL enrollment projections. This identity is not accepted and has no operational authority. Core generates identity/catalog proofs; `evidence` rejects those types and forged `ghostfleet-core` sources. `accept` never mints an identity. Its body may be omitted; compatibility node_id/platform arguments must match materialization. Callers that previously assigned identity at acceptance must move those fields to materialize.
+`materialize` accepts optional `{ "node_id": "lab-device", "platform": "linux" }` and returns an attempt with its stable `node_uid`; `GET /v0/nodes` includes PROVISIONAL enrollment projections. This identity is not accepted and has no operational authority. Core generates identity/catalog proofs. The legacy Operator HTTP `evidence` POST now returns 403 even for otherwise authenticated Operators: an Operator is not an independently authenticated Linux receipt verifier. Real evidence must be validated against trusted source/UID/subject/observer and persisted only through an approved server-side integration. Until that seam is installed, the attempt remains MATERIALIZING rather than admitting a fabricated PASS. `accept` never mints an identity. Its body may be omitted; compatibility node_id/platform arguments must match materialization. Callers that previously assigned identity at acceptance must move those fields to materialize.
 
 `ACTIVE` and seven evidence types establish admission in this control plane only, not independent consumer catalog/authentication/configuration/call-route/permission/rollback cutover. Each consumer must reuse the existing identity and separately validate discoverability, real calls, positive/negative permissions, identity readback and rollback. Do not create another identity or widen authority to fill a catalog gap.
 
