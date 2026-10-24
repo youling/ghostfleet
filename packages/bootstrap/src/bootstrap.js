@@ -420,7 +420,7 @@ if [ "$TAILSCALE_STATE" != COMPLIANT ]; then
   unset TS_AUTHKEY
 
   # The CLI must not block on a browser login or print OAuth links.
-  if ! tailscale up --authkey=file:/run/fleet/ts-authkey --hostname "$NODE_ID" </dev/null >/dev/null 2>&1; then
+  if ! tailscale up --authkey=file:/run/fleet/ts-authkey --hostname "$NODE_ID" --timeout=90s </dev/null >/dev/null 2>&1; then
     fail 'one-off Tailscale auth rejected or uncertain; reconcile existing enrollment, never retry login'
   fi
   rm -f /run/fleet/ts-authkey
