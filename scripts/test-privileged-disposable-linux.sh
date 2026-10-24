@@ -79,6 +79,21 @@ unsafe="$(bash "$installer" --check)"
 chmod 0600 "$keys"
 [[ "$(bash "$installer" --check)" == *"AUTHORIZED_KEY=CONFIGURED"* ]] || exit 1
 
+# A valid target behind a symlink is not an admitted SSH identity.
+# Run only within the guarded GitHub-hosted disposable Ubuntu VM.
+install -o root -g root -m 0600 "$private_dir/authorized_keys.original" "$private_dir/authorized_keys.target"
+rm "$keys"
+ln -s "$private_dir/authorized_keys.target" "$keys"
+unsafe="$(bash "$installer" --check)"
+[[ "$unsafe" == *"AUTHORIZED_KEY=ABSENT_OR_DRIFT"* ]] || {
+  echo "FAIL: symlinked authorized_keys was reported configured" >&2
+  exit 1
+}
+cmp -s "$private_dir/authorized_keys.original" "$private_dir/authorized_keys.target" || exit 1
+rm "$keys"
+install -o root -g root -m 0600 "$private_dir/authorized_keys.target" "$keys"
+[[ "$(bash "$installer" --check)" == *"AUTHORIZED_KEY=CONFIGURED"* ]] || exit 1
+
 python3 -I - <<'PY'
 import hashlib, json, pathlib
 state=json.loads(pathlib.Path('/etc/youling-fleet/privileged-operations/control.json').read_text())
