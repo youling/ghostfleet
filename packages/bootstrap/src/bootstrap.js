@@ -60,15 +60,23 @@ tailscale_self_state() {
 }
 
 tailscale_preclaim_state() {
-  command -v tailscale >/dev/null 2>&1 || { printf '%s' FRESH; return 0; }
+  # An absent binary is fresh only if no prior daemon state survives.
+  if ! command -v tailscale >/dev/null 2>&1; then
+    if [ -e /var/lib/tailscale/tailscaled.state ] || [ -L /var/lib/tailscale/tailscaled.state ]; then
+      printf '%s' UNKNOWN
+    else
+      printf '%s' FRESH
+    fi
+    return 0
+  fi
   TS_PRECLAIM="$(tailscale status --self --peers=false --json 2>/dev/null)" || { printf '%s' UNKNOWN; return 0; }
+  # NeedsLogin, NoState and Self=null do NOT prove a never-enrolled host.
   if printf '%s' "$TS_PRECLAIM" | grep -Eq '"Self"[[:space:]]*:[[:space:]]*null'; then
-    printf '%s' FRESH
+    printf '%s' UNKNOWN
     return 0
   fi
   PRECLAIM_BACKEND="$(printf '%s' "$TS_PRECLAIM" | grep -Eo '"BackendState"[[:space:]]*:[[:space:]]*"[^"]+"' | head -n1 | sed -E 's/^[^:]+:[[:space:]]*"([^"]+)"$/\\1/')"
   case "$PRECLAIM_BACKEND" in
-    NeedsLogin|NoState) printf '%s' FRESH ;;
     Running|Stopped) printf '%s' EXISTING ;;
     *) printf '%s' UNKNOWN ;;
   esac
@@ -127,6 +135,17 @@ EOF
   chmod 0600 "$CHECKPOINT_TMP"
   chown root:root "$CHECKPOINT_TMP"
   mv -f "$CHECKPOINT_TMP" "$CHECKPOINT_FILE"
+}
+
+refuse_unresolved_previous_enrollment() {
+  # Durable attempt/checkpoint records and a leftover one-off credential are
+  # never proof of a fresh host, even if Tailscale now reports NeedsLogin.
+  # Symlink checks also catch dangling paths without following them.
+  for marker in "$CHECKPOINT_FILE" "$CHECKPOINT_DIR/enrollment-report.json" /run/fleet/ts-authkey; do
+    if [ -e "$marker" ] || [ -L "$marker" ]; then
+      fail 'prior enrollment state unresolved; reconcile original node/attempt (ADOPT/REPAIR); no new one-off key'
+    fi
+  done
 }
 
 fail() {
@@ -191,6 +210,16 @@ bootstrap_phase0_preflight() {
   command -v sha256sum >/dev/null 2>&1 || fail 'preflight failed: sha256sum is required'
   command -v dpkg-query >/dev/null 2>&1 || fail 'preflight failed: dpkg-query is required'
   command -v apt-get >/dev/null 2>&1 || fail 'preflight failed: apt-get is required'
+  command -v ssh-keygen >/dev/null 2>&1 || fail 'preflight failed: ssh-keygen is required for host identity evidence'
+
+  # Verify the real host identity before package/service/provider effects.
+  SSH_HOST_KEY_PATH=
+  for candidate in /etc/ssh/ssh_host_ed25519_key.pub /etc/ssh/ssh_host_ecdsa_key.pub /etc/ssh/ssh_host_rsa_key.pub; do
+    if [ -r "$candidate" ] && [ -s "$candidate" ]; then SSH_HOST_KEY_PATH="$candidate"; break; fi
+  done
+  [ -n "$SSH_HOST_KEY_PATH" ] || fail 'preflight failed: no readable SSH host public key; identity evidence cannot be established'
+  SSH_HOST_KEY_SHA="$(ssh-keygen -lf "$SSH_HOST_KEY_PATH" 2>/dev/null | awk 'NF >= 2 {print $2; exit}')"
+  [ -n "$SSH_HOST_KEY_SHA" ] || fail 'preflight failed: SSH host public key fingerprint could not be verified'
 
   APPLIANCE_KIND=generic-linux
   if [ -e /etc/openmediavault/config.xml ] || [ -d /etc/openmediavault ]; then
@@ -220,6 +249,7 @@ if checkpoint_is_compliant; then
   printf '%s\\n' 'fleet-enroll: already converged; no enrollment credentials requested' >&2
   exit 0
 fi
+refuse_unresolved_previous_enrollment
 case "$(tailscale_preclaim_state)" in
   FRESH) ;;
   EXISTING) fail 'existing Tailscale identity detected; use verified ADOPT/REPAIR flow; no new enrollment effects attempted' ;;
@@ -356,6 +386,7 @@ case "$IDENTITY_KIND" in
     ;;
   *) fail 'broker returned unknown identity_kind' ;;
 esac
+unset CLAIM_JSON
 
 detect_live_components() {
   PACKAGES_STATE=ABSENT
@@ -372,30 +403,37 @@ detect_live_components() {
 }
 detect_live_components
 case "$TAILSCALE_STATE" in
-  *CONFLICT*|*UNKNOWN*) fail 'live ownership or identity conflict detected; refusing credential consumption' ;;
+  *CONFLICT*|*UNKNOWN*|DRIFT_REPAIRABLE) fail 'Tailscale identity stopped, foreign or uncertain; reconcile without reauthentication' ;;
 esac
 
-SSH_HOST_KEY_SHA=
+# Preserve the Phase-0-pinned SSH host fingerprint for both completion receipts.
 
 if [ "$TAILSCALE_STATE" != COMPLIANT ]; then
+  # The one-time claim is already spent. Before effectful auth, persist a
+  # credential-free original enrollment/node fence under root-owned storage.
+  # A crash, rejection or uncertain join must never trigger a second key.
+  checkpoint_write CONVERGE RECONCILE_REQUIRED
   printf '%s' "$TS_AUTHKEY" > /run/fleet/ts-authkey
   trap 'rm -f /run/fleet/ts-authkey' EXIT
   chmod 0600 /run/fleet/ts-authkey
   chown root:root /run/fleet/ts-authkey
   unset TS_AUTHKEY
 
-  tailscale up --authkey=file:/run/fleet/ts-authkey --hostname "$NODE_ID"
+  # The CLI must not block on a browser login or print OAuth links.
+  if ! tailscale up --authkey=file:/run/fleet/ts-authkey --hostname "$NODE_ID" --timeout=90s </dev/null >/dev/null 2>&1; then
+    fail 'one-off Tailscale auth rejected or uncertain; reconcile existing enrollment, never retry login'
+  fi
   rm -f /run/fleet/ts-authkey
   trap - EXIT
   live_tailscale_ready "$NODE_ID" ||
-    fail 'Tailscale is not ready after repair'
+    fail 'Tailscale join status uncertain; reconcile original enrollment without re-login'
   TAILSCALE_STATE=COMPLIANT
   checkpoint_write VERIFY IN_PROGRESS
 else
   unset TS_AUTHKEY
 fi
 
-SSH_HOST_KEY_SHA="$(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null | awk '{print $2}' || true)"
+# SSH_HOST_KEY_PATH and SSH_HOST_KEY_SHA were verified during read-only Phase 0.
 
 IDENTITY_EVIDENCE_B64=
 IDENTITY_EVIDENCE_SHA=
