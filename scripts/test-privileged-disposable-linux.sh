@@ -94,6 +94,19 @@ rm "$keys"
 install -o root -g root -m 0600 "$private_dir/authorized_keys.target" "$keys"
 [[ "$(bash "$installer" --check)" == *"AUTHORIZED_KEY=CONFIGURED"* ]] || exit 1
 
+# A valid forced-command key under a group-writable parent directory is
+# not an admitted identity, even when the key file itself remains 0600.
+ops_home=/var/lib/ghostfleet-ops
+[[ "$(stat -c '%a' "$ops_home")" == 755 ]] || exit 1
+chmod 0775 "$ops_home"
+unsafe="$(bash "$installer" --check)"
+chmod 0755 "$ops_home"
+[[ "$unsafe" == *"AUTHORIZED_KEY=ABSENT_OR_DRIFT"* ]] || {
+  echo "FAIL: group-writable ops home was reported configured" >&2
+  exit 1
+}
+[[ "$(bash "$installer" --check)" == *"AUTHORIZED_KEY=CONFIGURED"* ]] || exit 1
+
 python3 -I - <<'PY'
 import hashlib, json, pathlib
 state=json.loads(pathlib.Path('/etc/youling-fleet/privileged-operations/control.json').read_text())
