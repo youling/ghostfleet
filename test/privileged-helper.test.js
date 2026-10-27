@@ -146,6 +146,11 @@ test("network.interface.enable rejects extra parameters and never forwards comma
   assert.equal(bad.code,"NETWORK_INTERFACE_PARAMETERS_INVALID");
   assert.equal(reads,0);
   assert.equal(effects,0);
+  const badTarget=await operation.execute({target_ref:"",parameters:{admin_state:"UP"}});
+  assert.equal(badTarget.result,"DENIED");
+  assert.equal(badTarget.code,"NETWORK_INTERFACE_PARAMETERS_INVALID");
+  assert.equal(reads,0);
+  assert.equal(effects,0);
 });
 
 test("network.interface.enable fails closed when route/control-path preflight is unknown or unsafe",async()=>{

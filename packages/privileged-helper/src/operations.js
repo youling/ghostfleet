@@ -32,7 +32,7 @@ export function createLinuxTypedOperations(os) {
     mutating:true,
     async execute({target_ref,parameters}) {
       // target_ref is the lease-bound stable interface reference, never a raw device name.
-      if(!target_ref || !parameters || typeof parameters!=="object" || Array.isArray(parameters) ||
+      if(typeof target_ref!=="string" || !target_ref || !parameters || typeof parameters!=="object" || Array.isArray(parameters) ||
          Object.keys(parameters).length!==1 || parameters.admin_state!=="UP") {
         return {result:"DENIED",code:"NETWORK_INTERFACE_PARAMETERS_INVALID"};
       }
