@@ -11,6 +11,7 @@ import {
 const registry = createOperationRegistry([
   { operation_id:"service.status.read", risk_floor:"LOW", auto_approvable:true, recovery_requirement:"NONE", max_ttl_seconds:900, max_uses:4 },
   { operation_id:"service.restart", risk_floor:"MEDIUM", auto_approvable:true, recovery_requirement:"ROLLBACK", max_ttl_seconds:300, max_uses:1 },
+  { operation_id:"network.interface.enable", risk_floor:"HIGH", auto_approvable:false, recovery_requirement:"COMPENSATING", max_ttl_seconds:60, max_uses:1 },
   { operation_id:"credential.rotate", risk_floor:"CRITICAL", auto_approvable:false, recovery_requirement:"COMPENSATING", max_ttl_seconds:120, max_uses:1 },
 ]);
 const request = (overrides={}) => ({
@@ -18,6 +19,24 @@ const request = (overrides={}) => ({
   policy_revision:"policy-1", requested_ttl_seconds:120, requested_max_uses:1,
   operations:[{operation_id:"service.restart",scope_ref:"service/canary",parameters:{mode:"graceful"},recovery:{mode:"ROLLBACK",ref:"rollback-1"}}],
   ...overrides,
+});
+
+test("network interface enable is HIGH, Human-required, one-shot and short-lived",()=>{
+  const r=request({
+    requested_ttl_seconds:900,
+    requested_max_uses:4,
+    operations:[{
+      operation_id:"network.interface.enable",
+      scope_ref:"interface/canary-01",
+      parameters:{admin_state:"UP"},
+      recovery:{mode:"COMPENSATING",ref:"recovery/netif-canary"},
+    }],
+  });
+  const decision=evaluatePrivilegeRequest(r,{registry});
+  assert.equal(decision.outcome,"HUMAN_REQUIRED");
+  assert.equal(decision.derived_risk,"HIGH");
+  assert.equal(decision.lease_bounds.ttl_seconds,60);
+  assert.equal(decision.lease_bounds.max_uses,1);
 });
 
 test("caller risk cannot downgrade canonical risk", () => {

@@ -16,10 +16,11 @@ ordinary Agent/runtime
   -> public-safe receipt
 ```
 
-第一版只提供最小 typed operation contract：
+第一版提供最小 typed operation contracts：
 
 - `service.status.read`
 - `service.restart`
+- `network.interface.enable` — injected backend seam only; exact interface ref, preflight proving no autoconfiguration/route/control-path impact, before/after receipt, fail-closed UNKNOWN and no raw command/argv.
 - `managed.file.materialize`
 
 真实 OS backend、production lease verifier 和安装执行由 deployment/integration 层注入。本包只冻结 Helper enforcement boundary、安装/卸载计划和 fail-closed 行为。

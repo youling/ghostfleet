@@ -29,6 +29,10 @@ source: #9 / ADR 003
 
 默认：显式 request、bounded lease、Human required，除非 canonical policy 对特定 operation 明确允许更窄的自动化路径。
 
+### HIGH — network interface enable (bounded typed operation)
+
+**network.interface.enable** may only set the administrative state of one exact, inventory-resolved interface to UP. It defaults to HIGH / HUMAN_REQUIRED, one-shot and short TTL. The Helper must reject raw commands/arguments, ambiguous or stale interface identity, unknown route effects, manager autoconfiguration, or any dependency on the current control path. Before/after state and route evidence are mandatory; uncertain effects become RECONCILE_REQUIRED. This operation does not enable/disable Tailscale, edit addresses/routes/DNS/firewall, or change Wi-Fi credentials. The current generic implementation provides only an injected backend seam; it does not claim a real Linux adapter or installed Helper.
+
 ### CRITICAL — identity/security boundary
 
 示例：`credential.rotate`、`identity.authorize`、SSH authorization、secret materialization、trust-root change。
