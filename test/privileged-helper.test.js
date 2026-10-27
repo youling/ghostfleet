@@ -200,3 +200,28 @@ test("network.interface.enable cannot execute without a valid lease",async()=>{
   assert.equal(reads,0);
   assert.equal(effects,0);
 });
+
+
+test("network.interface.enable consumes its effect fence and rejects replay",async()=>{
+  let state="DOWN",enableCalls=0;
+  const os={
+    networkInterfaceStatus:async(ref)=>({interface_ref:ref,state_ref:"state-"+state,admin_state:state,autoconfig_on_up:false,route_impact:"NONE",control_path_dependency:false}),
+    networkInterfaceEnable:async(ref,options)=>{
+      enableCalls++;
+      assert.equal(ref,"interface/canary-01");
+      assert.equal(options.expected_before_state_ref,"state-DOWN");
+      state="UP";
+      return {outcome:"SUCCESS",recovery_ref:"recovery/netif"};
+    },
+  };
+  const helper=createPrivilegedHelper({
+    leaseVerifier:async()=>({ok:true}),
+    operations:createLinuxTypedOperations(os),
+    effectFences:createHelperEffectFenceStore(),
+  });
+  const req={request_id:"r-net-replay",lease_id:"l-net-replay",operation_id:"network.interface.enable",target_ref:"interface/canary-01",effect_ref:"effect-net-replay",parameters:{admin_state:"UP"}};
+  assert.equal((await helper.handle(req,{caller_ref:"agent",helper_ref:"helper",node_uid:"node"})).receipt.result,"SUCCESS");
+  const replay=await helper.handle(req,{caller_ref:"agent",helper_ref:"helper",node_uid:"node"});
+  assert.equal(replay.code,"EFFECT_FENCE_REPLAY");
+  assert.equal(enableCalls,1);
+});
