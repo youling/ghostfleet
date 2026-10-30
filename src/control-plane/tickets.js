@@ -86,15 +86,71 @@ export function validatePublicOrigin(value) {
   return url.origin;
 }
 
+// The delivered command carries no ticket URL, short code, or provider credential.
+// Root elevation happens before the downloaded bootstrap is executed. The Human
+// pastes the one-time URL into the protected root terminal, with terminal echo
+// disabled; the script then asks for the separate eight-digit short code.
+function quoteShell(value) {
+  return "'" + String(value).replaceAll("'", "'\\''") + "'";
+}
+
+function portableBootstrapCommand(origin) {
+  const downloadUrl = origin + "/v1/bootstrap.sh";
+  const rootScript = [
+    "set -eu",
+    "umask 077",
+    'f="$(mktemp)"',
+    "TTY_STATE=",
+    "cleanup() {",
+    '  if [ -n "$TTY_STATE" ]; then stty "$TTY_STATE" < /dev/tty 2>/dev/null || :; fi',
+    '  rm -f "$f"',
+    "}",
+    "trap cleanup EXIT",
+    "if command -v curl >/dev/null 2>&1; then",
+    "  curl -fsSL " + quoteShell(downloadUrl) + ' -o "$f"',
+    "elif command -v wget >/dev/null 2>&1; then",
+    '  wget -qO "$f" ' + quoteShell(downloadUrl),
+    "else",
+    "  printf '%s\\n' 'GhostFleet requires curl or wget' >&2",
+    "  exit 1",
+    "fi",
+    'TTY_STATE="$(stty -g < /dev/tty)"',
+    "stty -echo < /dev/tty",
+    "printf 'One-time enrollment URL from protected Console: ' > /dev/tty",
+    "IFS= read -r GHOSTFLEET_ENROLLMENT_URL < /dev/tty",
+    'stty "$TTY_STATE" < /dev/tty',
+    "TTY_STATE=",
+    "printf '\\n' > /dev/tty",
+    'case "$GHOSTFLEET_ENROLLMENT_URL" in ' + quoteShell(origin) +
+      "/v1/enrollment-tickets/ticket-*) ;; *) printf '%s\\n' 'Invalid enrollment URL for this control plane' >&2; exit 1 ;; esac",
+    "export GHOSTFLEET_ENROLLMENT_URL",
+    'sh "$f"',
+  ].join("\n");
+  const rootCommand = quoteShell(rootScript);
+  return [
+    "(",
+    'if [ "$(id -u)" -eq 0 ]; then',
+    "  sh -c " + rootCommand,
+    "elif command -v sudo >/dev/null 2>&1; then",
+    "  sudo sh -c " + rootCommand,
+    "elif command -v su >/dev/null 2>&1; then",
+    "  su root -c " + rootCommand,
+    "else",
+    "  printf '%s\\n' 'GhostFleet requires one root confirmation using sudo or su' >&2",
+    "  exit 1",
+    "fi",
+    ")",
+  ].join("\n");
+}
+
 export function createTicketDelivery({ record, short_code, public_origin }) {
   const origin = validatePublicOrigin(public_origin);
   const one_time_url = origin + "/v1/enrollment-tickets/" + encodeURIComponent(record.ticket_id);
-  const bootstrap_script_url = origin + "/v1/bootstrap.sh";
   return Object.freeze({
     one_time_url,
     short_code,
     expires_at: record.expires_at,
-    command: "curl -fsSL '" + bootstrap_script_url + "' | sudo env GHOSTFLEET_ENROLLMENT_URL='" + one_time_url + "' sh",
+    command: portableBootstrapCommand(origin),
     warning: "ONE_TIME_ENROLLMENT_MATERIAL_EXECUTE_PROMPTLY",
   });
 }
