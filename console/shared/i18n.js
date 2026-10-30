@@ -275,8 +275,10 @@ Object.assign(en, {
 Object.assign(zh, {
   generateBootstrap: "生成一次性 Bootstrap",
   bootstrapDeliveryTitle: "一次性纳管命令",
-  bootstrapDeliveryWarning: "这组纳管材料只显示一次。请立即在目标机执行；关闭后不能从持久状态读回。",
+  bootstrapDeliveryWarning: "这组纳管材料只显示一次。先运行命令，完成一次 root 授权，再按提示粘贴 URL 与 8 位短码；关闭后不能从持久状态读回。",
   bootstrapCommand: "Bootstrap 命令",
+  enrollmentOneTimeUrl: "一次性纳管 URL",
+  copyUrl: "复制 URL",
   enrollmentShortCode: "Enrollment 短码",
   copyCommand: "复制命令",
   copyCode: "复制短码",
@@ -285,8 +287,10 @@ Object.assign(zh, {
 Object.assign(en, {
   generateBootstrap: "Generate one-time bootstrap",
   bootstrapDeliveryTitle: "One-time enrollment command",
-  bootstrapDeliveryWarning: "This enrollment material is shown once. Run it on the target promptly; it cannot be recovered from durable state after closing.",
+  bootstrapDeliveryWarning: "Shown once. Run the command, confirm root access, then paste the URL and eight-digit code at the prompts. Delivery cannot be recovered after closing.",
   bootstrapCommand: "Bootstrap command",
+  enrollmentOneTimeUrl: "One-time enrollment URL",
+  copyUrl: "Copy URL",
   enrollmentShortCode: "Enrollment short code",
   copyCommand: "Copy command",
   copyCode: "Copy code",
