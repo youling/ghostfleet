@@ -29,6 +29,10 @@ source: #9 / ADR 003
 
 默认：显式 request、bounded lease、Human required，除非 canonical policy 对特定 operation 明确允许更窄的自动化路径。
 
+### HIGH — 网卡启用（受限类型化操作）
+
+**network.interface.enable** 只能将一个已由可信清单解析且身份唯一的网卡管理状态设为 UP。默认风险为 HIGH / HUMAN_REQUIRED，租约单次使用且有效期短。Helper 必须拒绝原始命令/参数、含糊或过期的网卡身份、未知路由影响、启用时自动配置，以及依赖当前控制通道的网卡。执行前后必须保留状态和路由证据；结果不确定时返回 RECONCILE_REQUIRED。此操作不会启用/禁用 Tailscale，不修改地址、路由、DNS、防火墙或 Wi-Fi 凭据。目前通用实现仅提供注入式后端接口，不代表真实 Linux 适配器或已安装 Helper。
+
 ### CRITICAL — identity/security boundary
 
 示例：`credential.rotate`、`identity.authorize`、SSH authorization、secret materialization、trust-root change。
@@ -67,6 +71,8 @@ Agent 问的是“完成 intent 需要哪个 typed capability”，不是“如�
 Risk classes are canonical operation-policy floors, not caller-controlled values. Derived risk may increase with scope, persistence, identity/secret involvement, lease bounds, or recovery constraints, but cannot be lowered by the requester.
 
 LOW observations bypass the broker when ordinary permissions suffice. MEDIUM covers bounded reversible changes. HIGH covers privileged infrastructure changes. CRITICAL covers identity/security boundaries and is never auto-approved.
+
+The HIGH-risk `network.interface.enable` operation may only set one exact inventory-resolved interface to UP. It is one-shot and short-lived, requires preflight evidence that autoconfiguration, route impact and current control-path dependency are absent, and must emit before/after state references. Unknown effects become `RECONCILE_REQUIRED`. It cannot change addresses, routes, DNS, firewall rules, Tailscale, or Wi-Fi credentials. The current implementation is an injected backend seam, not a production Linux adapter or an installed Helper.
 
 <!-- topic:recovery -->
 ### Recovery

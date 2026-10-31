@@ -16,10 +16,11 @@ ordinary Agent/runtime
   -> public-safe receipt
 ```
 
-第一版只提供最小 typed operation contract：
+第一版提供最小 typed operation contracts：
 
 - `service.status.read`
 - `service.restart`
+- `network.interface.enable` — injected backend seam only; exact interface ref, preflight proving no autoconfiguration/route/control-path impact, before/after receipt, fail-closed UNKNOWN and no raw command/argv.
 - `managed.file.materialize`
 
 真实 OS backend、production lease verifier 和安装执行由 deployment/integration 层注入。本包只冻结 Helper enforcement boundary、安装/卸载计划和 fail-closed 行为。
@@ -29,3 +30,5 @@ ordinary Agent/runtime
 ## English
 
 This package implements a node-local typed privileged-execution boundary. It never exposes arbitrary shell, password transport, root SSH, credential export or raw command passthrough. An authenticated local IPC envelope is validated by an injected lease verifier, dispatched to an exact typed operation through an effect fence, and produces public-safe receipts. Real OS backends, production lease verification and installation execution are deployment concerns.
+
+The candidate `network.interface.enable` operation is an injected backend seam only. It accepts a lease-bound exact interface reference and `admin_state: "UP"`; it requires evidence that enabling the interface cannot trigger autoconfiguration, change routes, or affect the current control path. Uncertain effects or failed readback return `RECONCILE_REQUIRED`. No production Linux backend or installed Helper is included.
