@@ -107,7 +107,7 @@ test("network.interface.enable is lease-bound, exact-target and emits before/aft
     admin_state:state,
     autoconfig_on_up:false,
     route_impact:"NONE",
-    control_path_dependency:false,
+    control_path_dependency:false, interface_manager:"known", manager_current:true, interface_manager:"known", manager_current:true,
   });
   const os={
     networkInterfaceStatus:async(ref)=>{
@@ -137,7 +137,7 @@ test("network.interface.enable is lease-bound, exact-target and emits before/aft
 test("network.interface.enable rejects extra parameters and never forwards commands",async()=>{
   let reads=0,effects=0;
   const os={
-    networkInterfaceStatus:async()=>{reads++;return {interface_ref:"interface/canary-01",state_ref:"s",admin_state:"DOWN",autoconfig_on_up:false,route_impact:"NONE",control_path_dependency:false};},
+    networkInterfaceStatus:async()=>{reads++;return {interface_ref:"interface/canary-01",state_ref:"s",admin_state:"DOWN",autoconfig_on_up:false,route_impact:"NONE",control_path_dependency:false, interface_manager:"known", manager_current:true, interface_manager:"known", manager_current:true};},
     networkInterfaceEnable:async()=>{effects++;return {outcome:"SUCCESS"};},
   };
   const operation=createLinuxTypedOperations(os).get("network.interface.enable");
@@ -156,7 +156,7 @@ test("network.interface.enable rejects extra parameters and never forwards comma
 test("network.interface.enable fails closed when route/control-path preflight is unknown or unsafe",async()=>{
   let effects=0;
   const os={
-    networkInterfaceStatus:async()=>({interface_ref:"interface/canary-01",state_ref:"s",admin_state:"DOWN",autoconfig_on_up:true,route_impact:"MAY_CHANGE",control_path_dependency:null}),
+    networkInterfaceStatus:async()=>({interface_ref:"interface/canary-01",state_ref:"s",admin_state:"DOWN",autoconfig_on_up:true,route_impact:"MAY_CHANGE",control_path_dependency:null, interface_manager:"known", manager_current:true, interface_manager:"known", manager_current:true}),
     networkInterfaceEnable:async()=>{effects++;return {outcome:"SUCCESS"};},
   };
   const operation=createLinuxTypedOperations(os).get("network.interface.enable");
@@ -169,7 +169,7 @@ test("network.interface.enable fails closed when route/control-path preflight is
 test("network.interface.enable turns uncertain effect or postcondition into reconcile, never success",async()=>{
   let state="DOWN",mode="UNKNOWN";
   const os={
-    networkInterfaceStatus:async()=>({interface_ref:"interface/canary-01",state_ref:"state-"+state,admin_state:state,autoconfig_on_up:false,route_impact:"NONE",control_path_dependency:false}),
+    networkInterfaceStatus:async()=>({interface_ref:"interface/canary-01",state_ref:"state-"+state,admin_state:state,autoconfig_on_up:false,route_impact:"NONE",control_path_dependency:false, interface_manager:"known", manager_current:true, interface_manager:"known", manager_current:true}),
     networkInterfaceEnable:async()=>{if(mode==="UNKNOWN")return {outcome:"UNKNOWN",recovery_ref:"reconcile/netif"};state="UP";return {outcome:"SUCCESS"};},
   };
   const operation=createLinuxTypedOperations(os).get("network.interface.enable");
@@ -177,7 +177,7 @@ test("network.interface.enable turns uncertain effect or postcondition into reco
   assert.equal(unknown.result,"RECONCILE_REQUIRED");
   assert.equal(unknown.recovery_ref,"reconcile/netif");
   mode="SUCCESS";state="DOWN";
-  os.networkInterfaceStatus=async()=>({interface_ref:"interface/canary-01",state_ref:"state-DOWN",admin_state:"DOWN",autoconfig_on_up:false,route_impact:"NONE",control_path_dependency:false});
+  os.networkInterfaceStatus=async()=>({interface_ref:"interface/canary-01",state_ref:"state-DOWN",admin_state:"DOWN",autoconfig_on_up:false,route_impact:"NONE",control_path_dependency:false, interface_manager:"known", manager_current:true, interface_manager:"known", manager_current:true});
   const postcondition=await operation.execute({target_ref:"interface/canary-01",parameters:{admin_state:"UP"}});
   assert.equal(postcondition.result,"RECONCILE_REQUIRED");
   assert.equal(postcondition.code,"NETWORK_INTERFACE_POSTCONDITION_UNPROVEN");
@@ -205,7 +205,7 @@ test("network.interface.enable cannot execute without a valid lease",async()=>{
 test("network.interface.enable consumes its effect fence and rejects replay",async()=>{
   let state="DOWN",enableCalls=0;
   const os={
-    networkInterfaceStatus:async(ref)=>({interface_ref:ref,state_ref:"state-"+state,admin_state:state,autoconfig_on_up:false,route_impact:"NONE",control_path_dependency:false}),
+    networkInterfaceStatus:async(ref)=>({interface_ref:ref,state_ref:"state-"+state,admin_state:state,autoconfig_on_up:false,route_impact:"NONE",control_path_dependency:false, interface_manager:"known", manager_current:true, interface_manager:"known", manager_current:true}),
     networkInterfaceEnable:async(ref,options)=>{
       enableCalls++;
       assert.equal(ref,"interface/canary-01");
@@ -224,4 +224,24 @@ test("network.interface.enable consumes its effect fence and rejects replay",asy
   const replay=await helper.handle(req,{caller_ref:"agent",helper_ref:"helper",node_uid:"node"});
   assert.equal(replay.code,"EFFECT_FENCE_REPLAY");
   assert.equal(enableCalls,1);
+});
+
+test("network.interface.enable denies missing or untrusted interface manager ownership",async()=>{
+  const os={
+    networkInterfaceStatus:async()=>({interface_ref:"interface/canary-01",state_ref:"s",admin_state:"DOWN",autoconfig_on_up:false,route_impact:"NONE",control_path_dependency:false}),
+    networkInterfaceEnable:async()=>({outcome:"SUCCESS"}),
+  };
+  const operation=createLinuxTypedOperations(os).get("network.interface.enable");
+  const missing=await operation.execute({target_ref:"interface/canary-01",parameters:{admin_state:"UP"}});
+  assert.equal(missing.result,"DENIED");
+  assert.equal(missing.code,"NETWORK_INTERFACE_PREFLIGHT_NOT_SAFE");
+
+  const untrusted={
+    networkInterfaceStatus:async()=>({interface_ref:"interface/canary-01",state_ref:"s",admin_state:"DOWN",autoconfig_on_up:false,route_impact:"NONE",control_path_dependency:false,interface_manager:"unknown"}),
+    networkInterfaceEnable:async()=>({outcome:"SUCCESS"}),
+  };
+  const operation2=createLinuxTypedOperations(untrusted).get("network.interface.enable");
+  const denied=await operation2.execute({target_ref:"interface/canary-01",parameters:{admin_state:"UP"}});
+  assert.equal(denied.result,"DENIED");
+  assert.equal(denied.code,"NETWORK_INTERFACE_PREFLIGHT_NOT_SAFE");
 });

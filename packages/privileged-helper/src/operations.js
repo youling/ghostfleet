@@ -2,6 +2,33 @@ function receiptRefs(before,after,recovery_ref=null) {
   return {before_state_ref:before?.state_ref ?? null,after_state_ref:after?.state_ref ?? null,recovery_ref};
 }
 
+function managerOwnershipCurrent(value) {
+  if (!value || typeof value !== "object") return false;
+  let found = false;
+  let safe = true;
+  for (const [key, val] of Object.entries(value)) {
+    const k = String(key).toLowerCase();
+    const isManager = k.includes("manager");
+    const isCurrent = k.includes("current");
+    if (!isManager && !isCurrent) continue;
+    found = true;
+    if (typeof val === "boolean") {
+      if (!val) safe = false;
+    } else if (typeof val === "string") {
+      const v = val.toLowerCase();
+      if (["unknown", "unmanaged", "none", "conflict", "ambiguous", "missing", "false", "null"].includes(v)) safe = false;
+      if (isCurrent && !["true", "known", "current", "managed", "controlled", "owned", "yes"].includes(v)) safe = false;
+    } else if (typeof val === "object" && val !== null) {
+      if (val.current === false || val.owner === false || val.known === false) safe = false;
+      if (typeof val.state === "string" && !["managed", "current", "known", "controlled", "owned"].includes(val.state.toLowerCase())) safe = false;
+      if (Object.keys(val).length === 0) safe = false;
+    } else if (val === null || val === undefined) {
+      safe = false;
+    }
+  }
+  return found && safe;
+}
+
 export function createLinuxTypedOperations(os) {
   if(!os) throw new Error("OS_BACKEND_REQUIRED");
   const map=new Map();
@@ -46,7 +73,8 @@ export function createLinuxTypedOperations(os) {
         ["UP","DOWN"].includes(value.admin_state) &&
         value.autoconfig_on_up===false &&
         value.route_impact==="NONE" &&
-        value.control_path_dependency===false;
+        value.control_path_dependency===false &&
+        managerOwnershipCurrent(value);
       if(!safeObservation(before)) {
         return {result:"DENIED",code:"NETWORK_INTERFACE_PREFLIGHT_NOT_SAFE"};
       }
