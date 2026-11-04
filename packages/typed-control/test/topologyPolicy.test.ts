@@ -14,6 +14,7 @@ import {
   type ControlEnvironment,
   type PrivilegedRuntimeEnv,
   type PrivilegedInput,
+  type OperationDependencies,
   createNativeBackend,
   canonicalRequestDigest,
 } from "../src/index.js";
@@ -524,6 +525,45 @@ describe("runControlOperation Topology Enforcement", () => {
     expect(receipt.error).toBe("SYNTHETIC_TIMEOUT");
     expect(receipt.reconcile_required).toBe(true);
     expect(receipt.retry_safe).toBe(false);
+  });
+
+  it("does not switch actor identity during the asynchronous receipt hash", async () => {
+    const actor: ControlActor = { userId: "managed-actor", scopes: ["fleet.exec"], authKind: "oauth" };
+    const realDigest = crypto.subtle.digest.bind(crypto.subtle);
+    const digestSpy = vi.spyOn(crypto.subtle, "digest").mockImplementationOnce((algorithm, bytes) => {
+      actor.userId = "central-operator";
+      actor.scopes.push("fleet.privileged");
+      return realDigest(algorithm, bytes);
+    });
+    const { backend, calls } = makeSpyBackend();
+    try {
+      const result = await runControlOperation(makeFullEnv("enforced"), actor, {
+        operation: "shell.exec", node_uid: node3, command: "/usr/bin/true", timeout_seconds: 5,
+      }, backend);
+      expect(result.error).toBe("TOPOLOGY_ORIGIN_NOT_CONTROLLER");
+      expect(result.outcome).toBe("NOT_DISPATCHED");
+      expect(calls).toEqual({ connect: 0, execute: 0 });
+    } finally { digestSpy.mockRestore(); }
+  });
+
+  it("keeps the requested target and command stable while caller input changes", async () => {
+    const actor: ControlActor = { userId: "edge-controller", scopes: ["fleet.exec"], authKind: "oauth" };
+    const input = { operation: "shell.exec" as const, node_uid: node2, command: "/usr/bin/true", timeout_seconds: 5 };
+    const realDigest = crypto.subtle.digest.bind(crypto.subtle);
+    const digestSpy = vi.spyOn(crypto.subtle, "digest").mockImplementationOnce((algorithm, bytes) => {
+      input.node_uid = node3;
+      input.command = "/usr/bin/false";
+      return realDigest(algorithm, bytes);
+    });
+    const connect = vi.fn<OperationDependencies["connect"]>(async () => ({ close: async () => {}, closed: Promise.resolve() }) as never);
+    const execute = vi.fn<OperationDependencies["execute"]>(async () => ({ exit_code: 0, stdout: "synthetic", stderr: "", truncated: false }));
+    try {
+      const receipt = await runControlOperation(makeFullEnv("enforced"), actor, input, createNativeBackend({ connect, execute }));
+      expect(receipt.outcome).toBe("SUCCEEDED");
+      expect(receipt.node_uid).toBe(node2);
+      expect(connect.mock.calls[0]?.[1]).toBe(node2);
+      expect(execute.mock.calls[0]?.[3]).toBe("/usr/bin/true");
+    } finally { digestSpy.mockRestore(); }
   });
 });
 

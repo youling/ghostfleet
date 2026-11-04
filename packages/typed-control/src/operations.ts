@@ -1,4 +1,4 @@
-import { actorAllows, controlActorRef, EXEC_SCOPE, OPERATE_SCOPE, READ_SCOPE, parseControlPolicy, expectedControlSource, type ControlActor, type NodePolicy } from "./controlPolicy.js";
+import { actorAllows, controlActorRef, snapshotControlActor, EXEC_SCOPE, OPERATE_SCOPE, READ_SCOPE, parseControlPolicy, expectedControlSource, type ControlActor, type NodePolicy } from "./controlPolicy.js";
 import { filterTopologyNodes, enforceTopologyAuthorization } from "./topologyPolicy.js";
 import { observationCommand, serviceCommand, type Observation } from "./platformOperations.js";
 import { NODE_UID_RE } from "./routing.js";
@@ -48,6 +48,7 @@ export function safeControlError(error: unknown): string {
 }
 
 export function listControlNodes(env:ControlEnvironment, actor:ControlActor | undefined) {
+  actor = snapshotControlActor(actor);
   if (!actorAllows(actor, READ_SCOPE)) throw new Error("INSUFFICIENT_SCOPE");
   const policy = parseControlPolicy(env.CONTROL_POLICY_JSON,expectedControlSource(env));
   const rawNodes = Object.entries(policy.nodes).map(([node_uid,node])=>({
@@ -76,6 +77,7 @@ export async function runControlOperation(
   };
   let dispatchPossible = false;
   try {
+    actor = snapshotControlActor(actor);
     if(!input || typeof input!=="object" || Array.isArray(input) || typeof input.operation!=="string" || !["node.inspect","service.status","service.restart","shell.exec","job.rpc","session.rpc"].includes(input.operation)) throw new Error("INVALID_CONTROL_OPERATION");
     if(typeof input.node_uid!=="string" || !NODE_UID_RE.test(input.node_uid)) throw new Error("INVALID_NODE_UID");
     receipt.node_uid=input.node_uid;receipt.operation=input.operation;
@@ -84,6 +86,8 @@ export async function runControlOperation(
     if(input.operation==="shell.exec" && typeof input.command!=="string") throw new Error("INVALID_SSH_COMMAND");
     if(input.operation==="job.rpc" && (!input.job || typeof input.job!=="object" || Array.isArray(input.job) || typeof input.job.action!=="string" || !["start","status","read","cancel"].includes(input.job.action))) throw new Error("INVALID_JOB_REQUEST");
     if(input.operation==="session.rpc" && (!input.session || typeof input.session!=="object" || Array.isArray(input.session) || typeof input.session.action!=="string" || !["create","status","read","input","close"].includes(input.session.action))) throw new Error("INVALID_SESSION_REQUEST");
+    // Tool input is caller-owned. Later awaits must not change the guarded target or payload.
+    input = structuredClone(input);
     const jobMutation=input.operation==="job.rpc" && ["start","cancel"].includes(input.job.action);
     const sessionMutation=input.operation==="session.rpc" && ["create","input","close"].includes(input.session.action);
     const risk = input.operation === "shell.exec" || jobMutation || sessionMutation ? "R2" : input.operation === "service.restart" ? "R1" : "R0";

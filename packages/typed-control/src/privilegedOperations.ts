@@ -1,6 +1,6 @@
 /** Dedicated optional privileged lane. No ordinary exec scope/key inheritance and no shell input. */
 import { z } from "zod";
-import { PRIVILEGED_SCOPE, actorAllows, type ControlActor, type ControlSourceEnv } from "./controlPolicy.js";
+import { PRIVILEGED_SCOPE, actorAllows, snapshotControlActor, type ControlActor, type ControlSourceEnv } from "./controlPolicy.js";
 import { enforceTopologyAuthorization, type ControlTopologyEnv } from "./topologyPolicy.js";
 import { parseControlTargets } from "./targets.js";
 import { connectControlTarget, type ControlNetworkEnv } from "./transport.js";
@@ -94,6 +94,8 @@ export function resolvePrivilegedTarget(env: PrivilegedRuntimeEnv, nodeUid: stri
   // Fail closed if ordinary lane metadata is absent: separation must be provable.
   if (!env.CONTROL_SSH_PRIVATE_KEY || !env.CONTROL_TARGETS_JSON) throw new Error("ORDINARY_LANE_EVIDENCE_REQUIRED");
   for (const ordinaryKey of [env.CONTROL_SSH_PRIVATE_KEY, env.CONTROL_SSH_PRIVATE_KEY_WINDOWS]) {
+    // Fast rejection only; different encodings do not prove distinct identities.
+    // assertDistinctKeyIdentities below is the authoritative public-key comparison.
     if (ordinaryKey && ordinaryKey.replace(/\s/g, "") === key.replace(/\s/g, "")) throw new Error("PRIVILEGED_KEY_MUST_BE_SEPARATE");
   }
   for (const raw of [env.CONTROL_TARGETS_JSON, env.CONTROL_WINDOWS_TARGETS_JSON]) {
@@ -160,6 +162,7 @@ export async function runPrivilegedOperation(env:PrivilegedRuntimeEnv, actor:Con
   raw:PrivilegedInput, dependencies:PrivilegedDependencies=defaults) {
   let dispatched = false;
   try {
+    actor = snapshotControlActor(actor);
     if (!actor || !actorAllows(actor,PRIVILEGED_SCOPE)) throw new Error("PRIVILEGED_SCOPE_REQUIRED");
     const input = inputSchema.parse(raw);
     enforceTopologyAuthorization(env, actor, input.node_uid);

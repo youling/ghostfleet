@@ -150,6 +150,9 @@ function assertOriginIsControllerCapable(
   topology: ControlTopologyPolicy,
   binding: TopologyBinding,
 ): void {
+  // null is an explicit protected-central binding, not an unknown origin fallback.
+  // Trusted ingress must isolate this principal from managed-node credentials;
+  // this policy checks authenticated identity, not physical network provenance.
   if (binding.origin_node_uid !== null) {
     const originNode = topology.nodes[binding.origin_node_uid];
     if (!originNode || originNode.role !== "CONTROLLER_CAPABLE") {

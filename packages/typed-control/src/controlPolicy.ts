@@ -14,6 +14,14 @@ export interface ControlActor {
   authKind: "oauth" | "break_glass";
 }
 
+/** Keep scope, identity, and receipt binding stable across asynchronous dispatch. */
+export function snapshotControlActor(actor: ControlActor | undefined): ControlActor | undefined {
+  if (!actor || !Array.isArray(actor.scopes)) return undefined;
+  const scopes = actor.scopes.slice();
+  Object.freeze(scopes);
+  return Object.freeze({ userId: actor.userId, authKind: actor.authKind, scopes });
+}
+
 export async function controlActorRef(actor: ControlActor): Promise<string> {
   const bytes = await crypto.subtle.digest("SHA-256",new TextEncoder().encode(actor.authKind+":"+actor.userId));
   return Array.from(new Uint8Array(bytes),byte=>byte.toString(16).padStart(2,"0")).join("");
