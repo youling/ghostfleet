@@ -1,6 +1,7 @@
 /** Dedicated optional privileged lane. No ordinary exec scope/key inheritance and no shell input. */
 import { z } from "zod";
-import { PRIVILEGED_SCOPE, actorAllows, type ControlActor } from "./controlPolicy.js";
+import { PRIVILEGED_SCOPE, actorAllows, type ControlActor, type ControlSourceEnv } from "./controlPolicy.js";
+import { enforceTopologyAuthorization, type ControlTopologyEnv } from "./topologyPolicy.js";
 import { parseControlTargets } from "./targets.js";
 import { connectControlTarget, type ControlNetworkEnv } from "./transport.js";
 import { executeSshCommand, SshExecutionError, sshKeyFingerprintSha256 } from "./sshClient.js";
@@ -51,7 +52,7 @@ const policySchema = z.object({
   operations: z.array(operation).min(1).max(2),
 }).strict();
 
-export interface PrivilegedRuntimeEnv extends ControlNetworkEnv {
+export interface PrivilegedRuntimeEnv extends ControlNetworkEnv, ControlSourceEnv, ControlTopologyEnv {
   CONTROL_PRIVILEGED_TARGETS_JSON?: string;
   CONTROL_PRIVILEGED_USERNAME?: string;
   CONTROL_PRIVILEGED_POLICY_JSON?: string;
@@ -161,6 +162,7 @@ export async function runPrivilegedOperation(env:PrivilegedRuntimeEnv, actor:Con
   try {
     if (!actor || !actorAllows(actor,PRIVILEGED_SCOPE)) throw new Error("PRIVILEGED_SCOPE_REQUIRED");
     const input = inputSchema.parse(raw);
+    enforceTopologyAuthorization(env, actor, input.node_uid);
     const policy = currentPrivilegedPolicyBinding(env,input.node_uid,input.operation);
     if (input.action === "execute" &&
       (policy.generation !== input.generation || policy.profile_generation !== input.profile_generation)) throw new Error("PRIVILEGED_POLICY_BINDING_MISMATCH");

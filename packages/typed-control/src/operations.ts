@@ -1,4 +1,5 @@
 import { actorAllows, controlActorRef, EXEC_SCOPE, OPERATE_SCOPE, READ_SCOPE, parseControlPolicy, expectedControlSource, type ControlActor, type NodePolicy } from "./controlPolicy.js";
+import { filterTopologyNodes, enforceTopologyAuthorization } from "./topologyPolicy.js";
 import { observationCommand, serviceCommand, type Observation } from "./platformOperations.js";
 import { NODE_UID_RE } from "./routing.js";
 import { resolveRuntimeControlTarget } from "./runtimeTarget.js";
@@ -49,14 +50,15 @@ export function safeControlError(error: unknown): string {
 export function listControlNodes(env:ControlEnvironment, actor:ControlActor | undefined) {
   if (!actorAllows(actor, READ_SCOPE)) throw new Error("INSUFFICIENT_SCOPE");
   const policy = parseControlPolicy(env.CONTROL_POLICY_JSON,expectedControlSource(env));
-  return { source:policy.source, nodes:Object.entries(policy.nodes).map(([node_uid,node])=>({
+  const rawNodes = Object.entries(policy.nodes).map(([node_uid,node])=>({
     node_uid, display_name:node.display_name, aliases:node.aliases, asset_ref:node.asset_ref, platform:node.platform,
     configured_observations:node.observations,
     configured_services:Object.entries(node.services).map(([service_key,service])=>({service_key,restart_allowed:service.restart_allowed})),
     ...(node.jobs?{configured_jobs:{protocol:node.jobs.protocol,max_runtime_seconds:node.jobs.max_runtime_seconds}}:{}),
     ...(node.sessions?{configured_sessions:{protocol:node.sessions.protocol,max_runtime_seconds:node.sessions.max_runtime_seconds}}:{}),
     // Configuration presence is deliberately not an online/contact/lifecycle assertion.
-  })) };
+  }));
+  return { source:policy.source, nodes:filterTopologyNodes(env, actor, rawNodes) };
 }
 
 /** Canonical operation boundary shared by MCP and future authenticated ingresses. */
@@ -94,6 +96,7 @@ export async function runControlOperation(
     const deadlineAt = Math.min(createDeadlineAt(input.timeout_seconds*1000),started+input.timeout_seconds*1000);
     const policy = parseControlPolicy(env.CONTROL_POLICY_JSON,expectedControlSource(env));
     receipt.policy_revision = policy.source.revision;
+    enforceTopologyAuthorization(env, actor, input.node_uid);
     let node:NodePolicy | undefined;
     if (input.operation !== "shell.exec") {
       node = policy.nodes[input.node_uid];
