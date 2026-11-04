@@ -9,6 +9,70 @@ test("IPC rejects arbitrary shell/command fields",()=>{
   assert.equal(validateIpcEnvelope({request_id:"r",lease_id:"l",operation_id:"x",target_ref:"t",effect_ref:"e",command:"id"}).code,"IPC_FORBIDDEN_FIELD");
   assert.equal(validateIpcEnvelope({request_id:"r",lease_id:"l",operation_id:"x",target_ref:"t",effect_ref:"e",parameters:{}}).ok,true);
 });
+test("helper verifies and executes the same nested parameter snapshot across async verification",async()=>{
+  let resumeVerification;
+  const pause=new Promise(resolve=>{resumeVerification=resolve;});
+  let approved;
+  let executed;
+  const helper=createPrivilegedHelper({
+    leaseVerifier:async({context})=>{
+      approved=context.parameters;
+      assert.equal(approved.items[0].value,"approved");
+      await pause;
+      return {ok:true};
+    },
+    operations:{get:()=>({mutating:false,execute:async envelope=>{
+      executed=envelope.parameters;
+      return {result:"SUCCESS"};
+    }})},
+    effectFences:createHelperEffectFenceStore(),
+  });
+  const parameters={items:[{value:"approved"}],options:{enabled:true}};
+  const pending=helper.handle({request_id:"snapshot",lease_id:"lease",operation_id:"fixture.inspect",target_ref:"fixture/target",effect_ref:"snapshot-effect",parameters});
+  parameters.items[0].value="tampered";
+  parameters.items.push({value:"injected"});
+  parameters.options.enabled=false;
+  assert.throws(()=>{approved.items[0].value="verifier-mutation";},TypeError);
+  resumeVerification();
+  assert.equal((await pending).ok,true);
+  assert.equal(executed,approved);
+  assert.deepEqual(executed,{items:[{value:"approved"}],options:{enabled:true}});
+  assert.notEqual(executed,parameters);
+});
+test("invalid IPC parameter data is rejected before verification or execution",async t=>{
+  const cycle={};cycle.self=cycle;
+  let deep={};for(let i=0;i<66;i++) deep={child:deep};
+  let getterCalls=0;
+  const accessor={get value(){getterCalls++;return "not-read";}};
+  const cases=[cycle,deep,accessor,{value:undefined},{value:NaN},{value:Infinity},
+    {value:1n},{value:()=>"not-called"},{value:new Date()},
+    {value:new Map()},{value:new Array(2)},{value:Array(10001).fill(null)},
+    {[Symbol("hidden")]:true}];
+  let verifierCalls=0,executionCalls=0;
+  const helper=createPrivilegedHelper({
+    leaseVerifier:async()=>{verifierCalls++;return {ok:true};},
+    operations:{get:()=>({mutating:true,execute:async()=>{executionCalls++;return {result:"SUCCESS"};}})},
+    effectFences:createHelperEffectFenceStore(),
+  });
+  for(const [index,parameters] of cases.entries()) await t.test(String(index),async()=>{
+    const result=await helper.handle({request_id:"invalid",lease_id:"lease",operation_id:"fixture.mutate",target_ref:"fixture/target",effect_ref:"invalid-effect",parameters});
+    assert.equal(result.code,"IPC_PARAMETERS_INVALID");
+    assert.equal(result.receipt,null);
+  });
+  assert.equal(getterCalls,0);
+  assert.equal(verifierCalls,0);
+  assert.equal(executionCalls,0);
+});
+test("IPC preserves valid JSON values and literal prototype keys without sharing caller references",()=>{
+  const parameters=JSON.parse('{"__proto__":{"value":"data"},"constructor":null,"values":[true,false,null,0,"text"]}');
+  const result=validateIpcEnvelope({request_id:"json",lease_id:"lease",operation_id:"fixture.inspect",target_ref:"fixture/target",effect_ref:"json-effect",parameters});
+  assert.equal(result.ok,true);
+  assert.deepEqual(result.envelope.parameters,parameters);
+  assert.equal(Object.getPrototypeOf(result.envelope.parameters),Object.prototype);
+  assert.equal(Object.prototype.value,undefined);
+  assert.ok(Object.isFrozen(result.envelope.parameters.__proto__));
+  assert.ok(Object.isFrozen(result.envelope.parameters.values));
+});
 test("ordinary principal boundary rejects root-equivalent bypasses",()=>{
   assert.equal(validateOrdinaryPrincipalBoundary({groups:["users"],nopasswd_sudo:false}).ok,true);
   const result=validateOrdinaryPrincipalBoundary({groups:["docker"],nopasswd_sudo:true});
