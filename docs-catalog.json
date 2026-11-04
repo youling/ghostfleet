@@ -20,6 +20,16 @@
       ]
     },
     {
+      "path": "docs/TOPOLOGY.md",
+      "topics": [
+        "compatibility",
+        "schema",
+        "axes",
+        "custody",
+        "rollout"
+      ]
+    },
+    {
       "path": "docs/PLUGIN_DEVELOPMENT.md",
       "topics": [
         "ownership",

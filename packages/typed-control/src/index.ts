@@ -9,4 +9,5 @@ export * from "./sessionOperations.js";
 export * from "./privilegedOperations.js";
 export * from "./nativeBackend.js";
 export * from "./transportContract.js";
+export * from "./topologyPolicy.js";
 export type {ControlEnvironment} from "./environment.js";

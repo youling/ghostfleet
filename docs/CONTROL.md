@@ -18,7 +18,7 @@
 
 本控制面中的身份准入不自动将节点登记到独立消费者的目录，也不配置其鉴权或调用路由。每个消费者必须回读同一身份，验证允许与越权调用，并验收切换和回滚；具体步骤见 [迁移](MIGRATION.md)。
 
-旧客户端绑定的契约不能只改名为“通用”就沿用授权。精确客户端配置、重定向、调用主体、权限范围与批准均需重验；操作员控制面令牌不自动成为设备执行或特权授权。
+旧客户端绑定的契约不能只改名为“通用”就沿用授权。精确客户端配置、重定向、调用主体、权限范围与批准均需重验；操作员控制面令牌不自动成为设备执行或特权授权。可选用 `CONTROL_TOPOLOGY_MODE` 与 `CONTROL_TOPOLOGY_JSON` 开启服务端拓扑策略与发起来源约束；详见 [拓扑策略与发起来源约束](TOPOLOGY.md)。
 
 <!-- topic:backend -->
 ### 后端、截止时间和凭据
@@ -50,7 +50,7 @@ The main export is `.`; select Cloudflare networking through `./cloudflare` and 
 
 R0 is bounded observation; determine R1/R2 approval and risk from the contract and source, never downgrade a command by name. Job/session mutations such as start/cancel/write/close are distinct from status/read observation. Admission in this control plane does not register a node in an independent consumer's catalog or configure its authentication/call routes. Each consumer must read back the same identity, validate permitted and unauthorized calls, and accept cutover/rollback; see [Migration](MIGRATION.md).
 
-Renaming a legacy client/profile to “generic” does not preserve authority: exact actor profile, redirect, scopes and approvals need revalidation.
+Renaming a legacy client/profile to “generic” does not preserve authority: exact actor profile, redirect, scopes and approvals need revalidation. Optional server-side topology and origin enforcement can be enabled via `CONTROL_TOPOLOGY_MODE` and `CONTROL_TOPOLOGY_JSON`; see [Topology and origin enforcement](TOPOLOGY.md).
 
 <!-- topic:backend -->
 ### Backend, deadlines and credentials
