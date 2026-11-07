@@ -5,9 +5,15 @@
  * between Agent requestors and Human approval / signing authority.
  */
 import { Buffer } from "buffer";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
-import { type ControlActor, controlActorRef } from "./controlPolicy.js";
+import {
+  type ControlActor,
+  controlActorRef,
+  actorAllows,
+  PRIVILEGED_APPROVE_SCOPE,
+  PRIVILEGED_SCOPE,
+} from "./controlPolicy.js";
 
 export const ADMIN_COMMAND_DOMAIN = new TextEncoder().encode("ghostfleet-approved-admin-command/v1\0");
 
@@ -39,9 +45,17 @@ export const adminCommandRequestInputSchema = z.object({
 
 export type AdminCommandRequestInput = z.infer<typeof adminCommandRequestInputSchema>;
 
-export type AdminApprovalState = "PENDING" | "APPROVED" | "DENIED" | "EXPIRED" | "CONSUMED" | "CANCELLED";
+export type AdminApprovalState =
+  | "PENDING"
+  | "APPROVED"
+  | "DISPATCHED"
+  | "CONSUMED"
+  | "DENIED"
+  | "EXPIRED"
+  | "CANCELLED";
 
 export interface AdminApprovalRecord {
+  version: number;
   request_id: string;
   node_uid: string;
   actor_ref: string;
@@ -56,6 +70,8 @@ export interface AdminApprovalRecord {
   created_at: number;
   expires_at: number;
   state: AdminApprovalState;
+  dispatch_state?: "NOT_DISPATCHED" | "DISPATCHED" | "UNKNOWN";
+  reconcile_required?: boolean;
   decision?: {
     decided_by: string;
     decided_at: number;
@@ -73,6 +89,11 @@ export interface AdminApprovalRecord {
   consumption?: {
     consumed_at: number;
     consumed_by_actor_ref: string;
+  };
+  cancellation?: {
+    cancelled_at: number;
+    cancelled_by_actor_ref: string;
+    reason?: string;
   };
 }
 
@@ -96,16 +117,59 @@ export interface NodeGenerationPolicy {
 }
 
 export interface AdminApprovalLedgerStore {
+  create(record: AdminApprovalRecord): Promise<void>;
   save(record: AdminApprovalRecord): Promise<void>;
   get(requestId: string): Promise<AdminApprovalRecord | null>;
   list(filter?: { node_uid?: string; state?: AdminApprovalState; work_ref?: string }): Promise<AdminApprovalRecord[]>;
+  compareAndSwap(
+    requestId: string,
+    expectedState: AdminApprovalState | AdminApprovalState[],
+    mutate: (current: AdminApprovalRecord) => AdminApprovalRecord,
+  ): Promise<AdminApprovalRecord>;
 }
 
 export class InMemoryAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
   private records = new Map<string, AdminApprovalRecord>();
+  private locks = new Map<string, Promise<void>>();
+
+  private async acquireLock(key: string): Promise<() => void> {
+    while (this.locks.has(key)) {
+      await this.locks.get(key);
+    }
+    let unlock: () => void = () => {};
+    const lockPromise = new Promise<void>((resolve) => {
+      unlock = () => {
+        this.locks.delete(key);
+        resolve();
+      };
+    });
+    this.locks.set(key, lockPromise);
+    return unlock;
+  }
+
+  async create(record: AdminApprovalRecord): Promise<void> {
+    const unlock = await this.acquireLock(record.request_id);
+    try {
+      if (this.records.has(record.request_id)) {
+        throw new Error("ADMIN_REQUEST_ALREADY_EXISTS");
+      }
+      const initial = JSON.parse(JSON.stringify(record));
+      if (!initial.version) initial.version = 1;
+      this.records.set(record.request_id, initial);
+    } finally {
+      unlock();
+    }
+  }
 
   async save(record: AdminApprovalRecord): Promise<void> {
-    this.records.set(record.request_id, JSON.parse(JSON.stringify(record)));
+    const unlock = await this.acquireLock(record.request_id);
+    try {
+      const cloned = JSON.parse(JSON.stringify(record));
+      if (!cloned.version) cloned.version = 1;
+      this.records.set(record.request_id, cloned);
+    } finally {
+      unlock();
+    }
   }
 
   async get(requestId: string): Promise<AdminApprovalRecord | null> {
@@ -119,6 +183,29 @@ export class InMemoryAdminApprovalLedgerStore implements AdminApprovalLedgerStor
     if (filter?.state) all = all.filter(r => r.state === filter.state);
     if (filter?.work_ref) all = all.filter(r => r.work_ref === filter.work_ref);
     return all;
+  }
+
+  async compareAndSwap(
+    requestId: string,
+    expectedState: AdminApprovalState | AdminApprovalState[],
+    mutate: (current: AdminApprovalRecord) => AdminApprovalRecord,
+  ): Promise<AdminApprovalRecord> {
+    const unlock = await this.acquireLock(requestId);
+    try {
+      const current = this.records.get(requestId);
+      if (!current) throw new Error("ADMIN_REQUEST_NOT_FOUND");
+      const allowed = Array.isArray(expectedState) ? expectedState : [expectedState];
+      if (!allowed.includes(current.state)) {
+        throw new Error(`ADMIN_CAS_STATE_MISMATCH:${current.state}`);
+      }
+      const cloned = JSON.parse(JSON.stringify(current));
+      const next = mutate(cloned);
+      next.version = (current.version ?? 0) + 1;
+      this.records.set(requestId, JSON.parse(JSON.stringify(next)));
+      return JSON.parse(JSON.stringify(next));
+    } finally {
+      unlock();
+    }
   }
 }
 
@@ -149,9 +236,12 @@ export class AdminApprovalManager {
     const input = adminCommandRequestInputSchema.parse(inputRaw);
     const actorRef = await controlActorRef(actor);
     const now = Math.floor(Date.now() / 1000);
-    const requestId = `req-${now}-${createHash("sha256").update(`${actorRef}:${input.node_uid}:${now}`).digest("hex").slice(0, 16)}`;
+    const entropy = randomBytes(8).toString("hex");
+    const cmdDigest = createHash("sha256").update(canonicalJson(input.command)).digest("hex").slice(0, 16);
+    const requestId = `req-${now}-${entropy}-${cmdDigest}`;
 
     const record: AdminApprovalRecord = {
+      version: 1,
       request_id: requestId,
       node_uid: input.node_uid,
       actor_ref: actorRef,
@@ -168,7 +258,7 @@ export class AdminApprovalManager {
       state: "PENDING",
     };
 
-    await this.store.save(record);
+    await this.store.create(record);
     return record;
   }
 
@@ -176,55 +266,64 @@ export class AdminApprovalManager {
     humanActor: ControlActor,
     requestId: string,
     policy: NodeGenerationPolicy,
-    options?: { reason?: string; issuerOverride?: TrustedIssuerPort },
+    options?: { reason?: string },
   ): Promise<AdminApprovalRecord> {
-    const record = await this.store.get(requestId);
-    if (!record) throw new Error("ADMIN_REQUEST_NOT_FOUND");
-    if (record.state !== "PENDING") {
-      throw new Error(`ADMIN_INVALID_STATE_FOR_APPROVAL:${record.state}`);
+    if (!actorAllows(humanActor, PRIVILEGED_APPROVE_SCOPE)) {
+      throw new Error("APPROVER_NOT_AUTHORIZED");
+    }
+
+    const existing = await this.store.get(requestId);
+    if (!existing) throw new Error("ADMIN_REQUEST_NOT_FOUND");
+
+    const approverRef = await controlActorRef(humanActor);
+    if (existing.actor_ref === approverRef || existing.requester_user_id === humanActor.userId) {
+      throw new Error("APPROVER_CANNOT_BE_REQUESTER");
+    }
+
+    if (existing.state !== "PENDING") {
+      throw new Error(`ADMIN_INVALID_STATE_FOR_APPROVAL:${existing.state}`);
     }
 
     const now = Math.floor(Date.now() / 1000);
-    if (now >= record.expires_at) {
-      record.state = "EXPIRED";
-      await this.store.save(record);
+    if (now >= existing.expires_at) {
+      await this.expireRequest(requestId);
       throw new Error("ADMIN_REQUEST_EXPIRED");
     }
 
-    const issuer = options?.issuerOverride ?? this.issuer;
+    const issuer = this.issuer;
     if (!policy.issuer_ids.includes(issuer.issuerId)) {
       throw new Error("ADMIN_ISSUER_NOT_AUTHORIZED_FOR_NODE");
     }
 
-    const leaseId = `lease-${now}-${record.request_id.slice(-8)}`;
-    const operationId = `op-${now}-${record.request_id.slice(-8)}`;
+    const leaseId = `lease-${now}-${existing.request_id.slice(-8)}`;
+    const operationId = `op-${now}-${existing.request_id.slice(-8)}`;
 
     const lease = {
       schema: "ghostfleet-approved-admin-lease/v1" as const,
       lease_id: leaseId,
-      request_id: record.request_id,
+      request_id: existing.request_id,
       operation_id: operationId,
       operation: "admin.command" as const,
       issuer_id: issuer.issuerId,
-      node_uid: record.node_uid,
-      subject_ref: record.actor_ref,
+      node_uid: existing.node_uid,
+      subject_ref: existing.actor_ref,
       audience_ref: "ghostfleet-approved-admin-command/v1" as const,
       generation: policy.generation,
       profile_generation: policy.profile_generation,
-      work_ref: record.work_ref,
-      purpose: record.purpose,
-      approval_ref: record.approval_ref,
-      rollback_ref: record.rollback_ref,
+      work_ref: existing.work_ref,
+      purpose: existing.purpose,
+      approval_ref: existing.approval_ref,
+      rollback_ref: existing.rollback_ref,
       issued_at: now,
       not_before: now,
-      expires_at: record.expires_at,
+      expires_at: existing.expires_at,
       max_uses: 1 as const,
-      max_runtime_seconds: record.max_runtime_seconds,
+      max_runtime_seconds: existing.max_runtime_seconds,
       command: {
-        argv: record.command.argv,
-        cwd: record.command.cwd,
-        env: record.command.env,
-        executable_sha256: record.command.executable_sha256,
+        argv: existing.command.argv,
+        cwd: existing.command.cwd,
+        env: existing.command.env,
+        executable_sha256: existing.command.executable_sha256,
         output: "discard" as const,
       },
     };
@@ -238,94 +337,136 @@ export class AdminApprovalManager {
     const leaseB64 = Buffer.from(canonicalLeaseBytes).toString("base64");
     const leaseDigest = sha256Hex(canonicalLeaseBytes);
 
-    record.state = "APPROVED";
-    record.decision = {
-      decided_by: humanActor.userId,
-      decided_at: now,
-      decision: "APPROVED",
-      reason: options?.reason,
-    };
-    record.lease = {
-      lease_id: leaseId,
-      operation_id: operationId,
-      issuer_id: signed.issuer_id,
-      raw_lease_b64: leaseB64,
-      signature_b64: signed.signature_b64,
-      lease_digest: leaseDigest,
-    };
-
-    await this.store.save(record);
-    return record;
+    return this.store.compareAndSwap(requestId, "PENDING", (record) => {
+      record.state = "APPROVED";
+      record.decision = {
+        decided_by: humanActor.userId,
+        decided_at: now,
+        decision: "APPROVED",
+        reason: options?.reason,
+      };
+      record.lease = {
+        lease_id: leaseId,
+        operation_id: operationId,
+        issuer_id: signed.issuer_id,
+        raw_lease_b64: leaseB64,
+        signature_b64: signed.signature_b64,
+        lease_digest: leaseDigest,
+      };
+      return record;
+    });
   }
 
   async denyRequest(humanActor: ControlActor, requestId: string, reason?: string): Promise<AdminApprovalRecord> {
-    const record = await this.store.get(requestId);
-    if (!record) throw new Error("ADMIN_REQUEST_NOT_FOUND");
-    if (record.state !== "PENDING") {
-      throw new Error(`ADMIN_INVALID_STATE_FOR_DENIAL:${record.state}`);
+    if (!actorAllows(humanActor, PRIVILEGED_APPROVE_SCOPE)) {
+      throw new Error("APPROVER_NOT_AUTHORIZED");
     }
 
     const now = Math.floor(Date.now() / 1000);
-    record.state = "DENIED";
-    record.decision = {
-      decided_by: humanActor.userId,
-      decided_at: now,
-      decision: "DENIED",
-      reason,
-    };
-
-    await this.store.save(record);
-    return record;
+    return this.store.compareAndSwap(requestId, "PENDING", (record) => {
+      record.state = "DENIED";
+      record.decision = {
+        decided_by: humanActor.userId,
+        decided_at: now,
+        decision: "DENIED",
+        reason,
+      };
+      return record;
+    });
   }
 
   async cancelRequest(actor: ControlActor, requestId: string, reason?: string): Promise<AdminApprovalRecord> {
-    const record = await this.store.get(requestId);
-    if (!record) throw new Error("ADMIN_REQUEST_NOT_FOUND");
-    if (record.state === "CONSUMED") {
-      throw new Error("ADMIN_CANNOT_CANCEL_CONSUMED_LEASE");
-    }
-    if (record.state === "CANCELLED") {
-      return record;
+    const existing = await this.store.get(requestId);
+    if (!existing) throw new Error("ADMIN_REQUEST_NOT_FOUND");
+
+    const callerRef = await controlActorRef(actor);
+    const isOwner = existing.actor_ref === callerRef;
+    const isSupervisor = actorAllows(actor, PRIVILEGED_APPROVE_SCOPE);
+    if (!isOwner && !isSupervisor) {
+      throw new Error("ADMIN_REQUEST_ACCESS_DENIED");
     }
 
-    record.state = "CANCELLED";
-    await this.store.save(record);
-    return record;
-  }
-
-  async markConsumed(actorRef: string, requestId: string): Promise<AdminApprovalRecord> {
-    const record = await this.store.get(requestId);
-    if (!record) throw new Error("ADMIN_REQUEST_NOT_FOUND");
-    if (record.state !== "APPROVED") {
-      if (record.state === "CONSUMED") {
-        throw new Error("ADMIN_LEASE_ALREADY_CONSUMED");
-      }
-      throw new Error(`ADMIN_NOT_APPROVED:${record.state}`);
+    if (existing.state === "CANCELLED") {
+      return existing;
+    }
+    if (existing.state === "EXPIRED" || existing.state === "DENIED") {
+      throw new Error(`ADMIN_INVALID_STATE_FOR_CANCELLATION:${existing.state}`);
     }
 
     const now = Math.floor(Date.now() / 1000);
-    if (now >= record.expires_at) {
-      record.state = "EXPIRED";
-      await this.store.save(record);
+    return this.store.compareAndSwap(requestId, ["PENDING", "APPROVED", "DISPATCHED", "CONSUMED"], (record) => {
+      record.state = "CANCELLED";
+      record.cancellation = {
+        cancelled_at: now,
+        cancelled_by_actor_ref: callerRef,
+        reason,
+      };
+      return record;
+    });
+  }
+
+  async markDispatched(actorRef: string, requestId: string): Promise<AdminApprovalRecord> {
+    const existing = await this.store.get(requestId);
+    if (!existing) throw new Error("ADMIN_REQUEST_NOT_FOUND");
+    if (existing.actor_ref !== actorRef) throw new Error("ADMIN_ACTOR_MISMATCH");
+
+    const now = Math.floor(Date.now() / 1000);
+    if (now >= existing.expires_at) {
+      await this.expireRequest(requestId);
       throw new Error("ADMIN_LEASE_EXPIRED");
     }
 
-    record.state = "CONSUMED";
-    record.consumption = {
-      consumed_at: now,
-      consumed_by_actor_ref: actorRef,
-    };
+    return this.store.compareAndSwap(requestId, "APPROVED", (record) => {
+      record.state = "DISPATCHED";
+      record.dispatch_state = "DISPATCHED";
+      return record;
+    });
+  }
 
-    await this.store.save(record);
-    return record;
+  async recordDispatchFailure(requestId: string): Promise<AdminApprovalRecord> {
+    return this.store.compareAndSwap(requestId, "DISPATCHED", (record) => {
+      record.state = "APPROVED";
+      record.dispatch_state = "NOT_DISPATCHED";
+      return record;
+    });
+  }
+
+  async recordDispatchUnknown(requestId: string): Promise<AdminApprovalRecord> {
+    return this.store.compareAndSwap(requestId, "DISPATCHED", (record) => {
+      record.dispatch_state = "UNKNOWN";
+      record.reconcile_required = true;
+      return record;
+    });
+  }
+
+  async recordDispatchSuccess(actorRef: string, requestId: string): Promise<AdminApprovalRecord> {
+    const now = Math.floor(Date.now() / 1000);
+    return this.store.compareAndSwap(requestId, "DISPATCHED", (record) => {
+      record.state = "CONSUMED";
+      record.consumption = {
+        consumed_at: now,
+        consumed_by_actor_ref: actorRef,
+      };
+      return record;
+    });
+  }
+
+  async expireRequest(requestId: string): Promise<AdminApprovalRecord | null> {
+    try {
+      return await this.store.compareAndSwap(requestId, ["PENDING", "APPROVED"], (record) => {
+        record.state = "EXPIRED";
+        return record;
+      });
+    } catch {
+      return null;
+    }
   }
 
   async getRequest(requestId: string): Promise<AdminApprovalRecord | null> {
     const record = await this.store.get(requestId);
     if (!record) return null;
     if ((record.state === "PENDING" || record.state === "APPROVED") && Math.floor(Date.now() / 1000) >= record.expires_at) {
-      record.state = "EXPIRED";
-      await this.store.save(record);
+      return this.expireRequest(requestId);
     }
     return record;
   }

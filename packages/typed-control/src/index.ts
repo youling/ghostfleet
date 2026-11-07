@@ -13,3 +13,4 @@ export type {ControlEnvironment} from "./environment.js";
 export * from "./approvedAdminCommand.js";
 export * from "./approvedAdminApproval.js";
 export * from "./approvedAdminConsumer.js";
+export * from "./dcrAdapter.js";
