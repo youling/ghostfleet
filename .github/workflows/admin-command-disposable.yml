@@ -26,11 +26,14 @@ jobs:
           persist-credentials: false
       - name: Prepare an isolated root-owned interpreter
         run: |
-          test ! -e /opt/ghostfleet-admin-ci
-          sudo /usr/bin/python3 -m venv /opt/ghostfleet-admin-ci
-          sudo /opt/ghostfleet-admin-ci/bin/python -I -m pip install --disable-pip-version-check cryptography==50.0.2
+          test ! -e /run/ghostfleet-admin-ci-venv
+          sudo /usr/bin/python3 -m venv /run/ghostfleet-admin-ci-venv
+          sudo chmod 0700 /run/ghostfleet-admin-ci-venv
+          sudo /run/ghostfleet-admin-ci-venv/bin/python -I -m pip install --disable-pip-version-check cryptography==50.0.2
+      - name: Inspect the fixed interpreter trust chain
+        run: sudo stat -Lc '%u:%g %a %n' / /run /run/ghostfleet-admin-ci-venv /run/ghostfleet-admin-ci-venv/bin /run/ghostfleet-admin-ci-venv/bin/python /usr /usr/bin /usr/bin/python3 /usr/bin/systemctl /usr/bin/systemd-run
       - name: Verify actual root effect and cgroup lifecycle
-        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT /opt/ghostfleet-admin-ci/bin/python -I scripts/check-approved-admin-disposable.py
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT /run/ghostfleet-admin-ci-venv/bin/python -I scripts/check-approved-admin-disposable.py
       - name: Remove the disposable interpreter
         if: always()
-        run: sudo rm -rf -- /opt/ghostfleet-admin-ci
+        run: sudo rm -rf -- /run/ghostfleet-admin-ci-venv
