@@ -417,6 +417,20 @@
       "line_sha256": "f82d951ce897624a528c5277f5bf034e4a7fc8609b38342c17f21b128fc0a3b2",
       "kind": "inert-fixture-or-detector",
       "reason": "Synthetic node identity for RF-4 compat test; no real locator or device."
+    },
+    {
+      "path": "packages/typed-control/test/fileTransfer.test.ts",
+      "rule": "node-identity",
+      "sha256": "546cdb34d144a0452f2e2e8ba3b4a7d0d8ed79db2436bd658dd0e1a7877df9df",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic transfer identity fixture without a locator, credential or live node binding."
+    },
+    {
+      "path": "packages/typed-control/test/fileTransfer.test.ts",
+      "rule": "node-identity",
+      "sha256": "f6da12024bd40e841fee10b1f47bcb82c1ba0a6afa3189a14c57cd45e6e97d6f",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic transfer identity fixture without a locator, credential or live node binding."
     }
   ],
   "binary_reviews": [
@@ -704,6 +718,48 @@
       "sha256": "a41dd0d542d54081493846dbece9251a826ca46acea714e8f80d0a2af2b296e0",
       "reason": "Current official Tailscale Trust credentials admin-console entry for creating scoped OAuth clients; no login factor, credential value, query string or instance identity.",
       "review": "Tailscale OAuth clients primary documentation links directly to this exact HTTPS Trust credentials page. It is a public provider destination, not a Fleet runtime."
+    },
+    {
+      "path": "docs/FILE_TRANSFER.md",
+      "sha256": "557cd7c4768206c8ef857dc46da8d46b70c0eb29502098287d61187eb6d93379",
+      "reason": "Official public upstream documentation for the optional file transfer contract; not an instance endpoint.",
+      "review": "GhostFleet #36 bounded source dispatch; official reference checked 2026-11-07."
+    },
+    {
+      "path": "docs/FILE_TRANSFER.md",
+      "sha256": "3ee4becd84acea65ee700af5b8b17223006d2ea3c29b13ad95a2e5acb0a3114d",
+      "reason": "Official public upstream documentation for the optional file transfer contract; not an instance endpoint.",
+      "review": "GhostFleet #36 bounded source dispatch; official reference checked 2026-11-07."
+    },
+    {
+      "path": "docs/FILE_TRANSFER.md",
+      "sha256": "b932a68d9edd4180c8e2cba176ca8f61a2671e88f9eca768217e4ecc532a6465",
+      "reason": "Official public upstream documentation for the optional file transfer contract; not an instance endpoint.",
+      "review": "GhostFleet #36 bounded source dispatch; official reference checked 2026-11-07."
+    },
+    {
+      "path": "docs/FILE_TRANSFER.md",
+      "sha256": "ada29a7623d267ba1085fae932b6c4aa9f7eae0ab35268d80807d61d2e401802",
+      "reason": "Official public upstream documentation for the optional file transfer contract; not an instance endpoint.",
+      "review": "GhostFleet #36 bounded source dispatch; official reference checked 2026-11-07."
+    },
+    {
+      "path": "docs/FILE_TRANSFER.md",
+      "sha256": "cad698db9ba54a4fe386afd1a4dab07209b5dc2aff5821e6ff3dd2ffc24de7ed",
+      "reason": "Official public upstream documentation for the optional file transfer contract; not an instance endpoint.",
+      "review": "GhostFleet #36 bounded source dispatch; official reference checked 2026-11-07."
+    },
+    {
+      "path": "docs/FILE_TRANSFER.md",
+      "sha256": "4cd470fd59bd5f42ef9973aa853242a16f90682e1f6291df7e4c28a45fe45733",
+      "reason": "Official public upstream documentation for the optional file transfer contract; not an instance endpoint.",
+      "review": "GhostFleet #36 bounded source dispatch; official reference checked 2026-11-07."
+    },
+    {
+      "path": "docs/FILE_TRANSFER.md",
+      "sha256": "a65c079e55ca0c921405988dfcc6369e094b1e2d19a3654e78d5150e381f0cd7",
+      "reason": "Official public upstream documentation for the optional file transfer contract; not an instance endpoint.",
+      "review": "GhostFleet #36 bounded source dispatch; official reference checked 2026-11-07."
     }
   ]
 }

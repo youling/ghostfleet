@@ -9,4 +9,7 @@ export * from "./sessionOperations.js";
 export * from "./privilegedOperations.js";
 export * from "./nativeBackend.js";
 export * from "./transportContract.js";
+export * from "./fileTransferContract.js";
+export * from "./fileTransferBackends.js";
 export type {ControlEnvironment} from "./environment.js";
+
