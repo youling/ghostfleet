@@ -12,7 +12,8 @@ license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 dependencies = ["PyYAML==6.0.3"]
 
 [project.optional-dependencies]
-test = ["pytest==8.4.2"]
+test = ["pytest==8.4.2", "cryptography==50.0.2"]
+admin = ["cryptography==50.0.2"]
 android = ["uiautomator2==3.7.0"]
 
 [project.scripts]
