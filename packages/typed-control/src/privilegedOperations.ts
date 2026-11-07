@@ -139,7 +139,7 @@ export async function parsePrivilegedResponse(raw: string, request: PrivilegedRe
 export interface PrivilegedDependencies {connect:typeof connectControlTarget;execute:typeof executeSshCommand}
 const defaults:PrivilegedDependencies = {connect:async()=>{throw new Error("CONTROL_BACKEND_NOT_CONFIGURED");},execute:async()=>{throw new Error("CONTROL_BACKEND_NOT_CONFIGURED");}};
 
-async function assertDistinctKeyIdentities(env:PrivilegedRuntimeEnv, key:string, deadlineAt:number) {
+export async function assertDistinctKeyIdentities(env:PrivilegedRuntimeEnv, key:string, deadlineAt:number) {
   async function identity(pem:string) {
     const imported = await withDeadline(()=>importKey(pem),deadlineAt,"PRIVILEGED_KEY_IMPORT_TIMEOUT",late=>late.dispose());
     try {return await withDeadline(()=>sshKeyFingerprintSha256(imported),deadlineAt,"PRIVILEGED_KEY_IMPORT_TIMEOUT");}

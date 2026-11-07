@@ -10,3 +10,4 @@ export * from "./privilegedOperations.js";
 export * from "./nativeBackend.js";
 export * from "./transportContract.js";
 export type {ControlEnvironment} from "./environment.js";
+export * from "./approvedAdminCommand.js";

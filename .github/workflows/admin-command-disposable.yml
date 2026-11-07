@@ -1,0 +1,36 @@
+name: approved-admin-disposable
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/admin-command-disposable.yml'
+      - 'scripts/check-approved-admin-disposable.py'
+      - 'packages/runtime-python/**'
+      - 'packages/typed-control/src/approvedAdminCommand.ts'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: approved-admin-disposable-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  disposable-systemd:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare an isolated root-owned interpreter
+        run: |
+          test ! -e /opt/ghostfleet-admin-ci
+          sudo /usr/bin/python3 -m venv /opt/ghostfleet-admin-ci
+          sudo /opt/ghostfleet-admin-ci/bin/python -I -m pip install --disable-pip-version-check cryptography==50.0.2
+      - name: Verify actual root effect and cgroup lifecycle
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT /opt/ghostfleet-admin-ci/bin/python -I scripts/check-approved-admin-disposable.py
+      - name: Remove the disposable interpreter
+        if: always()
+        run: sudo rm -rf -- /opt/ghostfleet-admin-ci
