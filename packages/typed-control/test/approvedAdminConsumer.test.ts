@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { Buffer } from "buffer";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   AdminApprovalManager,
   InMemoryAdminApprovalLedgerStore,
+  FileAdminApprovalLedgerStore,
+  defaultApprovalLedgerStore,
   type TrustedIssuerPort,
   type NodeGenerationPolicy,
   ADMIN_COMMAND_DOMAIN,
@@ -106,7 +111,7 @@ describe("G1/G2 Trusted Admin Approval and Consumer API", () => {
     expect(adminConsumerToolNames).not.toContain("fleet_admin_approve" as never);
   });
 
-  it("submits a valid request in PENDING state with atomic audit fields and collision-free ID", async () => {
+  it("submits a valid request in PENDING state with atomic audit fields and 128-bit entropy ID", async () => {
     const manager = new AdminApprovalManager();
     const res = await requestAdminCommand(manager, agentActor, {
       node_uid: uid,
@@ -125,7 +130,8 @@ describe("G1/G2 Trusted Admin Approval and Consumer API", () => {
     });
 
     expect(res.ok).toBe(true);
-    expect(res.request_id).toMatch(/^req-\d+-[0-9a-f]{16}-[0-9a-f]{16}$/);
+    // 16 bytes = 32 hex characters for entropy
+    expect(res.request_id).toMatch(/^req-\d+-[0-9a-f]{32}-[0-9a-f]{16}$/);
     expect(res.state).toBe("PENDING");
     expect(res.node_uid).toBe(uid);
 
@@ -158,8 +164,8 @@ describe("G1/G2 Trusted Admin Approval and Consumer API", () => {
     ]);
 
     expect(res1.request_id).not.toEqual(res2.request_id);
-    expect(res1.request_id).toMatch(/^req-\d+-[0-9a-f]{16}-[0-9a-f]{16}$/);
-    expect(res2.request_id).toMatch(/^req-\d+-[0-9a-f]{16}-[0-9a-f]{16}$/);
+    expect(res1.request_id).toMatch(/^req-\d+-[0-9a-f]{32}-[0-9a-f]{16}$/);
+    expect(res2.request_id).toMatch(/^req-\d+-[0-9a-f]{32}-[0-9a-f]{16}$/);
   });
 
   it("Blocker 1: rejects approval from unprivileged actor (APPROVER_NOT_AUTHORIZED)", async () => {
@@ -189,7 +195,6 @@ describe("G1/G2 Trusted Admin Approval and Consumer API", () => {
     const { issuer } = generateTestIssuer();
     const manager = new AdminApprovalManager(new InMemoryAdminApprovalLedgerStore(), issuer);
 
-    // Operator alice has approval scope, but is also submitting this request
     const res = await requestAdminCommand(manager, humanActor, {
       node_uid: uid,
       work_ref: "work-self",
@@ -205,14 +210,52 @@ describe("G1/G2 Trusted Admin Approval and Consumer API", () => {
       issuer_ids: ["human-issuer-v1"],
     };
 
-    // Operator alice cannot approve their own request
     await expect(
       manager.approveRequest(humanActor, res.request_id, policy),
     ).rejects.toThrow("APPROVER_CANNOT_BE_REQUESTER");
   });
 
+  it("R2 P1-4: enforces node-level allowed approvers and work_ref authorization", async () => {
+    const { issuer } = generateTestIssuer();
+    const manager = new AdminApprovalManager(new InMemoryAdminApprovalLedgerStore(), issuer);
+
+    const res = await requestAdminCommand(manager, agentActor, {
+      node_uid: uid,
+      work_ref: "unauthorized-repo#100",
+      purpose: "work check",
+      command: { argv: ["/usr/bin/id"], cwd: "/", executable_sha256: "a".repeat(64), env: {}, output: "discard" },
+      rollback_ref: "rb-1",
+    });
+
+    // 1. Policy restricting allowed approvers to operator-charlie
+    const policyRestrictedApprover: NodeGenerationPolicy = {
+      generation: "b".repeat(64),
+      profile_generation: "sha256:" + "c".repeat(64),
+      subject_ref: await controlActorRef(agentActor),
+      issuer_ids: ["human-issuer-v1"],
+      allowed_approvers: ["operator-charlie"],
+    };
+
+    await expect(
+      manager.approveRequest(humanActor, res.request_id, policyRestrictedApprover),
+    ).rejects.toThrow("APPROVER_NOT_AUTHORIZED_FOR_NODE");
+
+    // 2. Policy restricting work prefixes
+    const policyRestrictedWork: NodeGenerationPolicy = {
+      generation: "b".repeat(64),
+      profile_generation: "sha256:" + "c".repeat(64),
+      subject_ref: await controlActorRef(agentActor),
+      issuer_ids: ["human-issuer-v1"],
+      allowed_work_prefixes: ["youling/ai-hub#"],
+    };
+
+    await expect(
+      manager.approveRequest(humanActor, res.request_id, policyRestrictedWork),
+    ).rejects.toThrow("WORK_REF_NOT_AUTHORIZED_FOR_NODE");
+  });
+
   it("fails closed when approving without configured issuer (ISSUER_NOT_CONFIGURED)", async () => {
-    const manager = new AdminApprovalManager(); // defaults to DefaultUnconfiguredIssuer
+    const manager = new AdminApprovalManager();
     const res = await requestAdminCommand(manager, agentActor, {
       node_uid: uid,
       work_ref: "work-1",
@@ -486,7 +529,7 @@ describe("G1/G2 Trusted Admin Approval and Consumer API", () => {
     expect(secondExec.error).toBe("ADMIN_LEASE_ALREADY_CONSUMED");
   });
 
-  it("Blocker 3: in-flight cancellation of consumed/dispatched command dispatches remote cancel", async () => {
+  it("R2 P0-2: remote cancel failure or UNKNOWN does NOT mark CANCELLED, preserves reconcile_required", async () => {
     const { issuer } = generateTestIssuer();
     const manager = new AdminApprovalManager(new InMemoryAdminApprovalLedgerStore(), issuer);
     const subject = await controlActorRef(agentActor);
@@ -508,7 +551,7 @@ describe("G1/G2 Trusted Admin Approval and Consumer API", () => {
 
     await manager.approveRequest(humanActor, res.request_id, policy);
 
-    // Mock initial execution that entered STARTED (RUNNING)
+    // Initial execution enters STARTED (RUNNING)
     const connect = vi.fn(async () => ({ close: async () => {}, closed: Promise.resolve() } as never));
     const execute = vi.fn(async () => {
       const record = await manager.getRequest(res.request_id);
@@ -536,19 +579,37 @@ describe("G1/G2 Trusted Admin Approval and Consumer API", () => {
 
     const execRes = await executeAdminCommand(manager, env, agentActor, res.request_id, { connect, execute });
     expect(execRes.ok).toBe(true);
-    expect(execRes.outcome).toBe("RUNNING");
 
-    // Cancel in-flight running command
-    const executeCancel = vi.fn(async () => {
-      const record = await manager.getRequest(res.request_id);
+    // Now simulate cancel returning UNKNOWN due to network drop during cancel call
+    const executeCancelUnknown = vi.fn(async () => {
+      throw new Error("SSH_CONNECTION_DROPPED");
+    });
+
+    const cancelRes = await cancelAdminCommand(manager, env, agentActor, res.request_id, "User requested cancel", {
+      connect,
+      execute: executeCancelUnknown,
+    });
+
+    // P0-2: Must NOT claim CANCELLED if remote stop is unconfirmed
+    expect(cancelRes.ok).toBe(false);
+    expect(cancelRes.state).toBe("CANCEL_REQUESTED");
+    expect(cancelRes.reconcile_required).toBe(true);
+
+    const record = await manager.getRequest(res.request_id);
+    expect(record?.state).toBe("CANCEL_REQUESTED");
+    expect(record?.reconcile_required).toBe(true);
+
+    // Calling status later when node confirms REVOKED reconciles to CANCELLED
+    const executeStatusRevoked = vi.fn(async () => {
+      const rec = await manager.getRequest(res.request_id);
       const receipt = {
         schema: "ghostfleet-approved-admin-receipt/v1",
-        lease_id: record!.lease!.lease_id,
-        request_id: record!.request_id,
-        operation_id: record!.lease!.operation_id,
+        lease_id: rec!.lease!.lease_id,
+        request_id: rec!.request_id,
+        operation_id: rec!.lease!.operation_id,
         node_uid: uid,
         actor_ref: subject,
-        lease_digest: record!.lease!.lease_digest,
+        lease_digest: rec!.lease!.lease_digest,
         command_digest: "e".repeat(64),
         state: "REVOKED",
         duplicate: false,
@@ -563,18 +624,169 @@ describe("G1/G2 Trusted Admin Approval and Consumer API", () => {
       return { exit_code: 0, stdout: JSON.stringify({ ok: true, receipt }), stderr: "", truncated: false };
     });
 
-    const cancelRes = await cancelAdminCommand(manager, env, agentActor, res.request_id, "User requested cancel", {
+    const statusReconcile = await getAdminCommandStatus(manager, env, agentActor, res.request_id, {
       connect,
-      execute: executeCancel,
+      execute: executeStatusRevoked,
     });
-    expect(cancelRes.ok).toBe(true);
-    expect(cancelRes.state).toBe("CANCELLED");
 
-    const record = await manager.getRequest(res.request_id);
-    expect(record?.state).toBe("CANCELLED");
+    expect(statusReconcile.ok).toBe(true);
+    expect(statusReconcile.state).toBe("CANCELLED");
+    expect(statusReconcile.reconcile_required).toBe(false);
   });
 
-  it("Blocker 4: declares standard MCP tools and wires createAdminMcpDispatcher cleanly", async () => {
+  it("R2 P0-3: concurrent execute and cancel preserves terminal receipt without CAS mismatch crash", async () => {
+    const { issuer } = generateTestIssuer();
+    const manager = new AdminApprovalManager(new InMemoryAdminApprovalLedgerStore(), issuer);
+    const subject = await controlActorRef(agentActor);
+    const policy: NodeGenerationPolicy = {
+      generation: "b".repeat(64),
+      profile_generation: "sha256:" + "c".repeat(64),
+      subject_ref: subject,
+      issuer_ids: ["human-issuer-v1"],
+    };
+    const env = await createTestEnv(policy);
+
+    const res = await requestAdminCommand(manager, agentActor, {
+      node_uid: uid,
+      work_ref: "work",
+      purpose: "race test",
+      command: { argv: ["/usr/bin/id"], cwd: "/", executable_sha256: "a".repeat(64), env: {}, output: "discard" },
+      rollback_ref: "rb",
+    });
+
+    await manager.approveRequest(humanActor, res.request_id, policy);
+
+    let releaseExecutionBarrier: () => void = () => {};
+    const executionBarrier = new Promise<void>((resolve) => {
+      releaseExecutionBarrier = resolve;
+    });
+
+    const connect = vi.fn(async () => ({ close: async () => {}, closed: Promise.resolve() } as never));
+    const execute = vi.fn(async () => {
+      // Simulate slow execution in flight on target node
+      await executionBarrier;
+      const rec = await manager.getRequest(res.request_id);
+      const receipt = {
+        schema: "ghostfleet-approved-admin-receipt/v1",
+        lease_id: rec!.lease!.lease_id,
+        request_id: rec!.request_id,
+        operation_id: rec!.lease!.operation_id,
+        node_uid: uid,
+        actor_ref: subject,
+        lease_digest: rec!.lease!.lease_digest,
+        command_digest: "e".repeat(64),
+        state: "SUCCEEDED",
+        duplicate: false,
+        retry_safe: false,
+        reconcile_required: false,
+        exit_code: 0,
+        execution_privilege: "root",
+        output: "discarded",
+        persistent_effects_rolled_back: false,
+        code: null,
+      };
+      return { exit_code: 0, stdout: JSON.stringify({ ok: true, receipt }), stderr: "", truncated: false };
+    });
+
+    // 1. Start execution (will block in execute)
+    const executePromise = executeAdminCommand(manager, env, agentActor, res.request_id, { connect, execute });
+
+    // Wait until ledger state is DISPATCHED
+    while (true) {
+      const current = await manager.getRequest(res.request_id);
+      if (current?.state === "DISPATCHED") break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+
+    // 2. Concurrently invoke cancelAdminCommand while execution is awaiting backend
+    // The cancel will transition ledger to CANCEL_REQUESTED and dispatch cancel to node
+    const cancelPromise = cancelAdminCommand(manager, env, agentActor, res.request_id, "Cancel during execution", {
+      connect,
+      execute: vi.fn(async () => {
+        // Node says cancel failed because command was already executing
+        throw new Error("CANNOT_CANCEL_IN_FLIGHT");
+      }),
+    });
+
+    await cancelPromise;
+
+    // 3. Release the execution barrier so executeAdminCommand finishes
+    releaseExecutionBarrier();
+    const execRes = await executePromise;
+
+    // P0-3: Execution MUST NOT crash with CAS mismatch; terminal receipt MUST be preserved
+    expect(execRes.ok).toBe(true);
+    expect(execRes.outcome).toBe("SUCCEEDED");
+
+    const finalRecord = await manager.getRequest(res.request_id);
+    expect(finalRecord?.state).toBe("CONSUMED");
+    expect(finalRecord?.execution_receipt).toBeDefined();
+    expect(finalRecord?.cancellation?.completed_before_cancel).toBe(true);
+  });
+
+  it("R2 P0-1: FileAdminApprovalLedgerStore survives manager restart and shares state across store instances", async () => {
+    const tmp = await mkdtemp(path.join(tmpdir(), "ghostfleet-ledger-test-"));
+    try {
+      const { issuer } = generateTestIssuer();
+      const storeInstance1 = new FileAdminApprovalLedgerStore(tmp);
+      const manager1 = new AdminApprovalManager(storeInstance1, issuer);
+
+      const res = await requestAdminCommand(manager1, agentActor, {
+        node_uid: uid,
+        work_ref: "youling/ai-hub#300@durable",
+        purpose: "Durable store test across worker instances",
+        command: { argv: ["/usr/bin/id"], cwd: "/", executable_sha256: "b".repeat(64), env: {}, output: "discard" },
+        rollback_ref: "rb",
+      });
+
+      const policy: NodeGenerationPolicy = {
+        generation: "b".repeat(64),
+        profile_generation: "sha256:" + "c".repeat(64),
+        subject_ref: await controlActorRef(agentActor),
+        issuer_ids: ["human-issuer-v1"],
+      };
+
+      await manager1.approveRequest(humanActor, res.request_id, policy);
+
+      // Simulate process restart / new worker instance pointing to the exact same storage directory
+      const storeInstance2 = new FileAdminApprovalLedgerStore(tmp);
+      const manager2 = new AdminApprovalManager(storeInstance2, issuer);
+
+      const recovered = await manager2.getRequest(res.request_id);
+      expect(recovered).not.toBeNull();
+      expect(recovered?.state).toBe("APPROVED");
+      expect(recovered?.lease?.issuer_id).toBe("human-issuer-v1");
+      expect(recovered?.decision?.decided_by).toBe("operator-alice");
+
+      // Instance 2 executes CAS mutation
+      await manager2.requestCancellation(agentActor, res.request_id, "Instance 2 cancels");
+      const cancelled = await manager2.getRequest(res.request_id);
+      expect(cancelled?.state).toBe("CANCELLED");
+
+      // Instance 1 reads back updated state
+      const reRead1 = await manager1.getRequest(res.request_id);
+      expect(reRead1?.state).toBe("CANCELLED");
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("R2 P0-1: fails closed in production when durable store is unconfigured", () => {
+    const origEnv = process.env.NODE_ENV;
+    const origDir = process.env.CONTROL_APPROVAL_STORE_DIR;
+    try {
+      process.env.NODE_ENV = "production";
+      delete process.env.CONTROL_APPROVAL_STORE_DIR;
+
+      expect(() => defaultApprovalLedgerStore()).toThrow("DURABLE_APPROVAL_STORE_REQUIRED");
+      expect(() => new AdminApprovalManager()).toThrow("DURABLE_APPROVAL_STORE_REQUIRED");
+    } finally {
+      process.env.NODE_ENV = origEnv;
+      if (origDir) process.env.CONTROL_APPROVAL_STORE_DIR = origDir;
+    }
+  });
+
+  it("R2 P1-5: declares standard MCP tools with generic host/endpoint and wires createAdminMcpDispatcher cleanly", async () => {
     expect(FLEET_ADMIN_MCP_TOOLS.length).toBe(4);
     for (const tool of FLEET_ADMIN_MCP_TOOLS) {
       expect(tool.name).toMatch(/^fleet_admin_/);
@@ -603,20 +815,18 @@ describe("G1/G2 Trusted Admin Approval and Consumer API", () => {
 
     expect(DCR_INTEGRATION_STATUS).toBe("PRIVATE_CONSUMER_NOT_WIRED");
     expect(DCR_DEPLOYMENT_BOUNDARY.target_endpoint).toBe("https://fleet-control.example.org/mcp");
-    expect(DCR_DEPLOYMENT_BOUNDARY.target_host).toBe("fleet-control.xuezishi.net");
+    expect(DCR_DEPLOYMENT_BOUNDARY.target_host).not.toContain("xuezishi.net");
   });
 
   it("dispatches all tool calls cleanly through dispatchAdminToolCall", async () => {
     const { issuer } = generateTestIssuer();
     const manager = new AdminApprovalManager(new InMemoryAdminApprovalLedgerStore(), issuer);
-    const subject = await controlActorRef(agentActor);
-    const policy: NodeGenerationPolicy = {
+    const env = await createTestEnv({
       generation: "b".repeat(64),
       profile_generation: "sha256:" + "c".repeat(64),
-      subject_ref: subject,
+      subject_ref: await controlActorRef(agentActor),
       issuer_ids: ["human-issuer-v1"],
-    };
-    const env = await createTestEnv(policy);
+    });
     const ctx = { manager, env, actor: agentActor };
 
     // 1. Tool call: request

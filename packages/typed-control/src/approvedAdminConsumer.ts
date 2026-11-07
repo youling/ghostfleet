@@ -10,7 +10,6 @@ import {
   controlActorRef,
   actorAllows,
   PRIVILEGED_APPROVE_SCOPE,
-  PRIVILEGED_SCOPE,
 } from "./controlPolicy.js";
 import {
   AdminApprovalManager,
@@ -222,8 +221,15 @@ export async function getAdminCommandStatus(
     return { ok: false, error: "ADMIN_REQUEST_ACCESS_DENIED" };
   }
 
-  // If already dispatched or consumed and has a lease, query live node status
-  if ((record.state === "DISPATCHED" || record.state === "CONSUMED") && record.lease) {
+  // If already dispatched, consumed, or cancel is requested/reconciliation required, query live node status
+  const requiresLiveStatus =
+    (record.state === "DISPATCHED" ||
+      record.state === "CONSUMED" ||
+      record.state === "CANCEL_REQUESTED" ||
+      record.reconcile_required) &&
+    Boolean(record.lease);
+
+  if (requiresLiveStatus && record.lease) {
     const liveStatus = await runApprovedAdminCommand(
       env,
       actor,
@@ -235,12 +241,17 @@ export async function getAdminCommandStatus(
       },
       dependencies,
     );
+
+    // Reconcile status into durable ledger if node returned receipt
+    const reconciled = await manager.reconcileFromStatus(record.request_id, liveStatus as any);
+    const current = reconciled ?? record;
+
     return {
       ok: true,
-      request_id: record.request_id,
-      state: record.state,
-      decision: record.decision,
-      reconcile_required: record.reconcile_required,
+      request_id: current.request_id,
+      state: current.state,
+      decision: current.decision,
+      reconcile_required: current.reconcile_required,
       live_execution: liveStatus,
     };
   }
@@ -283,6 +294,9 @@ export async function executeAdminCommand(
     if (record.state === "DISPATCHED") {
       return { ok: false, error: "ADMIN_COMMAND_ALREADY_DISPATCHED" };
     }
+    if (record.state === "CANCEL_REQUESTED" || record.state === "CANCELLED") {
+      return { ok: false, error: `ADMIN_CANNOT_EXECUTE:${record.state}` };
+    }
     if (record.state === "PENDING") {
       return { ok: false, error: "ADMIN_REQUEST_NOT_YET_APPROVED" };
     }
@@ -319,7 +333,7 @@ export async function executeAdminCommand(
   );
 
   if (execution.outcome === "NOT_DISPATCHED") {
-    // Dispatch failed prior to transmitting command; revert to APPROVED so caller may retry
+    // Dispatch failed prior to transmitting command; revert state so caller may retry
     await manager.recordDispatchFailure(requestId);
     return {
       ok: false,
@@ -333,7 +347,7 @@ export async function executeAdminCommand(
 
   if (execution.outcome === "UNKNOWN") {
     // May have executed; mark reconcile_required
-    await manager.recordDispatchUnknown(requestId);
+    await manager.recordDispatchUnknown(requestId, execution.error);
     return {
       ok: false,
       request_id: record.request_id,
@@ -345,13 +359,15 @@ export async function executeAdminCommand(
     };
   }
 
-  // Dispatched and acknowledged by node (RUNNING, SUCCEEDED, FAILED, STOPPED)
-  await manager.recordDispatchSuccess(callerRef, requestId);
+  // Node acknowledged completion or running status (RUNNING, SUCCEEDED, FAILED, STOPPED)
+  // CAS handles any concurrent cancellation cleanly without losing receipt (P0-3)
+  const updated = await manager.recordDispatchOutcome(callerRef, requestId, execution);
   return {
     ok: true,
     request_id: record.request_id,
     lease_id: record.lease.lease_id,
     outcome: execution.outcome,
+    state: updated.state,
     execution,
   };
 }
@@ -369,44 +385,111 @@ export async function cancelAdminCommand(
     return { ok: false, error: "ADMIN_REQUEST_NOT_FOUND" };
   }
 
+  let callerRef: string;
   try {
-    await assertCallerAuthorized(record, actor);
+    callerRef = await assertCallerAuthorized(record, actor);
   } catch {
     return { ok: false, error: "ADMIN_REQUEST_ACCESS_DENIED" };
   }
 
-  let remoteCancelReceipt: unknown = null;
-  if ((record.state === "APPROVED" || record.state === "DISPATCHED" || record.state === "CONSUMED") && record.lease) {
-    // Dispatch remote cancellation to node with signed lease
-    try {
-      remoteCancelReceipt = await runApprovedAdminCommand(
-        env,
-        actor,
-        {
-          node_uid: record.node_uid,
-          action: "cancel",
-          lease_b64: record.lease.raw_lease_b64,
-          signature_b64: record.lease.signature_b64,
-        },
-        dependencies,
-      );
-    } catch {
-      // Best-effort remote dispatch
-    }
+  if (record.state === "CANCELLED") {
+    return { ok: true, request_id: record.request_id, state: "CANCELLED" };
   }
 
-  try {
-    const updated = await manager.cancelRequest(actor, requestId, reason);
+  // If PENDING or APPROVED without active dispatch to host, cancel locally
+  if (record.state === "PENDING" || (record.state === "APPROVED" && !record.lease)) {
+    const updated = await manager.requestCancellation(actor, requestId, reason);
     return {
       ok: true,
       request_id: updated.request_id,
       state: updated.state,
+    };
+  }
+
+  if (record.state === "APPROVED" && record.lease) {
+    // Lease was issued, cancel locally before dispatch
+    const updated = await manager.requestCancellation(actor, requestId, reason);
+    return {
+      ok: true,
+      request_id: updated.request_id,
+      state: updated.state,
+    };
+  }
+
+  // For DISPATCHED, CONSUMED, or already CANCEL_REQUESTED, we MUST dispatch action: 'cancel' to node
+  // and only confirm CANCELLED if node receipt confirms stop (P0-2)
+  await manager.requestCancellation(actor, requestId, reason);
+
+  let remoteCancelReceipt: any = null;
+  if (record.lease) {
+    remoteCancelReceipt = await runApprovedAdminCommand(
+      env,
+      actor,
+      {
+        node_uid: record.node_uid,
+        action: "cancel",
+        lease_b64: record.lease.raw_lease_b64,
+        signature_b64: record.lease.signature_b64,
+      },
+      dependencies,
+    );
+  }
+
+  if (!remoteCancelReceipt || remoteCancelReceipt.outcome === "NOT_DISPATCHED") {
+    await manager.recordCancelDispatchUncertain(requestId, "NOT_DISPATCHED", remoteCancelReceipt?.error);
+    return {
+      ok: false,
+      request_id: record.request_id,
+      state: "CANCEL_REQUESTED",
+      outcome: "NOT_DISPATCHED",
+      error: remoteCancelReceipt?.error ?? "CANCEL_CONNECT_FAILED",
+      reconcile_required: true,
+    };
+  }
+
+  if (remoteCancelReceipt.outcome === "UNKNOWN") {
+    await manager.recordCancelDispatchUncertain(requestId, "UNKNOWN", remoteCancelReceipt.error);
+    return {
+      ok: false,
+      request_id: record.request_id,
+      state: "CANCEL_REQUESTED",
+      outcome: "UNKNOWN",
+      error: remoteCancelReceipt.error ?? "ADMIN_CANCEL_DISPATCH_UNCERTAIN",
+      reconcile_required: true,
+    };
+  }
+
+  // Node returned confirmed receipt
+  const receiptState = remoteCancelReceipt.receipt?.state;
+  if (receiptState === "REVOKED" || receiptState === "STOPPED") {
+    const confirmed = await manager.confirmCancellation(requestId, callerRef, remoteCancelReceipt.receipt);
+    return {
+      ok: true,
+      request_id: confirmed.request_id,
+      state: confirmed.state,
       remote_cancel: remoteCancelReceipt,
     };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg };
   }
+
+  if (receiptState === "SUCCEEDED" || receiptState === "FAILED") {
+    const completed = await manager.recordCompletedBeforeCancel(requestId, callerRef, remoteCancelReceipt.receipt);
+    return {
+      ok: false,
+      request_id: completed.request_id,
+      state: completed.state,
+      error: "ADMIN_COMMAND_ALREADY_COMPLETED",
+      remote_cancel: remoteCancelReceipt,
+    };
+  }
+
+  return {
+    ok: false,
+    request_id: record.request_id,
+    state: "CANCEL_REQUESTED",
+    outcome: remoteCancelReceipt.outcome,
+    reconcile_required: true,
+    remote_cancel: remoteCancelReceipt,
+  };
 }
 
 export async function dispatchAdminToolCall(
