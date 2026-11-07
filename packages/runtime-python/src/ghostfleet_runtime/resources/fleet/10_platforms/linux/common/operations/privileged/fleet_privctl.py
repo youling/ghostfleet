@@ -762,7 +762,7 @@ def run() -> dict[str, Any]:
         if TEST_MODE:
             fail("ADMIN_TEST_MODE_NOT_SUPPORTED")
         import importlib.util
-        module_path = Path(__file__).with_name("fleet_admin_command.py")
+        module_path = Path(__file__).resolve().with_name("fleet_admin_command.py")
         for protected in [module_path, *module_path.parents]:
             info = protected.lstat()
             if (stat.S_ISLNK(info.st_mode) or info.st_uid != 0
