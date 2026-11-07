@@ -101,6 +101,12 @@ export interface AdminApprovalRecord {
     completed_before_cancel?: boolean;
   };
   execution_receipt?: unknown;
+  late_dispatch_outcome?: {
+    recorded_at: number;
+    outcome: string;
+    receipt?: unknown;
+    error?: string;
+  };
 }
 
 export interface TrustedIssuerPort {
@@ -205,43 +211,111 @@ export class InMemoryAdminApprovalLedgerStore implements AdminApprovalLedgerStor
   }
 }
 
+export const REQUEST_ID_RE = /^req-[0-9]+-[0-9a-f]{32}-[0-9a-f]{8,16}$/;
+
+export function isProcessAlive(pid: number): boolean {
+  if (typeof pid !== "number" || isNaN(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: unknown) {
+    const error = err as { code?: string };
+    return error?.code === "EPERM";
+  }
+}
+
 /**
  * File-backed durable transactional ledger store supporting cross-process CAS and crash recovery.
  */
 export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
-  constructor(private readonly dir: string) {}
+  readonly dir: string;
+
+  constructor(dir: string) {
+    this.dir = dir;
+  }
+
+  private validateRequestId(requestId: string): void {
+    if (!requestId || typeof requestId !== "string" || !REQUEST_ID_RE.test(requestId)) {
+      throw new Error(`INVALID_REQUEST_ID:${requestId}`);
+    }
+    if (requestId.includes("..") || requestId.includes("/") || requestId.includes("\\") || requestId.includes("\0")) {
+      throw new Error(`INVALID_REQUEST_ID:${requestId}`);
+    }
+  }
 
   private async ensureDir(): Promise<void> {
-    await mkdir(this.dir, { recursive: true });
+    await mkdir(this.dir, { recursive: true, mode: 0o700 });
   }
 
   private filePath(requestId: string): string {
+    this.validateRequestId(requestId);
     return path.join(this.dir, `${requestId}.json`);
   }
 
   private lockPath(requestId: string): string {
+    this.validateRequestId(requestId);
     return path.join(this.dir, `${requestId}.lock`);
   }
 
+  private async atomicWriteJson(file: string, data: unknown): Promise<void> {
+    const tmpFile = `${file}.tmp.${process.pid}.${Date.now()}.${randomBytes(4).toString("hex")}`;
+    const content = JSON.stringify(data, null, 2);
+    const handle = await open(tmpFile, "w", 0o600);
+    try {
+      await handle.writeFile(content, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(tmpFile, file);
+    try {
+      const dirHandle = await open(this.dir, "r");
+      try {
+        await dirHandle.sync();
+      } finally {
+        await dirHandle.close();
+      }
+    } catch {
+      // Directory fsync is platform-dependent (e.g. Windows EPERM/EISDIR)
+    }
+  }
+
   private async acquireFileLock(requestId: string, timeoutMs = 10000): Promise<() => Promise<void>> {
+    this.validateRequestId(requestId);
     await this.ensureDir();
     const lockFile = this.lockPath(requestId);
     const start = Date.now();
     while (true) {
       try {
-        const handle = await open(lockFile, "wx");
-        await handle.close();
+        const handle = await open(lockFile, "wx", 0o600);
+        try {
+          const lockMeta = JSON.stringify({ pid: process.pid, createdAt: Date.now() });
+          await handle.writeFile(lockMeta, "utf8");
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
         break;
       } catch (err: unknown) {
         const error = err as { code?: string };
         if (error?.code === "EEXIST") {
           if (Date.now() - start > timeoutMs) {
             try {
-              const fileStat = await stat(lockFile);
-              if (Date.now() - fileStat.mtimeMs > timeoutMs) {
+              const content = await readFile(lockFile, "utf8");
+              const meta = JSON.parse(content);
+              if (meta?.pid && !isProcessAlive(meta.pid)) {
                 await unlink(lockFile).catch(() => {});
+                continue;
               }
-            } catch {}
+            } catch {
+              try {
+                const fileStat = await stat(lockFile);
+                if (Date.now() - fileStat.mtimeMs > timeoutMs * 2) {
+                  await unlink(lockFile).catch(() => {});
+                  continue;
+                }
+              } catch {}
+            }
             throw new Error(`ADMIN_STORE_LOCK_TIMEOUT:${requestId}`);
           }
           await new Promise((resolve) => setTimeout(resolve, 20));
@@ -256,6 +330,7 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
   }
 
   async create(record: AdminApprovalRecord): Promise<void> {
+    this.validateRequestId(record.request_id);
     await this.ensureDir();
     const release = await this.acquireFileLock(record.request_id);
     try {
@@ -269,15 +344,14 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
       }
       const initial = JSON.parse(JSON.stringify(record));
       if (!initial.version) initial.version = 1;
-      const tmpFile = `${file}.tmp.${process.pid}.${Date.now()}.${randomBytes(4).toString("hex")}`;
-      await writeFile(tmpFile, JSON.stringify(initial, null, 2), "utf8");
-      await rename(tmpFile, file);
+      await this.atomicWriteJson(file, initial);
     } finally {
       await release();
     }
   }
 
   async get(requestId: string): Promise<AdminApprovalRecord | null> {
+    this.validateRequestId(requestId);
     await this.ensureDir();
     const file = this.filePath(requestId);
     try {
@@ -296,6 +370,8 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
     const results: AdminApprovalRecord[] = [];
     for (const entry of entries) {
       if (entry.endsWith(".json") && !entry.includes(".tmp.")) {
+        const reqId = entry.slice(0, -5);
+        if (!REQUEST_ID_RE.test(reqId)) continue;
         try {
           const content = await readFile(path.join(this.dir, entry), "utf8");
           const rec: AdminApprovalRecord = JSON.parse(content);
@@ -316,6 +392,7 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
     expectedState: AdminApprovalState | AdminApprovalState[],
     mutate: (current: AdminApprovalRecord) => AdminApprovalRecord,
   ): Promise<AdminApprovalRecord> {
+    this.validateRequestId(requestId);
     await this.ensureDir();
     const release = await this.acquireFileLock(requestId);
     try {
@@ -336,9 +413,7 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
       const cloned = JSON.parse(JSON.stringify(current));
       const next = mutate(cloned);
       next.version = (current.version ?? 0) + 1;
-      const tmpFile = `${file}.tmp.${process.pid}.${Date.now()}.${randomBytes(4).toString("hex")}`;
-      await writeFile(tmpFile, JSON.stringify(next, null, 2), "utf8");
-      await rename(tmpFile, file);
+      await this.atomicWriteJson(file, next);
       return JSON.parse(JSON.stringify(next));
     } finally {
       await release();
@@ -377,10 +452,16 @@ export function sha256Hex(data: Uint8Array | string): string {
 }
 
 export class AdminApprovalManager {
+  private store: AdminApprovalLedgerStore;
+  private issuer: TrustedIssuerPort;
+
   constructor(
-    private store: AdminApprovalLedgerStore = defaultApprovalLedgerStore(),
-    private issuer: TrustedIssuerPort = new DefaultUnconfiguredIssuer(),
-  ) {}
+    store: AdminApprovalLedgerStore = defaultApprovalLedgerStore(),
+    issuer: TrustedIssuerPort = new DefaultUnconfiguredIssuer(),
+  ) {
+    this.store = store;
+    this.issuer = issuer;
+  }
 
   async submitRequest(actor: ControlActor, inputRaw: AdminCommandRequestInput): Promise<AdminApprovalRecord> {
     const input = adminCommandRequestInputSchema.parse(inputRaw);
@@ -432,16 +513,18 @@ export class AdminApprovalManager {
     }
 
     // Node-level approver authorization check
-    if (policy.allowed_approvers && policy.allowed_approvers.length > 0) {
-      const allowed = policy.allowed_approvers.includes(humanActor.userId) || policy.allowed_approvers.includes(approverRef);
+    if (policy.allowed_approvers !== undefined) {
+      const validApprovers = policy.allowed_approvers.filter(a => typeof a === "string" && a.trim().length > 0);
+      const allowed = validApprovers.includes(humanActor.userId) || validApprovers.includes(approverRef);
       if (!allowed) {
         throw new Error("APPROVER_NOT_AUTHORIZED_FOR_NODE");
       }
     }
 
     // Work reference authorization check
-    if (policy.allowed_work_prefixes && policy.allowed_work_prefixes.length > 0) {
-      const workAllowed = policy.allowed_work_prefixes.some(p => existing.work_ref.startsWith(p));
+    if (policy.allowed_work_prefixes !== undefined) {
+      const validPrefixes = policy.allowed_work_prefixes.filter(p => typeof p === "string" && p.length > 0);
+      const workAllowed = validPrefixes.length > 0 && validPrefixes.some(p => existing.work_ref.startsWith(p));
       if (!workAllowed) {
         throw new Error("WORK_REF_NOT_AUTHORIZED_FOR_NODE");
       }
@@ -458,12 +541,14 @@ export class AdminApprovalManager {
     }
 
     const issuer = this.issuer;
-    if (!policy.issuer_ids.includes(issuer.issuerId)) {
+    if (!policy.issuer_ids || !policy.issuer_ids.includes(issuer.issuerId)) {
       throw new Error("ADMIN_ISSUER_NOT_AUTHORIZED_FOR_NODE");
     }
 
-    const leaseId = `lease-${now}-${existing.request_id.slice(-8)}`;
-    const operationId = `op-${now}-${existing.request_id.slice(-8)}`;
+    const entropy = randomBytes(8).toString("hex");
+    const cmdDigest = sha256Hex(canonicalJson(existing.command)).slice(0, 8);
+    const leaseId = `lease-${now}-${entropy}-${cmdDigest}`;
+    const operationId = `op-${now}-${entropy}-${cmdDigest}`;
 
     const lease = {
       schema: "ghostfleet-approved-admin-lease/v1" as const,
@@ -592,7 +677,7 @@ export class AdminApprovalManager {
     const now = Math.floor(Date.now() / 1000);
     return this.store.compareAndSwap(
       requestId,
-      ["CANCEL_REQUESTED", "DISPATCHED", "CONSUMED", "APPROVED"],
+      ["CANCEL_REQUESTED", "DISPATCHED", "CONSUMED", "APPROVED", "CANCELLED"],
       (record) => {
         record.state = "CANCELLED";
         record.reconcile_required = false;
@@ -602,8 +687,12 @@ export class AdminApprovalManager {
             cancelled_by_actor_ref: actorRef,
           };
         }
-        record.cancellation.confirmed_at = now;
-        record.execution_receipt = receipt;
+        if (!record.cancellation.confirmed_at) {
+          record.cancellation.confirmed_at = now;
+        }
+        if (receipt && !record.execution_receipt) {
+          record.execution_receipt = receipt;
+        }
         return record;
       },
     );
@@ -681,25 +770,52 @@ export class AdminApprovalManager {
     execution: { outcome: string; receipt?: unknown; error?: string },
   ): Promise<AdminApprovalRecord> {
     const now = Math.floor(Date.now() / 1000);
-    return this.store.compareAndSwap(requestId, ["DISPATCHED", "CANCEL_REQUESTED"], (record) => {
-      record.execution_receipt = execution.receipt;
-      record.dispatch_state = execution.outcome as any;
-
-      if (execution.outcome === "SUCCEEDED" || execution.outcome === "FAILED" || execution.outcome === "STOPPED") {
-        record.state = "CONSUMED";
-        record.reconcile_required = false;
-        record.consumption = {
-          consumed_at: now,
-          consumed_by_actor_ref: actorRef,
-        };
-        if (record.cancellation) {
-          record.cancellation.completed_before_cancel = true;
+    return this.store.compareAndSwap(
+      requestId,
+      ["APPROVED", "DISPATCHED", "CANCEL_REQUESTED", "CONSUMED", "CANCELLED"],
+      (record) => {
+        // Reverse Execute / Cancel Race: delayed execution arrival on confirmed CANCELLED record
+        if (record.state === "CANCELLED") {
+          record.late_dispatch_outcome = {
+            recorded_at: now,
+            outcome: execution.outcome,
+            receipt: execution.receipt,
+            error: execution.error,
+          };
+          return record;
         }
-      } else if (execution.outcome === "UNKNOWN") {
-        record.reconcile_required = true;
-      }
-      return record;
-    });
+
+        // Idempotent reconciliation on already-CONSUMED record
+        if (record.state === "CONSUMED") {
+          if (execution.receipt && !record.execution_receipt) {
+            record.execution_receipt = execution.receipt;
+          }
+          if (execution.outcome) {
+            record.dispatch_state = execution.outcome as any;
+          }
+          record.reconcile_required = false;
+          return record;
+        }
+
+        record.execution_receipt = execution.receipt;
+        record.dispatch_state = execution.outcome as any;
+
+        if (execution.outcome === "SUCCEEDED" || execution.outcome === "FAILED" || execution.outcome === "STOPPED") {
+          record.state = "CONSUMED";
+          record.reconcile_required = false;
+          record.consumption = {
+            consumed_at: now,
+            consumed_by_actor_ref: actorRef,
+          };
+          if (record.cancellation) {
+            record.cancellation.completed_before_cancel = true;
+          }
+        } else if (execution.outcome === "UNKNOWN") {
+          record.reconcile_required = true;
+        }
+        return record;
+      },
+    );
   }
 
   async reconcileFromStatus(
