@@ -38,6 +38,9 @@ class FakeBackend:
     def preflight(self):
         pass
 
+    def ingress_preflight(self):
+        pass
+
     def start(self, key, deadline, max_runtime_seconds):
         self.starts += 1
         if self.start_log:
@@ -285,6 +288,155 @@ class ApprovedAdminTests(unittest.TestCase):
             self.assertEqual(worker.exitcode,0)
         self.assertEqual([queue.get(timeout=1) for _ in workers],["STARTED"]*6)
         self.assertEqual(len((self.root/"starts.log").read_text().splitlines()),1)
+
+    def test_installer_cannot_switch_the_consumed_lease_namespace(self):
+        ex = self.executor()
+        ex.handle(self.wire())
+        other_state = self.root/"replacement-state"
+        other_state.mkdir(mode=0o700)
+        candidate = self.root/"candidate.json"
+        self.write(candidate, dict(self.cfg, state_dir=str(other_state)))
+        manager = install.Installer(self.root/"config.json", self.fs, FakeBackend)
+        before = (self.root/"config.json").read_bytes()
+        with self.assertRaisesRegex(install.admin.AdminError, "ADMIN_INSTALL_STATE_NAMESPACE_IMMUTABLE"):
+            manager.apply(candidate,admin.digest(candidate.read_bytes()),admin.digest(before))
+        self.assertEqual((self.root/"config.json").read_bytes(),before)
+        repeated = ex.handle(self.wire())
+        self.assertEqual(repeated["state"],"STARTED")
+        self.assertTrue(repeated["duplicate"])
+        self.assertEqual(self.backend.starts,1)
+
+    def test_concurrent_configuration_cas_has_one_winner(self):
+        first = self.root/"first.json";second = self.root/"second.json"
+        self.write(first,dict(self.cfg,max_runtime_seconds=40))
+        self.write(second,dict(self.cfg,max_runtime_seconds=50))
+        target = self.root/"managed.json"
+        a = install.Installer(target,self.fs,FakeBackend)
+        b = install.Installer(target,self.fs,FakeBackend)
+        entered,release,second_done = threading.Event(),threading.Event(),threading.Event()
+        results = []
+        original = a._atomic_bytes
+        def paused(path,raw):
+            if path == target:
+                entered.set();self.assertTrue(release.wait(5))
+            return original(path,raw)
+        a._atomic_bytes = paused
+        def apply(manager,candidate,done=None):
+            try: results.append(manager.apply(candidate,admin.digest(candidate.read_bytes()),"ABSENT")["status"])
+            except install.admin.AdminError as error: results.append(error.code)
+            finally:
+                if done: done.set()
+        t1 = threading.Thread(target=apply,args=(a,first));t1.start()
+        self.assertTrue(entered.wait(5))
+        t2 = threading.Thread(target=apply,args=(b,second,second_done));t2.start()
+        self.assertFalse(second_done.wait(0.1))
+        release.set();t1.join(5);t2.join(5)
+        self.assertFalse(t1.is_alive() or t2.is_alive())
+        self.assertCountEqual(results,["VERIFIED","ADMIN_INSTALL_CURRENT_MOVED"])
+        self.assertEqual(json.loads(target.read_text())["max_runtime_seconds"],40)
+
+    def test_rollback_winning_authority_lock_blocks_cached_executor_admission(self):
+        target = self.root/"managed.json"
+        manager = install.Installer(target,self.fs,FakeBackend)
+        result = manager.apply(self.root/"config.json",admin.digest((self.root/"config.json").read_bytes()),"ABSENT")
+        old = admin.Executor(target,fs=self.fs,backend=self.backend,clock=lambda:self.now)
+        entered,release,execute_done = threading.Event(),threading.Event(),threading.Event()
+        outcomes = []
+        active = manager._active
+        def paused(state):
+            active(state);entered.set();self.assertTrue(release.wait(5))
+        manager._active = paused
+        def rollback():
+            try: outcomes.append(manager.rollback(result["config_sha256"])["status"])
+            except Exception as error: outcomes.append(type(error).__name__)
+        def execute():
+            try: outcomes.append(old.handle(self.wire())["state"])
+            except admin.AdminError as error: outcomes.append(error.code)
+            finally: execute_done.set()
+        t1 = threading.Thread(target=rollback);t1.start();self.assertTrue(entered.wait(5))
+        t2 = threading.Thread(target=execute);t2.start()
+        self.assertFalse(execute_done.wait(0.1))
+        release.set();t1.join(5);t2.join(5)
+        self.assertFalse(t1.is_alive() or t2.is_alive())
+        self.assertCountEqual(outcomes,["ROLLED_BACK","ADMIN_PATH_UNAVAILABLE"])
+        self.assertFalse(target.exists());self.assertEqual(self.backend.starts,0)
+
+    def test_execute_winning_authority_lock_blocks_rollback(self):
+        target = self.root/"managed.json"
+        manager = install.Installer(target,self.fs,FakeBackend)
+        result = manager.apply(self.root/"config.json",admin.digest((self.root/"config.json").read_bytes()),"ABSENT")
+        ex = admin.Executor(target,fs=self.fs,backend=self.backend,clock=lambda:self.now)
+        ex.handle(self.wire())
+        with self.assertRaisesRegex(install.admin.AdminError,"ADMIN_INSTALL_RECONCILE_REQUIRED"):
+            manager.rollback(result["config_sha256"])
+        self.assertTrue(target.exists())
+        self.assertEqual(ex.handle(self.wire(action="status"))["state"],"STARTED")
+
+    def test_existing_executor_reloads_changed_authority(self):
+        ex = self.executor()
+        self.write(self.root/"config.json",dict(self.cfg,subject_ref="d"*64))
+        with self.assertRaisesRegex(admin.AdminError,"ADMIN_AUTHENTICATED_ACTOR_OR_NODE_MISMATCH"):
+            ex.handle(self.wire())
+        self.assertEqual(self.backend.starts,0)
+
+    def test_installer_requires_signature_library_in_the_fixed_ingress_python(self):
+        class ChildOnlyBackend(FakeBackend):
+            def ingress_preflight(self):
+                raise install.admin.AdminError("ADMIN_SYSTEMD_REJECTED")
+        target = self.root/"managed.json"
+        manager = install.Installer(target,self.fs,ChildOnlyBackend)
+        with self.assertRaisesRegex(install.admin.AdminError,"ADMIN_SYSTEMD_REJECTED"):
+            manager.apply(self.root/"config.json",admin.digest((self.root/"config.json").read_bytes()),"ABSENT")
+        self.assertFalse(target.exists())
+        self.assertFalse(manager.manifest.exists())
+
+    def test_ingress_dependency_probe_is_separate_from_configured_child_python(self):
+        backend = admin.SystemdBackend(self.cfg,self.root/"config.json",self.fs)
+        backend.INGRESS_PYTHON = str(self.binary)
+        calls=[]
+        backend._run=lambda argv,timeout=8:calls.append(argv) or ""
+        backend.ingress_preflight()
+        self.assertEqual(calls[0][:3],[str(self.binary),"-I","-c"])
+        self.assertIn("cryptography.__version__ == '50.0.2'",calls[0][3])
+
+    def test_reinstall_after_rollback_preserves_namespace_and_tombstones(self):
+        target = self.root/"managed.json"
+        manager = install.Installer(target,self.fs,FakeBackend)
+        candidate = self.root/"config.json"
+        result = manager.apply(candidate,admin.digest(candidate.read_bytes()),"ABSENT")
+        ex = admin.Executor(target,fs=self.fs,backend=self.backend,clock=lambda:self.now)
+        ex.handle(self.wire(action="cancel"))
+        manager.rollback(result["config_sha256"])
+        replacement = self.root/"new.json"
+        other = self.root/"other-state";other.mkdir(mode=0o700)
+        self.write(replacement,dict(self.cfg,state_dir=str(other)))
+        with self.assertRaisesRegex(install.admin.AdminError,"ADMIN_INSTALL_STATE_NAMESPACE_IMMUTABLE"):
+            manager.apply(replacement,admin.digest(replacement.read_bytes()),"ABSENT")
+        manager.apply(candidate,admin.digest(candidate.read_bytes()),"ABSENT")
+        replay = ex.handle(self.wire())
+        self.assertEqual(replay["state"],"REVOKED");self.assertTrue(replay["duplicate"])
+        self.assertEqual(self.backend.starts,0)
+
+    def test_os_stop_wait_releases_authority_but_blocks_install_with_unknown(self):
+        target = self.root/"managed.json"
+        manager = install.Installer(target,self.fs,FakeBackend)
+        result = manager.apply(self.root/"config.json",admin.digest((self.root/"config.json").read_bytes()),"ABSENT")
+        ex = admin.Executor(target,fs=self.fs,backend=self.backend,clock=lambda:self.now)
+        ex.handle(self.wire())
+        entered,release = threading.Event(),threading.Event()
+        outcomes=[]
+        def stop(_): entered.set();self.assertTrue(release.wait(5));return True
+        self.backend.stop=stop
+        def cancel():
+            try: outcomes.append(ex.handle(self.wire(action="cancel"))["state"])
+            except Exception as error: outcomes.append(type(error).__name__)
+        thread=threading.Thread(target=cancel);thread.start();self.assertTrue(entered.wait(5))
+        try:
+            with self.assertRaisesRegex(install.admin.AdminError,"ADMIN_INSTALL_RECONCILE_REQUIRED"):
+                manager.rollback(result["config_sha256"])
+        finally:
+            release.set();thread.join(5)
+        self.assertFalse(thread.is_alive());self.assertEqual(outcomes,["REVOKED"])
 
     def test_cancel_and_child_spawn_share_one_lock(self):
         ex = self.executor()

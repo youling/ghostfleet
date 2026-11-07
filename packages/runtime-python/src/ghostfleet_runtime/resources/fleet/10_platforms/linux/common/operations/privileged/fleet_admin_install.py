@@ -67,34 +67,53 @@ class Installer:
             except FileNotFoundError:
                 pass
 
-    def check(self, candidate: Path):
-        cfg = admin.load_config(candidate, self.fs, require_state=False)
+    def check(self, candidate: Path, raw: bytes | None = None):
+        cfg = admin.load_config(candidate, self.fs, require_state=False, raw=raw)
         backend = self.backend_factory(cfg, candidate, self.fs)
         backend.preflight()
+        backend.ingress_preflight()
         self.fs.path(self.target.parent, kind="dir")
         return cfg
 
     def apply(self, candidate: Path, expected_source: str, expected_current: str):
-        raw_source = self.fs.read(candidate, private=True)
+        with admin.authority_locked(self.target, self.fs):
+            return self._apply_locked(candidate, expected_source, expected_current)
+
+    def _apply_locked(self, candidate: Path, expected_source: str, expected_current: str):
+        raw_source = self.fs.read(candidate, limit=32768, private=True)
         if admin.digest(raw_source) != expected_source:
             admin.fail("ADMIN_INSTALL_SOURCE_MOVED")
-        cfg = self.check(candidate)
+        cfg = self.check(candidate, raw_source)
         new_bytes = admin.canonical(cfg) + b"\n"
         new_hash = admin.digest(new_bytes)
-        old = self.fs.read(self.target, private=True) if self.target.exists() or self.target.is_symlink() else None
+        old = self.fs.read(self.target, limit=32768, private=True) if self.target.exists() or self.target.is_symlink() else None
         current_hash = admin.digest(old) if old is not None else "ABSENT"
         if current_hash != expected_current:
             admin.fail("ADMIN_INSTALL_CURRENT_MOVED")
         manifest = self._read_manifest()
-        if old is not None and current_hash == new_hash:
-            return {"status": "COMPLIANT", "config_sha256": new_hash, "changed": False}
         if manifest and current_hash not in {manifest["applied_sha256"], manifest["previous_sha256"]}:
             admin.fail("ADMIN_INSTALL_OWNER_CONFLICT")
         state_dir = Path(cfg["state_dir"])
+        namespaces = {str(state_dir)}
+        if old is not None:
+            previous_cfg = admin.json_object(old)
+            if previous_cfg.get("schema") != admin.CONFIG_SCHEMA or not isinstance(previous_cfg.get("state_dir"), str):
+                admin.fail("ADMIN_INSTALL_EXISTING_CONFIG_INVALID")
+            namespaces.add(str(Path(previous_cfg["state_dir"])))
+        if manifest is not None:
+            namespaces.add(str(Path(manifest["state_dir"])))
+        # A changed directory would discard consumed lease tombstones and hide
+        # active operations. It is not a configuration-upgrade operation.
+        if len(namespaces) != 1:
+            admin.fail("ADMIN_INSTALL_STATE_NAMESPACE_IMMUTABLE")
         if state_dir.exists():
             self._active(state_dir)
         else:
+            if manifest is not None or old is not None:
+                admin.fail("ADMIN_INSTALL_LEDGER_MISSING")
             self.fs.mkdir(state_dir)
+        if old is not None and current_hash == new_hash and manifest and manifest.get("state") == "APPLIED":
+            return {"status": "COMPLIANT", "config_sha256": new_hash, "changed": False}
         if manifest is None:
             manifest = {
                 "schema": "ghostfleet-admin-installation/v1",
@@ -106,11 +125,17 @@ class Installer:
         self._atomic_bytes(self.target, new_bytes)
         manifest["state"] = "APPLIED"
         self._atomic_bytes(self.manifest, admin.canonical(manifest) + b"\n")
-        return self.verify()
+        return self._verify_locked()
 
     def verify(self):
+        with admin.authority_locked(self.target, self.fs):
+            return self._verify_locked()
+
+    def _verify_locked(self):
         cfg = admin.load_config(self.target, self.fs)
-        self.backend_factory(cfg, self.target, self.fs).preflight()
+        backend = self.backend_factory(cfg, self.target, self.fs)
+        backend.preflight()
+        backend.ingress_preflight()
         manifest = self._read_manifest()
         actual = admin.digest(self.fs.read(self.target, private=True))
         if not manifest or actual != manifest["applied_sha256"]:
@@ -119,13 +144,20 @@ class Installer:
                 "live_approval_execution": "NOT_RUN"}
 
     def rollback(self, expected_current: str):
+        with admin.authority_locked(self.target, self.fs):
+            return self._rollback_locked(expected_current)
+
+    def _rollback_locked(self, expected_current: str):
         manifest = self._read_manifest()
         if not manifest:
             admin.fail("ADMIN_INSTALL_MANIFEST_REQUIRED")
-        current = self.fs.read(self.target, private=True) if self.target.exists() or self.target.is_symlink() else None
+        current = self.fs.read(self.target, limit=32768, private=True) if self.target.exists() or self.target.is_symlink() else None
         current_hash = admin.digest(current) if current is not None else "ABSENT"
         if current_hash != expected_current or current_hash != manifest["applied_sha256"]:
             admin.fail("ADMIN_INSTALL_CURRENT_MOVED")
+        current_cfg = admin.json_object(current)
+        if current_cfg.get("state_dir") != manifest["state_dir"]:
+            admin.fail("ADMIN_INSTALL_STATE_NAMESPACE_IMMUTABLE")
         self._active(Path(manifest["state_dir"]))
         previous = manifest["previous_b64"]
         if previous is None:

@@ -417,6 +417,69 @@
       "line_sha256": "f82d951ce897624a528c5277f5bf034e4a7fc8609b38342c17f21b128fc0a3b2",
       "kind": "inert-fixture-or-detector",
       "reason": "Synthetic node identity for RF-4 compat test; no real locator or device."
+    },
+    {
+      "path": "packages/runtime-python/src/ghostfleet_runtime/resources/fleet/10_platforms/linux/common/operations/privileged/fleet_admin_command.py",
+      "rule": "instance-ipv6",
+      "line_sha256": "cc7933a3d3a9d451fac79f3f97ca85afe0268e925e281a0cf0f776b37a4962c2",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Linux unified cgroup record prefix, not an IPv6 locator; reviewed literal parser."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_approved_admin_command.py",
+      "rule": "node-identity",
+      "line_sha256": "b39af0750d407997e8871c669a23b654ec39f2a2544fba43399bde8546f2f723",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Independent synthetic UUID fixture; no real node or network contact."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_approved_admin_command.py",
+      "rule": "node-identity",
+      "line_sha256": "769396fc5cf51bf91a60083c3b21089cc4f23d7dd521fce84a3c116e787d2b1d",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Independent synthetic cross-node denial UUID; no real node or network contact."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_approved_admin_command.py",
+      "rule": "node-identity",
+      "line_sha256": "ae001ac383a7f938f4a86a018d6ebd48e23ff42f6d7753956149aa9cd6854775",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Independent synthetic signed wrong-node UUID; no real node or network contact."
+    },
+    {
+      "path": "packages/runtime-python/tests/test_approved_admin_command.py",
+      "rule": "credential-literal",
+      "line_sha256": "08199ad853c9cde3b38041554c1306d77b5a9e8758969901fb512ccfc47e4fd8",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Inert synthetic redaction sentinel, not usable credential material; tests omitted command and purpose from public receipts."
+    },
+    {
+      "path": "scripts/check-approved-admin-disposable.py",
+      "rule": "node-identity",
+      "line_sha256": "b4fa47f0a24650f2f2f3cdf61fd63103260cf2c55606c08c153808ded6699d3c",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Independent synthetic disposable CI node identity; no enrolled fleet device or remote transport."
+    },
+    {
+      "path": "scripts/check-approved-admin-disposable.py",
+      "rule": "node-identity",
+      "line_sha256": "a80d231aedf020133d090b9a5b949a4d5cc3b7e5d4daa4c338a779a4075b25f6",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Independent synthetic wrong-node denial identity in disposable CI; no real node."
+    },
+    {
+      "path": "packages/typed-control/test/approvedAdminCommand.test.ts",
+      "rule": "node-identity",
+      "line_sha256": "fc1b52c86effa47ba9b93579b06d1e1467947415aa665dcd511dc8bbe0a86f26",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Independent synthetic node UUID for local injected-controller tests; no live host."
+    },
+    {
+      "path": "packages/typed-control/test/approvedAdminCommand.test.ts",
+      "rule": "node-identity",
+      "line_sha256": "5d6c69dc91611d8280c9a052e5645c075d13d25de584e3cd681686eecf54a444",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Independent synthetic wrong-node UUID in local preconnection denial test."
     }
   ],
   "binary_reviews": [

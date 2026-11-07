@@ -252,6 +252,27 @@ class TrustedFiles:
                 pass
 
 
+@contextlib.contextmanager
+def authority_locked(config_path: Path, fs: TrustedFiles):
+    """One lifecycle lock shared by config CAS and final command admission.
+
+    Lock order is always authority -> lease. Never hold either lock while
+    waiting for an approved process to finish or for OS cancellation.
+    """
+    fs.path(config_path.parent, kind="dir")
+    path = config_path.parent / "admin-command-authority.lock"
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        info = os.fstat(fd)
+        if (info.st_uid != fs.owner_uid or not stat.S_ISREG(info.st_mode)
+                or stat.S_IMODE(info.st_mode) != 0o600):
+            fail("ADMIN_AUTHORITY_LOCK_UNTRUSTED")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 CONFIG_KEYS = {
     "schema", "node_uid", "subject_ref", "audience_ref", "generation",
     "profile_generation", "issuer_keys", "state_dir", "python_executable",
@@ -260,8 +281,9 @@ CONFIG_KEYS = {
 }
 
 
-def load_config(path: Path, fs: TrustedFiles, *, require_state: bool = True) -> dict[str, Any]:
-    cfg = json_object(fs.read(path, private=True))
+def load_config(path: Path, fs: TrustedFiles, *, require_state: bool = True,
+                raw: bytes | None = None) -> dict[str, Any]:
+    cfg = json_object(fs.read(path, private=True) if raw is None else raw)
     exact_keys(cfg, CONFIG_KEYS, "ADMIN_CONFIG_FIELDS")
     if cfg["schema"] != CONFIG_SCHEMA or not NODE.fullmatch(str(cfg["node_uid"])):
         fail("ADMIN_CONFIG_SCHEMA")
@@ -453,6 +475,10 @@ class SystemdBackend:
     """Short RPCs; the command and deadline survive the SSH helper process."""
     SYSTEMCTL = "/usr/bin/systemctl"
     SYSTEMD_RUN = "/usr/bin/systemd-run"
+    INGRESS_PYTHON = "/usr/bin/python3"
+    SIGNATURE_IMPORT = ("import cryptography; "
+                        "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey; "
+                        "assert cryptography.__version__ == '50.0.2'")
     CGROUP_BASE = Path("/sys/fs/cgroup/system.slice")
 
     def __init__(self, cfg: dict[str, Any], config_path: Path, fs: TrustedFiles):
@@ -491,8 +517,13 @@ class SystemdBackend:
             fail("ADMIN_SYSTEMD_VERSION")
         self._run([self.SYSTEMCTL, "show", "--property=Version", "--no-pager"])
         # Validate the same root-managed interpreter used by the transient unit.
-        self._run([self.cfg["python_executable"], "-I", "-c",
-                   "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey"])
+        self._run([self.cfg["python_executable"], "-I", "-c", self.SIGNATURE_IMPORT])
+
+    def ingress_preflight(self) -> None:
+        # fleet_privctl's installed shebang is fixed to this interpreter. A
+        # configured child venv cannot supply imports to the SSH ingress.
+        self.fs.path(Path(self.INGRESS_PYTHON), executable=True)
+        self._run([self.INGRESS_PYTHON, "-I", "-c", self.SIGNATURE_IMPORT])
 
     @staticmethod
     def unit(key: str) -> str:
@@ -601,69 +632,91 @@ class Executor:
                  backend: Any = None, clock: Any = time.time):
         self.fs = fs or TrustedFiles()
         self.config_path = config_path
-        self.cfg = load_config(config_path, self.fs)
-        self.ledger = Ledger(Path(self.cfg["state_dir"]), self.fs)
-        self.backend = backend or SystemdBackend(self.cfg, config_path, self.fs)
+        self._injected_backend = backend
         self.clock = clock
+        with authority_locked(self.config_path, self.fs):
+            self._reload()
+
+    def _reload(self) -> None:
+        # A long-lived controller object is never a cache of authority. Re-read
+        # under the same lock used by installer apply/rollback and child start.
+        self.cfg = load_config(self.config_path, self.fs)
+        self.ledger = Ledger(Path(self.cfg["state_dir"]), self.fs)
+        self.backend = self._injected_backend or SystemdBackend(self.cfg, self.config_path, self.fs)
 
     def handle(self, wire: dict[str, Any]) -> dict[str, Any]:
-        action = wire.get("action") if isinstance(wire, dict) else None
-        lease, raw = verify_request(wire, self.cfg, self.fs, now=self.clock(),
-                                    check_time=action == "execute",
-                                    check_command_files=action == "execute")
-        key = self.ledger.key(lease["lease_id"])
-        # Backend viability is checked before reserving a fresh execution.
-        if action == "execute":
-            self.backend.preflight()
-        with self.ledger.locked(key):
-            record = self.ledger.read(key)
-            if record and record.get("lease_digest") != digest(raw):
-                fail("ADMIN_LEASE_ID_CONFLICT")
-            if action == "status":
-                if record and record["state"] not in TERMINAL:
-                    if self.clock() >= record["deadline"] or time.monotonic() >= record["monotonic_deadline"]:
-                        stopped = self.backend.stop(key)
-                        record.update(state="EXPIRED" if stopped else "UNKNOWN",
-                                      code="ADMIN_DEADLINE_REACHED")
-                    else:
-                        observed = self.backend.observe(key)
-                        if observed["state"] == "UNKNOWN":
-                            record.update(state="UNKNOWN", code="ADMIN_RECONCILE_REQUIRED")
+        stop_plan = None
+        with authority_locked(self.config_path, self.fs):
+            self._reload()
+            action = wire.get("action") if isinstance(wire, dict) else None
+            lease, raw = verify_request(wire, self.cfg, self.fs, now=self.clock(),
+                                        check_time=action == "execute",
+                                        check_command_files=action == "execute")
+            key = self.ledger.key(lease["lease_id"])
+            if action == "execute":
+                self.backend.preflight()
+            with self.ledger.locked(key):
+                record = self.ledger.read(key)
+                if record and record.get("lease_digest") != digest(raw):
+                    fail("ADMIN_LEASE_ID_CONFLICT")
+                if action == "status":
+                    if record and record["state"] not in TERMINAL:
+                        if self.clock() >= record["deadline"] or time.monotonic() >= record["monotonic_deadline"]:
+                            # Publish an admission barrier before releasing the
+                            # locks for OS stop; installer must see unresolved.
+                            record.update(state="UNKNOWN", revoked=True, code="ADMIN_DEADLINE_REACHED")
+                            self.ledger.write(key, record)
+                            stop_plan = (self.backend, "EXPIRED", "ADMIN_DEADLINE_REACHED")
+                        else:
+                            observed = self.backend.observe(key)
+                            if observed["state"] == "UNKNOWN":
+                                record.update(state="UNKNOWN", code="ADMIN_RECONCILE_REQUIRED")
+                            self.ledger.write(key, record)
+                    if stop_plan is None:
+                        return public_receipt(lease, raw, record)
+                elif action == "cancel":
+                    if record and record["state"] in TERMINAL:
+                        return public_receipt(lease, raw, record, duplicate=True)
+                    if record is None:
+                        record = self._record(key, wire, lease, raw)
+                        record.update(state="REVOKED", revoked=True, code="ADMIN_REVOKED_BEFORE_DISPATCH")
+                        self.ledger.write(key, record)
+                        return public_receipt(lease, raw, record)
+                    record.update(state="UNKNOWN", revoked=True, code="ADMIN_REVOCATION_REQUESTED")
                     self.ledger.write(key, record)
-                return public_receipt(lease, raw, record)
-            if action == "cancel":
-                if record and record["state"] in TERMINAL:
+                    stop_plan = (self.backend, "REVOKED", "ADMIN_REVOKED")
+                elif record is not None:
                     return public_receipt(lease, raw, record, duplicate=True)
-                if record is None:
+                else:
                     record = self._record(key, wire, lease, raw)
-                    record.update(state="REVOKED", revoked=True, code="ADMIN_REVOKED_BEFORE_DISPATCH")
+                    self.ledger.write(key, record)
+                    if self.clock() >= record["deadline"] or time.monotonic() >= record["monotonic_deadline"]:
+                        record.update(state="EXPIRED", code="ADMIN_DEADLINE_BEFORE_DISPATCH")
+                    else:
+                        try:
+                            self.backend.start(key, record["deadline"], lease["max_runtime_seconds"])
+                            record.update(state="STARTED", started=True)
+                        except Exception:
+                            record.update(state="UNKNOWN", code="ADMIN_DISPATCH_OUTCOME_UNKNOWN")
                     self.ledger.write(key, record)
                     return public_receipt(lease, raw, record)
-                # Publish revocation before attempting OS cancellation.
-                record.update(revoked=True, code="ADMIN_REVOCATION_REQUESTED")
-                self.ledger.write(key, record)
-                stopped = self.backend.stop(key)
-                record.update(state="REVOKED" if stopped else "UNKNOWN",
-                              code="ADMIN_REVOKED" if stopped else "ADMIN_CANCEL_OUTCOME_UNKNOWN")
-                self.ledger.write(key, record)
-                return public_receipt(lease, raw, record)
-            if record is not None:
-                # The lease, not a caller-selected effect/request ID, is the
-                # durable one-use fence. Never repeat even an uncertain start.
-                return public_receipt(lease, raw, record, duplicate=True)
-            record = self._record(key, wire, lease, raw)
-            self.ledger.write(key, record)
-            # Recheck time under the same lock immediately before dispatch.
-            if self.clock() >= record["deadline"] or time.monotonic() >= record["monotonic_deadline"]:
-                record.update(state="EXPIRED", code="ADMIN_DEADLINE_BEFORE_DISPATCH")
-            else:
-                try:
-                    self.backend.start(key, record["deadline"], lease["max_runtime_seconds"])
-                    record.update(state="STARTED", started=True)
-                except Exception:
-                    record.update(state="UNKNOWN", code="ADMIN_DISPATCH_OUTCOME_UNKNOWN")
-            self.ledger.write(key, record)
-            return public_receipt(lease, raw, record)
+        # OS stop can wait for process exit. Admission is already revoked and
+        # durable UNKNOWN prevents configuration changes during this interval.
+        backend, terminal, code = stop_plan
+        try:
+            stopped = backend.stop(key)
+        except Exception:
+            stopped = False
+        with authority_locked(self.config_path, self.fs):
+            self._reload()
+            with self.ledger.locked(key):
+                current = self.ledger.read(key)
+                if not current or current.get("lease_digest") != digest(raw):
+                    fail("ADMIN_RECONCILE_RECORD_CHANGED")
+                if current["state"] not in TERMINAL:
+                    current.update(state=terminal if stopped else "UNKNOWN", code=code if stopped else "ADMIN_CANCEL_OUTCOME_UNKNOWN")
+                    self.ledger.write(key, current)
+                return public_receipt(lease, raw, current)
 
     def _record(self, key: str, wire: dict[str, Any], lease: dict[str, Any], raw: bytes) -> dict[str, Any]:
         return {
@@ -713,42 +766,44 @@ def child(config_path: Path, key: str) -> int:
     if os.geteuid() != 0 or not HEX.fullmatch(key):
         return 77
     fs = TrustedFiles()
-    cfg = load_config(config_path, fs)
-    ledger = Ledger(Path(cfg["state_dir"]), fs)
-    with ledger.locked(key):
-        record = ledger.read(key)
-        if not record or record["state"] not in {"RESERVED", "STARTED"} or record.get("revoked"):
-            return 77
-        lease, raw = verify_request(record["wire"], cfg, fs, now=time.time())
-        if (digest(raw) != record["lease_digest"] or time.time() >= record["deadline"]
-                or time.monotonic() >= record["monotonic_deadline"]):
-            return 77
-        if ledger.key(lease["lease_id"]) != key:
-            return 77
-        command = lease["command"]
-        # Cancellation and command start share the same admission lock. A
-        # cancellation that commits first prevents even a new child process.
-        _other_unit_processes(key)
-        if time.time() >= record["deadline"] or time.monotonic() >= record["monotonic_deadline"]:
-            return 77
-        # The approved argv never appears in systemd's command line or receipt.
-        process = subprocess.Popen(
-            command["argv"], cwd=command["cwd"], env={**SAFE_ENV, **command["env"]},
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            close_fds=True,
-        )
-        record.update(state="STARTED", started=True)
-        ledger.write(key, record)
+    with authority_locked(config_path, fs):
+        cfg = load_config(config_path, fs)
+        ledger = Ledger(Path(cfg["state_dir"]), fs)
+        with ledger.locked(key):
+            record = ledger.read(key)
+            if not record or record["state"] not in {"RESERVED", "STARTED"} or record.get("revoked"):
+                return 77
+            lease, raw = verify_request(record["wire"], cfg, fs, now=time.time())
+            if (digest(raw) != record["lease_digest"] or time.time() >= record["deadline"]
+                    or time.monotonic() >= record["monotonic_deadline"]):
+                return 77
+            if ledger.key(lease["lease_id"]) != key:
+                return 77
+            command = lease["command"]
+            # Cancellation and command start share the same admission lock. A
+            # cancellation that commits first prevents even a new child process.
+            _other_unit_processes(key)
+            if time.time() >= record["deadline"] or time.monotonic() >= record["monotonic_deadline"]:
+                return 77
+            # The approved argv never appears in systemd's command line or receipt.
+            process = subprocess.Popen(
+                command["argv"], cwd=command["cwd"], env={**SAFE_ENV, **command["env"]},
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
+            record.update(state="STARTED", started=True)
+            ledger.write(key, record)
     try:
         exit_code = process.wait(timeout=max(0.001, record["monotonic_deadline"] - time.monotonic()))
     except subprocess.TimeoutExpired:
         # This process is in the unit being stopped. Publish uncertainty before
         # requesting cgroup stop; an external status call confirms emptiness.
-        with ledger.locked(key):
-            current = ledger.read(key)
-            if current:
-                current.update(state="UNKNOWN", code="ADMIN_RUNTIME_EXPIRED")
-                ledger.write(key, current)
+        with authority_locked(config_path, fs):
+            with ledger.locked(key):
+                current = ledger.read(key)
+                if current and current["state"] not in TERMINAL:
+                    current.update(state="UNKNOWN", code="ADMIN_RUNTIME_EXPIRED")
+                    ledger.write(key, current)
         SystemdBackend(cfg, config_path, fs).stop(key)
         return 78
     # A daemonized/setsid child remains in the unit cgroup. Do not report
@@ -758,12 +813,13 @@ def child(config_path: Path, key: str) -> int:
             SystemdBackend(cfg, config_path, fs).stop(key)
             return 78  # Independent systemd deadline still kills the full unit.
         time.sleep(0.05)
-    with ledger.locked(key):
-        current = ledger.read(key)
-        if current and not current.get("revoked") and current["state"] not in TERMINAL:
-            current.update(state="SUCCEEDED" if exit_code == 0 else "FAILED",
-                           started=True, exit_code=exit_code, code=None)
-            ledger.write(key, current)
+    with authority_locked(config_path, fs):
+        with ledger.locked(key):
+            current = ledger.read(key)
+            if current and not current.get("revoked") and current["state"] not in TERMINAL:
+                current.update(state="SUCCEEDED" if exit_code == 0 else "FAILED",
+                               started=True, exit_code=exit_code, code=None)
+                ledger.write(key, current)
     return 0
 
 
