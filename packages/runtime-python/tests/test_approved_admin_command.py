@@ -289,6 +289,64 @@ class ApprovedAdminTests(unittest.TestCase):
         self.assertEqual([queue.get(timeout=1) for _ in workers],["STARTED"]*6)
         self.assertEqual(len((self.root/"starts.log").read_text().splitlines()),1)
 
+    def test_first_admission_syncs_new_directory_entries_before_dispatch(self):
+        events=[]
+        state=self.root/"state"
+        native_mkdir=Path.mkdir
+        native_fsync=os.fsync
+        native_start=self.backend.start
+        def mkdir(path,*args,**kwargs):
+            native_mkdir(path,*args,**kwargs)
+            if path.parent == state:
+                events.append("mkdir:"+path.name)
+        def fsync(fd):
+            info=os.fstat(fd)
+            def same(path):
+                return path.exists() and (info.st_dev,info.st_ino) == (path.stat().st_dev,path.stat().st_ino)
+            if same(state): events.append("sync:state")
+            elif same(state/"leases"): events.append("sync:leases")
+            else: events.append("sync:receipt")
+            native_fsync(fd)
+        def start(*args):
+            events.append("dispatch")
+            native_start(*args)
+        with patch.object(Path,"mkdir",mkdir),patch.object(admin.os,"fsync",fsync), \
+                patch.object(self.backend,"start",start):
+            self.executor().handle(self.wire())
+        locks=events.index("mkdir:locks")
+        first_parent=events.index("sync:state",locks+1)
+        leases=events.index("mkdir:leases",first_parent+1)
+        second_parent=events.index("sync:state",leases+1)
+        receipt=events.index("sync:receipt",second_parent+1)
+        lease_directory=events.index("sync:leases",receipt+1)
+        self.assertLess(lease_directory,events.index("dispatch"))
+        self.assertEqual(self.backend.starts,1)
+
+    def test_parent_sync_failure_and_existing_directory_retry_deny_dispatch(self):
+        state=self.root/"state"
+        parent_info=state.stat()
+        native_fsync=os.fsync
+        failures=[]
+        def fsync(fd):
+            info=os.fstat(fd)
+            if ((info.st_dev,info.st_ino) == (parent_info.st_dev,parent_info.st_ino)
+                    and (state/"leases").exists()):
+                failures.append(1)
+                raise OSError("synthetic parent sync failure")
+            native_fsync(fd)
+        with patch.object(admin.os,"fsync",fsync):
+            for _ in range(2):
+                with self.assertRaisesRegex(admin.AdminError,"ADMIN_DIRECTORY_SYNC_FAILED"):
+                    self.executor().handle(self.wire())
+                self.assertTrue((state/"locks").is_dir())
+                self.assertTrue((state/"leases").is_dir())
+                self.assertEqual(list((state/"leases").glob("*.json")),[])
+                self.assertEqual(self.backend.starts,0)
+        self.assertEqual(len(failures),2)
+        # Recovery may reuse the directories only after parent fsync succeeds.
+        self.assertEqual(self.executor().handle(self.wire())["state"],"STARTED")
+        self.assertEqual(self.backend.starts,1)
+
     def test_installer_cannot_switch_the_consumed_lease_namespace(self):
         ex = self.executor()
         ex.handle(self.wire())

@@ -221,6 +221,17 @@ class TrustedFiles:
         except FileExistsError:
             pass
         self.path(path, kind="dir", private=True)
+        # The new directory entry must be durable before a receipt inside it
+        # can serve as a crash-safe one-use fence. Repeat on FileExists too:
+        # a prior mkdir may have succeeded while its parent fsync failed.
+        try:
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError:
+            fail("ADMIN_DIRECTORY_SYNC_FAILED")
 
     def write(self, path: Path, value: dict[str, Any]) -> None:
         self.path(path.parent, kind="dir", private=True)
