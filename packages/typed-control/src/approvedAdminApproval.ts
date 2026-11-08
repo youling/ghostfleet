@@ -145,6 +145,7 @@ export interface AdminApprovalLedgerStore {
     expectedState: AdminApprovalState | AdminApprovalState[],
     mutate: (current: AdminApprovalRecord) => AdminApprovalRecord,
   ): Promise<AdminApprovalRecord>;
+  recoverStaleLock?(requestId: string): Promise<boolean>;
 }
 
 export class InMemoryAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
@@ -374,22 +375,6 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
           } catch {}
 
           if (Date.now() - start > timeoutMs) {
-            try {
-              const content = await readFile(lockFile, "utf8");
-              const meta = JSON.parse(content);
-              if (meta?.pid && !isProcessAlive(meta.pid)) {
-                await unlink(lockFile).catch(() => {});
-                continue;
-              }
-            } catch {
-              try {
-                const fileStat = await stat(lockFile);
-                if (Date.now() - fileStat.mtimeMs > timeoutMs * 2) {
-                  await unlink(lockFile).catch(() => {});
-                  continue;
-                }
-              } catch {}
-            }
             throw new Error(`ADMIN_STORE_LOCK_TIMEOUT:${requestId}`);
           }
           await new Promise((resolve) => setTimeout(resolve, 20));
@@ -408,6 +393,64 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
         }
       } catch {}
     };
+  }
+
+  /**
+   * Explicit administrative/operator recovery for stale locks left by terminated processes.
+   * Never invoked automatically in concurrent request paths to avoid race conditions.
+   */
+  async recoverStaleLock(requestId: string): Promise<boolean> {
+    this.validateRequestId(requestId);
+    await this.ensureDir();
+    const lockFile = this.lockPath(requestId);
+
+    try {
+      const lockStat = await lstat(lockFile);
+      if (lockStat.isSymbolicLink()) {
+        throw new Error(`ADMIN_STORE_INSECURE_PATH: Lock file is a symlink: ${lockFile}`);
+      }
+    } catch (err: unknown) {
+      const error = err as { code?: string; message?: string };
+      if (error?.code === "ENOENT") {
+        return false;
+      }
+      if (error?.message?.startsWith("ADMIN_STORE_INSECURE_PATH")) {
+        throw err;
+      }
+    }
+
+    let content: string;
+    try {
+      content = await readFile(lockFile, "utf8");
+    } catch (err: unknown) {
+      const error = err as { code?: string };
+      if (error?.code === "ENOENT") {
+        return false;
+      }
+      throw err;
+    }
+
+    let meta: { pid?: number; time?: number; nonce?: string } = {};
+    try {
+      meta = JSON.parse(content);
+    } catch {
+      // Malformed lock file left by corrupt/crashed process
+    }
+
+    if (meta?.pid && isProcessAlive(meta.pid)) {
+      throw new Error(`LOCKED_BY_ACTIVE_PROCESS:${meta.pid}`);
+    }
+
+    try {
+      await unlink(lockFile);
+      return true;
+    } catch (err: unknown) {
+      const error = err as { code?: string };
+      if (error?.code === "ENOENT") {
+        return false;
+      }
+      throw err;
+    }
   }
 
   async create(record: AdminApprovalRecord): Promise<void> {

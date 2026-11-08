@@ -649,7 +649,7 @@ describe("Architect R4 Remediation: approvedAdminApproval unit & integration tes
       }
     });
 
-    it("safe lock timeout: automatically cleans up stale locks from dead processes and succeeds", async () => {
+    it("safe lock timeout: acquireFileLock times out without unlinking stale lock (no auto-reaping in request path)", async () => {
       const tmp = await mkdtemp(path.join(tmpdir(), "gf-stale-lock-test-"));
       try {
         const store = new FileAdminApprovalLedgerStore(tmp);
@@ -660,13 +660,96 @@ describe("Architect R4 Remediation: approvedAdminApproval unit & integration tes
         expect(isProcessAlive(deadPid)).toBe(false);
 
         const lockPath = path.join(tmp, `${reqId}.lock`);
-        await writeFile(lockPath, JSON.stringify({ pid: deadPid, time: Date.now() - 30000, nonce: "stale-nonce" }), "utf8");
+        const lockContent = JSON.stringify({ pid: deadPid, time: Date.now() - 30000, nonce: "stale-nonce" });
+        await writeFile(lockPath, lockContent, "utf8");
 
-        // Attempting to acquire lock with short timeout (100ms) detects dead PID, clears stale lock, and succeeds
-        const release = await (store as any).acquireFileLock(reqId, 100);
-        await release();
+        // Attempting to acquire lock with short timeout (50ms) times out and MUST NOT unlink the stale lock!
+        await expect((store as any).acquireFileLock(reqId, 50)).rejects.toThrow(/ADMIN_STORE_LOCK_TIMEOUT/);
 
-        // Now creating the record proceeds cleanly
+        // Verify the lock file was NOT unlinked
+        const contentAfter = await readFile(lockPath, "utf8");
+        expect(contentAfter).toBe(lockContent);
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("two-competitor timeout and new living lock interleaving: timed-out competitors never unlink a newly acquired living lock", async () => {
+      const tmp = await mkdtemp(path.join(tmpdir(), "gf-interleaved-lock-test-"));
+      try {
+        const store1 = new FileAdminApprovalLedgerStore(tmp);
+        const store2 = new FileAdminApprovalLedgerStore(tmp);
+        const reqId = "req-1700000000-0123456789abcdef0123456789abcdef-0123456789abcdef";
+        const lockPath = path.join(tmp, `${reqId}.lock`);
+
+        // Competitor 1 and Competitor 2 both try to acquire lock concurrently while initial lock exists
+        await writeFile(lockPath, JSON.stringify({ pid: 999999, time: Date.now(), nonce: "initial-dead" }), "utf8");
+
+        // Both store1 and store2 attempt to acquire with 50ms timeout
+        const p1 = (store1 as any).acquireFileLock(reqId, 50);
+        const p2 = (store2 as any).acquireFileLock(reqId, 50);
+
+        // Both must timeout with ADMIN_STORE_LOCK_TIMEOUT and NOT unlink the lock
+        await expect(p1).rejects.toThrow(/ADMIN_STORE_LOCK_TIMEOUT/);
+        await expect(p2).rejects.toThrow(/ADMIN_STORE_LOCK_TIMEOUT/);
+
+        // Now operator explicitly recovers the stale lock
+        const recovered = await store1.recoverStaleLock(reqId);
+        expect(recovered).toBe(true);
+
+        // A new process A acquires a fresh active lock with its own nonce
+        const releaseA = await (store1 as any).acquireFileLock(reqId, 5000);
+        const lockContentA = await readFile(lockPath, "utf8");
+        const metaA = JSON.parse(lockContentA);
+        expect(metaA.pid).toBe(process.pid);
+
+        // Even if competitor 2 runs another attempt or has delayed timeout handling,
+        // it cannot unlink Process A's new living lock
+        await expect((store2 as any).acquireFileLock(reqId, 50)).rejects.toThrow(/ADMIN_STORE_LOCK_TIMEOUT/);
+
+        // Verify Process A's lock is completely intact
+        const lockContentAfter = await readFile(lockPath, "utf8");
+        const metaAfter = JSON.parse(lockContentAfter);
+        expect(metaAfter.nonce).toBe(metaA.nonce);
+        expect(metaAfter.pid).toBe(process.pid);
+
+        // Process A releases cleanly
+        await releaseA();
+        const lockExists = await stat(lockPath).then(() => true).catch(() => false);
+        expect(lockExists).toBe(false);
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("recoverStaleLock: safely clears locks from dead processes and protects locks from active processes", async () => {
+      const tmp = await mkdtemp(path.join(tmpdir(), "gf-recover-lock-test-"));
+      try {
+        const store = new FileAdminApprovalLedgerStore(tmp);
+        const reqId = "req-1700000000-0123456789abcdef0123456789abcdef-0123456789abcdef";
+        const lockPath = path.join(tmp, `${reqId}.lock`);
+
+        // Case 1: No lock file exists -> returns false
+        const resEmpty = await store.recoverStaleLock(reqId);
+        expect(resEmpty).toBe(false);
+
+        // Case 2: Lock held by an ACTIVE living process -> throws LOCKED_BY_ACTIVE_PROCESS
+        await writeFile(lockPath, JSON.stringify({ pid: process.pid, time: Date.now(), nonce: "living-nonce" }), "utf8");
+        await expect(store.recoverStaleLock(reqId)).rejects.toThrow(/LOCKED_BY_ACTIVE_PROCESS/);
+
+        // Lock file must still exist
+        expect(await stat(lockPath).then(() => true).catch(() => false)).toBe(true);
+
+        // Case 3: Lock held by a DEAD process -> successfully unlinks and returns true
+        const deadPid = 999999;
+        expect(isProcessAlive(deadPid)).toBe(false);
+        await writeFile(lockPath, JSON.stringify({ pid: deadPid, time: Date.now() - 60000, nonce: "dead-nonce" }), "utf8");
+
+        const resRecovered = await store.recoverStaleLock(reqId);
+        expect(resRecovered).toBe(true);
+        expect(await stat(lockPath).then(() => true).catch(() => false)).toBe(false);
+
+        // After recovery, normal creation succeeds
         await store.create({
           version: 1,
           request_id: reqId,
@@ -684,9 +767,7 @@ describe("Architect R4 Remediation: approvedAdminApproval unit & integration tes
           expires_at: 1700000300,
           state: "PENDING",
         });
-
         const rec = await store.get(reqId);
-        expect(rec).not.toBeNull();
         expect(rec?.state).toBe("PENDING");
       } finally {
         await rm(tmp, { recursive: true, force: true });
