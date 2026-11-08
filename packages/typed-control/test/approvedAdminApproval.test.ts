@@ -728,14 +728,23 @@ describe("Architect R4 Remediation: approvedAdminApproval unit & integration tes
         const spy = vi.spyOn(process, "getuid").mockReturnValue(fakeUid);
 
         try {
-          await expect(store.get(reqId)).rejects.toThrow("ADMIN_STORE_INSECURE_PERMISSIONS: Foreign-owned ledger file");
+          await expect(store.get(reqId)).rejects.toThrow("ADMIN_STORE_INSECURE_PERMISSIONS: Foreign-owned ledger store directory");
           await expect(store.compareAndSwap(reqId, "PENDING", (r) => r)).rejects.toThrow(
-            "ADMIN_STORE_INSECURE_PERMISSIONS: Foreign-owned ledger file",
+            "ADMIN_STORE_INSECURE_PERMISSIONS: Foreign-owned ledger store directory",
           );
-          await expect(store.list()).rejects.toThrow("ADMIN_STORE_INSECURE_PERMISSIONS: Foreign-owned ledger file");
+          await expect(store.list()).rejects.toThrow("ADMIN_STORE_INSECURE_PERMISSIONS: Foreign-owned ledger store directory");
         } finally {
           spy.mockRestore();
         }
+
+        // Test foreign-owned ledger file security check specifically
+        expect(() =>
+          (store as any).validateFileSecurity(file, {
+            isSymbolicLink: () => false,
+            mode: 0o600,
+            uid: fakeUid,
+          }),
+        ).toThrow("ADMIN_STORE_INSECURE_PERMISSIONS: Foreign-owned ledger file");
       } finally {
         await rm(tmp, { recursive: true, force: true });
       }
