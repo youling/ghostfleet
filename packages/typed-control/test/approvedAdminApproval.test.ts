@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { Buffer } from "node:buffer";
-import { mkdtemp, rm, writeFile, readFile, stat, mkdir, unlink, symlink } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile, stat, mkdir, unlink, symlink, chmod } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -549,6 +549,48 @@ describe("Architect R4 Remediation: approvedAdminApproval unit & integration tes
         await expect(store.get("req-1700000000-0123456789abcdef0123456789abcdef-0123456789abcdef")).rejects.toThrow(
           "ADMIN_STORE_INSECURE_PATH",
         );
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("MUST-1: rejects store directory with 0777 permissions or world-writable ancestor without sticky bit", async () => {
+      if (process.platform === "win32") {
+        return;
+      }
+      const tmp = await mkdtemp(path.join(tmpdir(), "gf-perm-test-"));
+      try {
+        // Storage directory itself with 0777 (group- and world-writable)
+        const insecureDir = path.join(tmp, "insecure-store");
+        await mkdir(insecureDir, { recursive: true, mode: 0o777 });
+        await chmod(insecureDir, 0o777);
+
+        const store = new FileAdminApprovalLedgerStore(insecureDir);
+        await expect(store.get("req-1700000000-0123456789abcdef0123456789abcdef-0123456789abcdef")).rejects.toThrow(
+          "ADMIN_STORE_INSECURE_PERMISSIONS",
+        );
+
+        // Ancestor directory with 0777 (world-writable without sticky bit)
+        const insecureAncestor = path.join(tmp, "insecure-parent");
+        await mkdir(insecureAncestor, { recursive: true, mode: 0o777 });
+        await chmod(insecureAncestor, 0o777);
+        const childStore = path.join(insecureAncestor, "child-store");
+
+        const store2 = new FileAdminApprovalLedgerStore(childStore);
+        await expect(store2.get("req-1700000000-0123456789abcdef0123456789abcdef-0123456789abcdef")).rejects.toThrow(
+          "ADMIN_STORE_INSECURE_PERMISSIONS",
+        );
+
+        // Ancestor directory with 01777 (world-writable WITH sticky bit, e.g. /tmp) is allowed
+        const stickyAncestor = path.join(tmp, "sticky-parent");
+        await mkdir(stickyAncestor, { recursive: true, mode: 0o1777 });
+        await chmod(stickyAncestor, 0o1777);
+        const stickyChildStore = path.join(stickyAncestor, "child-store");
+
+        const store3 = new FileAdminApprovalLedgerStore(stickyChildStore);
+        const validId = "req-1700000000-0123456789abcdef0123456789abcdef-0123456789abcdef";
+        const res = await store3.get(validId);
+        expect(res).toBeNull();
       } finally {
         await rm(tmp, { recursive: true, force: true });
       }

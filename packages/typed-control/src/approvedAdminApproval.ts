@@ -252,7 +252,7 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
   private async ensureDir(): Promise<void> {
     const resolvedDir = path.resolve(this.dir);
 
-    // Verify ancestor path security: reject symlinks and world-writable directories
+    // Verify ancestor path security: reject symlinks and world-writable directories lacking sticky bit
     let current = resolvedDir;
     const visited = new Set<string>();
     while (true) {
@@ -264,9 +264,16 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
           throw new Error(`ADMIN_STORE_INSECURE_PATH: Symlinks not permitted in ledger store path: ${current}`);
         }
         if (process.platform !== "win32") {
-          // Reject world-writable directories (mode & 0o002)
-          if ((st.mode & 0o002) !== 0) {
-            throw new Error(`ADMIN_STORE_INSECURE_PERMISSIONS: Directory must not be world-writable: ${current}`);
+          if (current === resolvedDir) {
+            // Storage directory itself must not be group- or world-writable
+            if ((st.mode & 0o022) !== 0) {
+              throw new Error(`ADMIN_STORE_INSECURE_PERMISSIONS: Directory must not be group- or world-writable: ${current}`);
+            }
+          } else {
+            // Ancestor directories: if world-writable, must have sticky bit (0o1000, S_ISVTX, e.g. /tmp is 01777)
+            if ((st.mode & 0o002) !== 0 && (st.mode & 0o1000) === 0) {
+              throw new Error(`ADMIN_STORE_INSECURE_PERMISSIONS: Ancestor directory is world-writable without sticky bit: ${current}`);
+            }
           }
         }
       } catch (err: unknown) {
@@ -286,8 +293,8 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
       throw new Error(`ADMIN_STORE_INSECURE_PATH: Ledger store directory is a symlink: ${resolvedDir}`);
     }
     if (process.platform !== "win32") {
-      if ((dirStat.mode & 0o002) !== 0) {
-        throw new Error(`ADMIN_STORE_INSECURE_PERMISSIONS: Directory must not be world-writable: ${resolvedDir}`);
+      if ((dirStat.mode & 0o022) !== 0) {
+        throw new Error(`ADMIN_STORE_INSECURE_PERMISSIONS: Directory must not be group- or world-writable: ${resolvedDir}`);
       }
       if ((dirStat.mode & 0o077) !== 0) {
         await chmod(resolvedDir, 0o700).catch(() => {});
