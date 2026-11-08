@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { generateKeyPairSync, sign, createHash } from "node:crypto";
 import { Buffer } from "buffer";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -854,5 +854,121 @@ describe("G1/G2 Trusted Admin Approval and Consumer API", () => {
     const unknownRes = await dispatchAdminToolCall("fleet_admin_unknown_tool", {}, ctx);
     expect(unknownRes.ok).toBe(false);
     expect(unknownRes.error).toContain("UNKNOWN_ADMIN_TOOL");
+  });
+
+  it("supports end-to-end bounded diagnostic command submission, approval, execution, and privacy boundary", async () => {
+    const { issuer } = generateTestIssuer();
+    const store = new InMemoryAdminApprovalLedgerStore();
+    const manager = new AdminApprovalManager(store, issuer);
+    const policy: NodeGenerationPolicy = {
+      generation: "a".repeat(64),
+      profile_generation: "sha256:" + "b".repeat(64),
+      subject_ref: await controlActorRef(agentActor),
+      issuer_ids: ["human-issuer-v1"],
+    };
+    const env = await createTestEnv(policy);
+
+    // 1. Agent submits request with output: bounded and 4096 byte budget
+    const requestRes = await requestAdminCommand(manager, agentActor, {
+      node_uid: uid,
+      work_ref: "youling/ghostfleet#71",
+      purpose: "Read diagnostic SMART output",
+      command: {
+        argv: ["/usr/sbin/smartctl", "-a", "/dev/nvme0n1"],
+        cwd: "/",
+        executable_sha256: "b".repeat(64),
+        output: "bounded",
+        output_limit_bytes: 4096,
+      },
+      rollback_ref: "None",
+    });
+    expect(requestRes.ok).toBe(true);
+    const reqId = requestRes.request_id;
+
+    // 2. Human approves request: verifies output: bounded is preserved in signed lease
+    const approved = await manager.approveRequest(humanActor, reqId, policy);
+    expect(approved.state).toBe("APPROVED");
+    expect(approved.lease).toBeDefined();
+    const decodedLease = JSON.parse(Buffer.from(approved.lease!.raw_lease_b64, "base64").toString("utf8"));
+    expect(decodedLease.command.output).toBe("bounded");
+    expect(decodedLease.command.output_limit_bytes).toBe(4096);
+
+    // 3. Mock dependencies return bounded output and public receipt
+    const stdoutText = "SMART overall-health self-assessment test result: PASSED\n";
+    const stderrText = "";
+    const outSha = createHash("sha256").update(Buffer.from(stdoutText + stderrText)).digest("hex");
+    const mockReceipt = {
+      schema: "ghostfleet-approved-admin-receipt/v1",
+      lease_id: approved.lease!.lease_id,
+      request_id: reqId,
+      operation_id: approved.lease!.operation_id,
+      node_uid: uid,
+      actor_ref: await controlActorRef(agentActor),
+      lease_digest: approved.lease!.lease_digest,
+      command_digest: "c".repeat(64),
+      state: "SUCCEEDED",
+      duplicate: false,
+      retry_safe: false,
+      reconcile_required: false,
+      exit_code: 0,
+      execution_privilege: "root",
+      output: "bounded",
+      persistent_effects_rolled_back: false,
+      code: null,
+      stdout_bytes: Buffer.byteLength(stdoutText),
+      stderr_bytes: 0,
+      output_bytes: Buffer.byteLength(stdoutText),
+      truncated: false,
+      output_sha256: outSha,
+    };
+
+    const mockDeps = {
+      connect: vi.fn(async () => ({ close: async () => {}, closed: Promise.resolve() }) as never),
+      execute: vi.fn(async () => ({
+        exit_code: 0,
+        stdout: JSON.stringify({
+          ok: true,
+          receipt: mockReceipt,
+          output: { stdout: stdoutText, stderr: stderrText },
+        }),
+        stderr: "",
+        truncated: false,
+      })),
+    };
+
+    // 4. Agent executes approved command: returns private output to caller
+    const execRes = await executeAdminCommand(manager, env, agentActor, reqId, mockDeps);
+    expect(execRes.ok).toBe(true);
+    expect(execRes.outcome).toBe("SUCCEEDED");
+    expect(execRes.output).toEqual({ stdout: stdoutText, stderr: stderrText });
+
+    // 5. PRIVACY BOUNDARY: Verify durable ledger record NEVER contains raw stdout/stderr
+    const recordedInLedger = await manager.getRequest(reqId);
+    expect(recordedInLedger?.state).toBe("CONSUMED");
+    expect(recordedInLedger?.execution_receipt).toEqual(mockReceipt);
+    const serializedLedger = JSON.stringify(recordedInLedger);
+    expect(serializedLedger).not.toContain("SMART overall-health");
+    expect(serializedLedger).toContain(outSha);
+
+    // 6. Query status returns private output
+    const statusRes = await getAdminCommandStatus(manager, env, agentActor, reqId, mockDeps);
+    expect(statusRes.ok).toBe(true);
+    expect(statusRes.output).toEqual({ stdout: stdoutText, stderr: stderrText });
+  });
+
+  it("declares output and output_limit_bytes in tool specifications", () => {
+    const legacyDecl = fleetAdminToolDeclarations.find(t => t.name === "fleet_admin_request_command");
+    expect(legacyDecl).toBeDefined();
+    const legacyCmdProps = (legacyDecl!.parameters.properties.command as any).properties;
+    expect(legacyCmdProps.output).toBeDefined();
+    expect(legacyCmdProps.output.enum).toEqual(["discard", "bounded"]);
+    expect(legacyCmdProps.output_limit_bytes).toBeDefined();
+
+    const mcpDecl = FLEET_ADMIN_MCP_TOOLS.find(t => t.name === "fleet_admin_request_command");
+    expect(mcpDecl).toBeDefined();
+    const mcpCmdProps = (mcpDecl!.inputSchema.properties.command as any).properties;
+    expect(mcpCmdProps.output).toBeDefined();
+    expect(mcpCmdProps.output.enum).toEqual(["discard", "bounded"]);
+    expect(mcpCmdProps.output_limit_bytes).toBeDefined();
   });
 });

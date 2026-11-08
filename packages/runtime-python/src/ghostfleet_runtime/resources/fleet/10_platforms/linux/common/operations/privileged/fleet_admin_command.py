@@ -30,7 +30,7 @@ DEFAULT_CONFIG = Path("/etc/youling-fleet/privileged-operations/admin-command.js
 OPS_USER = "ghostfleet-ops"
 MAX_WIRE = 32768
 MAX_LEASE = 16384
-MAX_RECORD = 65536
+MAX_RECORD = 131072
 HEX = re.compile(r"^[0-9a-f]{64}$")
 REF = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._:/-]{7,127}$")
 NODE = re.compile(r"^node-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
@@ -395,7 +395,11 @@ def verify_request(wire: Any, cfg: dict[str, Any], fs: TrustedFiles, *,
         fail("ADMIN_LEASE_BOUNDS")
     if check_time and not lease["not_before"] <= now < lease["expires_at"]:
         fail("ADMIN_LEASE_EXPIRED_OR_NOT_YET_VALID")
-    command = exact_keys(lease["command"], {"argv", "cwd", "env", "executable_sha256", "output"}, "ADMIN_COMMAND_FIELDS")
+    allowed_cmd_keys = {"argv", "cwd", "env", "executable_sha256", "output"}
+    has_limit = isinstance(lease["command"], dict) and "output_limit_bytes" in lease["command"]
+    if has_limit:
+        allowed_cmd_keys = {"argv", "cwd", "env", "executable_sha256", "output", "output_limit_bytes"}
+    command = exact_keys(lease["command"], allowed_cmd_keys, "ADMIN_COMMAND_FIELDS")
     argv = command["argv"]
     if not isinstance(argv, list) or not 1 <= len(argv) <= 64:
         fail("ADMIN_ARGV_INVALID")
@@ -406,8 +410,12 @@ def verify_request(wire: Any, cfg: dict[str, Any], fs: TrustedFiles, *,
     string(command["cwd"])
     if not Path(command["cwd"]).is_absolute() or not HEX.fullmatch(str(command["executable_sha256"])):
         fail("ADMIN_COMMAND_PATH_OR_DIGEST")
-    if command["output"] != "discard":
+    if command["output"] not in {"discard", "bounded"}:
         fail("ADMIN_OUTPUT_POLICY")
+    if has_limit:
+        limit = command["output_limit_bytes"]
+        if type(limit) is not int or not 1024 <= limit <= 32768:
+            fail("ADMIN_OUTPUT_LIMIT_BOUNDS")
     env = command["env"]
     if not isinstance(env, dict) or len(env) > 16:
         fail("ADMIN_ENV_INVALID")
@@ -423,6 +431,15 @@ def verify_request(wire: Any, cfg: dict[str, Any], fs: TrustedFiles, *,
 
 
 class Ledger:
+    """Atomic root-owned lease record store.
+
+    Raw diagnostic stdout/stderr is persisted only in the node-local root-owned
+    lease ledger so an authenticated later status call can retrieve it over the
+    private channel. Raw output is never exposed in public receipts or durable
+    audit ledgers. The node may reclaim private output data after lease expiry
+    while strictly preserving the one-use lease tombstone and receipt hash to
+    prevent replay.
+    """
     def __init__(self, root: Path, fs: TrustedFiles):
         self.root = fs.path(root, kind="dir", private=True)
         self.fs = fs
@@ -466,7 +483,9 @@ class Ledger:
 def public_receipt(lease: dict[str, Any], raw: bytes, record: dict[str, Any] | None,
                    duplicate: bool = False) -> dict[str, Any]:
     state = record["state"] if record else "NOT_FOUND"
-    return {
+    cmd_output = lease["command"].get("output", "discard")
+    receipt_output = "bounded" if cmd_output == "bounded" else "discarded"
+    receipt = {
         "schema": RECEIPT_SCHEMA,
         "lease_id": lease["lease_id"], "request_id": lease["request_id"],
         "operation_id": lease["operation_id"], "node_uid": lease["node_uid"],
@@ -476,10 +495,15 @@ def public_receipt(lease: dict[str, Any], raw: bytes, record: dict[str, Any] | N
         "reconcile_required": state in {"RESERVED", "STARTED", "UNKNOWN"},
         "exit_code": record.get("exit_code") if record else None,
         "execution_privilege": "root" if record and record.get("started") else None,
-        "output": "discarded",
+        "output": receipt_output,
         "persistent_effects_rolled_back": False,
         "code": record.get("code") if record else None,
     }
+    if receipt_output == "bounded" and record:
+        for field in ("stdout_bytes", "stderr_bytes", "output_bytes", "truncated", "output_sha256"):
+            if field in record:
+                receipt[field] = record[field]
+    return receipt
 
 
 class SystemdBackend:
@@ -729,6 +753,19 @@ class Executor:
                     self.ledger.write(key, current)
                 return public_receipt(lease, raw, current)
 
+    def get_output(self, wire: dict[str, Any]) -> dict[str, str] | None:
+        try:
+            lease, _ = verify_request(wire, self.cfg, self.fs, now=self.clock(),
+                                      check_time=False, check_command_files=False)
+            key = self.ledger.key(lease["lease_id"])
+            with self.ledger.locked(key):
+                record = self.ledger.read(key)
+                if record and "stdout" in record and "stderr" in record:
+                    return {"stdout": record["stdout"], "stderr": record["stderr"]}
+        except Exception:
+            pass
+        return None
+
     def _record(self, key: str, wire: dict[str, Any], lease: dict[str, Any], raw: bytes) -> dict[str, Any]:
         return {
             "schema": "ghostfleet-admin-ledger/v1", "lease_key": key,
@@ -744,8 +781,14 @@ def handle_request(wire: dict[str, Any], ops_user: str) -> dict[str, Any]:
     if os.geteuid() != 0 or ops_user != OPS_USER:
         return {"ok": False, "error": "ADMIN_DEDICATED_OPS_REQUIRED"}
     try:
-        receipt = Executor(DEFAULT_CONFIG).handle(wire)
-        return {"ok": True, "receipt": receipt}
+        executor = Executor(DEFAULT_CONFIG)
+        receipt = executor.handle(wire)
+        result: dict[str, Any] = {"ok": True, "receipt": receipt}
+        if receipt.get("output") == "bounded":
+            output_data = executor.get_output(wire)
+            if output_data is not None:
+                result["output"] = output_data
+        return result
     except AdminError as error:
         return {"ok": False, "error": error.code}
     except Exception:
@@ -772,6 +815,90 @@ def _other_unit_processes(key: str) -> bool:
     return False
 
 
+def _capture_bounded_output(process: subprocess.Popen, limit_bytes: int,
+                            deadline_monotonic: float) -> tuple[int, bytes, bytes, bool]:
+    import threading
+    out_chunks: list[bytes] = []
+    err_chunks: list[bytes] = []
+    state = {
+        "total": 0,
+        "truncated": False,
+        "error": None,
+        "out_eof": False,
+        "err_eof": False,
+    }
+    lock = threading.Lock()
+
+    def reader(stream: Any, chunks: list[bytes], eof_key: str) -> None:
+        try:
+            while True:
+                chunk = stream.read(4096)
+                if not chunk:
+                    with lock:
+                        state[eof_key] = True
+                    break
+                with lock:
+                    if state["total"] < limit_bytes:
+                        space = limit_bytes - state["total"]
+                        if len(chunk) <= space:
+                            chunks.append(chunk)
+                            state["total"] += len(chunk)
+                        else:
+                            chunks.append(chunk[:space])
+                            state["total"] += space
+                            state["truncated"] = True
+                    else:
+                        state["truncated"] = True
+        except Exception as exc:
+            with lock:
+                state["error"] = exc
+                state["truncated"] = True
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    t_out = threading.Thread(target=reader, args=(process.stdout, out_chunks, "out_eof"), daemon=True)
+    t_err = threading.Thread(target=reader, args=(process.stderr, err_chunks, "err_eof"), daemon=True)
+    t_out.start()
+    t_err.start()
+
+    # 1. Wait for immediate process to exit, bounded by remaining deadline
+    remaining = deadline_monotonic - time.monotonic()
+    if remaining <= 0:
+        process.kill()
+        raise subprocess.TimeoutExpired(cmd=process.args, timeout=0)
+
+    try:
+        exit_code = process.wait(timeout=max(0.001, remaining))
+    except subprocess.TimeoutExpired:
+        process.kill()
+        raise
+
+    # 2. Wait for both streams/reader threads to reach EOF within the remaining lease deadline.
+    # Descendants inheriting stdout/stderr may continue writing until deadline.
+    remaining = deadline_monotonic - time.monotonic()
+    if remaining > 0 and t_out.is_alive():
+        t_out.join(timeout=max(0.001, remaining))
+    remaining = deadline_monotonic - time.monotonic()
+    if remaining > 0 and t_err.is_alive():
+        t_err.join(timeout=max(0.001, remaining))
+
+    # 3. Check stream completeness
+    # If the remaining deadline expired while streams were still open, or threads timed out:
+    if t_out.is_alive() or t_err.is_alive() or not state["out_eof"] or not state["err_eof"]:
+        state["truncated"] = True
+        if time.monotonic() >= deadline_monotonic:
+            raise subprocess.TimeoutExpired(cmd=process.args, timeout=0)
+
+    # If a reader thread encountered an unexpected exception, fail closed
+    if state["error"] is not None:
+        raise AdminError("ADMIN_OUTPUT_READER_INCOMPLETE")
+
+    return exit_code, b"".join(out_chunks), b"".join(err_chunks), state["truncated"]
+
+
 def child(config_path: Path, key: str) -> int:
     """Only systemd calls this root-only wrapper; caller-controlled CLI is absent."""
     if os.geteuid() != 0 or not HEX.fullmatch(key):
@@ -791,21 +918,36 @@ def child(config_path: Path, key: str) -> int:
             if ledger.key(lease["lease_id"]) != key:
                 return 77
             command = lease["command"]
+            output_mode = command.get("output", "discard")
+            output_limit = command.get("output_limit_bytes", 32768)
             # Cancellation and command start share the same admission lock. A
             # cancellation that commits first prevents even a new child process.
             _other_unit_processes(key)
             if time.time() >= record["deadline"] or time.monotonic() >= record["monotonic_deadline"]:
                 return 77
             # The approved argv never appears in systemd's command line or receipt.
-            process = subprocess.Popen(
-                command["argv"], cwd=command["cwd"], env={**SAFE_ENV, **command["env"]},
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                close_fds=True,
-            )
+            if output_mode == "bounded":
+                process = subprocess.Popen(
+                    command["argv"], cwd=command["cwd"], env={**SAFE_ENV, **command["env"]},
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    close_fds=True,
+                )
+            else:
+                process = subprocess.Popen(
+                    command["argv"], cwd=command["cwd"], env={**SAFE_ENV, **command["env"]},
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    close_fds=True,
+                )
             record.update(state="STARTED", started=True)
             ledger.write(key, record)
     try:
-        exit_code = process.wait(timeout=max(0.001, record["monotonic_deadline"] - time.monotonic()))
+        if output_mode == "bounded":
+            exit_code, out_raw, err_raw, truncated = _capture_bounded_output(
+                process, output_limit, record["monotonic_deadline"]
+            )
+        else:
+            exit_code = process.wait(timeout=max(0.001, record["monotonic_deadline"] - time.monotonic()))
+            out_raw, err_raw, truncated = b"", b"", False
     except subprocess.TimeoutExpired:
         # This process is in the unit being stopped. Publish uncertainty before
         # requesting cgroup stop; an external status call confirms emptiness.
@@ -814,6 +956,15 @@ def child(config_path: Path, key: str) -> int:
                 current = ledger.read(key)
                 if current and current["state"] not in TERMINAL:
                     current.update(state="UNKNOWN", code="ADMIN_RUNTIME_EXPIRED")
+                    ledger.write(key, current)
+        SystemdBackend(cfg, config_path, fs).stop(key)
+        return 78
+    except AdminError as error:
+        with authority_locked(config_path, fs):
+            with ledger.locked(key):
+                current = ledger.read(key)
+                if current and current["state"] not in TERMINAL:
+                    current.update(state="UNKNOWN", code=error.code)
                     ledger.write(key, current)
         SystemdBackend(cfg, config_path, fs).stop(key)
         return 78
@@ -828,8 +979,38 @@ def child(config_path: Path, key: str) -> int:
         with ledger.locked(key):
             current = ledger.read(key)
             if current and not current.get("revoked") and current["state"] not in TERMINAL:
-                current.update(state="SUCCEEDED" if exit_code == 0 else "FAILED",
-                               started=True, exit_code=exit_code, code=None)
+                update_fields: dict[str, Any] = {
+                    "state": "SUCCEEDED" if exit_code == 0 else "FAILED",
+                    "started": True, "exit_code": exit_code, "code": None,
+                }
+                if output_mode == "bounded":
+                    out_text = out_raw.decode("utf-8", errors="replace")
+                    err_text = err_raw.decode("utf-8", errors="replace")
+                    out_b = len(out_text.encode("utf-8"))
+                    err_b = len(err_text.encode("utf-8"))
+                    tot_b = out_b + err_b
+                    if tot_b > output_limit:
+                        truncated = True
+                        if out_b >= output_limit:
+                            out_text = out_text.encode("utf-8")[:output_limit].decode("utf-8", errors="ignore")
+                            err_text = ""
+                        else:
+                            rem = output_limit - out_b
+                            err_text = err_text.encode("utf-8")[:rem].decode("utf-8", errors="ignore")
+                        out_b = len(out_text.encode("utf-8"))
+                        err_b = len(err_text.encode("utf-8"))
+                        tot_b = out_b + err_b
+                    digest_val = digest((out_text + err_text).encode("utf-8"))
+                    update_fields.update({
+                        "stdout": out_text,
+                        "stderr": err_text,
+                        "stdout_bytes": out_b,
+                        "stderr_bytes": err_b,
+                        "output_bytes": tot_b,
+                        "truncated": truncated,
+                        "output_sha256": digest_val,
+                    })
+                current.update(update_fields)
                 ledger.write(key, current)
     return 0
 

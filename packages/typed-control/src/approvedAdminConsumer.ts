@@ -52,6 +52,8 @@ export const fleetAdminToolDeclarations = [
             cwd: { type: "string", description: "Working directory on the target host" },
             env: { type: "object", additionalProperties: { type: "string" }, description: "Restricted environment variables" },
             executable_sha256: { type: "string", description: "Exact SHA-256 digest of the binary on target host" },
+            output: { type: "string", enum: ["discard", "bounded"], default: "discard", description: "Diagnostic output capture mode: 'discard' (default) or 'bounded' (up to 32 KiB stdout/stderr)" },
+            output_limit_bytes: { type: "integer", default: 32768, description: "Maximum combined stdout/stderr budget in bytes (1024-32768, default 32768)" },
           },
           required: ["argv", "cwd", "executable_sha256"],
         },
@@ -119,6 +121,8 @@ export const FLEET_ADMIN_MCP_TOOLS = Object.freeze([
             cwd: { type: "string", description: "Working directory on the target host" },
             env: { type: "object", additionalProperties: { type: "string" }, description: "Restricted environment variables" },
             executable_sha256: { type: "string", description: "Exact SHA-256 digest of the binary on target host" },
+            output: { type: "string", enum: ["discard", "bounded"], default: "discard", description: "Diagnostic output capture mode: 'discard' (default) or 'bounded' (up to 32 KiB stdout/stderr)" },
+            output_limit_bytes: { type: "integer", default: 32768, description: "Maximum combined stdout/stderr budget in bytes (1024-32768, default 32768)" },
           },
           required: ["argv", "cwd", "executable_sha256"],
         },
@@ -262,6 +266,7 @@ export async function getAdminCommandStatus(
       late_dispatch_outcome: current.late_dispatch_outcome,
       conflicting_dispatch_outcome: current.conflicting_dispatch_outcome,
       actual_execution_outcome: current.late_dispatch_outcome?.outcome ?? current.dispatch_state,
+      output: (liveStatus as any)?.output,
       effect_summary: isLateSuccess
         ? "COMMAND_EFFECT_EXECUTED_DESPITE_CANCELLATION: Remote execution completed with SUCCEEDED before cancellation took effect"
         : undefined,
@@ -393,6 +398,7 @@ export async function executeAdminCommand(
     outcome: execution.outcome,
     state: updated.state,
     execution,
+    output: (execution as any).output,
   };
 }
 

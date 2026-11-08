@@ -29,7 +29,8 @@ export const adminCommandPayloadSchema = z.object({
   cwd: text,
   env: z.record(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/), text).default({}),
   executable_sha256: hex,
-  output: z.literal("discard").default("discard"),
+  output: z.enum(["discard", "bounded"]).default("discard"),
+  output_limit_bytes: z.number().int().min(1024).max(32768).optional(),
 }).strict();
 
 export type AdminCommandPayload = z.infer<typeof adminCommandPayloadSchema>;
@@ -744,7 +745,10 @@ export class AdminApprovalManager {
         cwd: existing.command.cwd,
         env: existing.command.env,
         executable_sha256: existing.command.executable_sha256,
-        output: "discard" as const,
+        output: existing.command.output,
+        ...(existing.command.output_limit_bytes !== undefined
+          ? { output_limit_bytes: existing.command.output_limit_bytes }
+          : {}),
       },
     };
 

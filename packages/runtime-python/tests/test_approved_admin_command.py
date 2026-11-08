@@ -1,5 +1,7 @@
+
 """Real Ed25519/files/locks; the OS backend is injected in this unit suite."""
 from __future__ import annotations
+import copy
 import base64
 import hashlib
 import importlib.util
@@ -7,6 +9,8 @@ import json
 import multiprocessing
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -572,6 +576,124 @@ class ApprovedAdminTests(unittest.TestCase):
         self.assertFalse(backend.stop(key))  # Even inconsistent/stale evidence denies.
         (child/"cgroup.procs").write_text("")
         self.assertTrue(backend.stop(key))
+
+    def test_bounded_output_policy_and_limits_validation(self):
+        # Valid bounded output without limit
+        valid_bounded = copy.deepcopy(self.lease)
+        valid_bounded["command"]["output"] = "bounded"
+        res = self.executor().handle(self.wire(valid_bounded))
+        self.assertEqual(res["output"], "bounded")
+        self.assertEqual(res["state"], "STARTED")
+
+        # Valid bounded output with explicit limit
+        valid_with_limit = copy.deepcopy(self.lease)
+        valid_with_limit["lease_id"] = "lease-test-limit-ok"
+        valid_with_limit["command"]["output"] = "bounded"
+        valid_with_limit["command"]["output_limit_bytes"] = 16384
+        res2 = self.executor().handle(self.wire(valid_with_limit))
+        self.assertEqual(res2["output"], "bounded")
+
+        # Invalid limit too small (< 1024)
+        too_small = copy.deepcopy(self.lease)
+        too_small["command"]["output"] = "bounded"
+        too_small["command"]["output_limit_bytes"] = 512
+        with self.assertRaisesRegex(admin.AdminError, "ADMIN_OUTPUT_LIMIT_BOUNDS"):
+            self.executor().handle(self.wire(too_small))
+
+        # Invalid limit too large (> 32768)
+        too_large = copy.deepcopy(self.lease)
+        too_large["command"]["output"] = "bounded"
+        too_large["command"]["output_limit_bytes"] = 65536
+        with self.assertRaisesRegex(admin.AdminError, "ADMIN_OUTPUT_LIMIT_BOUNDS"):
+            self.executor().handle(self.wire(too_large))
+
+        # Invalid output mode
+        invalid_mode = copy.deepcopy(self.lease)
+        invalid_mode["command"]["output"] = "stream"
+        with self.assertRaisesRegex(admin.AdminError, "ADMIN_OUTPUT_POLICY"):
+            self.executor().handle(self.wire(invalid_mode))
+
+    def test_bounded_output_receipt_privacy_and_get_output(self):
+        ex = self.executor()
+        lease = copy.deepcopy(self.lease)
+        lease["command"]["output"] = "bounded"
+        wire = self.wire(lease)
+        res = ex.handle(wire)
+        self.assertEqual(res["output"], "bounded")
+        self.assertNotIn("stdout", res)
+        self.assertNotIn("stderr", res)
+
+        key = ex.ledger.key(lease["lease_id"])
+        with ex.ledger.locked(key):
+            record = ex.ledger.read(key)
+            record.update({
+                "state": "SUCCEEDED",
+                "exit_code": 0,
+                "stdout": "DIAGNOSTIC_DATA\n",
+                "stderr": "WARNING_LOG\n",
+                "stdout_bytes": 16,
+                "stderr_bytes": 12,
+                "output_bytes": 28,
+                "truncated": False,
+                "output_sha256": hashlib.sha256("DIAGNOSTIC_DATA\nWARNING_LOG\n".encode()).hexdigest(),
+            })
+            ex.ledger.write(key, record)
+
+        # Status receipt contains metadata, but NEVER raw stdout/stderr
+        status_receipt = ex.handle(self.wire(lease, action="status"))
+        self.assertEqual(status_receipt["output"], "bounded")
+        self.assertEqual(status_receipt["state"], "SUCCEEDED")
+        self.assertEqual(status_receipt["output_bytes"], 28)
+        self.assertEqual(status_receipt["truncated"], False)
+        self.assertNotIn("stdout", status_receipt)
+        self.assertNotIn("stderr", status_receipt)
+        self.assertNotIn("DIAGNOSTIC_DATA", json.dumps(status_receipt))
+
+        # get_output retrieves private output
+        out = ex.get_output(wire)
+        self.assertEqual(out, {"stdout": "DIAGNOSTIC_DATA\n", "stderr": "WARNING_LOG\n"})
+
+    def test_capture_bounded_output_descendant_delayed_write(self):
+        desc_code = (
+            "import subprocess, sys; "
+            "subprocess.Popen([sys.executable, '-I', '-c', "
+            "'import time; time.sleep(2.2); print(\"DESCENDANT_LATE_DATA\", flush=True)']); "
+            "sys.exit(0)"
+        )
+        p = subprocess.Popen([sys.executable, "-I", "-c", desc_code],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        t0 = time.monotonic()
+        ret, out, err, trunc = admin._capture_bounded_output(p, 32768, time.monotonic() + 10)
+        dur = time.monotonic() - t0
+        self.assertEqual(ret, 0)
+        self.assertIn(b"DESCENDANT_LATE_DATA", out)
+        self.assertFalse(trunc)
+        self.assertGreaterEqual(dur, 2.0)
+
+    def test_capture_bounded_output_timeout_expired(self):
+        p = subprocess.Popen([sys.executable, "-I", "-c", "import time; time.sleep(10)"],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                admin._capture_bounded_output(p, 32768, time.monotonic() + 0.3)
+        finally:
+            try:
+                p.kill()
+                p.wait()
+            except Exception:
+                pass
+
+    def test_capture_bounded_output_reader_exception_fails_closed(self):
+        class FaultyStream:
+            def read(self, _size):
+                raise OSError("SIMULATED_PIPE_FAULT")
+            def close(self):
+                pass
+        p = subprocess.Popen([sys.executable, "-I", "-c", "import sys; sys.exit(0)"],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p.stdout = FaultyStream()
+        with self.assertRaisesRegex(admin.AdminError, "ADMIN_OUTPUT_READER_INCOMPLETE"):
+            admin._capture_bounded_output(p, 32768, time.monotonic() + 5)
 
     def test_missing_systemd_is_explicit_denial(self):
         if Path("/proc/1/comm").read_text().strip() == "systemd":
