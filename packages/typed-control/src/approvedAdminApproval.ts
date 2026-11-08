@@ -6,7 +6,7 @@
  */
 import { Buffer } from "buffer";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile, rename, readdir, unlink, open, stat } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename, readdir, unlink, open, stat, lstat, chmod } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -102,6 +102,12 @@ export interface AdminApprovalRecord {
   };
   execution_receipt?: unknown;
   late_dispatch_outcome?: {
+    recorded_at: number;
+    outcome: string;
+    receipt?: unknown;
+    error?: string;
+  };
+  conflicting_dispatch_outcome?: {
     recorded_at: number;
     outcome: string;
     receipt?: unknown;
@@ -244,7 +250,49 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
   }
 
   private async ensureDir(): Promise<void> {
-    await mkdir(this.dir, { recursive: true, mode: 0o700 });
+    const resolvedDir = path.resolve(this.dir);
+
+    // Verify ancestor path security: reject symlinks and world-writable directories
+    let current = resolvedDir;
+    const visited = new Set<string>();
+    while (true) {
+      if (visited.has(current)) break;
+      visited.add(current);
+      try {
+        const st = await lstat(current);
+        if (st.isSymbolicLink()) {
+          throw new Error(`ADMIN_STORE_INSECURE_PATH: Symlinks not permitted in ledger store path: ${current}`);
+        }
+        if (process.platform !== "win32") {
+          // Reject world-writable directories (mode & 0o002)
+          if ((st.mode & 0o002) !== 0) {
+            throw new Error(`ADMIN_STORE_INSECURE_PERMISSIONS: Directory must not be world-writable: ${current}`);
+          }
+        }
+      } catch (err: unknown) {
+        const error = err as { code?: string };
+        if (error?.code !== "ENOENT") {
+          throw err;
+        }
+      }
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+
+    await mkdir(resolvedDir, { recursive: true, mode: 0o700 });
+    const dirStat = await lstat(resolvedDir);
+    if (dirStat.isSymbolicLink()) {
+      throw new Error(`ADMIN_STORE_INSECURE_PATH: Ledger store directory is a symlink: ${resolvedDir}`);
+    }
+    if (process.platform !== "win32") {
+      if ((dirStat.mode & 0o002) !== 0) {
+        throw new Error(`ADMIN_STORE_INSECURE_PERMISSIONS: Directory must not be world-writable: ${resolvedDir}`);
+      }
+      if ((dirStat.mode & 0o077) !== 0) {
+        await chmod(resolvedDir, 0o700).catch(() => {});
+      }
+    }
   }
 
   private filePath(requestId: string): string {
@@ -267,7 +315,13 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
     } finally {
       await handle.close();
     }
+    if (process.platform !== "win32") {
+      await chmod(tmpFile, 0o600).catch(() => {});
+    }
     await rename(tmpFile, file);
+    if (process.platform !== "win32") {
+      await chmod(file, 0o600).catch(() => {});
+    }
     try {
       const dirHandle = await open(this.dir, "r");
       try {
@@ -285,20 +339,33 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
     await this.ensureDir();
     const lockFile = this.lockPath(requestId);
     const start = Date.now();
+    const nonce = randomBytes(16).toString("hex");
+
     while (true) {
       try {
         const handle = await open(lockFile, "wx", 0o600);
         try {
-          const lockMeta = JSON.stringify({ pid: process.pid, createdAt: Date.now() });
+          const lockMeta = JSON.stringify({ pid: process.pid, time: Date.now(), nonce });
           await handle.writeFile(lockMeta, "utf8");
           await handle.sync();
         } finally {
           await handle.close();
         }
+        if (process.platform !== "win32") {
+          await chmod(lockFile, 0o600).catch(() => {});
+        }
         break;
       } catch (err: unknown) {
         const error = err as { code?: string };
         if (error?.code === "EEXIST") {
+          try {
+            const lockStat = await lstat(lockFile);
+            if (lockStat.isSymbolicLink()) {
+              await unlink(lockFile).catch(() => {});
+              continue;
+            }
+          } catch {}
+
           if (Date.now() - start > timeoutMs) {
             try {
               const content = await readFile(lockFile, "utf8");
@@ -324,8 +391,15 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
         throw err;
       }
     }
+
     return async () => {
-      await unlink(lockFile).catch(() => {});
+      try {
+        const content = await readFile(lockFile, "utf8");
+        const meta = JSON.parse(content);
+        if (meta?.nonce === nonce) {
+          await unlink(lockFile).catch(() => {});
+        }
+      } catch {}
     };
   }
 
@@ -355,6 +429,10 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
     await this.ensureDir();
     const file = this.filePath(requestId);
     try {
+      const fileStat = await lstat(file);
+      if (fileStat.isSymbolicLink()) {
+        throw new Error(`ADMIN_STORE_INSECURE_PATH: Ledger file cannot be a symlink: ${file}`);
+      }
       const content = await readFile(file, "utf8");
       return JSON.parse(content);
     } catch (err: unknown) {
@@ -373,7 +451,10 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
         const reqId = entry.slice(0, -5);
         if (!REQUEST_ID_RE.test(reqId)) continue;
         try {
-          const content = await readFile(path.join(this.dir, entry), "utf8");
+          const entryPath = path.join(this.dir, entry);
+          const st = await lstat(entryPath);
+          if (st.isSymbolicLink()) continue;
+          const content = await readFile(entryPath, "utf8");
           const rec: AdminApprovalRecord = JSON.parse(content);
           if (filter?.node_uid && rec.node_uid !== filter.node_uid) continue;
           if (filter?.state && rec.state !== filter.state) continue;
@@ -399,6 +480,10 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
       const file = this.filePath(requestId);
       let current: AdminApprovalRecord;
       try {
+        const fileStat = await lstat(file);
+        if (fileStat.isSymbolicLink()) {
+          throw new Error(`ADMIN_STORE_INSECURE_PATH: Ledger file cannot be a symlink: ${file}`);
+        }
         const content = await readFile(file, "utf8");
         current = JSON.parse(content);
       } catch (err: unknown) {
@@ -512,21 +597,25 @@ export class AdminApprovalManager {
       throw new Error("APPROVER_CANNOT_BE_REQUESTER");
     }
 
-    // Node-level approver authorization check
-    if (policy.allowed_approvers !== undefined) {
+    // Node-level approver authorization check (only if non-empty list configured in policy)
+    if (policy.allowed_approvers && policy.allowed_approvers.length > 0) {
       const validApprovers = policy.allowed_approvers.filter(a => typeof a === "string" && a.trim().length > 0);
-      const allowed = validApprovers.includes(humanActor.userId) || validApprovers.includes(approverRef);
-      if (!allowed) {
-        throw new Error("APPROVER_NOT_AUTHORIZED_FOR_NODE");
+      if (validApprovers.length > 0) {
+        const allowed = validApprovers.includes(humanActor.userId) || validApprovers.includes(approverRef);
+        if (!allowed) {
+          throw new Error("APPROVER_NOT_AUTHORIZED_FOR_NODE");
+        }
       }
     }
 
-    // Work reference authorization check
-    if (policy.allowed_work_prefixes !== undefined) {
+    // Work reference intent/audit check (only if non-empty list configured in policy)
+    if (policy.allowed_work_prefixes && policy.allowed_work_prefixes.length > 0) {
       const validPrefixes = policy.allowed_work_prefixes.filter(p => typeof p === "string" && p.length > 0);
-      const workAllowed = validPrefixes.length > 0 && validPrefixes.some(p => existing.work_ref.startsWith(p));
-      if (!workAllowed) {
-        throw new Error("WORK_REF_NOT_AUTHORIZED_FOR_NODE");
+      if (validPrefixes.length > 0) {
+        const workAllowed = validPrefixes.some(p => existing.work_ref.startsWith(p));
+        if (!workAllowed) {
+          throw new Error("WORK_REF_NOT_AUTHORIZED_FOR_NODE");
+        }
       }
     }
 
@@ -545,7 +634,7 @@ export class AdminApprovalManager {
       throw new Error("ADMIN_ISSUER_NOT_AUTHORIZED_FOR_NODE");
     }
 
-    const entropy = randomBytes(8).toString("hex");
+    const entropy = randomBytes(16).toString("hex");
     const cmdDigest = sha256Hex(canonicalJson(existing.command)).slice(0, 8);
     const leaseId = `lease-${now}-${entropy}-${cmdDigest}`;
     const operationId = `op-${now}-${entropy}-${cmdDigest}`;
@@ -782,15 +871,40 @@ export class AdminApprovalManager {
             receipt: execution.receipt,
             error: execution.error,
           };
-          return record;
-        }
-
-        // Idempotent reconciliation on already-CONSUMED record
-        if (record.state === "CONSUMED") {
+          if (execution.outcome === "SUCCEEDED" || execution.outcome === "RUNNING") {
+            record.reconcile_required = true;
+          }
           if (execution.receipt && !record.execution_receipt) {
             record.execution_receipt = execution.receipt;
           }
-          if (execution.outcome) {
+          return record;
+        }
+
+        // Idempotent reconciliation and consistency verification on already-CONSUMED record
+        if (record.state === "CONSUMED") {
+          const existingOutcome = record.dispatch_state;
+          const incomingOutcome = execution.outcome;
+
+          const isConflict = Boolean(
+            existingOutcome && incomingOutcome && existingOutcome !== incomingOutcome,
+          );
+
+          if (isConflict) {
+            // Contradictory receipts: preserve initial evidence and flag reconcile_required
+            record.reconcile_required = true;
+            record.conflicting_dispatch_outcome = {
+              recorded_at: now,
+              outcome: execution.outcome,
+              receipt: execution.receipt,
+              error: execution.error,
+            };
+            return record;
+          }
+
+          if (execution.receipt && !record.execution_receipt) {
+            record.execution_receipt = execution.receipt;
+          }
+          if (execution.outcome && !record.dispatch_state) {
             record.dispatch_state = execution.outcome as any;
           }
           record.reconcile_required = false;

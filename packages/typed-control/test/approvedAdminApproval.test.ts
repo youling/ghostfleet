@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { Buffer } from "node:buffer";
-import { mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile, stat, mkdir, unlink, symlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -92,12 +92,12 @@ function createTestEnv(policy: NodeGenerationPolicy): ApprovedAdminEnvironment {
   };
 }
 
-describe("Architect R3 Remediation: approvedAdminApproval unit & integration tests", () => {
+describe("Architect R4 Remediation: approvedAdminApproval unit & integration tests", () => {
   // --------------------------------------------------------------------------
-  // Fix 1: Lease ID & Operation ID Collision Prevention
+  // Fix 1: Lease ID & Operation ID 128-bit Entropy Collision Prevention
   // --------------------------------------------------------------------------
-  describe("Fix 1: Lease ID & Operation ID Collision Prevention", () => {
-    it("prevents lease_id and operation_id collision when approving identical commands within the same second", async () => {
+  describe("Fix 1: Lease ID & Operation ID 128-bit Entropy Collision Prevention", () => {
+    it("prevents lease_id and operation_id collision with 128-bit entropy when approving identical commands in same second", async () => {
       const store = new InMemoryAdminApprovalLedgerStore();
       const { issuer } = generateTestIssuer();
       const manager = new AdminApprovalManager(store, issuer);
@@ -145,28 +145,29 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
       expect(approved1.lease!.lease_id).not.toBe(approved2.lease!.lease_id);
       expect(approved1.lease!.operation_id).not.toBe(approved2.lease!.operation_id);
 
-      // Verify format includes timestamp, 16 hex chars (8 bytes) entropy, and 8 hex chars command digest
-      const leaseIdPattern = /^lease-[0-9]+-[0-9a-f]{16}-[0-9a-f]{8}$/;
-      const opIdPattern = /^op-[0-9]+-[0-9a-f]{16}-[0-9a-f]{8}$/;
+      // Verify format includes timestamp, 32 hex chars (16 bytes = 128-bit entropy), and 8 hex chars command digest
+      const leaseIdPattern = /^lease-[0-9]+-[0-9a-f]{32}-[0-9a-f]{8}$/;
+      const opIdPattern = /^op-[0-9]+-[0-9a-f]{32}-[0-9a-f]{8}$/;
 
       expect(approved1.lease!.lease_id).toMatch(leaseIdPattern);
       expect(approved2.lease!.lease_id).toMatch(leaseIdPattern);
       expect(approved1.lease!.operation_id).toMatch(opIdPattern);
       expect(approved2.lease!.operation_id).toMatch(opIdPattern);
 
-      // Verify command digest suffix is identical (since command is identical) but random entropy differs
+      // Verify command digest suffix is identical (since command is identical) but 128-bit random entropy differs
       const leaseParts1 = approved1.lease!.lease_id.split("-");
       const leaseParts2 = approved2.lease!.lease_id.split("-");
       expect(leaseParts1[3]).toBe(leaseParts2[3]); // identical command digest slice(0, 8)
       expect(leaseParts1[2]).not.toBe(leaseParts2[2]); // unique cryptographic entropy
+      expect(leaseParts1[2].length).toBe(32); // 128-bit entropy = 32 hex chars
     });
   });
 
   // --------------------------------------------------------------------------
-  // Fix 2: Status Query After CONSUMED State (Idempotence & No CAS Mismatch)
+  // Fix 2: Status Query After CONSUMED State & Receipt Consistency
   // --------------------------------------------------------------------------
-  describe("Fix 2: Status Query After CONSUMED State", () => {
-    it("recordDispatchOutcome is idempotent on already-CONSUMED record without ADMIN_CAS_STATE_MISMATCH", async () => {
+  describe("Fix 2: Status Query After CONSUMED State & Consistency Check", () => {
+    it("recordDispatchOutcome is idempotent on already-CONSUMED record when receiving same receipt", async () => {
       const store = new InMemoryAdminApprovalLedgerStore();
       const { issuer } = generateTestIssuer();
       const manager = new AdminApprovalManager(store, issuer);
@@ -198,7 +199,7 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
       expect(firstOutcome.state).toBe("CONSUMED");
       expect(firstOutcome.reconcile_required).toBe(false);
 
-      // Call recordDispatchOutcome AGAIN (simulating duplicate receipt arrival or status reconciliation)
+      // Call recordDispatchOutcome AGAIN with matching outcome
       const secondOutcome = await manager.recordDispatchOutcome(callerRef, req.request_id, {
         outcome: "SUCCEEDED",
         receipt: { exit_code: 0, stdout: "up 5 days" },
@@ -206,6 +207,58 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
       expect(secondOutcome.state).toBe("CONSUMED");
       expect(secondOutcome.reconcile_required).toBe(false);
       expect(secondOutcome.execution_receipt).toEqual({ exit_code: 0, stdout: "up 5 days" });
+    });
+
+    it("MUST-4: detects contradictory receipts in CONSUMED state, preserves initial evidence and sets reconcile_required", async () => {
+      const store = new InMemoryAdminApprovalLedgerStore();
+      const { issuer } = generateTestIssuer();
+      const manager = new AdminApprovalManager(store, issuer);
+
+      const req = await manager.submitRequest(agentActor, {
+        node_uid: uid,
+        work_ref: "ops/conflict#204",
+        purpose: "Contradictory receipt test",
+        command: { argv: ["/usr/bin/uptime"], cwd: "/", executable_sha256: "b".repeat(64), env: {}, output: "discard" },
+        rollback_ref: "ops/rb#204",
+      });
+
+      const policy: NodeGenerationPolicy = {
+        generation: "b".repeat(64),
+        profile_generation: "sha256:" + "c".repeat(64),
+        subject_ref: await controlActorRef(agentActor),
+        issuer_ids: ["human-issuer-v1"],
+      };
+
+      await manager.approveRequest(humanActor, req.request_id, policy);
+      const callerRef = await controlActorRef(agentActor);
+      await manager.markDispatched(callerRef, req.request_id);
+
+      // Initial execution report: SUCCEEDED
+      const initial = await manager.recordDispatchOutcome(callerRef, req.request_id, {
+        outcome: "SUCCEEDED",
+        receipt: { exit_code: 0, stdout: "initial success" },
+      });
+      expect(initial.state).toBe("CONSUMED");
+      expect(initial.dispatch_state).toBe("SUCCEEDED");
+      expect(initial.reconcile_required).toBe(false);
+
+      // Now a contradictory receipt arrives: FAILED
+      const conflicted = await manager.recordDispatchOutcome(callerRef, req.request_id, {
+        outcome: "FAILED",
+        receipt: { exit_code: 1, stderr: "conflict error" },
+        error: "PROCESS_FAILED",
+      });
+
+      // Assert initial evidence is NOT silently overwritten
+      expect(conflicted.state).toBe("CONSUMED");
+      expect(conflicted.dispatch_state).toBe("SUCCEEDED");
+      expect(conflicted.execution_receipt).toEqual({ exit_code: 0, stdout: "initial success" });
+
+      // Assert reconcile_required is set and conflict evidence is audited
+      expect(conflicted.reconcile_required).toBe(true);
+      expect(conflicted.conflicting_dispatch_outcome).toBeDefined();
+      expect(conflicted.conflicting_dispatch_outcome?.outcome).toBe("FAILED");
+      expect(conflicted.conflicting_dispatch_outcome?.receipt).toEqual({ exit_code: 1, stderr: "conflict error" });
     });
 
     it("reconcileFromStatus cleanly updates CONSUMED record on SUCCEEDED receipt without throwing", async () => {
@@ -269,7 +322,6 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
       });
 
       await manager.approveRequest(humanActor, reqRes.request_id, policy);
-
       const approved = await manager.getRequest(reqRes.request_id);
       const subject = await controlActorRef(agentActor);
 
@@ -312,10 +364,10 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
   });
 
   // --------------------------------------------------------------------------
-  // Fix 3: Reverse Execute / Cancel Race
+  // Fix 3: Reverse Execute / Cancel Race & Clarity in Status Query
   // --------------------------------------------------------------------------
   describe("Fix 3: Reverse Execute / Cancel Race", () => {
-    it("safely records delayed execution on confirmed CANCELLED record without state corruption or crash", async () => {
+    it("MUST-3: safely records delayed execution on CANCELLED record, sets reconcile_required, and exposes effect", async () => {
       const store = new InMemoryAdminApprovalLedgerStore();
       const { issuer } = generateTestIssuer();
       const manager = new AdminApprovalManager(store, issuer);
@@ -352,9 +404,11 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
         receipt: { exit_code: 0, stdout: "Command actually finished right before cancel took effect" },
       });
 
-      // Verify that recordDispatchOutcome did not crash with ADMIN_CAS_STATE_MISMATCH
-      // and state is NOT overwritten to CONSUMED
+      // Verify state is NOT overwritten to CONSUMED
       expect(lateOutcome.state).toBe("CANCELLED");
+
+      // MUST-3: reconcile_required MUST be true because command took effect despite cancellation
+      expect(lateOutcome.reconcile_required).toBe(true);
 
       // Verify that late execution was safely audited
       expect(lateOutcome.late_dispatch_outcome).toBeDefined();
@@ -364,9 +418,17 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
         stdout: "Command actually finished right before cancel took effect",
       });
       expect(typeof lateOutcome.late_dispatch_outcome?.recorded_at).toBe("number");
+
+      // Consumer getAdminCommandStatus exposes actual effect to avoid misleading user
+      const env = createTestEnv(policy);
+      const statusRes = await getAdminCommandStatus(manager, env, agentActor, req.request_id);
+      expect(statusRes.state).toBe("CANCELLED");
+      expect(statusRes.reconcile_required).toBe(true);
+      expect(statusRes.actual_execution_outcome).toBe("SUCCEEDED");
+      expect(statusRes.effect_summary).toContain("COMMAND_EFFECT_EXECUTED_DESPITE_CANCELLATION");
     });
 
-    it("reconcileFromStatus audits late SUCCEEDED receipt on CANCELLED record", async () => {
+    it("reconcileFromStatus audits late SUCCEEDED receipt on CANCELLED record and sets reconcile_required", async () => {
       const store = new InMemoryAdminApprovalLedgerStore();
       const { issuer } = generateTestIssuer();
       const manager = new AdminApprovalManager(store, issuer);
@@ -397,6 +459,7 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
       });
 
       expect(result?.state).toBe("CANCELLED");
+      expect(result?.reconcile_required).toBe(true);
       expect(result?.late_dispatch_outcome).toBeDefined();
       expect(result?.late_dispatch_outcome?.outcome).toBe("SUCCEEDED");
     });
@@ -436,7 +499,7 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
   // Fix 4: File Ledger Security, Durability & True Multi-Process Concurrency
   // --------------------------------------------------------------------------
   describe("Fix 4: File Ledger Security, Durability & True Multi-Process Concurrency", () => {
-    it("strictly validates request_id with regex and rejects path traversal attempts", async () => {
+    it("MUST-1: strictly validates request_id with regex and rejects path traversal attempts", async () => {
       const tmp = await mkdtemp(path.join(tmpdir(), "gf-path-traversal-test-"));
       try {
         const store = new FileAdminApprovalLedgerStore(tmp);
@@ -468,6 +531,58 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
       }
     });
 
+    it("MUST-1: rejects symlinked directory paths for ledger store", async () => {
+      const tmp = await mkdtemp(path.join(tmpdir(), "gf-symlink-dir-test-"));
+      try {
+        const realTarget = path.join(tmp, "real-store");
+        await mkdir(realTarget, { recursive: true });
+        const symlinkDir = path.join(tmp, "symlink-store");
+
+        try {
+          await symlink(realTarget, symlinkDir, "junction");
+        } catch {
+          // If platform lacks symlink/junction privileges, skip gracefully
+          return;
+        }
+
+        const store = new FileAdminApprovalLedgerStore(symlinkDir);
+        await expect(store.get("req-1700000000-0123456789abcdef0123456789abcdef-0123456789abcdef")).rejects.toThrow(
+          "ADMIN_STORE_INSECURE_PATH",
+        );
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("MUST-2: safe lock release verifies nonce and does not unlink competitor lock if overwritten", async () => {
+      const tmp = await mkdtemp(path.join(tmpdir(), "gf-lock-nonce-test-"));
+      try {
+        const store = new FileAdminApprovalLedgerStore(tmp);
+        const reqId = "req-1700000000-0123456789abcdef0123456789abcdef-0123456789abcdef";
+
+        // Process 1 acquires lock
+        const release1 = await (store as any).acquireFileLock(reqId, 5000);
+        const lockPath = path.join(tmp, `${reqId}.lock`);
+
+        // Simulate that while Process 1 was executing, another process took over the lock with a different nonce
+        const competitorNonce = "competitor-nonce-1234567890abcdef";
+        await writeFile(lockPath, JSON.stringify({ pid: process.pid, time: Date.now(), nonce: competitorNonce }), "utf8");
+
+        // Process 1 attempts to release its lock
+        await release1();
+
+        // The lock file MUST STILL EXIST because nonce did not match!
+        const contentAfter = await readFile(lockPath, "utf8");
+        const metaAfter = JSON.parse(contentAfter);
+        expect(metaAfter.nonce).toBe(competitorNonce);
+
+        // Clean up competitor lock manually
+        await unlink(lockPath).catch(() => {});
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    });
+
     it("safe lock timeout: preserves active locks held by living processes and rejects without unlinking", async () => {
       const tmp = await mkdtemp(path.join(tmpdir(), "gf-active-lock-test-"));
       try {
@@ -476,7 +591,7 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
 
         // Create an active lock owned by our own living PID
         const lockPath = path.join(tmp, `${reqId}.lock`);
-        await writeFile(lockPath, JSON.stringify({ pid: process.pid, createdAt: Date.now() }), "utf8");
+        await writeFile(lockPath, JSON.stringify({ pid: process.pid, time: Date.now(), nonce: "active-nonce" }), "utf8");
 
         // isProcessAlive returns true for process.pid
         expect(isProcessAlive(process.pid)).toBe(true);
@@ -503,7 +618,7 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
         expect(isProcessAlive(deadPid)).toBe(false);
 
         const lockPath = path.join(tmp, `${reqId}.lock`);
-        await writeFile(lockPath, JSON.stringify({ pid: deadPid, createdAt: Date.now() - 30000 }), "utf8");
+        await writeFile(lockPath, JSON.stringify({ pid: deadPid, time: Date.now() - 30000, nonce: "stale-nonce" }), "utf8");
 
         // Attempting to acquire lock with short timeout (100ms) detects dead PID, clears stale lock, and succeeds
         const release = await (store as any).acquireFileLock(reqId, 100);
@@ -615,10 +730,10 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
   });
 
   // --------------------------------------------------------------------------
-  // Fix 5: Node Approval Scope Fail-Closed Semantics
+  // Fix 5: Node Approval Scope & Human Architecture Ruling
   // --------------------------------------------------------------------------
-  describe("Fix 5: Node Approval Scope Fail-Closed Semantics", () => {
-    it("fails closed when policy.allowed_approvers is empty or does not include approver", async () => {
+  describe("Fix 5: Node Approval Scope & Human Ruling", () => {
+    it("enforces allowed_approvers when configured, but does not block universal admin channel when omitted or empty", async () => {
       const store = new InMemoryAdminApprovalLedgerStore();
       const { issuer } = generateTestIssuer();
       const manager = new AdminApprovalManager(store, issuer);
@@ -626,7 +741,7 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
       const req = await manager.submitRequest(agentActor, {
         node_uid: uid,
         work_ref: "ops/node-scope#501",
-        purpose: "Fail-closed approver test",
+        purpose: "Universal admin approver test",
         command: { argv: ["/usr/bin/id"], cwd: "/", executable_sha256: "d".repeat(64), env: {}, output: "discard" },
         rollback_ref: "ops/rb#501",
       });
@@ -643,7 +758,7 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
         "APPROVER_NOT_AUTHORIZED_FOR_NODE",
       );
 
-      // 2. Empty allowed_approvers: MUST FAIL CLOSED (nobody authorized)
+      // 2. Empty allowed_approvers: Human ruling - does NOT fail closed, allows universal admin channel
       const policyEmptyApprovers: NodeGenerationPolicy = {
         generation: "b".repeat(64),
         profile_generation: "sha256:" + "c".repeat(64),
@@ -651,24 +766,11 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
         issuer_ids: ["human-issuer-v1"],
         allowed_approvers: [],
       };
-      await expect(manager.approveRequest(humanActor, req.request_id, policyEmptyApprovers)).rejects.toThrow(
-        "APPROVER_NOT_AUTHORIZED_FOR_NODE",
-      );
-
-      // 3. Array with only empty/whitespace strings: MUST FAIL CLOSED
-      const policyWhitespaceApprovers: NodeGenerationPolicy = {
-        generation: "b".repeat(64),
-        profile_generation: "sha256:" + "c".repeat(64),
-        subject_ref: await controlActorRef(agentActor),
-        issuer_ids: ["human-issuer-v1"],
-        allowed_approvers: ["", "   "],
-      };
-      await expect(manager.approveRequest(humanActor, req.request_id, policyWhitespaceApprovers)).rejects.toThrow(
-        "APPROVER_NOT_AUTHORIZED_FOR_NODE",
-      );
+      const approved = await manager.approveRequest(humanActor, req.request_id, policyEmptyApprovers);
+      expect(approved.state).toBe("APPROVED");
     });
 
-    it("fails closed when policy.allowed_work_prefixes is empty or does not match", async () => {
+    it("enforces allowed_work_prefixes when configured, but does not block universal admin channel when omitted or empty", async () => {
       const store = new InMemoryAdminApprovalLedgerStore();
       const { issuer } = generateTestIssuer();
       const manager = new AdminApprovalManager(store, issuer);
@@ -676,7 +778,7 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
       const req = await manager.submitRequest(agentActor, {
         node_uid: uid,
         work_ref: "ops/node-scope#502",
-        purpose: "Fail-closed work prefix test",
+        purpose: "Universal admin work ref test",
         command: { argv: ["/usr/bin/id"], cwd: "/", executable_sha256: "d".repeat(64), env: {}, output: "discard" },
         rollback_ref: "ops/rb#502",
       });
@@ -693,7 +795,7 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
         "WORK_REF_NOT_AUTHORIZED_FOR_NODE",
       );
 
-      // 2. Empty allowed_work_prefixes: MUST FAIL CLOSED
+      // 2. Empty allowed_work_prefixes: Human ruling - work_ref acts as audit context, not a hard blocking whitelist
       const policyEmptyWork: NodeGenerationPolicy = {
         generation: "b".repeat(64),
         profile_generation: "sha256:" + "c".repeat(64),
@@ -701,21 +803,8 @@ describe("Architect R3 Remediation: approvedAdminApproval unit & integration tes
         issuer_ids: ["human-issuer-v1"],
         allowed_work_prefixes: [],
       };
-      await expect(manager.approveRequest(humanActor, req.request_id, policyEmptyWork)).rejects.toThrow(
-        "WORK_REF_NOT_AUTHORIZED_FOR_NODE",
-      );
-
-      // 3. Array containing only empty string: MUST NOT permit arbitrary work_ref
-      const policyBlankPrefix: NodeGenerationPolicy = {
-        generation: "b".repeat(64),
-        profile_generation: "sha256:" + "c".repeat(64),
-        subject_ref: await controlActorRef(agentActor),
-        issuer_ids: ["human-issuer-v1"],
-        allowed_work_prefixes: [""],
-      };
-      await expect(manager.approveRequest(humanActor, req.request_id, policyBlankPrefix)).rejects.toThrow(
-        "WORK_REF_NOT_AUTHORIZED_FOR_NODE",
-      );
+      const approved = await manager.approveRequest(humanActor, req.request_id, policyEmptyWork);
+      expect(approved.state).toBe("APPROVED");
     });
 
     it("enforces approver cannot be requester", async () => {

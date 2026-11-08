@@ -246,6 +246,11 @@ export async function getAdminCommandStatus(
     const reconciled = await manager.reconcileFromStatus(record.request_id, liveStatus as any);
     const current = reconciled ?? record;
 
+    const isLateSuccess =
+      current.state === "CANCELLED" &&
+      (current.late_dispatch_outcome?.outcome === "SUCCEEDED" ||
+        (current.execution_receipt as any)?.state === "SUCCEEDED");
+
     return {
       ok: true,
       request_id: current.request_id,
@@ -253,8 +258,20 @@ export async function getAdminCommandStatus(
       decision: current.decision,
       reconcile_required: current.reconcile_required,
       live_execution: liveStatus,
+      execution_receipt: current.execution_receipt,
+      late_dispatch_outcome: current.late_dispatch_outcome,
+      conflicting_dispatch_outcome: current.conflicting_dispatch_outcome,
+      actual_execution_outcome: current.late_dispatch_outcome?.outcome ?? current.dispatch_state,
+      effect_summary: isLateSuccess
+        ? "COMMAND_EFFECT_EXECUTED_DESPITE_CANCELLATION: Remote execution completed with SUCCEEDED before cancellation took effect"
+        : undefined,
     };
   }
+
+  const isLateSuccess =
+    record.state === "CANCELLED" &&
+    (record.late_dispatch_outcome?.outcome === "SUCCEEDED" ||
+      (record.execution_receipt as any)?.state === "SUCCEEDED");
 
   return {
     ok: true,
@@ -266,6 +283,13 @@ export async function getAdminCommandStatus(
     decision: record.decision,
     reconcile_required: record.reconcile_required,
     lease_available: Boolean(record.lease),
+    execution_receipt: record.execution_receipt,
+    late_dispatch_outcome: record.late_dispatch_outcome,
+    conflicting_dispatch_outcome: record.conflicting_dispatch_outcome,
+    actual_execution_outcome: record.late_dispatch_outcome?.outcome ?? record.dispatch_state,
+    effect_summary: isLateSuccess
+      ? "COMMAND_EFFECT_EXECUTED_DESPITE_CANCELLATION: Remote execution completed with SUCCEEDED before cancellation took effect"
+      : undefined,
   };
 }
 
