@@ -480,6 +480,13 @@
       "line_sha256": "5d6c69dc91611d8280c9a052e5645c075d13d25de584e3cd681686eecf54a444",
       "kind": "inert-fixture-or-detector",
       "reason": "Independent synthetic wrong-node UUID in local preconnection denial test."
+    },
+    {
+      "path": "packages/typed-control/test/approvedAdminConsumer.test.ts",
+      "rule": "node-identity",
+      "line_sha256": "fc1b52c86effa47ba9b93579b06d1e1467947415aa665dcd511dc8bbe0a86f26",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Independent synthetic node UUID for consumer toolchain tests; no live host."
     }
   ],
   "binary_reviews": [
