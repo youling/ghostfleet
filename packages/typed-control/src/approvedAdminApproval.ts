@@ -232,6 +232,21 @@ export function isProcessAlive(pid: number): boolean {
 
 /**
  * File-backed durable transactional ledger store supporting cross-process CAS and crash recovery.
+ *
+ * LOCKING & RECOVERY ARCHITECTURE (R7 ARCHITECTURAL CONTRACT):
+ * - Lock acquisition (`acquireFileLock`) is strictly atomic via exclusive filesystem creation (`wx` mode, 0600).
+ * - Lock files are ONLY ever unlinked by the specific process that successfully acquired the lock and holds
+ *   the matching unguessable random cryptographic nonce.
+ * - Under lock contention or timeout (`ADMIN_STORE_LOCK_TIMEOUT`), `acquireFileLock` NEVER unlinks or steals locks.
+ *   Under malformed or symlink locks, it fails closed immediately (`ADMIN_STORE_INSECURE_PATH`).
+ * - Stale/Orphan Lock Recovery: There is NO online or runtime-callable lock recovery method. In the rare event of
+ *   an ungraceful process or host termination leaving an orphan `.lock` file, recovery MUST be performed via
+ *   an offline Host maintenance procedure:
+ *     1. Stop / quiesce all GhostFleet services/workers accessing the approval store directory.
+ *     2. Verify that no writer processes are active (`ps aux` / PID inspection).
+ *     3. Inspect the orphan lock file (`cat <dir>/<requestId>.lock`).
+ *     4. Remove the verified orphan lock file manually (`rm <dir>/<requestId>.lock`).
+ *     5. Restart GhostFleet services and execute state reconciliation.
  */
 export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
   readonly dir: string;
@@ -454,95 +469,6 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
         }
       } catch {}
     };
-  }
-
-  /**
-   * Offline administrative recovery procedure to be run only during scheduled maintenance
-   * or after verifying complete quiescence (no active writer processes).
-   *
-   * Explicit administrative/operator recovery for stale locks left by terminated processes.
-   * Never invoked automatically in concurrent request paths to avoid race conditions.
-   */
-  async recoverStaleLock(
-    requestId: string,
-    options?: { offlineQuiescentVerified?: boolean; force?: boolean },
-  ): Promise<boolean> {
-    this.validateRequestId(requestId);
-    await this.ensureDir();
-    const lockFile = this.lockPath(requestId);
-
-    try {
-      const lockStat = await lstat(lockFile);
-      if (lockStat.isSymbolicLink()) {
-        throw new Error(`ADMIN_STORE_INSECURE_PATH: Lock file is a symlink: ${lockFile}`);
-      }
-    } catch (err: unknown) {
-      const error = err as { code?: string; message?: string };
-      if (error?.code === "ENOENT") {
-        return false;
-      }
-      if (error?.message?.startsWith("ADMIN_STORE_INSECURE_PATH")) {
-        throw err;
-      }
-    }
-
-    let content: string;
-    try {
-      content = await readFile(lockFile, "utf8");
-    } catch (err: unknown) {
-      const error = err as { code?: string };
-      if (error?.code === "ENOENT") {
-        return false;
-      }
-      throw err;
-    }
-
-    let meta: { pid?: number; time?: number; nonce?: string } = {};
-    let parseFailed = false;
-    try {
-      meta = JSON.parse(content);
-    } catch {
-      parseFailed = true;
-    }
-
-    const hasValidPid = !parseFailed && typeof meta?.pid === "number" && !isNaN(meta.pid) && meta.pid > 0;
-
-    if (!hasValidPid) {
-      if (!options?.force && !options?.offlineQuiescentVerified) {
-        throw new Error(
-          "ADMIN_STORE_CORRUPT_LOCK: Missing or unparseable PID in lock file; cannot prove process termination without options.offlineQuiescentVerified: true",
-        );
-      }
-    } else {
-      if (isProcessAlive(meta.pid!)) {
-        throw new Error(`LOCKED_BY_ACTIVE_PROCESS:${meta.pid}`);
-      }
-    }
-
-    if (!options?.force) {
-      let currentContent: string;
-      try {
-        currentContent = await readFile(lockFile, "utf8");
-      } catch (err: unknown) {
-        const error = err as { code?: string };
-        if (error?.code === "ENOENT") return false;
-        throw err;
-      }
-      if (currentContent !== content) {
-        throw new Error("ADMIN_STORE_LOCK_CONCURRENT_MUTATION: Lock content changed before unlink");
-      }
-    }
-
-    try {
-      await unlink(lockFile);
-      return true;
-    } catch (err: unknown) {
-      const error = err as { code?: string };
-      if (error?.code === "ENOENT") {
-        return false;
-      }
-      throw err;
-    }
   }
 
   async create(record: AdminApprovalRecord): Promise<void> {

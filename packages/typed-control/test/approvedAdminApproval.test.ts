@@ -875,9 +875,8 @@ describe("Architect R4 Remediation: approvedAdminApproval unit & integration tes
           expect(p2).rejects.toThrow(/ADMIN_STORE_LOCK_TIMEOUT/),
         ]);
 
-        // Now operator explicitly recovers the stale lock
-        const recovered = await store1.recoverStaleLock(reqId);
-        expect(recovered).toBe(true);
+        // Now operator explicitly performs offline orphan lock recovery after quiescence
+        await unlink(lockPath);
 
         // A new process A acquires a fresh active lock with its own nonce
         const releaseA = await (store1 as any).acquireFileLock(reqId, 5000);
@@ -904,53 +903,30 @@ describe("Architect R4 Remediation: approvedAdminApproval unit & integration tes
       }
     });
 
-    it("MUST-2: recoverStaleLock enforces offlineQuiescentVerified for corrupt lock, detects active locks, and cleans up dead locks", async () => {
-      const tmp = await mkdtemp(path.join(tmpdir(), "gf-recover-lock-test-"));
+    it("MUST R7: offline host maintenance sequence cleanly unlinks verified orphan lock and allows subsequent operations", async () => {
+      const tmp = await mkdtemp(path.join(tmpdir(), "gf-offline-maint-test-"));
       try {
         const store = new FileAdminApprovalLedgerStore(tmp);
         const reqId = "req-1700000000-0123456789abcdef0123456789abcdef-0123456789abcdef";
         const lockPath = path.join(tmp, `${reqId}.lock`);
 
-        // Case 1: No lock file exists -> returns false
-        const resEmpty = await store.recoverStaleLock(reqId);
-        expect(resEmpty).toBe(false);
-
-        // Case 2a: Corrupt / unparseable lock without options -> throws ADMIN_STORE_CORRUPT_LOCK and preserves lock
-        await writeFile(lockPath, "{ corrupt invalid json }", "utf8");
-        await expect(store.recoverStaleLock(reqId)).rejects.toThrow("ADMIN_STORE_CORRUPT_LOCK");
-        expect(await stat(lockPath).then(() => true).catch(() => false)).toBe(true);
-
-        // Case 2b: Corrupt lock with offlineQuiescentVerified: true -> successfully cleans up
-        const resQuiescent = await store.recoverStaleLock(reqId, { offlineQuiescentVerified: true });
-        expect(resQuiescent).toBe(true);
-        expect(await stat(lockPath).then(() => true).catch(() => false)).toBe(false);
-
-        // Case 2c: Missing PID in lock JSON without options -> throws ADMIN_STORE_CORRUPT_LOCK and preserves lock
-        await writeFile(lockPath, JSON.stringify({ time: Date.now(), nonce: "no-pid" }), "utf8");
-        await expect(store.recoverStaleLock(reqId)).rejects.toThrow("ADMIN_STORE_CORRUPT_LOCK");
-        expect(await stat(lockPath).then(() => true).catch(() => false)).toBe(true);
-
-        // Case 2d: Missing PID with force: true -> cleans up
-        const resForce = await store.recoverStaleLock(reqId, { force: true });
-        expect(resForce).toBe(true);
-        expect(await stat(lockPath).then(() => true).catch(() => false)).toBe(false);
-
-        // Case 3: Lock held by an ACTIVE living process -> throws LOCKED_BY_ACTIVE_PROCESS and preserves lock
-        await writeFile(lockPath, JSON.stringify({ pid: process.pid, time: Date.now(), nonce: "living-nonce" }), "utf8");
-        await expect(store.recoverStaleLock(reqId)).rejects.toThrow(/LOCKED_BY_ACTIVE_PROCESS/);
-        expect(await stat(lockPath).then(() => true).catch(() => false)).toBe(true);
-        await unlink(lockPath);
-
-        // Case 4: Lock held by a DEAD process -> successfully unlinks and returns true
+        // Simulate an orphan lock left by an abruptly killed process
         const deadPid = 999999;
         expect(isProcessAlive(deadPid)).toBe(false);
-        await writeFile(lockPath, JSON.stringify({ pid: deadPid, time: Date.now() - 60000, nonce: "dead-nonce" }), "utf8");
+        await writeFile(lockPath, JSON.stringify({ pid: deadPid, time: Date.now() - 60000, nonce: "orphan-nonce" }), "utf8");
 
-        const resRecovered = await store.recoverStaleLock(reqId);
-        expect(resRecovered).toBe(true);
+        // Normal acquisition timed out and refused to unlink the orphan lock
+        await expect((store as any).acquireFileLock(reqId, 50)).rejects.toThrow(/ADMIN_STORE_LOCK_TIMEOUT/);
+        expect(await stat(lockPath).then(() => true).catch(() => false)).toBe(true);
+
+        // Offline Host Maintenance Sequence:
+        // 1. All service writers are stopped / quiesced.
+        // 2. Operator verifies holding PID is dead (deadPid is dead).
+        // 3. Operator manually removes the verified orphan lock file.
+        await unlink(lockPath);
         expect(await stat(lockPath).then(() => true).catch(() => false)).toBe(false);
 
-        // After recovery, normal creation succeeds
+        // 4. Services restarted: subsequent store operations now acquire the lock cleanly
         await store.create({
           version: 1,
           request_id: reqId,
@@ -968,49 +944,9 @@ describe("Architect R4 Remediation: approvedAdminApproval unit & integration tes
           expires_at: 1700000300,
           state: "PENDING",
         });
+
         const rec = await store.get(reqId);
         expect(rec?.state).toBe("PENDING");
-      } finally {
-        await rm(tmp, { recursive: true, force: true });
-      }
-    });
-
-    it("MUST-2: recoverStaleLock detects concurrent mutation before unlink and aborts unless force: true", async () => {
-      const tmp = await mkdtemp(path.join(tmpdir(), "gf-mutation-lock-test-"));
-      try {
-        const store = new FileAdminApprovalLedgerStore(tmp);
-        const reqId = "req-1700000000-0123456789abcdef0123456789abcdef-0123456789abcdef";
-        const lockPath = path.join(tmp, `${reqId}.lock`);
-
-        const deadPid = 999999;
-        const initialContent = JSON.stringify({ pid: deadPid, time: Date.now() - 60000, nonce: "initial-dead" });
-        await writeFile(lockPath, initialContent, "utf8");
-
-        // Simulate concurrent mutation right before unlink by hooking process.kill
-        // When recoverStaleLock checks isProcessAlive, process.kill is called.
-        // During that check, mutate the lock file content on disk.
-        const mutatedContent = JSON.stringify({ pid: deadPid, time: Date.now(), nonce: "competitor-mutated" });
-        const origKill = process.kill;
-        process.kill = ((pid: number, sig?: string | number) => {
-          writeFileSync(lockPath, mutatedContent, "utf8");
-          const err = new Error("No such process");
-          (err as any).code = "ESRCH";
-          throw err;
-        }) as typeof process.kill;
-
-        try {
-          // Without force, should detect mutation and throw
-          await expect(store.recoverStaleLock(reqId)).rejects.toThrow("ADMIN_STORE_LOCK_CONCURRENT_MUTATION");
-          // Lock file was NOT unlinked
-          expect(await stat(lockPath).then(() => true).catch(() => false)).toBe(true);
-        } finally {
-          process.kill = origKill;
-        }
-
-        // With force: true, cleans up even if mutated
-        const forceRecovered = await store.recoverStaleLock(reqId, { force: true });
-        expect(forceRecovered).toBe(true);
-        expect(await stat(lockPath).then(() => true).catch(() => false)).toBe(false);
       } finally {
         await rm(tmp, { recursive: true, force: true });
       }
