@@ -182,9 +182,9 @@ def main():
         assert expired_receipt["persistent_effects_rolled_back"] is False
 
         # Test bounded diagnostic output capture and receipt privacy
-        diag_code = ("import sys; "
-                     "sys.stdout.write('NVME_SMART_HEALTH_OK\n'); "
-                     "sys.stderr.write('NVME_TEMP_NORMAL_32C\n')")
+        diag_code = (r"import sys; "
+                     r"sys.stdout.write('NVME_SMART_HEALTH_OK\n'); "
+                     r"sys.stderr.write('NVME_TEMP_NORMAL_32C\n')")
         lease_diag, wire_diag = approve(diag_code, output="bounded")
         assert executor.handle(wire_diag)["state"] == "STARTED"
         receipt_diag = poll(wire_diag, {"SUCCEEDED", "FAILED"})
@@ -214,7 +214,7 @@ def main():
         assert out_trunc is not None and len(out_trunc["stdout"].encode()) <= 2048
 
         # Test nonzero exit code with error stderr capture
-        fail_code = "import sys; sys.stderr.write('DIAGNOSTIC_FAILURE\n'); raise SystemExit(3)"
+        fail_code = r"import sys; sys.stderr.write('DIAGNOSTIC_FAILURE\n'); raise SystemExit(3)"
         lease_fail, wire_fail = approve(fail_code, output="bounded")
         assert executor.handle(wire_fail)["state"] == "STARTED"
         receipt_fail = poll(wire_fail, {"SUCCEEDED", "FAILED"})
