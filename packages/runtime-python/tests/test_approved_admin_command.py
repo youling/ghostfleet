@@ -657,7 +657,7 @@ class ApprovedAdminTests(unittest.TestCase):
         desc_code = (
             "import subprocess, sys; "
             "subprocess.Popen([sys.executable, '-I', '-c', "
-            "'import time, sys; time.sleep(2.2); sys.stdout.write(\"DESCENDANT_LATE_DATA\\n\")']); "
+            "'import time; time.sleep(2.2); print(\"DESCENDANT_LATE_DATA\", flush=True)']); "
             "sys.exit(0)"
         )
         p = subprocess.Popen([sys.executable, "-I", "-c", desc_code],
