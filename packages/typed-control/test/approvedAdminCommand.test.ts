@@ -156,10 +156,15 @@ describe("approved administrator command seam",()=>{
     };
     const leaseB64 = Buffer.from(JSON.stringify(boundedLease)).toString("base64");
     const leaseDigest = createHash("sha256").update(Buffer.from(leaseB64, "base64")).digest("hex");
+    const stdoutText = "SOME OUTPUT";
     const boundedReceipt = {
       ...f.receipt,
       lease_digest: leaseDigest,
       output: "bounded" as const,
+      stdout_bytes: Buffer.byteLength(stdoutText),
+      stderr_bytes: 0,
+      output_bytes: Buffer.byteLength(stdoutText),
+      truncated: false,
       output_sha256: "0".repeat(64),
     };
     f.dependencies.execute.mockResolvedValueOnce({
@@ -167,7 +172,7 @@ describe("approved administrator command seam",()=>{
       stdout: JSON.stringify({
         ok: true,
         receipt: boundedReceipt,
-        output: { stdout: "SOME OUTPUT", stderr: "" },
+        output: { stdout: stdoutText, stderr: "" },
       }),
       stderr: "",
       truncated: false,
@@ -180,6 +185,207 @@ describe("approved administrator command seam",()=>{
     );
     expect(result.outcome).toBe("UNKNOWN");
     expect(result.error).toBe("ADMIN_OUTPUT_DIGEST_MISMATCH");
+  });
+
+  it("fails closed when terminal bounded receipt is missing response.output", async () => {
+    const f = await fixture("SUCCEEDED");
+    const boundedLease = { ...f.lease, command: { ...f.lease.command, output: "bounded" as const } };
+    const leaseB64 = Buffer.from(JSON.stringify(boundedLease)).toString("base64");
+    const leaseDigest = createHash("sha256").update(Buffer.from(leaseB64, "base64")).digest("hex");
+    const boundedReceipt = {
+      ...f.receipt,
+      lease_digest: leaseDigest,
+      output: "bounded" as const,
+      stdout_bytes: 10,
+      stderr_bytes: 0,
+      output_bytes: 10,
+      truncated: false,
+      output_sha256: "0".repeat(64),
+    };
+    f.dependencies.execute.mockResolvedValueOnce({
+      exit_code: 0,
+      stdout: JSON.stringify({ ok: true, receipt: boundedReceipt }),
+      stderr: "",
+      truncated: false,
+    });
+    const result = await runApprovedAdminCommand(f.env, actor, { ...f.input, lease_b64: leaseB64 }, f.dependencies);
+    expect(result.outcome).toBe("UNKNOWN");
+    expect(result.error).toBe("ADMIN_OUTPUT_DATA_MISSING");
+  });
+
+  it("fails closed when terminal bounded receipt is missing metadata or hash", async () => {
+    const f = await fixture("SUCCEEDED");
+    const boundedLease = { ...f.lease, command: { ...f.lease.command, output: "bounded" as const } };
+    const leaseB64 = Buffer.from(JSON.stringify(boundedLease)).toString("base64");
+    const leaseDigest = createHash("sha256").update(Buffer.from(leaseB64, "base64")).digest("hex");
+    const boundedReceipt = {
+      ...f.receipt,
+      lease_digest: leaseDigest,
+      output: "bounded" as const,
+    };
+    f.dependencies.execute.mockResolvedValueOnce({
+      exit_code: 0,
+      stdout: JSON.stringify({ ok: true, receipt: boundedReceipt, output: { stdout: "HI", stderr: "" } }),
+      stderr: "",
+      truncated: false,
+    });
+    const result = await runApprovedAdminCommand(f.env, actor, { ...f.input, lease_b64: leaseB64 }, f.dependencies);
+    expect(result.outcome).toBe("UNKNOWN");
+    expect(result.error).toBe("ADMIN_OUTPUT_METADATA_MISSING");
+  });
+
+  it("fails closed when response.output byte lengths mismatch receipt metadata", async () => {
+    const f = await fixture("SUCCEEDED");
+    const boundedLease = { ...f.lease, command: { ...f.lease.command, output: "bounded" as const } };
+    const leaseB64 = Buffer.from(JSON.stringify(boundedLease)).toString("base64");
+    const leaseDigest = createHash("sha256").update(Buffer.from(leaseB64, "base64")).digest("hex");
+    const stdoutText = "HELLO";
+    const boundedReceipt = {
+      ...f.receipt,
+      lease_digest: leaseDigest,
+      output: "bounded" as const,
+      stdout_bytes: 999,
+      stderr_bytes: 0,
+      output_bytes: 999,
+      truncated: false,
+      output_sha256: createHash("sha256").update(stdoutText).digest("hex"),
+    };
+    f.dependencies.execute.mockResolvedValueOnce({
+      exit_code: 0,
+      stdout: JSON.stringify({ ok: true, receipt: boundedReceipt, output: { stdout: stdoutText, stderr: "" } }),
+      stderr: "",
+      truncated: false,
+    });
+    const result = await runApprovedAdminCommand(f.env, actor, { ...f.input, lease_b64: leaseB64 }, f.dependencies);
+    expect(result.outcome).toBe("UNKNOWN");
+    expect(result.error).toBe("ADMIN_OUTPUT_BYTE_LENGTH_MISMATCH");
+  });
+
+  it("fails closed when receipt stdout_bytes + stderr_bytes !== output_bytes", async () => {
+    const f = await fixture("SUCCEEDED");
+    const boundedLease = { ...f.lease, command: { ...f.lease.command, output: "bounded" as const } };
+    const leaseB64 = Buffer.from(JSON.stringify(boundedLease)).toString("base64");
+    const leaseDigest = createHash("sha256").update(Buffer.from(leaseB64, "base64")).digest("hex");
+    const stdoutText = "HELLO";
+    const boundedReceipt = {
+      ...f.receipt,
+      lease_digest: leaseDigest,
+      output: "bounded" as const,
+      stdout_bytes: Buffer.byteLength(stdoutText),
+      stderr_bytes: 0,
+      output_bytes: 50,
+      truncated: false,
+      output_sha256: createHash("sha256").update(stdoutText).digest("hex"),
+    };
+    f.dependencies.execute.mockResolvedValueOnce({
+      exit_code: 0,
+      stdout: JSON.stringify({ ok: true, receipt: boundedReceipt, output: { stdout: stdoutText, stderr: "" } }),
+      stderr: "",
+      truncated: false,
+    });
+    const result = await runApprovedAdminCommand(f.env, actor, { ...f.input, lease_b64: leaseB64 }, f.dependencies);
+    expect(result.outcome).toBe("UNKNOWN");
+    expect(result.error).toBe("ADMIN_OUTPUT_SUM_MISMATCH");
+  });
+
+  it("fails closed when receipt output_bytes exceeds lease limit", async () => {
+    const f = await fixture("SUCCEEDED");
+    const boundedLease = {
+      ...f.lease,
+      command: { ...f.lease.command, output: "bounded" as const, output_limit_bytes: 1024 },
+    };
+    const leaseB64 = Buffer.from(JSON.stringify(boundedLease)).toString("base64");
+    const leaseDigest = createHash("sha256").update(Buffer.from(leaseB64, "base64")).digest("hex");
+    const stdoutText = "A".repeat(2048);
+    const boundedReceipt = {
+      ...f.receipt,
+      lease_digest: leaseDigest,
+      output: "bounded" as const,
+      stdout_bytes: 2048,
+      stderr_bytes: 0,
+      output_bytes: 2048,
+      truncated: true,
+      output_sha256: createHash("sha256").update(stdoutText).digest("hex"),
+    };
+    f.dependencies.execute.mockResolvedValueOnce({
+      exit_code: 0,
+      stdout: JSON.stringify({ ok: true, receipt: boundedReceipt, output: { stdout: stdoutText, stderr: "" } }),
+      stderr: "",
+      truncated: false,
+    });
+    const result = await runApprovedAdminCommand(f.env, actor, { ...f.input, lease_b64: leaseB64 }, f.dependencies);
+    expect(result.outcome).toBe("UNKNOWN");
+    expect(result.error).toBe("ADMIN_OUTPUT_LIMIT_EXCEEDED");
+  });
+
+  it("succeeds with non-terminal STARTED receipt without output data", async () => {
+    const f = await fixture("STARTED");
+    const boundedLease = { ...f.lease, command: { ...f.lease.command, output: "bounded" as const } };
+    const leaseB64 = Buffer.from(JSON.stringify(boundedLease)).toString("base64");
+    const leaseDigest = createHash("sha256").update(Buffer.from(leaseB64, "base64")).digest("hex");
+    const boundedReceipt = {
+      ...f.receipt,
+      lease_digest: leaseDigest,
+      output: "bounded" as const,
+      state: "STARTED" as const,
+    };
+    f.dependencies.execute.mockResolvedValueOnce({
+      exit_code: 0,
+      stdout: JSON.stringify({ ok: true, receipt: boundedReceipt }),
+      stderr: "",
+      truncated: false,
+    });
+    const result = await runApprovedAdminCommand(f.env, actor, { ...f.input, lease_b64: leaseB64 }, f.dependencies);
+    expect(result.outcome).toBe("RUNNING");
+    expect(result.receipt?.output).toBe("bounded");
+    expect(result.output).toBeUndefined();
+  });
+
+  it("fails closed on lease vs receipt output mode mismatch", async () => {
+    const f1 = await fixture("SUCCEEDED");
+    const boundedReceipt = {
+      ...f1.receipt,
+      output: "bounded" as const,
+    };
+    f1.dependencies.execute.mockResolvedValueOnce({
+      exit_code: 0,
+      stdout: JSON.stringify({ ok: true, receipt: boundedReceipt }),
+      stderr: "",
+      truncated: false,
+    });
+    const res1 = await runApprovedAdminCommand(f1.env, actor, f1.input, f1.dependencies);
+    expect(res1.outcome).toBe("UNKNOWN");
+    expect(res1.error).toBe("ADMIN_RECEIPT_OUTPUT_MODE_MISMATCH");
+
+    const f2 = await fixture("SUCCEEDED");
+    f2.dependencies.execute.mockResolvedValueOnce({
+      exit_code: 0,
+      stdout: JSON.stringify({ ok: true, receipt: f2.receipt, output: { stdout: "LEAK", stderr: "" } }),
+      stderr: "",
+      truncated: false,
+    });
+    const res2 = await runApprovedAdminCommand(f2.env, actor, f2.input, f2.dependencies);
+    expect(res2.outcome).toBe("UNKNOWN");
+    expect(res2.error).toBe("ADMIN_RECEIPT_OUTPUT_MODE_MISMATCH");
+
+    const f3 = await fixture("SUCCEEDED");
+    const boundedLease = { ...f3.lease, command: { ...f3.lease.command, output: "bounded" as const } };
+    const leaseB64 = Buffer.from(JSON.stringify(boundedLease)).toString("base64");
+    const leaseDigest = createHash("sha256").update(Buffer.from(leaseB64, "base64")).digest("hex");
+    const discardedReceipt = {
+      ...f3.receipt,
+      lease_digest: leaseDigest,
+      output: "discarded" as const,
+    };
+    f3.dependencies.execute.mockResolvedValueOnce({
+      exit_code: 0,
+      stdout: JSON.stringify({ ok: true, receipt: discardedReceipt }),
+      stderr: "",
+      truncated: false,
+    });
+    const res3 = await runApprovedAdminCommand(f3.env, actor, { ...f3.input, lease_b64: leaseB64 }, f3.dependencies);
+    expect(res3.outcome).toBe("UNKNOWN");
+    expect(res3.error).toBe("ADMIN_RECEIPT_OUTPUT_MODE_MISMATCH");
   });
 
   it("rejects invalid output_limit_bytes in command schema", async () => {

@@ -651,6 +651,48 @@ class ApprovedAdminTests(unittest.TestCase):
         out = ex.get_output(wire)
         self.assertEqual(out, {"stdout": "DIAGNOSTIC_DATA\n", "stderr": "WARNING_LOG\n"})
 
+    def test_capture_bounded_output_descendant_delayed_write(self):
+        desc_code = (
+            "import subprocess, sys; "
+            "subprocess.Popen([sys.executable, '-I', '-c', "
+            "'import time, sys; time.sleep(2.2); sys.stdout.write(\"DESCENDANT_LATE_DATA\\n\")']); "
+            "sys.exit(0)"
+        )
+        p = subprocess.Popen([sys.executable, "-I", "-c", desc_code],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        t0 = time.monotonic()
+        ret, out, err, trunc = admin._capture_bounded_output(p, 32768, time.monotonic() + 10)
+        dur = time.monotonic() - t0
+        self.assertEqual(ret, 0)
+        self.assertIn(b"DESCENDANT_LATE_DATA", out)
+        self.assertFalse(trunc)
+        self.assertGreaterEqual(dur, 2.0)
+
+    def test_capture_bounded_output_timeout_expired(self):
+        p = subprocess.Popen([sys.executable, "-I", "-c", "import time; time.sleep(10)"],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                admin._capture_bounded_output(p, 32768, time.monotonic() + 0.3)
+        finally:
+            try:
+                p.kill()
+                p.wait()
+            except Exception:
+                pass
+
+    def test_capture_bounded_output_reader_exception_fails_closed(self):
+        class FaultyStream:
+            def read(self, _size):
+                raise OSError("SIMULATED_PIPE_FAULT")
+            def close(self):
+                pass
+        p = subprocess.Popen([sys.executable, "-I", "-c", "import sys; sys.exit(0)"],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p.stdout = FaultyStream()
+        with self.assertRaisesRegex(admin.AdminError, "ADMIN_OUTPUT_READER_INCOMPLETE"):
+            admin._capture_bounded_output(p, 32768, time.monotonic() + 5)
+
     def test_missing_systemd_is_explicit_denial(self):
         if Path("/proc/1/comm").read_text().strip() == "systemd":
             self.skipTest("positive OS proof belongs to disposable smoke")

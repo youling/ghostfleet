@@ -224,6 +224,24 @@ def main():
         out_fail = executor.get_output(wire_fail)
         assert out_fail == {"stdout": "", "stderr": "DIAGNOSTIC_FAILURE\n"}
 
+        # Test descendant keeping stdout/stderr open for >2 seconds writes and completes before deadline
+        desc_holder_code = (
+            r"import os, subprocess, sys, time; "
+            r"p = subprocess.Popen([sys.executable, '-I', '-c', "
+            r"'import time, sys; time.sleep(2.5); sys.stdout.write(\"LATE_DESCENDANT_OUTPUT\\n\"); sys.stderr.write(\"LATE_DESCENDANT_ERR\\n\")']); "
+            r"sys.exit(0)"
+        )
+        lease_desc, wire_desc = approve(desc_holder_code, runtime=30, output="bounded")
+        assert executor.handle(wire_desc)["state"] == "STARTED"
+        receipt_desc = poll(wire_desc, {"SUCCEEDED", "FAILED"}, timeout=20)
+        assert receipt_desc["state"] == "SUCCEEDED" and receipt_desc["exit_code"] == 0, receipt_desc
+        assert receipt_desc["output"] == "bounded"
+        assert receipt_desc["truncated"] is False
+        assert receipt_desc["stdout_bytes"] == len("LATE_DESCENDANT_OUTPUT\n".encode())
+        assert receipt_desc["stderr_bytes"] == len("LATE_DESCENDANT_ERR\n".encode())
+        out_desc = executor.get_output(wire_desc)
+        assert out_desc == {"stdout": "LATE_DESCENDANT_OUTPUT\n", "stderr": "LATE_DESCENDANT_ERR\n"}
+
         print(json.dumps({"result": "PASS", "backend": "real-systemd-cgroup-v2",
                           "positive_root_effect": True, "one_use_replay": "DENIED",
                           "invalid_approval": "DENIED", "cancel_descendants": "EMPTY",

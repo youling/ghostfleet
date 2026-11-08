@@ -146,11 +146,40 @@ export async function runApprovedAdminCommand(
         || receipt.actor_ref !== subject || receipt.lease_digest !== await sha256(bytes)) {
       throw new Error("ADMIN_RECEIPT_BINDING_MISMATCH");
     }
-    if (receipt.output === "bounded" && response.output && receipt.output_sha256) {
-      const outputConcat = new TextEncoder().encode(response.output.stdout + response.output.stderr);
-      const computedHash = await sha256(outputConcat);
-      if (receipt.output_sha256 !== computedHash) {
-        throw new Error("ADMIN_OUTPUT_DIGEST_MISMATCH");
+    if (lease.command.output === "discard") {
+      if (receipt.output !== "discarded" || response.output !== undefined) {
+        throw new Error("ADMIN_RECEIPT_OUTPUT_MODE_MISMATCH");
+      }
+    } else if (lease.command.output === "bounded") {
+      if (receipt.output !== "bounded") {
+        throw new Error("ADMIN_RECEIPT_OUTPUT_MODE_MISMATCH");
+      }
+      if (["SUCCEEDED", "FAILED"].includes(receipt.state)) {
+        if (!response.output) {
+          throw new Error("ADMIN_OUTPUT_DATA_MISSING");
+        }
+        if (receipt.stdout_bytes === undefined || receipt.stderr_bytes === undefined
+            || receipt.output_bytes === undefined || receipt.truncated === undefined
+            || receipt.output_sha256 === undefined) {
+          throw new Error("ADMIN_OUTPUT_METADATA_MISSING");
+        }
+        const stdoutBytes = Buffer.byteLength(response.output.stdout, "utf-8");
+        const stderrBytes = Buffer.byteLength(response.output.stderr, "utf-8");
+        if (stdoutBytes !== receipt.stdout_bytes || stderrBytes !== receipt.stderr_bytes) {
+          throw new Error("ADMIN_OUTPUT_BYTE_LENGTH_MISMATCH");
+        }
+        if (receipt.stdout_bytes + receipt.stderr_bytes !== receipt.output_bytes) {
+          throw new Error("ADMIN_OUTPUT_SUM_MISMATCH");
+        }
+        const limit = lease.command.output_limit_bytes ?? 32768;
+        if (receipt.output_bytes > limit) {
+          throw new Error("ADMIN_OUTPUT_LIMIT_EXCEEDED");
+        }
+        const outputConcat = new TextEncoder().encode(response.output.stdout + response.output.stderr);
+        const computedHash = await sha256(outputConcat);
+        if (receipt.output_sha256 !== computedHash) {
+          throw new Error("ADMIN_OUTPUT_DIGEST_MISMATCH");
+        }
       }
     }
     const uncertain = ["NOT_FOUND", "RESERVED", "UNKNOWN"].includes(receipt.state);

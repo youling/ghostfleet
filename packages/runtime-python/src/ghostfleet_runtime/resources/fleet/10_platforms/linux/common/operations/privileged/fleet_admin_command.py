@@ -431,6 +431,15 @@ def verify_request(wire: Any, cfg: dict[str, Any], fs: TrustedFiles, *,
 
 
 class Ledger:
+    """Atomic root-owned lease record store.
+
+    Raw diagnostic stdout/stderr is persisted only in the node-local root-owned
+    lease ledger so an authenticated later status call can retrieve it over the
+    private channel. Raw output is never exposed in public receipts or durable
+    audit ledgers. The node may reclaim private output data after lease expiry
+    while strictly preserving the one-use lease tombstone and receipt hash to
+    prevent replay.
+    """
     def __init__(self, root: Path, fs: TrustedFiles):
         self.root = fs.path(root, kind="dir", private=True)
         self.fs = fs
@@ -811,14 +820,22 @@ def _capture_bounded_output(process: subprocess.Popen, limit_bytes: int,
     import threading
     out_chunks: list[bytes] = []
     err_chunks: list[bytes] = []
-    state = {"total": 0, "truncated": False}
+    state = {
+        "total": 0,
+        "truncated": False,
+        "error": None,
+        "out_eof": False,
+        "err_eof": False,
+    }
     lock = threading.Lock()
 
-    def reader(stream: Any, chunks: list[bytes]) -> None:
+    def reader(stream: Any, chunks: list[bytes], eof_key: str) -> None:
         try:
             while True:
                 chunk = stream.read(4096)
                 if not chunk:
+                    with lock:
+                        state[eof_key] = True
                     break
                 with lock:
                     if state["total"] < limit_bytes:
@@ -832,19 +849,22 @@ def _capture_bounded_output(process: subprocess.Popen, limit_bytes: int,
                             state["truncated"] = True
                     else:
                         state["truncated"] = True
-        except Exception:
-            pass
+        except Exception as exc:
+            with lock:
+                state["error"] = exc
+                state["truncated"] = True
         finally:
             try:
                 stream.close()
             except Exception:
                 pass
 
-    t_out = threading.Thread(target=reader, args=(process.stdout, out_chunks), daemon=True)
-    t_err = threading.Thread(target=reader, args=(process.stderr, err_chunks), daemon=True)
+    t_out = threading.Thread(target=reader, args=(process.stdout, out_chunks, "out_eof"), daemon=True)
+    t_err = threading.Thread(target=reader, args=(process.stderr, err_chunks, "err_eof"), daemon=True)
     t_out.start()
     t_err.start()
 
+    # 1. Wait for immediate process to exit, bounded by remaining deadline
     remaining = deadline_monotonic - time.monotonic()
     if remaining <= 0:
         process.kill()
@@ -856,8 +876,25 @@ def _capture_bounded_output(process: subprocess.Popen, limit_bytes: int,
         process.kill()
         raise
 
-    t_out.join(timeout=2.0)
-    t_err.join(timeout=2.0)
+    # 2. Wait for both streams/reader threads to reach EOF within the remaining lease deadline.
+    # Descendants inheriting stdout/stderr may continue writing until deadline.
+    remaining = deadline_monotonic - time.monotonic()
+    if remaining > 0 and t_out.is_alive():
+        t_out.join(timeout=max(0.001, remaining))
+    remaining = deadline_monotonic - time.monotonic()
+    if remaining > 0 and t_err.is_alive():
+        t_err.join(timeout=max(0.001, remaining))
+
+    # 3. Check stream completeness
+    # If the remaining deadline expired while streams were still open, or threads timed out:
+    if t_out.is_alive() or t_err.is_alive() or not state["out_eof"] or not state["err_eof"]:
+        state["truncated"] = True
+        if time.monotonic() >= deadline_monotonic:
+            raise subprocess.TimeoutExpired(cmd=process.args, timeout=0)
+
+    # If a reader thread encountered an unexpected exception, fail closed
+    if state["error"] is not None:
+        raise AdminError("ADMIN_OUTPUT_READER_INCOMPLETE")
 
     return exit_code, b"".join(out_chunks), b"".join(err_chunks), state["truncated"]
 
@@ -919,6 +956,15 @@ def child(config_path: Path, key: str) -> int:
                 current = ledger.read(key)
                 if current and current["state"] not in TERMINAL:
                     current.update(state="UNKNOWN", code="ADMIN_RUNTIME_EXPIRED")
+                    ledger.write(key, current)
+        SystemdBackend(cfg, config_path, fs).stop(key)
+        return 78
+    except AdminError as error:
+        with authority_locked(config_path, fs):
+            with ledger.locked(key):
+                current = ledger.read(key)
+                if current and current["state"] not in TERMINAL:
+                    current.update(state="UNKNOWN", code=error.code)
                     ledger.write(key, current)
         SystemdBackend(cfg, config_path, fs).stop(key)
         return 78
