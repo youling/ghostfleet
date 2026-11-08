@@ -690,8 +690,11 @@ describe("Architect R4 Remediation: approvedAdminApproval unit & integration tes
         const p2 = (store2 as any).acquireFileLock(reqId, 50);
 
         // Both must timeout with ADMIN_STORE_LOCK_TIMEOUT and NOT unlink the lock
-        await expect(p1).rejects.toThrow(/ADMIN_STORE_LOCK_TIMEOUT/);
-        await expect(p2).rejects.toThrow(/ADMIN_STORE_LOCK_TIMEOUT/);
+        // Await concurrently with Promise.all to avoid unhandled rejection if p2 rejects while awaiting p1
+        await Promise.all([
+          expect(p1).rejects.toThrow(/ADMIN_STORE_LOCK_TIMEOUT/),
+          expect(p2).rejects.toThrow(/ADMIN_STORE_LOCK_TIMEOUT/),
+        ]);
 
         // Now operator explicitly recovers the stale lock
         const recovered = await store1.recoverStaleLock(reqId);
