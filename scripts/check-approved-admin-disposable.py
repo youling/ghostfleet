@@ -7,6 +7,7 @@ production backend. It generates an ephemeral key and uses the real backend.
 from __future__ import annotations
 import base64
 import copy
+import hashlib
 import importlib.util
 import json
 import os
