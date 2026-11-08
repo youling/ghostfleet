@@ -145,7 +145,6 @@ export interface AdminApprovalLedgerStore {
     expectedState: AdminApprovalState | AdminApprovalState[],
     mutate: (current: AdminApprovalRecord) => AdminApprovalRecord,
   ): Promise<AdminApprovalRecord>;
-  recoverStaleLock?(requestId: string): Promise<boolean>;
 }
 
 export class InMemoryAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
@@ -241,6 +240,30 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
     this.dir = dir;
   }
 
+  private validateFileSecurity(
+    filePath: string,
+    st: { isSymbolicLink(): boolean; mode: number; uid?: number },
+  ): void {
+    if (st.isSymbolicLink()) {
+      throw new Error(`ADMIN_STORE_INSECURE_PATH: Ledger file cannot be a symlink: ${filePath}`);
+    }
+    if (process.platform !== "win32") {
+      if (typeof process.getuid === "function") {
+        const currentUid = process.getuid();
+        if (currentUid !== 0 && typeof st.uid === "number" && st.uid !== currentUid) {
+          throw new Error(
+            `ADMIN_STORE_INSECURE_PERMISSIONS: Foreign-owned ledger file: ${filePath} (owner uid: ${st.uid}, process uid: ${currentUid})`,
+          );
+        }
+      }
+      if ((st.mode & 0o077) !== 0) {
+        throw new Error(
+          `ADMIN_STORE_INSECURE_PERMISSIONS: Ledger file must be mode 0600 (not readable/writable by group/others): ${filePath}`,
+        );
+      }
+    }
+  }
+
   private validateRequestId(requestId: string): void {
     if (!requestId || typeof requestId !== "string" || !REQUEST_ID_RE.test(requestId)) {
       throw new Error(`INVALID_REQUEST_ID:${requestId}`);
@@ -294,11 +317,33 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
       throw new Error(`ADMIN_STORE_INSECURE_PATH: Ledger store directory is a symlink: ${resolvedDir}`);
     }
     if (process.platform !== "win32") {
+      if (typeof process.getuid === "function") {
+        const currentUid = process.getuid();
+        if (currentUid !== 0 && typeof dirStat.uid === "number" && dirStat.uid !== currentUid) {
+          throw new Error(
+            `ADMIN_STORE_INSECURE_PERMISSIONS: Foreign-owned ledger store directory: ${resolvedDir} (owner uid: ${dirStat.uid}, process uid: ${currentUid})`,
+          );
+        }
+      }
       if ((dirStat.mode & 0o022) !== 0) {
         throw new Error(`ADMIN_STORE_INSECURE_PERMISSIONS: Directory must not be group- or world-writable: ${resolvedDir}`);
       }
       if ((dirStat.mode & 0o077) !== 0) {
-        await chmod(resolvedDir, 0o700).catch(() => {});
+        try {
+          await chmod(resolvedDir, 0o700);
+          const updatedStat = await lstat(resolvedDir);
+          if ((updatedStat.mode & 0o077) !== 0) {
+            throw new Error(`ADMIN_STORE_INSECURE_PERMISSIONS: Directory must be mode 0700: ${resolvedDir}`);
+          }
+        } catch (err: unknown) {
+          const error = err as { message?: string };
+          if (error?.message?.startsWith("ADMIN_STORE_INSECURE_PERMISSIONS")) {
+            throw err;
+          }
+          throw new Error(
+            `ADMIN_STORE_INSECURE_PERMISSIONS: Failed to enforce mode 0700 on ledger store directory: ${resolvedDir}`,
+          );
+        }
       }
     }
   }
@@ -324,21 +369,30 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
       await handle.close();
     }
     if (process.platform !== "win32") {
-      await chmod(tmpFile, 0o600).catch(() => {});
+      await chmod(tmpFile, 0o600);
     }
     await rename(tmpFile, file);
     if (process.platform !== "win32") {
-      await chmod(file, 0o600).catch(() => {});
+      await chmod(file, 0o600);
     }
-    try {
+    if (process.platform !== "win32") {
       const dirHandle = await open(this.dir, "r");
       try {
         await dirHandle.sync();
       } finally {
         await dirHandle.close();
       }
-    } catch {
-      // Directory fsync is platform-dependent (e.g. Windows EPERM/EISDIR)
+    } else {
+      try {
+        const dirHandle = await open(this.dir, "r");
+        try {
+          await dirHandle.sync();
+        } finally {
+          await dirHandle.close();
+        }
+      } catch {
+        // Directory fsync is platform-dependent (e.g. Windows EPERM/EISDIR)
+      }
     }
   }
 
@@ -360,7 +414,7 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
           await handle.close();
         }
         if (process.platform !== "win32") {
-          await chmod(lockFile, 0o600).catch(() => {});
+          await chmod(lockFile, 0o600);
         }
         break;
       } catch (err: unknown) {
@@ -369,10 +423,17 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
           try {
             const lockStat = await lstat(lockFile);
             if (lockStat.isSymbolicLink()) {
-              await unlink(lockFile).catch(() => {});
-              continue;
+              throw new Error(`ADMIN_STORE_INSECURE_PATH: Lock file is a symlink: ${lockFile}`);
             }
-          } catch {}
+          } catch (statErr: unknown) {
+            const statError = statErr as { code?: string; message?: string };
+            if (statError?.message?.startsWith("ADMIN_STORE_INSECURE_PATH")) {
+              throw statErr;
+            }
+            if (statError?.code !== "ENOENT") {
+              throw statErr;
+            }
+          }
 
           if (Date.now() - start > timeoutMs) {
             throw new Error(`ADMIN_STORE_LOCK_TIMEOUT:${requestId}`);
@@ -396,10 +457,16 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
   }
 
   /**
+   * Offline administrative recovery procedure to be run only during scheduled maintenance
+   * or after verifying complete quiescence (no active writer processes).
+   *
    * Explicit administrative/operator recovery for stale locks left by terminated processes.
    * Never invoked automatically in concurrent request paths to avoid race conditions.
    */
-  async recoverStaleLock(requestId: string): Promise<boolean> {
+  async recoverStaleLock(
+    requestId: string,
+    options?: { offlineQuiescentVerified?: boolean; force?: boolean },
+  ): Promise<boolean> {
     this.validateRequestId(requestId);
     await this.ensureDir();
     const lockFile = this.lockPath(requestId);
@@ -431,14 +498,39 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
     }
 
     let meta: { pid?: number; time?: number; nonce?: string } = {};
+    let parseFailed = false;
     try {
       meta = JSON.parse(content);
     } catch {
-      // Malformed lock file left by corrupt/crashed process
+      parseFailed = true;
     }
 
-    if (meta?.pid && isProcessAlive(meta.pid)) {
-      throw new Error(`LOCKED_BY_ACTIVE_PROCESS:${meta.pid}`);
+    const hasValidPid = !parseFailed && typeof meta?.pid === "number" && !isNaN(meta.pid) && meta.pid > 0;
+
+    if (!hasValidPid) {
+      if (!options?.force && !options?.offlineQuiescentVerified) {
+        throw new Error(
+          "ADMIN_STORE_CORRUPT_LOCK: Missing or unparseable PID in lock file; cannot prove process termination without options.offlineQuiescentVerified: true",
+        );
+      }
+    } else {
+      if (isProcessAlive(meta.pid!)) {
+        throw new Error(`LOCKED_BY_ACTIVE_PROCESS:${meta.pid}`);
+      }
+    }
+
+    if (!options?.force) {
+      let currentContent: string;
+      try {
+        currentContent = await readFile(lockFile, "utf8");
+      } catch (err: unknown) {
+        const error = err as { code?: string };
+        if (error?.code === "ENOENT") return false;
+        throw err;
+      }
+      if (currentContent !== content) {
+        throw new Error("ADMIN_STORE_LOCK_CONCURRENT_MUTATION: Lock content changed before unlink");
+      }
     }
 
     try {
@@ -460,11 +552,19 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
     try {
       const file = this.filePath(record.request_id);
       try {
-        await readFile(file);
+        const fileStat = await lstat(file);
+        this.validateFileSecurity(file, fileStat);
         throw new Error("ADMIN_REQUEST_ALREADY_EXISTS");
       } catch (err: unknown) {
-        const error = err as Error;
+        const error = err as Error & { code?: string };
         if (error?.message === "ADMIN_REQUEST_ALREADY_EXISTS") throw error;
+        if (
+          error?.message?.startsWith("ADMIN_STORE_INSECURE_PATH") ||
+          error?.message?.startsWith("ADMIN_STORE_INSECURE_PERMISSIONS")
+        ) {
+          throw error;
+        }
+        if (error?.code !== "ENOENT") throw err;
       }
       const initial = JSON.parse(JSON.stringify(record));
       if (!initial.version) initial.version = 1;
@@ -480,9 +580,7 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
     const file = this.filePath(requestId);
     try {
       const fileStat = await lstat(file);
-      if (fileStat.isSymbolicLink()) {
-        throw new Error(`ADMIN_STORE_INSECURE_PATH: Ledger file cannot be a symlink: ${file}`);
-      }
+      this.validateFileSecurity(file, fileStat);
       const content = await readFile(file, "utf8");
       return JSON.parse(content);
     } catch (err: unknown) {
@@ -503,14 +601,21 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
         try {
           const entryPath = path.join(this.dir, entry);
           const st = await lstat(entryPath);
-          if (st.isSymbolicLink()) continue;
+          this.validateFileSecurity(entryPath, st);
           const content = await readFile(entryPath, "utf8");
           const rec: AdminApprovalRecord = JSON.parse(content);
           if (filter?.node_uid && rec.node_uid !== filter.node_uid) continue;
           if (filter?.state && rec.state !== filter.state) continue;
           if (filter?.work_ref && rec.work_ref !== filter.work_ref) continue;
           results.push(rec);
-        } catch {
+        } catch (err: unknown) {
+          const error = err as { message?: string };
+          if (
+            error?.message?.startsWith("ADMIN_STORE_INSECURE_PATH") ||
+            error?.message?.startsWith("ADMIN_STORE_INSECURE_PERMISSIONS")
+          ) {
+            throw err;
+          }
           // ignore transient read errors
         }
       }
@@ -531,9 +636,7 @@ export class FileAdminApprovalLedgerStore implements AdminApprovalLedgerStore {
       let current: AdminApprovalRecord;
       try {
         const fileStat = await lstat(file);
-        if (fileStat.isSymbolicLink()) {
-          throw new Error(`ADMIN_STORE_INSECURE_PATH: Ledger file cannot be a symlink: ${file}`);
-        }
+        this.validateFileSecurity(file, fileStat);
         const content = await readFile(file, "utf8");
         current = JSON.parse(content);
       } catch (err: unknown) {
@@ -957,7 +1060,11 @@ export class AdminApprovalManager {
           if (execution.outcome && !record.dispatch_state) {
             record.dispatch_state = execution.outcome as any;
           }
-          record.reconcile_required = false;
+          if (record.conflicting_dispatch_outcome) {
+            record.reconcile_required = true;
+          } else {
+            record.reconcile_required = false;
+          }
           return record;
         }
 

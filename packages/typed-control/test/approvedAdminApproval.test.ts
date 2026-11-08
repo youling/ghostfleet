@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { Buffer } from "node:buffer";
-import { mkdtemp, rm, writeFile, readFile, stat, mkdir, unlink, symlink, chmod } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { mkdtemp, rm, writeFile, readFile, stat, lstat, mkdir, unlink, symlink, chmod } from "node:fs/promises";
+import { existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -259,6 +259,67 @@ describe("Architect R4 Remediation: approvedAdminApproval unit & integration tes
       expect(conflicted.conflicting_dispatch_outcome).toBeDefined();
       expect(conflicted.conflicting_dispatch_outcome?.outcome).toBe("FAILED");
       expect(conflicted.conflicting_dispatch_outcome?.receipt).toEqual({ exit_code: 1, stderr: "conflict error" });
+    });
+
+    it("MUST-3 Part 2: subsequent routine poll matching original outcome never clears reconcile_required if conflict was previously recorded", async () => {
+      const store = new InMemoryAdminApprovalLedgerStore();
+      const { issuer } = generateTestIssuer();
+      const manager = new AdminApprovalManager(store, issuer);
+
+      const req = await manager.submitRequest(agentActor, {
+        node_uid: uid,
+        work_ref: "ops/poll-conflict#205",
+        purpose: "Conflict preservation regression test",
+        command: { argv: ["/usr/bin/uptime"], cwd: "/", executable_sha256: "b".repeat(64), env: {}, output: "discard" },
+        rollback_ref: "ops/rb#205",
+      });
+
+      const policy: NodeGenerationPolicy = {
+        generation: "b".repeat(64),
+        profile_generation: "sha256:" + "c".repeat(64),
+        subject_ref: await controlActorRef(agentActor),
+        issuer_ids: ["human-issuer-v1"],
+      };
+
+      await manager.approveRequest(humanActor, req.request_id, policy);
+      const callerRef = await controlActorRef(agentActor);
+      await manager.markDispatched(callerRef, req.request_id);
+
+      // Step 1: Initial outcome SUCCEEDED -> CONSUMED, reconcile_required: false
+      const step1 = await manager.recordDispatchOutcome(callerRef, req.request_id, {
+        outcome: "SUCCEEDED",
+        receipt: { exit_code: 0, stdout: "initial ok" },
+      });
+      expect(step1.state).toBe("CONSUMED");
+      expect(step1.dispatch_state).toBe("SUCCEEDED");
+      expect(step1.reconcile_required).toBe(false);
+      expect(step1.conflicting_dispatch_outcome).toBeUndefined();
+
+      // Step 2: Contradictory outcome FAILED arrives -> conflict recorded, reconcile_required: true
+      const step2 = await manager.recordDispatchOutcome(callerRef, req.request_id, {
+        outcome: "FAILED",
+        receipt: { exit_code: 1, stderr: "failed err" },
+        error: "PROCESS_ERROR",
+      });
+      expect(step2.state).toBe("CONSUMED");
+      expect(step2.dispatch_state).toBe("SUCCEEDED");
+      expect(step2.reconcile_required).toBe(true);
+      expect(step2.conflicting_dispatch_outcome).toBeDefined();
+      expect(step2.conflicting_dispatch_outcome?.outcome).toBe("FAILED");
+      expect(step2.conflicting_dispatch_outcome?.receipt).toEqual({ exit_code: 1, stderr: "failed err" });
+
+      // Step 3: Subsequent routine poll arrives with SUCCEEDED (matching original outcome)
+      // Must NEVER clear reconcile_required: reconcile_required MUST stay true!
+      const step3 = await manager.recordDispatchOutcome(callerRef, req.request_id, {
+        outcome: "SUCCEEDED",
+        receipt: { exit_code: 0, stdout: "initial ok" },
+      });
+      expect(step3.state).toBe("CONSUMED");
+      expect(step3.dispatch_state).toBe("SUCCEEDED");
+      expect(step3.reconcile_required).toBe(true);
+      expect(step3.conflicting_dispatch_outcome).toBeDefined();
+      expect(step3.conflicting_dispatch_outcome?.outcome).toBe("FAILED");
+      expect(step3.conflicting_dispatch_outcome?.receipt).toEqual({ exit_code: 1, stderr: "failed err" });
     });
 
     it("reconcileFromStatus cleanly updates CONSUMED record on SUCCEEDED receipt without throwing", async () => {
@@ -596,6 +657,115 @@ describe("Architect R4 Remediation: approvedAdminApproval unit & integration tes
       }
     });
 
+    it("MUST-1: acquireFileLock throws ADMIN_STORE_INSECURE_PATH and does NOT unlink if lock file is a symlink", async () => {
+      const tmp = await mkdtemp(path.join(tmpdir(), "gf-symlink-lock-test-"));
+      try {
+        const store = new FileAdminApprovalLedgerStore(tmp);
+        const reqId = "req-1700000000-0123456789abcdef0123456789abcdef-0123456789abcdef";
+        const lockPath = path.join(tmp, `${reqId}.lock`);
+
+        if (process.platform === "win32") {
+          const dummyTarget = path.join(tmp, "dummy-lock-target");
+          await mkdir(dummyTarget);
+          await symlink(dummyTarget, lockPath, "junction");
+        } else {
+          await symlink("/dev/null", lockPath);
+        }
+
+        const lockStat = await lstat(lockPath);
+        expect(lockStat.isSymbolicLink()).toBe(true);
+
+        await expect((store as any).acquireFileLock(reqId, 50)).rejects.toThrow(
+          "ADMIN_STORE_INSECURE_PATH: Lock file is a symlink",
+        );
+
+        // Verify the symlink was NOT removed
+        const stillStat = await lstat(lockPath);
+        expect(stillStat.isSymbolicLink()).toBe(true);
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("MUST-3 Part 1: rejects permissive ledger file (0644/0666) on POSIX with ADMIN_STORE_INSECURE_PERMISSIONS", async () => {
+      if (process.platform === "win32") {
+        return;
+      }
+      const tmp = await mkdtemp(path.join(tmpdir(), "gf-file-perm-test-"));
+      try {
+        const store = new FileAdminApprovalLedgerStore(tmp);
+        const reqId = "req-1700000000-0123456789abcdef0123456789abcdef-0123456789abcdef";
+        const file = path.join(tmp, `${reqId}.json`);
+
+        await writeFile(file, JSON.stringify({ state: "PENDING" }), "utf8");
+        await chmod(file, 0o644);
+
+        await expect(store.get(reqId)).rejects.toThrow("ADMIN_STORE_INSECURE_PERMISSIONS: Ledger file must be mode 0600");
+        await expect(store.compareAndSwap(reqId, "PENDING", (r) => r)).rejects.toThrow(
+          "ADMIN_STORE_INSECURE_PERMISSIONS: Ledger file must be mode 0600",
+        );
+        await expect(store.list()).rejects.toThrow("ADMIN_STORE_INSECURE_PERMISSIONS: Ledger file must be mode 0600");
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("MUST-3 Part 1: rejects foreign-owned ledger file on POSIX with ADMIN_STORE_INSECURE_PERMISSIONS", async () => {
+      if (process.platform === "win32" || typeof process.getuid !== "function") {
+        return;
+      }
+      const tmp = await mkdtemp(path.join(tmpdir(), "gf-foreign-owner-test-"));
+      try {
+        const store = new FileAdminApprovalLedgerStore(tmp);
+        const reqId = "req-1700000000-0123456789abcdef0123456789abcdef-0123456789abcdef";
+        const file = path.join(tmp, `${reqId}.json`);
+
+        await writeFile(file, JSON.stringify({ state: "PENDING" }), "utf8");
+        await chmod(file, 0o600);
+
+        const currentUid = process.getuid();
+        const fakeUid = currentUid === 1000 ? 1001 : 1000;
+        const spy = vi.spyOn(process, "getuid").mockReturnValue(fakeUid);
+
+        try {
+          await expect(store.get(reqId)).rejects.toThrow("ADMIN_STORE_INSECURE_PERMISSIONS: Foreign-owned ledger file");
+          await expect(store.compareAndSwap(reqId, "PENDING", (r) => r)).rejects.toThrow(
+            "ADMIN_STORE_INSECURE_PERMISSIONS: Foreign-owned ledger file",
+          );
+          await expect(store.list()).rejects.toThrow("ADMIN_STORE_INSECURE_PERMISSIONS: Foreign-owned ledger file");
+        } finally {
+          spy.mockRestore();
+        }
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("MUST-3 Part 1: rejects symlinked ledger file with ADMIN_STORE_INSECURE_PATH", async () => {
+      const tmp = await mkdtemp(path.join(tmpdir(), "gf-symlink-ledger-test-"));
+      try {
+        const store = new FileAdminApprovalLedgerStore(tmp);
+        const reqId = "req-1700000000-0123456789abcdef0123456789abcdef-0123456789abcdef";
+        const file = path.join(tmp, `${reqId}.json`);
+
+        if (process.platform === "win32") {
+          const dummyTarget = path.join(tmp, "dummy-file-target");
+          await mkdir(dummyTarget);
+          await symlink(dummyTarget, file, "junction");
+        } else {
+          await symlink("/dev/null", file);
+        }
+
+        await expect(store.get(reqId)).rejects.toThrow("ADMIN_STORE_INSECURE_PATH: Ledger file cannot be a symlink");
+        await expect(store.compareAndSwap(reqId, "PENDING", (r) => r)).rejects.toThrow(
+          "ADMIN_STORE_INSECURE_PATH: Ledger file cannot be a symlink",
+        );
+        await expect(store.list()).rejects.toThrow("ADMIN_STORE_INSECURE_PATH: Ledger file cannot be a symlink");
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    });
+
     it("MUST-2: safe lock release verifies nonce and does not unlink competitor lock if overwritten", async () => {
       const tmp = await mkdtemp(path.join(tmpdir(), "gf-lock-nonce-test-"));
       try {
@@ -725,7 +895,7 @@ describe("Architect R4 Remediation: approvedAdminApproval unit & integration tes
       }
     });
 
-    it("recoverStaleLock: safely clears locks from dead processes and protects locks from active processes", async () => {
+    it("MUST-2: recoverStaleLock enforces offlineQuiescentVerified for corrupt lock, detects active locks, and cleans up dead locks", async () => {
       const tmp = await mkdtemp(path.join(tmpdir(), "gf-recover-lock-test-"));
       try {
         const store = new FileAdminApprovalLedgerStore(tmp);
@@ -736,14 +906,33 @@ describe("Architect R4 Remediation: approvedAdminApproval unit & integration tes
         const resEmpty = await store.recoverStaleLock(reqId);
         expect(resEmpty).toBe(false);
 
-        // Case 2: Lock held by an ACTIVE living process -> throws LOCKED_BY_ACTIVE_PROCESS
-        await writeFile(lockPath, JSON.stringify({ pid: process.pid, time: Date.now(), nonce: "living-nonce" }), "utf8");
-        await expect(store.recoverStaleLock(reqId)).rejects.toThrow(/LOCKED_BY_ACTIVE_PROCESS/);
-
-        // Lock file must still exist
+        // Case 2a: Corrupt / unparseable lock without options -> throws ADMIN_STORE_CORRUPT_LOCK and preserves lock
+        await writeFile(lockPath, "{ corrupt invalid json }", "utf8");
+        await expect(store.recoverStaleLock(reqId)).rejects.toThrow("ADMIN_STORE_CORRUPT_LOCK");
         expect(await stat(lockPath).then(() => true).catch(() => false)).toBe(true);
 
-        // Case 3: Lock held by a DEAD process -> successfully unlinks and returns true
+        // Case 2b: Corrupt lock with offlineQuiescentVerified: true -> successfully cleans up
+        const resQuiescent = await store.recoverStaleLock(reqId, { offlineQuiescentVerified: true });
+        expect(resQuiescent).toBe(true);
+        expect(await stat(lockPath).then(() => true).catch(() => false)).toBe(false);
+
+        // Case 2c: Missing PID in lock JSON without options -> throws ADMIN_STORE_CORRUPT_LOCK and preserves lock
+        await writeFile(lockPath, JSON.stringify({ time: Date.now(), nonce: "no-pid" }), "utf8");
+        await expect(store.recoverStaleLock(reqId)).rejects.toThrow("ADMIN_STORE_CORRUPT_LOCK");
+        expect(await stat(lockPath).then(() => true).catch(() => false)).toBe(true);
+
+        // Case 2d: Missing PID with force: true -> cleans up
+        const resForce = await store.recoverStaleLock(reqId, { force: true });
+        expect(resForce).toBe(true);
+        expect(await stat(lockPath).then(() => true).catch(() => false)).toBe(false);
+
+        // Case 3: Lock held by an ACTIVE living process -> throws LOCKED_BY_ACTIVE_PROCESS and preserves lock
+        await writeFile(lockPath, JSON.stringify({ pid: process.pid, time: Date.now(), nonce: "living-nonce" }), "utf8");
+        await expect(store.recoverStaleLock(reqId)).rejects.toThrow(/LOCKED_BY_ACTIVE_PROCESS/);
+        expect(await stat(lockPath).then(() => true).catch(() => false)).toBe(true);
+        await unlink(lockPath);
+
+        // Case 4: Lock held by a DEAD process -> successfully unlinks and returns true
         const deadPid = 999999;
         expect(isProcessAlive(deadPid)).toBe(false);
         await writeFile(lockPath, JSON.stringify({ pid: deadPid, time: Date.now() - 60000, nonce: "dead-nonce" }), "utf8");
@@ -772,6 +961,47 @@ describe("Architect R4 Remediation: approvedAdminApproval unit & integration tes
         });
         const rec = await store.get(reqId);
         expect(rec?.state).toBe("PENDING");
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("MUST-2: recoverStaleLock detects concurrent mutation before unlink and aborts unless force: true", async () => {
+      const tmp = await mkdtemp(path.join(tmpdir(), "gf-mutation-lock-test-"));
+      try {
+        const store = new FileAdminApprovalLedgerStore(tmp);
+        const reqId = "req-1700000000-0123456789abcdef0123456789abcdef-0123456789abcdef";
+        const lockPath = path.join(tmp, `${reqId}.lock`);
+
+        const deadPid = 999999;
+        const initialContent = JSON.stringify({ pid: deadPid, time: Date.now() - 60000, nonce: "initial-dead" });
+        await writeFile(lockPath, initialContent, "utf8");
+
+        // Simulate concurrent mutation right before unlink by hooking process.kill
+        // When recoverStaleLock checks isProcessAlive, process.kill is called.
+        // During that check, mutate the lock file content on disk.
+        const mutatedContent = JSON.stringify({ pid: deadPid, time: Date.now(), nonce: "competitor-mutated" });
+        const origKill = process.kill;
+        process.kill = ((pid: number, sig?: string | number) => {
+          writeFileSync(lockPath, mutatedContent, "utf8");
+          const err = new Error("No such process");
+          (err as any).code = "ESRCH";
+          throw err;
+        }) as typeof process.kill;
+
+        try {
+          // Without force, should detect mutation and throw
+          await expect(store.recoverStaleLock(reqId)).rejects.toThrow("ADMIN_STORE_LOCK_CONCURRENT_MUTATION");
+          // Lock file was NOT unlinked
+          expect(await stat(lockPath).then(() => true).catch(() => false)).toBe(true);
+        } finally {
+          process.kill = origKill;
+        }
+
+        // With force: true, cleans up even if mutated
+        const forceRecovered = await store.recoverStaleLock(reqId, { force: true });
+        expect(forceRecovered).toBe(true);
+        expect(await stat(lockPath).then(() => true).catch(() => false)).toBe(false);
       } finally {
         await rm(tmp, { recursive: true, force: true });
       }
