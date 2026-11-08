@@ -808,84 +808,58 @@ def _other_unit_processes(key: str) -> bool:
 
 def _capture_bounded_output(process: subprocess.Popen, limit_bytes: int,
                             deadline_monotonic: float) -> tuple[int, bytes, bytes, bool]:
-    import select
+    import threading
     out_chunks: list[bytes] = []
     err_chunks: list[bytes] = []
-    total_bytes = 0
-    truncated = False
+    state = {"total": 0, "truncated": False}
+    lock = threading.Lock()
 
-    for stream in (process.stdout, process.stderr):
-        if stream:
-            os.set_blocking(stream.fileno(), False)
-
-    active_readers = {}
-    if process.stdout:
-        active_readers[process.stdout.fileno()] = ("stdout", process.stdout)
-    if process.stderr:
-        active_readers[process.stderr.fileno()] = ("stderr", process.stderr)
-
-    while active_readers:
-        remaining_time = deadline_monotonic - time.monotonic()
-        if remaining_time <= 0:
-            raise subprocess.TimeoutExpired(cmd=process.args, timeout=0)
-        readable, _, _ = select.select(list(active_readers.keys()), [], [], min(max(0.001, remaining_time), 0.1))
-        if not readable:
-            if process.poll() is not None:
-                break
-            continue
-        for fd in readable:
-            channel, stream = active_readers[fd]
-            try:
-                chunk = os.read(fd, 4096)
-            except (BlockingIOError, OSError):
-                chunk = b""
-            if not chunk:
-                del active_readers[fd]
-                continue
-            if total_bytes < limit_bytes:
-                space = limit_bytes - total_bytes
-                if len(chunk) <= space:
-                    (out_chunks if channel == "stdout" else err_chunks).append(chunk)
-                    total_bytes += len(chunk)
-                else:
-                    (out_chunks if channel == "stdout" else err_chunks).append(chunk[:space])
-                    total_bytes += space
-                    truncated = True
-            else:
-                truncated = True
-
-    for fd, (channel, stream) in list(active_readers.items()):
+    def reader(stream: Any, chunks: list[bytes]) -> None:
         try:
             while True:
-                chunk = os.read(fd, 4096)
+                chunk = stream.read(4096)
                 if not chunk:
                     break
-                if total_bytes < limit_bytes:
-                    space = limit_bytes - total_bytes
-                    if len(chunk) <= space:
-                        (out_chunks if channel == "stdout" else err_chunks).append(chunk)
-                        total_bytes += len(chunk)
+                with lock:
+                    if state["total"] < limit_bytes:
+                        space = limit_bytes - state["total"]
+                        if len(chunk) <= space:
+                            chunks.append(chunk)
+                            state["total"] += len(chunk)
+                        else:
+                            chunks.append(chunk[:space])
+                            state["total"] += space
+                            state["truncated"] = True
                     else:
-                        (out_chunks if channel == "stdout" else err_chunks).append(chunk[:space])
-                        total_bytes += space
-                        truncated = True
-                else:
-                    truncated = True
-        except (BlockingIOError, OSError):
+                        state["truncated"] = True
+        except Exception:
             pass
-
-    for stream in (process.stdout, process.stderr):
-        if stream:
+        finally:
             try:
                 stream.close()
-            except OSError:
+            except Exception:
                 pass
 
-    remaining_time = deadline_monotonic - time.monotonic()
-    if remaining_time <= 0 and process.poll() is None:
+    t_out = threading.Thread(target=reader, args=(process.stdout, out_chunks), daemon=True)
+    t_err = threading.Thread(target=reader, args=(process.stderr, err_chunks), daemon=True)
+    t_out.start()
+    t_err.start()
+
+    remaining = deadline_monotonic - time.monotonic()
+    if remaining <= 0:
+        process.kill()
         raise subprocess.TimeoutExpired(cmd=process.args, timeout=0)
-    exit_code = process.wait(timeout=max(0.001, remaining_time))
-    return exit_code, b"".join(out_chunks), b"".join(err_chunks), truncated
+
+    try:
+        exit_code = process.wait(timeout=max(0.001, remaining))
+    except subprocess.TimeoutExpired:
+        process.kill()
+        raise
+
+    t_out.join(timeout=2.0)
+    t_err.join(timeout=2.0)
+
+    return exit_code, b"".join(out_chunks), b"".join(err_chunks), state["truncated"]
 
 
 def child(config_path: Path, key: str) -> int:

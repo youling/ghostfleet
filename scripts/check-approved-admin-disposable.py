@@ -188,7 +188,7 @@ def main():
         lease_diag, wire_diag = approve(diag_code, output="bounded")
         assert executor.handle(wire_diag)["state"] == "STARTED"
         receipt_diag = poll(wire_diag, {"SUCCEEDED", "FAILED"})
-        assert receipt_diag["state"] == "SUCCEEDED" and receipt_diag["exit_code"] == 0
+        assert receipt_diag["state"] == "SUCCEEDED" and receipt_diag["exit_code"] == 0, receipt_diag
         assert receipt_diag["output"] == "bounded"
         assert receipt_diag["truncated"] is False
         assert receipt_diag["stdout_bytes"] == len("NVME_SMART_HEALTH_OK\n".encode())
@@ -206,7 +206,7 @@ def main():
         lease_trunc, wire_trunc = approve(large_code, output="bounded", output_limit_bytes=2048)
         assert executor.handle(wire_trunc)["state"] == "STARTED"
         receipt_trunc = poll(wire_trunc, {"SUCCEEDED", "FAILED"})
-        assert receipt_trunc["state"] == "SUCCEEDED" and receipt_trunc["exit_code"] == 0
+        assert receipt_trunc["state"] == "SUCCEEDED" and receipt_trunc["exit_code"] == 0, receipt_trunc
         assert receipt_trunc["output"] == "bounded"
         assert receipt_trunc["truncated"] is True
         assert receipt_trunc["output_bytes"] <= 2048
@@ -218,7 +218,7 @@ def main():
         lease_fail, wire_fail = approve(fail_code, output="bounded")
         assert executor.handle(wire_fail)["state"] == "STARTED"
         receipt_fail = poll(wire_fail, {"SUCCEEDED", "FAILED"})
-        assert receipt_fail["state"] == "FAILED" and receipt_fail["exit_code"] == 3
+        assert receipt_fail["state"] == "FAILED" and receipt_fail["exit_code"] == 3, receipt_fail
         assert receipt_fail["output"] == "bounded"
         out_fail = executor.get_output(wire_fail)
         assert out_fail == {"stdout": "", "stderr": "DIAGNOSTIC_FAILURE\n"}
