@@ -104,4 +104,108 @@ describe("approved administrator command seam",()=>{
       expect(result.retry_safe).toBe(false);
     }
   });
+
+  it("supports bounded output mode and returns private stdout/stderr", async () => {
+    const f = await fixture("SUCCEEDED");
+    const boundedLease = {
+      ...f.lease,
+      command: { ...f.lease.command, output: "bounded" as const, output_limit_bytes: 4096 },
+    };
+    const leaseB64 = Buffer.from(JSON.stringify(boundedLease)).toString("base64");
+    const leaseDigest = createHash("sha256").update(Buffer.from(leaseB64, "base64")).digest("hex");
+    const stdoutText = "NVME SMART HEALTH PASSED\n";
+    const stderrText = "TEMP 35C\n";
+    const outputSha = createHash("sha256").update(Buffer.from(stdoutText + stderrText)).digest("hex");
+    const boundedReceipt = {
+      ...f.receipt,
+      lease_digest: leaseDigest,
+      output: "bounded" as const,
+      stdout_bytes: Buffer.byteLength(stdoutText),
+      stderr_bytes: Buffer.byteLength(stderrText),
+      output_bytes: Buffer.byteLength(stdoutText) + Buffer.byteLength(stderrText),
+      truncated: false,
+      output_sha256: outputSha,
+    };
+    f.dependencies.execute.mockResolvedValueOnce({
+      exit_code: 0,
+      stdout: JSON.stringify({
+        ok: true,
+        receipt: boundedReceipt,
+        output: { stdout: stdoutText, stderr: stderrText },
+      }),
+      stderr: "",
+      truncated: false,
+    });
+    const result = await runApprovedAdminCommand(
+      f.env,
+      actor,
+      { ...f.input, lease_b64: leaseB64 },
+      f.dependencies,
+    );
+    expect(result.outcome).toBe("SUCCEEDED");
+    expect(result.receipt?.output).toBe("bounded");
+    expect(result.receipt?.output_sha256).toBe(outputSha);
+    expect(result.output).toEqual({ stdout: stdoutText, stderr: stderrText });
+  });
+
+  it("fails closed when returned bounded output digest mismatches receipt", async () => {
+    const f = await fixture("SUCCEEDED");
+    const boundedLease = {
+      ...f.lease,
+      command: { ...f.lease.command, output: "bounded" as const },
+    };
+    const leaseB64 = Buffer.from(JSON.stringify(boundedLease)).toString("base64");
+    const leaseDigest = createHash("sha256").update(Buffer.from(leaseB64, "base64")).digest("hex");
+    const boundedReceipt = {
+      ...f.receipt,
+      lease_digest: leaseDigest,
+      output: "bounded" as const,
+      output_sha256: "0".repeat(64),
+    };
+    f.dependencies.execute.mockResolvedValueOnce({
+      exit_code: 0,
+      stdout: JSON.stringify({
+        ok: true,
+        receipt: boundedReceipt,
+        output: { stdout: "SOME OUTPUT", stderr: "" },
+      }),
+      stderr: "",
+      truncated: false,
+    });
+    const result = await runApprovedAdminCommand(
+      f.env,
+      actor,
+      { ...f.input, lease_b64: leaseB64 },
+      f.dependencies,
+    );
+    expect(result.outcome).toBe("UNKNOWN");
+    expect(result.error).toBe("ADMIN_OUTPUT_DIGEST_MISMATCH");
+  });
+
+  it("rejects invalid output_limit_bytes in command schema", async () => {
+    const f = await fixture();
+    const badSmall = {
+      ...f.lease,
+      command: { ...f.lease.command, output: "bounded" as const, output_limit_bytes: 512 },
+    };
+    const resSmall = await runApprovedAdminCommand(
+      f.env,
+      actor,
+      { ...f.input, lease_b64: Buffer.from(JSON.stringify(badSmall)).toString("base64") },
+      f.dependencies,
+    );
+    expect(resSmall.outcome).toBe("NOT_DISPATCHED");
+
+    const badLarge = {
+      ...f.lease,
+      command: { ...f.lease.command, output: "bounded" as const, output_limit_bytes: 65536 },
+    };
+    const resLarge = await runApprovedAdminCommand(
+      f.env,
+      actor,
+      { ...f.input, lease_b64: Buffer.from(JSON.stringify(badLarge)).toString("base64") },
+      f.dependencies,
+    );
+    expect(resLarge.outcome).toBe("NOT_DISPATCHED");
+  });
 });

@@ -17,7 +17,8 @@ const command = z.object({
   cwd: text,
   env: z.record(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/), text),
   executable_sha256: hex,
-  output: z.literal("discard"),
+  output: z.enum(["discard", "bounded"]).default("discard"),
+  output_limit_bytes: z.number().int().min(1024).max(32768).optional(),
 }).strict();
 export const approvedAdminLeaseSchema = z.object({
   schema: z.literal("ghostfleet-approved-admin-lease/v1"),
@@ -54,9 +55,21 @@ const receiptSchema = z.object({
   duplicate: z.boolean(), retry_safe: z.literal(false), reconcile_required: z.boolean(),
   exit_code: z.number().int().min(-255).max(255).nullable(),
   execution_privilege: z.literal("root").nullable(),
-  output: z.literal("discarded"), persistent_effects_rolled_back: z.literal(false),
+  output: z.enum(["discarded", "bounded"]), persistent_effects_rolled_back: z.literal(false),
+  stdout_bytes: z.number().int().nonnegative().optional(),
+  stderr_bytes: z.number().int().nonnegative().optional(),
+  output_bytes: z.number().int().nonnegative().optional(),
+  truncated: z.boolean().optional(),
+  output_sha256: hex.optional(),
   code: z.string().regex(/^[A-Z0-9_]{1,100}$/).nullable(),
 }).strict();
+export const approvedAdminReceiptSchema = receiptSchema;
+export const approvedAdminOutputSchema = z.object({
+  stdout: z.string(),
+  stderr: z.string(),
+}).strict();
+export type ApprovedAdminOutput = z.infer<typeof approvedAdminOutputSchema>;
+
 const defaults: PrivilegedDependencies = {
   connect: async () => { throw new Error("CONTROL_BACKEND_NOT_CONFIGURED"); },
   execute: async () => { throw new Error("CONTROL_BACKEND_NOT_CONFIGURED"); },
@@ -117,22 +130,34 @@ export async function runApprovedAdminCommand(
       {username: resolved.target.username, hostKeyAlgorithm: resolved.target.ssh_host_key_algorithm,
         hostKeySha256: resolved.target.ssh_host_key_sha256},
       resolved.controllerPrivateKey, null,
-      {deadlineAt, timeoutMs: 30000, outputLimitBytes: 32768,
+      {deadlineAt, timeoutMs: 30000, outputLimitBytes: 131072,
         forcedCommandPrincipal: env.CONTROL_PRIVILEGED_USERNAME, stdin: JSON.stringify(wire)},
     );
     if (result.exit_code !== 0 || result.truncated) throw new Error("ADMIN_RESPONSE_UNAVAILABLE");
-    const response = z.object({ok:z.literal(true),receipt:receiptSchema}).strict().parse(JSON.parse(result.stdout));
+    const responseSchema = z.object({
+      ok: z.literal(true),
+      receipt: receiptSchema,
+      output: approvedAdminOutputSchema.optional(),
+    }).strict();
+    const response = responseSchema.parse(JSON.parse(result.stdout));
     const receipt = response.receipt;
     if (receipt.lease_id !== lease.lease_id || receipt.request_id !== lease.request_id
         || receipt.operation_id !== lease.operation_id || receipt.node_uid !== input.node_uid
         || receipt.actor_ref !== subject || receipt.lease_digest !== await sha256(bytes)) {
       throw new Error("ADMIN_RECEIPT_BINDING_MISMATCH");
     }
+    if (receipt.output === "bounded" && response.output && receipt.output_sha256) {
+      const outputConcat = new TextEncoder().encode(response.output.stdout + response.output.stderr);
+      const computedHash = await sha256(outputConcat);
+      if (receipt.output_sha256 !== computedHash) {
+        throw new Error("ADMIN_OUTPUT_DIGEST_MISMATCH");
+      }
+    }
     const uncertain = ["NOT_FOUND", "RESERVED", "UNKNOWN"].includes(receipt.state);
     const outcome = uncertain ? "UNKNOWN" : receipt.state === "STARTED" ? "RUNNING"
       : receipt.state === "SUCCEEDED" ? "SUCCEEDED"
       : receipt.state === "FAILED" ? "FAILED" : "STOPPED";
-    return {outcome, receipt, retry_safe:false,
+    return {outcome, receipt, output: response.output, retry_safe:false,
       reconcile_required: uncertain || receipt.state === "STARTED"};
   } catch (error) {
     if (error instanceof SshExecutionError) dispatched = error.dispatch_state === "MAY_HAVE_EXECUTED";

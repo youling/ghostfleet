@@ -68,9 +68,14 @@ def main():
     executor = admin.Executor(config)
     keys = []
 
-    def approve(code, runtime=30, ttl=60):
+    def approve(code, runtime=30, ttl=60, output="discard", output_limit_bytes=None):
         ident = "ci-" + uuid.uuid4().hex
         issued = int(time.time())
+        cmd = {"argv": [sys.executable, "-I", "-c", code], "cwd": str(directory),
+               "env": {}, "executable_sha256": fs.executable_digest(Path(sys.executable)),
+               "output": output}
+        if output_limit_bytes is not None:
+            cmd["output_limit_bytes"] = output_limit_bytes
         lease = {"schema": admin.LEASE_SCHEMA, "lease_id": ident, "request_id": "request-" + ident,
                  "operation_id": "operation-" + ident, "operation": "admin.command",
                  "issuer_id": "ci-ephemeral", "node_uid": node, "subject_ref": subject,
@@ -80,9 +85,7 @@ def main():
                  "rollback_ref": "synthetic/disposable-cleanup", "issued_at": issued,
                  "not_before": issued, "expires_at": issued + ttl, "max_uses": 1,
                  "max_runtime_seconds": runtime,
-                 "command": {"argv": [sys.executable, "-I", "-c", code], "cwd": str(directory),
-                             "env": {}, "executable_sha256": fs.executable_digest(Path(sys.executable)),
-                             "output": "discard"}}
+                 "command": cmd}
         raw = admin.canonical(lease)
         wire = {"schema": admin.WIRE_SCHEMA, "action": "execute", "node_uid": node,
                 "actor_ref": subject, "lease_b64": base64.b64encode(raw).decode(),
@@ -177,10 +180,53 @@ def main():
         assert_stopped(expired_pids, admin.Ledger.key(lease["lease_id"]))
         expired_receipt = poll(wire, {"EXPIRED"})
         assert expired_receipt["persistent_effects_rolled_back"] is False
+
+        # Test bounded diagnostic output capture and receipt privacy
+        diag_code = ("import sys; "
+                     "sys.stdout.write('NVME_SMART_HEALTH_OK\n'); "
+                     "sys.stderr.write('NVME_TEMP_NORMAL_32C\n')")
+        lease_diag, wire_diag = approve(diag_code, output="bounded")
+        assert executor.handle(wire_diag)["state"] == "STARTED"
+        receipt_diag = poll(wire_diag, {"SUCCEEDED", "FAILED"})
+        assert receipt_diag["state"] == "SUCCEEDED" and receipt_diag["exit_code"] == 0
+        assert receipt_diag["output"] == "bounded"
+        assert receipt_diag["truncated"] is False
+        assert receipt_diag["stdout_bytes"] == len("NVME_SMART_HEALTH_OK\n".encode())
+        assert receipt_diag["stderr_bytes"] == len("NVME_TEMP_NORMAL_32C\n".encode())
+        assert receipt_diag["output_bytes"] == receipt_diag["stdout_bytes"] + receipt_diag["stderr_bytes"]
+        expected_sha = hashlib.sha256("NVME_SMART_HEALTH_OK\nNVME_TEMP_NORMAL_32C\n".encode()).hexdigest()
+        assert receipt_diag["output_sha256"] == expected_sha
+        assert "NVME_SMART" not in json.dumps(receipt_diag)
+        assert "NVME_TEMP" not in json.dumps(receipt_diag)
+        out_data = executor.get_output(wire_diag)
+        assert out_data == {"stdout": "NVME_SMART_HEALTH_OK\n", "stderr": "NVME_TEMP_NORMAL_32C\n"}
+
+        # Test bounded truncation at limit
+        large_code = "import sys; sys.stdout.write('A' * 40000)"
+        lease_trunc, wire_trunc = approve(large_code, output="bounded", output_limit_bytes=2048)
+        assert executor.handle(wire_trunc)["state"] == "STARTED"
+        receipt_trunc = poll(wire_trunc, {"SUCCEEDED", "FAILED"})
+        assert receipt_trunc["state"] == "SUCCEEDED" and receipt_trunc["exit_code"] == 0
+        assert receipt_trunc["output"] == "bounded"
+        assert receipt_trunc["truncated"] is True
+        assert receipt_trunc["output_bytes"] <= 2048
+        out_trunc = executor.get_output(wire_trunc)
+        assert out_trunc is not None and len(out_trunc["stdout"].encode()) <= 2048
+
+        # Test nonzero exit code with error stderr capture
+        fail_code = "import sys; sys.stderr.write('DIAGNOSTIC_FAILURE\n'); raise SystemExit(3)"
+        lease_fail, wire_fail = approve(fail_code, output="bounded")
+        assert executor.handle(wire_fail)["state"] == "STARTED"
+        receipt_fail = poll(wire_fail, {"SUCCEEDED", "FAILED"})
+        assert receipt_fail["state"] == "FAILED" and receipt_fail["exit_code"] == 3
+        assert receipt_fail["output"] == "bounded"
+        out_fail = executor.get_output(wire_fail)
+        assert out_fail == {"stdout": "", "stderr": "DIAGNOSTIC_FAILURE\n"}
+
         print(json.dumps({"result": "PASS", "backend": "real-systemd-cgroup-v2",
                           "positive_root_effect": True, "one_use_replay": "DENIED",
                           "invalid_approval": "DENIED", "cancel_descendants": "EMPTY",
-                          "disconnected_ttl_descendants": "EMPTY", "diagnostic_output": "NOT_IMPLEMENTED"}))
+                          "disconnected_ttl_descendants": "EMPTY", "diagnostic_output": "PASS"}))
     finally:
         for key in keys:
             for unit in (backend.unit(key), backend.timer(key) + ".timer", backend.timer(key) + ".service"):
