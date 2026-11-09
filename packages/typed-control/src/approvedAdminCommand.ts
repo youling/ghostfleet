@@ -79,6 +79,9 @@ export type ApprovedAdminCommandResult =
       outcome: "NOT_DISPATCHED";
       error: string;
       validation_fields?: string[];
+      helper_error?: never;
+      receipt?: never;
+      output?: never;
       retry_safe: false;
       reconcile_required: false;
     }
@@ -87,11 +90,16 @@ export type ApprovedAdminCommandResult =
       error: string;
       helper_error?: true;
       validation_fields?: string[];
+      receipt?: never;
+      output?: never;
       retry_safe: false;
       reconcile_required: true;
     }
   | {
       outcome: "UNKNOWN";
+      error?: never;
+      helper_error?: never;
+      validation_fields?: never;
       receipt: ApprovedAdminReceipt;
       output?: ApprovedAdminOutput;
       retry_safe: false;
@@ -99,6 +107,9 @@ export type ApprovedAdminCommandResult =
     }
   | {
       outcome: "RUNNING";
+      error?: never;
+      helper_error?: never;
+      validation_fields?: never;
       receipt: ApprovedAdminReceipt;
       output?: ApprovedAdminOutput;
       retry_safe: false;
@@ -106,6 +117,9 @@ export type ApprovedAdminCommandResult =
     }
   | {
       outcome: "SUCCEEDED" | "FAILED" | "STOPPED";
+      error?: never;
+      helper_error?: never;
+      validation_fields?: never;
       receipt: ApprovedAdminReceipt;
       output?: ApprovedAdminOutput;
       retry_safe: false;
