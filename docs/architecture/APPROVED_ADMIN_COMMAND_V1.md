@@ -2,6 +2,8 @@
 
 ## 中文
 
+> **对话审批主体约束（候选源码）**：管理命令的请求者和审批人可能是同一个真实 Human，不能把两个 `userId` 相同等同于 Agent 自批。OAuth Human 决策通道必须由服务端认证入口同时赋予 `fleet.privileged.approve` Scope 与 `human-approver` Role；单独具有 Role 或 Scope 的普通工作负载不得审批。ChatGPT MCP App 的 `visibility:["app"]` 仍需由 Host 实机证明，服务端认证也不能把 UI 可见性当成点击签名。已有显式 break-glass 行为单独保留；具体签名租约、账本和节点约束不放宽。
+
 <!-- topic:boundary -->
 ### 能力与信任边界
 
@@ -110,6 +112,8 @@ systemd 250+、统一 cgroup v2、root 管理且含签名库的 Python 缺一不
 后续交付包括生产 Human 审批签发与 key 保管、入口工具/Console、受授权诊断输出或 artifact 读取、交互 session、跨主体策略、设备首次 root bootstrap 和逐节点部署验收。当前版本没有这些能力，不应据此宣称“一般管理员运维已全部可用”。
 
 ## English
+
+> **In-chat principal boundary (source candidate):** The requester and approver may be the same real Human. Equal `userId` values do not themselves constitute Agent self-approval. The server-authenticated Human decision lane must provide both the `fleet.privileged.approve` scope and the `human-approver` role; neither an ordinary workload with only the role nor one with only the scope can decide. ChatGPT MCP App `visibility:["app"]` still requires live Host enforcement evidence, and server authentication is not a cryptographic UI-click assertion. Existing explicit break-glass behavior remains separate. Signed-lease, ledger and node constraints are unchanged.
 
 <!-- topic:boundary -->
 ### Capability and trust boundary
