@@ -9,7 +9,9 @@ import { SshExecutionError } from "./sshClient.js";
 export const APPROVED_ADMIN_SCHEMA = "youling-fleet-privileged-operations/v4";
 const hex = z.string().regex(/^[0-9a-f]{64}$/);
 const uid = z.string().regex(/^node-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-const ref = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{7,127}$/);
+/** Opaque protocol reference, not a free-form URL. Human-readable links belong in work_ref/purpose. */
+export const approvedAdminReferenceSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{7,127}$/);
+const ref = approvedAdminReferenceSchema;
 const profile = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const text = z.string().min(1).max(4096).refine(value => !value.includes("\0"));
 const command = z.object({
@@ -70,6 +72,80 @@ export const approvedAdminOutputSchema = z.object({
 }).strict();
 export type ApprovedAdminOutput = z.infer<typeof approvedAdminOutputSchema>;
 
+const helperSuccessResponseSchema = z.object({
+  ok: z.literal(true),
+  receipt: receiptSchema,
+  output: approvedAdminOutputSchema.optional(),
+}).strict();
+
+/**
+ * The node helper can return a structured validation/preflight error without a
+ * receipt. This is diagnostic evidence, not a terminal execution receipt:
+ * once the SSH forced-command request was sent, keep the operation UNKNOWN
+ * until the exact lease is reconciled through the node ledger.
+ */
+const helperErrorResponseSchema = z.object({
+  ok: z.literal(false),
+  error: z.string().regex(/^[A-Z0-9_]{1,100}$/),
+}).strict();
+
+const helperResponseSchema = z.discriminatedUnion("ok", [
+  helperSuccessResponseSchema,
+  helperErrorResponseSchema,
+]);
+
+class AdminValidationError extends Error {
+  public constructor(
+    public readonly code: string,
+    public readonly fields: string[],
+  ) {
+    super(code);
+    this.name = "AdminValidationError";
+  }
+}
+
+function validationFields(error: z.ZodError): string[] {
+  const paths = error.issues.map((issue) => {
+    const path = issue.path.map((part) => typeof part === "number"
+      ? `[${part}]`
+      : String(part).replace(/[^A-Za-z0-9_-]/g, "_")).join(".");
+    return path || "$";
+  });
+  return [...new Set(paths)].slice(0, 8);
+}
+
+function parseInput(raw: unknown): ApprovedAdminInput {
+  const parsed = approvedAdminInputSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new AdminValidationError("ADMIN_INPUT_SCHEMA_INVALID", validationFields(parsed.error));
+  }
+  return parsed.data;
+}
+
+function parseLease(raw: unknown): z.infer<typeof approvedAdminLeaseSchema> {
+  const parsed = approvedAdminLeaseSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new AdminValidationError("ADMIN_LEASE_SCHEMA_INVALID", validationFields(parsed.error));
+  }
+  return parsed.data;
+}
+
+function parseHelperResponse(raw: unknown): z.infer<typeof helperResponseSchema> {
+  const parsed = helperResponseSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new AdminValidationError("ADMIN_HELPER_RESPONSE_INVALID", validationFields(parsed.error));
+  }
+  return parsed.data;
+}
+
+function parseJsonText(value: string, code: string, field: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    throw new AdminValidationError(code, [field]);
+  }
+}
+
 const defaults: PrivilegedDependencies = {
   connect: async () => { throw new Error("CONTROL_BACKEND_NOT_CONFIGURED"); },
   execute: async () => { throw new Error("CONTROL_BACKEND_NOT_CONFIGURED"); },
@@ -99,10 +175,15 @@ export async function runApprovedAdminCommand(
   let dispatched = false;
   try {
     if (!actor || !actorAllows(actor, PRIVILEGED_SCOPE)) throw new Error("PRIVILEGED_SCOPE_REQUIRED");
-    const input = approvedAdminInputSchema.parse(raw);
+    const input = parseInput(raw);
     const bytes = decode(input.lease_b64, 16384);
     decode(input.signature_b64, 64, 64);
-    const lease = approvedAdminLeaseSchema.parse(JSON.parse(new TextDecoder("utf-8", {fatal:true}).decode(bytes)));
+    const leaseJson = parseJsonText(
+      new TextDecoder("utf-8", {fatal:true}).decode(bytes),
+      "ADMIN_LEASE_JSON_INVALID",
+      "lease_b64",
+    );
+    const lease = parseLease(leaseJson);
     const subject = await controlActorRef(actor);
     const policy = z.record(uid, policySchema).parse(JSON.parse(env.CONTROL_APPROVED_ADMIN_POLICY_JSON ?? "{}"))[input.node_uid];
     if (!policy || policy.subject_ref !== subject || lease.subject_ref !== subject
@@ -134,12 +215,20 @@ export async function runApprovedAdminCommand(
         forcedCommandPrincipal: env.CONTROL_PRIVILEGED_USERNAME, stdin: JSON.stringify(wire)},
     );
     if (result.exit_code !== 0 || result.truncated) throw new Error("ADMIN_RESPONSE_UNAVAILABLE");
-    const responseSchema = z.object({
-      ok: z.literal(true),
-      receipt: receiptSchema,
-      output: approvedAdminOutputSchema.optional(),
-    }).strict();
-    const response = responseSchema.parse(JSON.parse(result.stdout));
+    const responseJson = parseJsonText(result.stdout, "ADMIN_HELPER_RESPONSE_INVALID", "stdout_json");
+    const response = parseHelperResponse(responseJson);
+    if (!response.ok) {
+      // A negative helper response preserves the precise node-side error code,
+      // but it has no request-bound receipt. Do not infer NOT_EXECUTED or allow
+      // a retry after the SSH request has crossed the dispatch boundary.
+      return {
+        outcome: "UNKNOWN",
+        error: response.error,
+        helper_error: true,
+        reconcile_required: true,
+        retry_safe: false,
+      };
+    }
     const receipt = response.receipt;
     if (receipt.lease_id !== lease.lease_id || receipt.request_id !== lease.request_id
         || receipt.operation_id !== lease.operation_id || receipt.node_uid !== input.node_uid
@@ -190,11 +279,18 @@ export async function runApprovedAdminCommand(
       reconcile_required: uncertain || receipt.state === "STARTED"};
   } catch (error) {
     if (error instanceof SshExecutionError) dispatched = error.dispatch_state === "MAY_HAVE_EXECUTED";
-    const code = error instanceof Error && /^[A-Z0-9_]{1,100}$/.test(error.message)
-      ? error.message : "ADMIN_REQUEST_OR_RESPONSE_INVALID";
-    // Lost responses and even server errors after dispatch are uncertain until
-    // exact-lease status reconciliation. Never silently mint a replacement ID.
-    return {outcome:dispatched ? "UNKNOWN" : "NOT_DISPATCHED", error:code,
-      reconcile_required:dispatched, retry_safe:false};
+    const validation = error instanceof AdminValidationError ? error : undefined;
+    const code = validation?.code
+      ?? (error instanceof Error && /^[A-Z0-9_]{1,100}$/.test(error.message)
+        ? error.message : "ADMIN_REQUEST_OR_RESPONSE_INVALID");
+    // Lost responses and all malformed post-dispatch replies remain uncertain
+    // until exact-lease status reconciliation. Never silently mint a new ID.
+    return {
+      outcome:dispatched ? "UNKNOWN" : "NOT_DISPATCHED",
+      error:code,
+      ...(validation ? {validation_fields: validation.fields} : {}),
+      reconcile_required:dispatched,
+      retry_safe:false,
+    };
   }
 }
