@@ -16,12 +16,36 @@ import { createDeadlineAt, DeadlineExceededError, settleCleanup, withDeadline } 
 
 export type SshDispatchState = "NOT_DISPATCHED" | "MAY_HAVE_EXECUTED";
 
+/**
+ * A Symbol.for brand survives duplicate module instances in one JS isolate.
+ * This matters when a consumer bundles its own copy of typed-control: plain
+ * instanceof would otherwise lose the dispatch fence at the package seam.
+ */
+const SSH_EXECUTION_ERROR_BRAND = Symbol.for("ghostfleet.ssh-execution-error/v1");
+
 /** A local transport outcome, never a claim that remote work was killed. */
 export class SshExecutionError extends Error {
+  public readonly [SSH_EXECUTION_ERROR_BRAND] = true as const;
+
   public constructor(public readonly code: string, public readonly dispatch_state: SshDispatchState) {
     super(code);
     this.name = "SshExecutionError";
   }
+}
+
+/** Recognize the versioned transport contract across duplicate package copies. */
+export function isSshExecutionError(error: unknown): error is SshExecutionError {
+  if (!(error instanceof Error)) return false;
+  const candidate = error as Error & {
+    code?: unknown;
+    dispatch_state?: unknown;
+    [SSH_EXECUTION_ERROR_BRAND]?: unknown;
+  };
+  return candidate[SSH_EXECUTION_ERROR_BRAND] === true
+    && typeof candidate.code === "string"
+    && /^[A-Z0-9_]{1,100}$/.test(candidate.code)
+    && (candidate.dispatch_state === "NOT_DISPATCHED"
+      || candidate.dispatch_state === "MAY_HAVE_EXECUTED");
 }
 
 function invalid(code: string): never {

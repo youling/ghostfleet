@@ -85,7 +85,7 @@ effective_runtime =
 
 - V4 通过可信部署配置传递 `forcedCommandPrincipal`；SSH adapter 只允许该专用主体与精确目标用户名匹配，不能退回普通 shell。
 - adapter 的 `SshExecutionError.dispatch_state` 必须跨包保持同一语义：`NOT_DISPATCHED` 仅表示 SSH 请求未进入可能发送阶段；调用 `channel.request` 前后可能存在部分发送时必须是 `MAY_HAVE_EXECUTED`。
-- 不得仅靠字符串错误码或跨包 `instanceof` 猜测派发状态；用共享类型/显式适配器转换。
+- 不得仅靠字符串错误码或跨包 `instanceof` 猜测派发状态；公共 SSH error 使用版本化 `Symbol.for` brand，重复打包的模块副本也必须保留 `dispatch_state`，并通过跨副本合成测试。
 - Host key pin、专用用户名、key identity、期限和 stdin wire schema 均须在真实连接前校验。
 
 #### 3.5 Helper 响应与不确定性
@@ -348,7 +348,7 @@ effective_runtime =
 
 - V4 passes `forcedCommandPrincipal` from trusted deployment configuration. The SSH adapter accepts only that dedicated principal with an exact target-username match; it must never fall back to an ordinary shell.
 - `SshExecutionError.dispatch_state` must preserve one meaning across package boundaries: `NOT_DISPATCHED` means the SSH request never entered a possible-send stage; once a request may be partially sent it is `MAY_HAVE_EXECUTED`.
-- Do not infer dispatch state from error strings or a cross-package `instanceof` check alone; use a shared type or explicit adapter conversion.
+- Do not infer dispatch state from error strings or cross-package `instanceof` alone. The public SSH error uses a versioned `Symbol.for` brand so duplicate bundled module instances preserve `dispatch_state`; cover the seam with a cross-copy synthetic test.
 - Validate Host-key pin, dedicated username, key identity, deadlines and stdin wire schema before real command dispatch.
 
 #### 3.5 Helper responses and uncertainty

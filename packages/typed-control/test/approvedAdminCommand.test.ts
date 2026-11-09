@@ -152,6 +152,23 @@ describe("approved administrator command seam",()=>{
     const result=await runApprovedAdminCommand(f.env,actor,{...f.input,action:"status"},f.dependencies);
     expect(result.outcome).toBe("UNKNOWN");expect(result.reconcile_required).toBe(true);
   });
+  it("preserves dispatch state across duplicate typed-control module instances",async()=>{
+    for(const state of ["NOT_DISPATCHED","MAY_HAVE_EXECUTED"] as const) {
+      const f=await fixture();
+      const foreignCopy = Object.assign(new Error("SYNTHETIC_CROSS_BUNDLE_FAILURE"), {
+        name:"SshExecutionError",
+        code:"SYNTHETIC_CROSS_BUNDLE_FAILURE",
+        dispatch_state:state,
+        [Symbol.for("ghostfleet.ssh-execution-error/v1")]:true,
+      });
+      f.dependencies.execute.mockImplementationOnce(async()=>{throw foreignCopy;});
+      const result=await runApprovedAdminCommand(f.env,actor,f.input,f.dependencies);
+      expect(result.outcome).toBe(state === "NOT_DISPATCHED" ? "NOT_DISPATCHED" : "UNKNOWN");
+      expect(result.error).toBe("SYNTHETIC_CROSS_BUNDLE_FAILURE");
+      expect(result.reconcile_required).toBe(state === "MAY_HAVE_EXECUTED");
+      expect(result.retry_safe).toBe(false);
+    }
+  });
   it("preserves pre-dispatch versus post-dispatch transport uncertainty",async()=>{
     for(const state of ["NOT_DISPATCHED","MAY_HAVE_EXECUTED"] as const) {
       const f=await fixture();f.dependencies.execute.mockImplementation(async()=>{throw new SshExecutionError("SYNTHETIC_TRANSPORT_FAILURE",state);});

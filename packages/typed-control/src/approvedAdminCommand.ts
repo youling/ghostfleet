@@ -4,7 +4,7 @@ import { z } from "zod";
 import { actorAllows, controlActorRef, PRIVILEGED_SCOPE, type ControlActor } from "./controlPolicy.js";
 import { assertDistinctKeyIdentities, resolvePrivilegedTarget, type PrivilegedDependencies, type PrivilegedRuntimeEnv } from "./privilegedOperations.js";
 import { createDeadlineAt, withDeadline } from "./deadline.js";
-import { SshExecutionError } from "./sshClient.js";
+import { isSshExecutionError } from "./sshClient.js";
 
 export const APPROVED_ADMIN_SCHEMA = "youling-fleet-privileged-operations/v4";
 const hex = z.string().regex(/^[0-9a-f]{64}$/);
@@ -278,7 +278,7 @@ export async function runApprovedAdminCommand(
     return {outcome, receipt, output: response.output, retry_safe:false,
       reconcile_required: uncertain || receipt.state === "STARTED"};
   } catch (error) {
-    if (error instanceof SshExecutionError) dispatched = error.dispatch_state === "MAY_HAVE_EXECUTED";
+    if (isSshExecutionError(error)) dispatched = error.dispatch_state === "MAY_HAVE_EXECUTED";
     const validation = error instanceof AdminValidationError ? error : undefined;
     const code = validation?.code
       ?? (error instanceof Error && /^[A-Z0-9_]{1,100}$/.test(error.message)
