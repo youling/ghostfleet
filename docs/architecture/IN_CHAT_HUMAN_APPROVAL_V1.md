@@ -1,9 +1,8 @@
 # In-chat Human approval v1 / 对话内人工审批 v1
 
 status: `TARGET_DECIDED / WEB_POC_REQUIRED / NATIVE_MOBILE_BLOCKED_FOR_CUSTOM_MCP`
-owner: GhostFleet owns the generic interaction contract; `youling/ai-hub` owns the private issuer, Durable Object ledger, credentials and deployment bindings.
+owner: GhostFleet owns the generic interaction contract; each deployment owner owns its private issuer, transactional ledger, credentials and deployment bindings.
 parent: [GhostFleet #69](https://github.com/youling/ghostfleet/issues/69)
-baseline: `youling/ghostfleet@4dae64b16298d28f938d73d72771c1b88bc0ada8`
 last_updated: 2026-11-10
 
 ## 中文
@@ -17,11 +16,11 @@ last_updated: 2026-11-10
 
 本规范是 GhostFleet 的可选 ChatGPT MCP App 集成合同，不改变 AI-client-neutral core，也不把 ChatGPT、OAuth 或 Cloudflare 变成核心运行依赖。
 
-沿用现有 GhostFleet #69 与私有 `ai-hub#300` 实现 lineage：
+沿用现有 GhostFleet #69 的产品裁决：
 
 - 不创建第二套审批账本、签发器或管理员权限层。
-- 私有 `AdminApprovalLedgerDO`、现有 issuer、Ed25519 租约及节点 V4 Helper 仍由 `ai-hub` 部署 owner 持有。
-- GhostFleet 只定义可复用的 UI、MCP 工具、认证边界和验收合同。
+- 部署专属的事务账本、可信签发器、Ed25519 租约及节点 Helper 仍由各自部署 owner 持有。
+- GhostFleet 只定义可复用的 UI、MCP 工具、认证边界和验收合同，不公开或复制部署专属实现。
 - 普通执行身份不因接入 UI 或 OAuth 而获得管理员权限。
 
 <!-- topic:platform -->
@@ -196,29 +195,23 @@ stateDiagram-v2
 - 派发后响应丢失、UNKNOWN 和同请求恢复；
 - Web 与原生移动端分别验收，不能互相代替。
 
-### 8. 当前实现差距与状态
-
-已只读核对 2026-11-10 的 GhostFleet 与 ai-hub main：
-
-- ai-hub OAuth Provider 已存在，MCP access token TTL 为 900 秒；Cloudflare Access 用于 OAuth 授权登录。
-- ai-hub 私有 `CONTROL_SCOPES` 当前仅列 `fleet.read`、`fleet.operate`、`fleet.exec`、`fleet.privileged`，没有把现有 `fleet.privileged.approve` 加入 OAuth 支持列表。
-- 当前 MCP catalog 只有四个 `fleet_admin_*` 工具（request/status/execute/cancel），没有 `fleet_admin_human_decide`，也没有 app-only visibility 接线。
-- 当前 `/admin/approve` 与 `/admin/deny` 仍通过 `cf-access-jwt-assertion` 和 `verifyAccessOwner` 认证；这是现有 Access Human recovery 路径，不是 MCP App 的 per-tool OAuth 决策入口。
-- `CloudflareAdminIssuer` 签发 Ed25519 节点租约；OAuth access token 由 Worker 的 OAuth Provider 管理。两者不可混称。
-- 现有 DO CAS 与 Ed25519 租约签发已由 ai-hub PR #357 合入；不重复实现。
-- 当前 manager 以 `requester_user_id`、`actor_ref` 做拒绝判断；旧 Access 路由使用邮箱作为 Human userId，而 MCP OAuth 请求使用 provider subject。新 App-only OAuth 路径若让同一 Human 的请求和审批共享同一 `sub`，不能沿用“请求者 ID 必须不同于审批者 ID”的判断。应以 Host 强制 app-only 工具可见性、审批 scope 和明确的 actor kind/decision path 阻止 Agent 调用；同一 Human 可以批准自己发起的工作。
+### 8. 当前实现状态
 
 截至 2026-11-10：
+
+- GhostFleet 公共仓库目前提供通用特权命令与审批合同；本规范定义的 ChatGPT MCP App 卡片和 app-only 决策工具仍属于待实现的可选客户端集成，不代表已部署。
+- 公共 typed-control 已定义 `PRIVILEGED_APPROVE_SCOPE = fleet.privileged.approve`，并纳入通用 scope 常量。新集成应复用此名称，不再创建同义 scope。
+- 每个私有部署必须独立核验自己的 OAuth Provider 是否实际支持该 scope、consent 是否正确展示、审批工具是否声明 per-tool `securitySchemes`，以及 Host 是否强制执行 app-only 可见性。公共仓库无法替部署 owner 声称这些能力已上线。
+- 部署专属事务账本、租约签发器、凭据与节点绑定继续由部署 owner 管理；本规范不要求创建第二套账本或签发器。
+- 本文不记录私有仓库路径、部署资源名称、密钥、内部节点标识或私有工单编号。
 
 - 产品裁决：`IN_CHAT_HUMAN_APPROVAL = PRIMARY`。
 - 客户端 HAST 30 天：`REJECTED`。
 - ChatGPT Web MCP App：`WEB_POC_REQUIRED`。
 - Native ChatGPT Mobile custom MCP：`BLOCKED_BY_HOST_PLATFORM`。
 - Existing Fleet DCR native mobile：`UNVERIFIED`。
-- ThinkPad approved-admin production canary：已验收。
-- JG node preflight：已验收为 READY FOR ONE BOUNDED CANARY；尚无新审批请求、Human 决定或执行。
-- JG canary：`HOLD_UNTIL_IN_CHAT_APPROVAL_USABLE`。
-- OMV8：继续冻结，不能由本方案解锁。
+- JG/其他节点是否 READY、是否可创建请求、是否可执行，必须以各自私有部署工单的当前证据为准；本公共规范不授予执行权限。
+- OMV8 等独立冻结边界不受本规范改变。
 
 任何源码合并、合成测试通过或 Host 预检通过，都不能替代 UI、真实身份和单笔金丝雀验收。
 
@@ -407,28 +400,22 @@ Required negative tests:
 - Lost response after dispatch, UNKNOWN and same-request recovery;
 - Separate Web and native mobile acceptance; neither substitutes for the other.
 
-### 8. Current implementation gap and status
-
-Read-only checked GhostFleet and ai-hub main as of 2026-11-10:
-
-- The ai-hub OAuth Provider already exists; MCP access-token TTL is 900 seconds, and Cloudflare Access is used for OAuth authorization login.
-- The private ai-hub `CONTROL_SCOPES` currently lists only `fleet.read`, `fleet.operate`, `fleet.exec` and `fleet.privileged`; it does not yet include the existing `fleet.privileged.approve` scope in the OAuth supported-scope list.
-- The current MCP catalog has only four `fleet_admin_*` tools (request/status/execute/cancel). There is no `fleet_admin_human_decide` tool and no app-only visibility wiring.
-- Current `/admin/approve` and `/admin/deny` routes still authenticate through `cf-access-jwt-assertion` and `verifyAccessOwner`. This is the existing Access Human recovery path, not the MCP App per-tool OAuth decision entrypoint.
-- `CloudflareAdminIssuer` signs Ed25519 node leases; the Worker's OAuth Provider manages OAuth access tokens. Do not conflate them.
-- Existing DO CAS and Ed25519 lease issuance were merged by ai-hub PR #357; do not reimplement them.
-- The current manager uses `requester_user_id` and `actor_ref` comparisons. The old Access route uses the email as the Human userId, while MCP OAuth requests use the provider subject. If the new App-only OAuth path uses the same `sub` for a Human's request and approval, the current “requester ID must differ from approver ID” check cannot be reused unchanged. Use Host-enforced app-only visibility, approval scope and an explicit actor kind/decision path to prevent Agent invocation; the same Human may approve work they initiated.
+### 8. Implementation status
 
 As of 2026-11-10:
+
+- The public GhostFleet repository provides the generic privileged-command and approval contract. The ChatGPT MCP App card and app-only decision tool defined here remain an optional client integration to be implemented; this document does not claim they are deployed.
+- Public typed-control already defines `PRIVILEGED_APPROVE_SCOPE = fleet.privileged.approve` and includes it in the shared scope constants. New integrations should reuse this name rather than create a synonymous scope.
+- Each private deployment must independently verify that its OAuth Provider supports this scope, that consent presents it correctly, that the decision tool declares per-tool `securitySchemes`, and that the Host enforces app-only visibility. The public repository cannot claim these deployment capabilities are live.
+- Deployment-specific transactional ledgers, lease signers, credentials and node bindings remain owned by each deployment owner; this contract does not require a second ledger or signer.
+- This public document does not record private repository paths, deployment resource names, secrets, internal node identifiers or private issue numbers.
 
 - Product ruling: `IN_CHAT_HUMAN_APPROVAL = PRIMARY`.
 - Client-side 30-day HAST: `REJECTED`.
 - ChatGPT Web MCP App: `WEB_POC_REQUIRED`.
 - Native ChatGPT Mobile custom MCP: `BLOCKED_BY_HOST_PLATFORM`.
 - Existing Fleet DCR native mobile: `UNVERIFIED`.
-- ThinkPad approved-admin production canary: accepted.
-- JG node preflight: accepted as READY FOR ONE BOUNDED CANARY; no new approval request, Human decision or execution exists.
-- JG canary: `HOLD_UNTIL_IN_CHAT_APPROVAL_USABLE`.
-- OMV8: remains frozen and is not unblocked by this design.
+- Whether JG/another node is READY, may receive a request, or may execute must be determined from current evidence in its private deployment work item; this public contract grants no execution authority.
+- Independent OMV8 and other frozen boundaries are unchanged by this contract.
 
 Source merges, synthetic test passes and Host preflight do not substitute for UI, real identity and single-request canary acceptance.
