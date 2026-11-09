@@ -134,11 +134,15 @@ sequenceDiagram
     H->>UI: explicit Approve / Deny click
     UI->>S: app-only human_decide + approval auth
     S->>S: verify Human principal, scope, digest, expiry
-    S->>D: CAS PENDING -> APPROVED / DENIED
-    D-->>S: authoritative terminal decision
+    alt Approve
+        S->>K: sign candidate one-use lease (not yet published)
+        K-->>S: signed candidate
+        S->>D: CAS PENDING -> APPROVED with signed lease
+    else Deny
+        S->>D: CAS PENDING -> DENIED
+    end
+    D-->>S: authoritative decision readback
     opt Approved
-        S->>K: sign exact one-use lease
-        K-->>S: signed lease
         S-->>A: same request is APPROVED
         A->>S: execute same request_id
         S->>N: dispatch signed lease once
@@ -151,24 +155,22 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> PENDING
-    PENDING --> APPROVED: Human CAS decision
-    PENDING --> DENIED: Human CAS decision
-    PENDING --> EXPIRED: TTL reached
-    APPROVED --> CONSUMED: one-use lease dispatch fence committed
-    APPROVED --> REVOKED: explicit revoke before dispatch
-    APPROVED --> EXPIRED: lease expired
-    CONSUMED --> SUCCEEDED: terminal receipt proves success
-    CONSUMED --> FAILED: terminal receipt proves failure
-    CONSUMED --> UNKNOWN: outcome cannot be proven
-    UNKNOWN --> SUCCEEDED: same-request reconciliation proves success
-    UNKNOWN --> FAILED: same-request reconciliation proves failure
-    UNKNOWN --> RECONCILE_REQUIRED: evidence remains incomplete
-    RECONCILE_REQUIRED --> SUCCEEDED: later evidence proves success
-    RECONCILE_REQUIRED --> FAILED: later evidence proves failure
-    DENIED --> [*]
-    EXPIRED --> [*]
-    REVOKED --> [*]
+    PENDING --> APPROVED: Human-approved signed lease stored by CAS
+    PENDING --> DENIED: Human denial
+    PENDING --> EXPIRED: request expiry
+    PENDING --> CANCELLED: pre-dispatch cancellation
+    APPROVED --> DISPATCHED: exact one-use dispatch admitted
+    APPROVED --> EXPIRED: expiry before dispatch
+    APPROVED --> CANCELLED: pre-dispatch cancellation
+    DISPATCHED --> APPROVED: proven NOT_DISPATCHED
+    DISPATCHED --> CONSUMED: terminal execution receipt
+    DISPATCHED --> CANCEL_REQUESTED: cancellation pending
+    CONSUMED --> CANCEL_REQUESTED: late cancellation requested
+    CANCEL_REQUESTED --> CANCELLED: stop confirmed
+    CANCEL_REQUESTED --> CONSUMED: completed before cancellation
 ```
+
+**上图仅表示 `AdminApprovalRecord.state`，并非 OS 执行结果。** 当前审批状态枚举不包含 `UNKNOWN`、`SUCCEEDED`、`FAILED`、`STOPPED` 或 `RECONCILE_REQUIRED`。前四者属于独立的 `dispatch_state` 值；后一项是 `reconcile_required` 布尔标记。比如账本状态仍为 `DISPATCHED` 时，执行结果可以是 `UNKNOWN` 且需要对账。签名候选在现行实现中先生成，只有事务 CAS 成功后才产生权威 `APPROVED` 记录，预签名本身不构成已批准。
 
 `UNKNOWN` 不允许创建新请求来掩盖旧请求，也不允许盲目重复派发。所有恢复都沿用原 request/lease 进行对账。
 
@@ -344,11 +346,15 @@ sequenceDiagram
     H->>UI: explicit Approve / Deny click
     UI->>S: app-only human_decide + approval auth
     S->>S: verify Human principal, scope, digest, expiry
-    S->>D: CAS PENDING -> APPROVED / DENIED
-    D-->>S: authoritative terminal decision
+    alt Approve
+        S->>K: sign candidate one-use lease (not yet published)
+        K-->>S: signed candidate
+        S->>D: CAS PENDING -> APPROVED with signed lease
+    else Deny
+        S->>D: CAS PENDING -> DENIED
+    end
+    D-->>S: authoritative decision readback
     opt Approved
-        S->>K: sign exact one-use lease
-        K-->>S: signed lease
         S-->>A: same request is APPROVED
         A->>S: execute same request_id
         S->>N: dispatch signed lease once
@@ -361,19 +367,22 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> PENDING
-    PENDING --> APPROVED: Human CAS decision
-    PENDING --> DENIED: Human CAS decision
-    PENDING --> EXPIRED: TTL reached
-    APPROVED --> CONSUMED: one-use lease dispatched and reconciled
-    APPROVED --> REVOKED: explicit revoke before dispatch
-    APPROVED --> EXPIRED: lease expired
-    CONSUMED --> UNKNOWN: outcome cannot be proven
-    UNKNOWN --> CONSUMED: same-request reconciliation proves effect
-    UNKNOWN --> RECONCILE_REQUIRED: evidence remains incomplete
-    DENIED --> [*]
-    EXPIRED --> [*]
-    REVOKED --> [*]
+    PENDING --> APPROVED: Human-approved signed lease stored by CAS
+    PENDING --> DENIED: Human denial
+    PENDING --> EXPIRED: request expiry
+    PENDING --> CANCELLED: pre-dispatch cancellation
+    APPROVED --> DISPATCHED: exact one-use dispatch admitted
+    APPROVED --> EXPIRED: expiry before dispatch
+    APPROVED --> CANCELLED: pre-dispatch cancellation
+    DISPATCHED --> APPROVED: proven NOT_DISPATCHED
+    DISPATCHED --> CONSUMED: terminal execution receipt
+    DISPATCHED --> CANCEL_REQUESTED: cancellation pending
+    CONSUMED --> CANCEL_REQUESTED: late cancellation requested
+    CANCEL_REQUESTED --> CANCELLED: stop confirmed
+    CANCEL_REQUESTED --> CONSUMED: completed before cancellation
 ```
+
+**The diagram represents `AdminApprovalRecord.state` only, not OS execution outcomes.** The approval-state enum does not contain `UNKNOWN`, `SUCCEEDED`, `FAILED`, `STOPPED` or `RECONCILE_REQUIRED`. The first four are values of the separate `dispatch_state` field; the last is a boolean `reconcile_required` marker. For example, the ledger state may remain `DISPATCHED` while execution is `UNKNOWN` and requires reconciliation. The current implementation signs a candidate before CAS; only a successful CAS creates the authoritative `APPROVED` record, and a precalculated signature is not an approval.
 
 `UNKNOWN` must not be hidden by creating a new request, and must never trigger blind redispatch. Recovery reconciles the original request/lease.
 
