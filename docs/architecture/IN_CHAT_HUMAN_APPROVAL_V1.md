@@ -101,7 +101,7 @@ App-only 决策工具：
 
 1. 普通 Agent 工具只拥有普通请求/查询/执行所需 scope。
 2. `fleet_admin_human_decide` 单独声明现有 `PRIVILEGED_APPROVE_SCOPE`（`fleet.privileged.approve`），不另造 `fleet.admin.approve` 同义 scope。
-3. 使用 MCP OAuth 资源服务器元数据和 per-tool `securitySchemes`；按官方要求配置授权服务器发现、PKCE、resource、issuer identification 和 scope。私有 Worker 的 `CONTROL_SCOPES` 当前尚未纳入该 scope，接线时必须同步补齐授权服务器支持列表与 consent 描述。
+3. 使用 MCP OAuth 资源服务器元数据和 per-tool `securitySchemes`；按官方要求配置授权服务器发现、PKCE、resource、issuer identification 和 scope。每个部署都必须确保其 OAuth 支持 scope 清单与 consent 描述包含该 scope。
 4. 服务端每次请求验证签名、`iss`、`aud/resource`、`exp/nbf`、scope、撤销状态和主体映射。
 5. 必须实测 ChatGPT Host 对 app-only 工具的实际执行：模型工具目录不包含该工具，App 可经 Host Bridge `tools/call` 调用，Host 拒绝越权调用；同时验证该调用具备审批 scope。不能把自定义 `_meta` 参数或服务端收到的普通 `tools/call` 当成来源证明。
 6. 若 Host 无法执行 app-only 过滤/调用约束，或无法把审批 scope 授予该调用，先保持该路径 BLOCKED，并向 Human 提交可选补救方案（例如独立 Human step-up）供裁决；不得自行把 WebAuthn/passkey 或额外权限层升级为强制产品要求，也不得发明 Host 签名的“用户点击证明”。
