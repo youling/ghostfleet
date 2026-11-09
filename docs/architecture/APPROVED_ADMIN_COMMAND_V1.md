@@ -42,6 +42,8 @@
 
 节点配置只绑定一个 `subject_ref`。控制端必须保持独立的 ops key/target，并设置 `CONTROL_APPROVED_ADMIN_POLICY_JSON`，映射 `node_uid` 到 `generation, profile_generation, subject_ref, issuer_ids`。节点再次验签和核对本地身份；控制端的 policy 投影不能替代节点信任根。多主体授权、正式签发/撤销服务和 UI 仍需独立交付。
 
+引用字段约束：租约中的 `approval_ref` 使用有界 ref 标识符，不是自由文本；不要传入带 `#` fragment 的 GitHub 评论 URL。可选请求字段应由部署签发端按当前 request ID 生成合规引用；人类可读链接放在 `work_ref/purpose`。签发端必须将 TTL/runtime 限制在节点 Host 配置上限内，而不是要求节点放宽上限。详见[生产节点纳管与特权金丝雀 runbook](PRODUCTION_NODE_ONBOARDING_AND_ADMIN_CANARY_V1.md)。
+
 <!-- topic:execution -->
 ### 执行、撤销和不确定性
 
@@ -148,6 +150,8 @@ Commands have at most 64 arguments and 8192 total UTF-8 bytes. The executable pa
 **An argv digest does not freeze all external inputs.** Examples include `python /writable/script.py`, `sh -c 'source ...'`, package-manager configuration and file arguments interpreted by the trusted command. The approver must verify their ownership and contents, or use approved literal arguments and separately verified immutable artifacts. This version automatically hashes the first executable, not arbitrary file arguments, dynamic libraries, interpreter modules or all system configuration.
 
 Node configuration binds one `subject_ref`. The controller retains independent ops credentials/targets and sets `CONTROL_APPROVED_ADMIN_POLICY_JSON`, mapping node UID to `generation, profile_generation, subject_ref, issuer_ids`. The node separately verifies signature/local identity; the controller projection does not replace node trust roots. Multiple-subject authorization, a production issuance/revocation service and UI remain separate work.
+
+Reference fields are bounded protocol identifiers, not free-form text: do not put a GitHub comment URL containing a `#` fragment in `approval_ref`. The deployment issuer should generate a compliant reference from the current request ID when the optional request field is omitted; readable links belong in `work_ref/purpose`. The issuer must clamp TTL/runtime to the node Host-configured limits instead of asking the node to relax them. See the [production node onboarding and admin canary runbook](PRODUCTION_NODE_ONBOARDING_AND_ADMIN_CANARY_V1.md).
 
 <!-- topic:execution -->
 ### Execution, cancellation and uncertainty
