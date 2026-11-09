@@ -27,7 +27,14 @@ export function actorAllows(actor: ControlActor | undefined, scope: string): boo
   if (!valid) return false;
   // Privileged authority is never inherited from the ordinary arbitrary-shell grant.
   if (scope === PRIVILEGED_APPROVE_SCOPE) {
-    return actor.scopes.includes(PRIVILEGED_APPROVE_SCOPE) || actor.authKind === "break_glass" || (Array.isArray(actor.roles) && actor.roles.includes("human-approver"));
+    // The independent Human decision lane needs BOTH a server-issued approval
+    // scope and a server-resolved Human role. Neither alone grants authority.
+    // Preserve the existing explicit break-glass branch for recovery, without
+    // allowing ordinary workload OAuth tokens to inherit approval power.
+    return actor.authKind === "break_glass" ||
+      (actor.authKind === "oauth" &&
+        actor.scopes.includes(PRIVILEGED_APPROVE_SCOPE) &&
+        Array.isArray(actor.roles) && actor.roles.includes("human-approver"));
   }
   if (scope === PRIVILEGED_SCOPE) return actor.scopes.includes(PRIVILEGED_SCOPE);
   // Legacy owner-approved shell grants retain their existing broader ordinary authority.
