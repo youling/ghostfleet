@@ -21,7 +21,7 @@ export type SshDispatchState = "NOT_DISPATCHED" | "MAY_HAVE_EXECUTED";
  * This matters when a consumer bundles its own copy of typed-control: plain
  * instanceof would otherwise lose the dispatch fence at the package seam.
  */
-const SSH_EXECUTION_ERROR_BRAND = Symbol.for("ghostfleet.ssh-execution-error/v1");
+export const SSH_EXECUTION_ERROR_BRAND = Symbol.for("ghostfleet.ssh-execution-error/v1");
 
 /** A local transport outcome, never a claim that remote work was killed. */
 export class SshExecutionError extends Error {

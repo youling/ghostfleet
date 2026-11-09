@@ -3,7 +3,7 @@ import {Buffer} from "node:buffer";
 import {describe, expect, it, vi} from "vitest";
 import {runApprovedAdminCommand, type ApprovedAdminEnvironment} from "../src/approvedAdminCommand.js";
 import {controlActorRef, type ControlActor} from "../src/controlPolicy.js";
-import {SshExecutionError} from "../src/sshClient.js";
+import {SSH_EXECUTION_ERROR_BRAND, SshExecutionError} from "../src/sshClient.js";
 
 const uid = "node-00000000-0000-4000-8000-000000000001";
 const actor: ControlActor = {userId:"synthetic-admin", scopes:["fleet.privileged"], authKind:"oauth"};
@@ -159,7 +159,7 @@ describe("approved administrator command seam",()=>{
         name:"SshExecutionError",
         code:"SYNTHETIC_CROSS_BUNDLE_FAILURE",
         dispatch_state:state,
-        [Symbol.for("ghostfleet.ssh-execution-error/v1")]:true,
+        [SSH_EXECUTION_ERROR_BRAND]:true,
       });
       f.dependencies.execute.mockImplementationOnce(async()=>{throw foreignCopy;});
       const result=await runApprovedAdminCommand(f.env,actor,f.input,f.dependencies);

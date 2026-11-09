@@ -71,6 +71,46 @@ export const approvedAdminOutputSchema = z.object({
   stderr: z.string(),
 }).strict();
 export type ApprovedAdminOutput = z.infer<typeof approvedAdminOutputSchema>;
+export type ApprovedAdminReceipt = z.infer<typeof receiptSchema>;
+
+/** Stable, explicit result contract for the optional approved-admin command seam. */
+export type ApprovedAdminCommandResult =
+  | {
+      outcome: "NOT_DISPATCHED";
+      error: string;
+      validation_fields?: string[];
+      retry_safe: false;
+      reconcile_required: false;
+    }
+  | {
+      outcome: "UNKNOWN";
+      error: string;
+      helper_error?: true;
+      validation_fields?: string[];
+      retry_safe: false;
+      reconcile_required: true;
+    }
+  | {
+      outcome: "UNKNOWN";
+      receipt: ApprovedAdminReceipt;
+      output?: ApprovedAdminOutput;
+      retry_safe: false;
+      reconcile_required: true;
+    }
+  | {
+      outcome: "RUNNING";
+      receipt: ApprovedAdminReceipt;
+      output?: ApprovedAdminOutput;
+      retry_safe: false;
+      reconcile_required: true;
+    }
+  | {
+      outcome: "SUCCEEDED" | "FAILED" | "STOPPED";
+      receipt: ApprovedAdminReceipt;
+      output?: ApprovedAdminOutput;
+      retry_safe: false;
+      reconcile_required: false;
+    };
 
 const helperSuccessResponseSchema = z.object({
   ok: z.literal(true),
@@ -171,7 +211,7 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 export async function runApprovedAdminCommand(
   env: ApprovedAdminEnvironment, actor: ControlActor | undefined, raw: ApprovedAdminInput,
   dependencies: PrivilegedDependencies = defaults,
-) {
+): Promise<ApprovedAdminCommandResult> {
   let dispatched = false;
   try {
     if (!actor || !actorAllows(actor, PRIVILEGED_SCOPE)) throw new Error("PRIVILEGED_SCOPE_REQUIRED");
@@ -271,12 +311,20 @@ export async function runApprovedAdminCommand(
         }
       }
     }
-    const uncertain = ["NOT_FOUND", "RESERVED", "UNKNOWN"].includes(receipt.state);
-    const outcome = uncertain ? "UNKNOWN" : receipt.state === "STARTED" ? "RUNNING"
-      : receipt.state === "SUCCEEDED" ? "SUCCEEDED"
-      : receipt.state === "FAILED" ? "FAILED" : "STOPPED";
-    return {outcome, receipt, output: response.output, retry_safe:false,
-      reconcile_required: uncertain || receipt.state === "STARTED"};
+    if (["NOT_FOUND", "RESERVED", "UNKNOWN"].includes(receipt.state)) {
+      return {outcome:"UNKNOWN", receipt, output:response.output,
+        retry_safe:false, reconcile_required:true};
+    }
+    if (receipt.state === "STARTED") {
+      return {outcome:"RUNNING", receipt, output:response.output,
+        retry_safe:false, reconcile_required:true};
+    }
+    if (receipt.state === "SUCCEEDED" || receipt.state === "FAILED") {
+      return {outcome:receipt.state, receipt, output:response.output,
+        retry_safe:false, reconcile_required:false};
+    }
+    return {outcome:"STOPPED", receipt, output:response.output,
+      retry_safe:false, reconcile_required:false};
   } catch (error) {
     if (isSshExecutionError(error)) dispatched = error.dispatch_state === "MAY_HAVE_EXECUTED";
     const validation = error instanceof AdminValidationError ? error : undefined;

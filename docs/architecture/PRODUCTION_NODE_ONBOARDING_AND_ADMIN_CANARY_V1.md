@@ -1,7 +1,9 @@
 # Production node onboarding and approved-admin canary v1 / 生产节点纳管与特权金丝雀 v1
 
 status: `OPERATIONAL_RUNBOOK / SOURCE_CONTRACT`
-source_baseline: `youling/ghostfleet@986725ac4ce3c9c99f49a9f9f8f385f41c87b3d6`
+source_baseline: `youling/ghostfleet@2d69c4cbba3bd809d9cf18855c134cba59857a7e`
+topology_enforcement: `PENDING_PR_65_UNMERGED_PRIVATE_ROLLOUT`
+topology_source_ref: `youling/ghostfleet#64 / PR #65 @ ad239cebab4a82b42fb5f40cbf4709cee98f9008`
 scope: Linux typed-control V4, deployment-owned Worker/issuer, root-owned node helper
 last_updated: 2026-11-09
 
