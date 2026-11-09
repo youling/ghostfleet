@@ -78,7 +78,7 @@ OAuth `sub` 只能证明当前令牌代表哪个身份；scope 只能证明令�
 
 App-only 决策工具：
 
-- `fleet_admin_human_decide`：只供审批卡片按钮调用，声明 `_meta.ui.visibility: ["app"]`。
+- `fleet_admin_human_decide`：设计为只供审批卡片按钮调用，声明 `_meta.ui.visibility: ["app"]`；必须在 Phase 0 证明 Host 会拒绝模型/普通工具调用，未证实前不得启用。
 - 只接受 `request_id`、请求摘要/版本及 `approve | deny` 等最小必要输入。
 - 不接受调用方自报的 Human 身份、批准布尔值、租约、私钥或签名材料。
 - 服务端仍须独立认证 Human approver principal、审批角色和当前授权 scope。
@@ -101,7 +101,7 @@ App-only 决策工具：
 3. 使用 MCP OAuth 资源服务器元数据和 per-tool `securitySchemes`；按官方要求配置授权服务器发现、PKCE、resource、issuer identification 和 scope。
 4. 服务端每次请求验证签名、`iss`、`aud/resource`、`exp/nbf`、scope、撤销状态和主体映射。
 5. 必须实测 Host 是否为 UI 决策调用提供独立、仅含审批 scope 的授权上下文；不能假定模型工具 token 与 UI token 自动隔离。
-6. 若 Host 无法提供足以区分 Agent 与 Human 的授权上下文，必须增加独立 Human step-up（可评估 WebAuthn/passkey），或保持审批关闭。不得自行发明 Host 签名的“用户点击证明”。
+6. 若 Host 无法证明决策工具仅能由 App UI 调用，或无法把审批 scope 限定到该调用，先保持该路径 BLOCKED，并向 Human 提交可选补救方案（例如独立 Human step-up）供裁决；不得自行把 WebAuthn/passkey 或额外权限层升级为强制产品要求，也不得发明 Host 签名的“用户点击证明”。
 
 审批决定必须绑定：
 
@@ -278,7 +278,7 @@ Model-visible tools:
 
 App-only decision tool:
 
-- `fleet_admin_human_decide`: callable by the approval-card button only, declared with `_meta.ui.visibility: ["app"]`.
+- `fleet_admin_human_decide`: designed for the approval-card button only and declared with `_meta.ui.visibility: ["app"]`; Phase 0 must prove that the Host rejects model/ordinary-tool invocation before this tool is enabled.
 - Accept only the minimum required inputs, such as `request_id`, request digest/version and `approve | deny`.
 - Never accept caller-asserted Human identity, approval booleans, leases, private keys or signing material.
 - The server must independently authenticate the Human approver principal, approval role and current authorization scope.
@@ -301,7 +301,7 @@ Prototype per-tool OAuth scopes first, for example `fleet.admin.approve`:
 3. Use MCP OAuth resource-server metadata and per-tool `securitySchemes`; configure discovery, PKCE, resource, issuer identification and scopes as required by the official contract.
 4. On every request, verify signature, `iss`, `aud/resource`, `exp/nbf`, scope, revocation state and principal mapping.
 5. Test whether the Host supplies an independent approval-only authorization context to UI decisions. Never assume the model tool token and UI token are automatically isolated.
-6. If the Host cannot provide sufficient separation between Agent and Human authorization contexts, require independent Human step-up (WebAuthn/passkey may be evaluated) or keep approval disabled. Never invent a Host-signed “user clicked” assertion.
+6. If the Host cannot prove that the decision tool is callable only through the App UI, or cannot scope approval authorization to that invocation, keep this path BLOCKED and present optional remedies (such as independent Human step-up) for Human decision. Do not unilaterally make WebAuthn/passkey or another permission tier mandatory, and never invent a Host-signed “user clicked” assertion.
 
 Bind every decision to:
 
