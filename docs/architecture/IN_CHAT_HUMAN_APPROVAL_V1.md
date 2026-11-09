@@ -180,7 +180,7 @@ stateDiagram-v2
 | 0A | Web Host feasibility | 实测 App resource、Host Bridge `tools/call`、App-only visibility、per-tool OAuth scope 和真实按钮交互 |
 | 0B | Mobile feasibility | 独立验证现有 Fleet DCR 是否有原生移动端受信审批 UI；custom MCP mobile 当前按官方限制视为 blocked |
 | 1 | GhostFleet generic contract | 通用审批卡片、工具 schema、窄屏布局、服务端状态回读和双语文档 |
-| 2 | Private ai-hub integration | 复用现有 DO CAS、issuer、Ed25519 和 Cloudflare Access recovery，不新增账本/签发器 |
+| 2 | Deployment integration | 复用部署现有事务账本、issuer、Ed25519 和恢复入口，不新增账本/签发器 |
 | 3 | Canary | Web 路径验收通过后才允许创建一笔真实 PENDING；用户在卡片明确点击；同一请求执行一次并终态回读 |
 
 必须覆盖的负向测试：
@@ -226,11 +226,11 @@ The normal approval journey must take place inside the current ChatGPT conversat
 
 This is an optional ChatGPT MCP App integration contract. It does not change the AI-client-neutral core or make ChatGPT, OAuth, or Cloudflare a mandatory core dependency.
 
-Continue the existing GhostFleet #69 / private `ai-hub#300` lineage:
+Continue the existing GhostFleet #69 product decision:
 
 - Do not create a second approval ledger, issuer, or administrator permission tier.
-- The private `AdminApprovalLedgerDO`, existing issuer, Ed25519 lease and node V4 Helper remain owned by the private `ai-hub` deployment owner.
-- GhostFleet owns only the reusable UI, MCP tool, authentication-boundary and acceptance contracts.
+- Deployment-specific transactional ledger, trusted signer, Ed25519 lease and node Helper remain owned by each deployment owner.
+- GhostFleet owns only the reusable UI, MCP tool, authentication-boundary and acceptance contracts; it does not publish or duplicate deployment-specific implementation.
 - Ordinary execution identity does not gain administrator authority merely by using the UI or OAuth.
 
 <!-- topic:platform -->
@@ -311,7 +311,7 @@ Prototype per-tool OAuth scopes first, using the existing `fleet.privileged.appr
 
 1. Ordinary Agent tools receive only the scopes required for normal request/read/execute operations.
 2. `fleet_admin_human_decide` declares the existing `PRIVILEGED_APPROVE_SCOPE` (`fleet.privileged.approve`); do not create `fleet.admin.approve` as a synonymous second scope.
-3. Use MCP OAuth resource-server metadata and per-tool `securitySchemes`; configure discovery, PKCE, resource, issuer identification and scopes as required by the official contract. The private Worker's current `CONTROL_SCOPES` does not yet include this scope; the integration must add it to the authorization-server supported-scope list and consent description.
+3. Use MCP OAuth resource-server metadata and per-tool `securitySchemes`; configure discovery, PKCE, resource, issuer identification and scopes as required by the official contract. Each deployment must ensure its OAuth supported-scope list and consent description include this scope.
 4. On every request, verify signature, `iss`, `aud/resource`, `exp/nbf`, scope, revocation state and principal mapping.
 5. Test actual ChatGPT Host enforcement for app-only tools: the tool is absent from the model tool list, the App can call it through Host Bridge `tools/call`, and the Host rejects unauthorized invocation; also verify that the call receives the approval scope. Do not treat custom `_meta` arguments or an ordinary server-side `tools/call` as origin proof.
 6. If the Host cannot enforce app-only filtering/call restrictions, or cannot grant the approval scope to that call, keep this path BLOCKED and present optional remedies (such as independent Human step-up) for Human decision. Do not unilaterally make WebAuthn/passkey or another permission tier mandatory, and never invent a Host-signed “user clicked” assertion.
@@ -385,7 +385,7 @@ stateDiagram-v2
 | 0A | Web Host feasibility | Real App resource, Host Bridge `tools/call`, app-only visibility, per-tool OAuth scope and button interaction |
 | 0B | Mobile feasibility | Independently verify whether existing Fleet DCR has a trusted native mobile approval UI; custom MCP mobile remains blocked under current official guidance |
 | 1 | Generic GhostFleet contract | Reusable approval card, tool schemas, narrow-screen layout, server status readback and bilingual docs |
-| 2 | Private ai-hub integration | Reuse existing DO CAS, issuer, Ed25519 and Cloudflare Access recovery; add no second ledger or issuer |
+| 2 | Deployment integration | Reuse the deployment's existing transactional ledger, issuer, Ed25519 and recovery path; add no second ledger or issuer |
 | 3 | Canary | Only after Web acceptance, create one real PENDING request; require explicit card click; execute once and read back terminal status |
 
 Required negative tests:
