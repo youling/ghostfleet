@@ -36,9 +36,9 @@ last_updated: 2026-11-10
 - ChatGPT 对写操作的确认提示由应用权限和动作上下文决定，不能当作不可伪造的密码学用户点击证明。
 
 官方参考：
-- [Connecting custom MCP servers in ChatGPT](https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt)
-- [ChatGPT MCP UI](https://developers.openai.com/plugins/build/chatgpt-ui)
-- [MCP OAuth authentication](https://developers.openai.com/plugins/build/auth)
+- OpenAI Help Center: “Connecting custom MCP servers in ChatGPT”
+- OpenAI Developer Docs: “Add UI to your MCP server”
+- OpenAI Developer Docs: “Authentication”
 
 因此，平台状态必须分别记录：
 
@@ -150,12 +150,17 @@ stateDiagram-v2
     PENDING --> APPROVED: Human CAS decision
     PENDING --> DENIED: Human CAS decision
     PENDING --> EXPIRED: TTL reached
-    APPROVED --> CONSUMED: one-use lease dispatched and reconciled
+    APPROVED --> CONSUMED: one-use lease dispatch fence committed
     APPROVED --> REVOKED: explicit revoke before dispatch
     APPROVED --> EXPIRED: lease expired
+    CONSUMED --> SUCCEEDED: terminal receipt proves success
+    CONSUMED --> FAILED: terminal receipt proves failure
     CONSUMED --> UNKNOWN: outcome cannot be proven
-    UNKNOWN --> CONSUMED: same-request reconciliation proves effect
+    UNKNOWN --> SUCCEEDED: same-request reconciliation proves success
+    UNKNOWN --> FAILED: same-request reconciliation proves failure
     UNKNOWN --> RECONCILE_REQUIRED: evidence remains incomplete
+    RECONCILE_REQUIRED --> SUCCEEDED: later evidence proves success
+    RECONCILE_REQUIRED --> FAILED: later evidence proves failure
     DENIED --> [*]
     EXPIRED --> [*]
     REVOKED --> [*]
