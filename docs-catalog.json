@@ -386,6 +386,17 @@
         "installation",
         "verification"
       ]
+    },
+    {
+      "path": "docs/architecture/PRODUCTION_NODE_ONBOARDING_AND_ADMIN_CANARY_V1.md",
+      "topics": [
+        "purpose",
+        "timeline",
+        "flow",
+        "runbook",
+        "timing",
+        "roles"
+      ]
     }
   ]
 }

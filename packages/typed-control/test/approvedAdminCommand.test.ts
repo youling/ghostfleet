@@ -3,7 +3,7 @@ import {Buffer} from "node:buffer";
 import {describe, expect, it, vi} from "vitest";
 import {runApprovedAdminCommand, type ApprovedAdminEnvironment} from "../src/approvedAdminCommand.js";
 import {controlActorRef, type ControlActor} from "../src/controlPolicy.js";
-import {SshExecutionError} from "../src/sshClient.js";
+import {SSH_EXECUTION_ERROR_BRAND, SshExecutionError} from "../src/sshClient.js";
 
 const uid = "node-00000000-0000-4000-8000-000000000001";
 const actor: ControlActor = {userId:"synthetic-admin", scopes:["fleet.privileged"], authKind:"oauth"};
@@ -72,6 +72,62 @@ describe("approved administrator command seam",()=>{
     }
     expect(f.dependencies.connect).not.toHaveBeenCalled();
   });
+  it("reports opaque lease-reference schema failures before connecting without echoing values",async()=>{
+    const f=await fixture();
+    const invalidLease={...f.lease,approval_ref:"https://github.com/org/repo/issues/1#issuecomment-123"};
+    const result=await runApprovedAdminCommand(
+      f.env,actor,{...f.input,lease_b64:Buffer.from(JSON.stringify(invalidLease)).toString("base64")},f.dependencies
+    );
+    expect(result.outcome).toBe("NOT_DISPATCHED");
+    expect(result.error).toBe("ADMIN_LEASE_SCHEMA_INVALID");
+    expect((result as {validation_fields?:string[]}).validation_fields).toContain("approval_ref");
+    expect(JSON.stringify(result)).not.toContain("https://github.com");
+    expect(f.dependencies.connect).not.toHaveBeenCalled();
+  });
+  it("preserves a structured host-helper error code without claiming a terminal outcome",async()=>{
+    const f=await fixture();
+    f.dependencies.execute.mockResolvedValueOnce({
+      exit_code:0,
+      stdout:JSON.stringify({ok:false,error:"ADMIN_LEASE_BOUNDS"}),
+      stderr:"",
+      truncated:false,
+    });
+    const result=await runApprovedAdminCommand(f.env,actor,f.input,f.dependencies);
+    expect(result.outcome).toBe("UNKNOWN");
+    expect(result.error).toBe("ADMIN_LEASE_BOUNDS");
+    expect((result as {helper_error?:boolean}).helper_error).toBe(true);
+    expect(result.reconcile_required).toBe(true);
+    expect(result.retry_safe).toBe(false);
+    expect(f.dependencies.execute).toHaveBeenCalledTimes(1);
+  });
+  it("rejects malformed helper error envelopes without echoing raw helper output",async()=>{
+    const f=await fixture();
+    f.dependencies.execute.mockResolvedValueOnce({
+      exit_code:0,
+      stdout:JSON.stringify({ok:false,error:"lease rejected",detail:"private detail"}),
+      stderr:"",
+      truncated:false,
+    });
+    const result=await runApprovedAdminCommand(f.env,actor,f.input,f.dependencies);
+    expect(result.outcome).toBe("UNKNOWN");
+    expect(result.error).toBe("ADMIN_HELPER_RESPONSE_INVALID");
+    expect((result as {validation_fields?:string[]}).validation_fields).toContain("error");
+    expect(JSON.stringify(result)).not.toContain("private detail");
+    expect(result.reconcile_required).toBe(true);
+    expect(result.retry_safe).toBe(false);
+  });
+  it("reports malformed helper JSON as an explicit post-dispatch response error",async()=>{
+    const f=await fixture();
+    f.dependencies.execute.mockResolvedValueOnce({
+      exit_code:0,stdout:"not-json",stderr:"",truncated:false,
+    });
+    const result=await runApprovedAdminCommand(f.env,actor,f.input,f.dependencies);
+    expect(result.outcome).toBe("UNKNOWN");
+    expect(result.error).toBe("ADMIN_HELPER_RESPONSE_INVALID");
+    expect((result as {validation_fields?:string[]}).validation_fields).toEqual(["stdout_json"]);
+    expect(result.reconcile_required).toBe(true);
+    expect(result.retry_safe).toBe(false);
+  });
   it("reports started as RUNNING with same-lease reconciliation",async()=>{
     const f=await fixture();const result=await runApprovedAdminCommand(f.env,actor,f.input,f.dependencies);
     expect(result.outcome).toBe("RUNNING");expect(result.reconcile_required).toBe(true);
@@ -95,6 +151,23 @@ describe("approved administrator command seam",()=>{
     const f=await fixture("NOT_FOUND");
     const result=await runApprovedAdminCommand(f.env,actor,{...f.input,action:"status"},f.dependencies);
     expect(result.outcome).toBe("UNKNOWN");expect(result.reconcile_required).toBe(true);
+  });
+  it("preserves dispatch state across duplicate typed-control module instances",async()=>{
+    for(const state of ["NOT_DISPATCHED","MAY_HAVE_EXECUTED"] as const) {
+      const f=await fixture();
+      const foreignCopy = Object.assign(new Error("SYNTHETIC_CROSS_BUNDLE_FAILURE"), {
+        name:"SshExecutionError",
+        code:"SYNTHETIC_CROSS_BUNDLE_FAILURE",
+        dispatch_state:state,
+        [SSH_EXECUTION_ERROR_BRAND]:true,
+      });
+      f.dependencies.execute.mockImplementationOnce(async()=>{throw foreignCopy;});
+      const result=await runApprovedAdminCommand(f.env,actor,f.input,f.dependencies);
+      expect(result.outcome).toBe(state === "NOT_DISPATCHED" ? "NOT_DISPATCHED" : "UNKNOWN");
+      expect(result.error).toBe("SYNTHETIC_CROSS_BUNDLE_FAILURE");
+      expect(result.reconcile_required).toBe(state === "MAY_HAVE_EXECUTED");
+      expect(result.retry_safe).toBe(false);
+    }
   });
   it("preserves pre-dispatch versus post-dispatch transport uncertainty",async()=>{
     for(const state of ["NOT_DISPATCHED","MAY_HAVE_EXECUTED"] as const) {

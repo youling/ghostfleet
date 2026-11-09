@@ -375,14 +375,16 @@ export async function executeAdminCommand(
   }
 
   if (execution.outcome === "UNKNOWN") {
-    // May have executed; mark reconcile_required
-    await manager.recordDispatchUnknown(requestId, execution.error);
+    // May have executed; mark reconcile_required. A receipt-backed UNKNOWN
+    // carries the node's nullable code; a helper/transport UNKNOWN carries error.
+    const error = execution.error ?? execution.receipt?.code ?? "ADMIN_EXECUTION_UNKNOWN";
+    await manager.recordDispatchUnknown(requestId, error);
     return {
       ok: false,
       request_id: record.request_id,
       lease_id: record.lease.lease_id,
       outcome: "UNKNOWN",
-      error: execution.error,
+      error,
       reconcile_required: true,
       retry_safe: false,
     };
