@@ -268,6 +268,8 @@ OS 操作权限与舰队拓扑角色是两个独立维度：
 
 一个 `MANAGED_ONLY` 节点可以在 Human 授权下执行本机 root 操作，但不会因此成为控制器。新增公网节点默认目标为 `MANAGED_ONLY`；在当前拓扑策略 PR/私有部署未合并上线前，必须明确标注为**目标策略/待部署**，不能宣称已强制执行。
 
+GhostFleet #64 的 typed-origin enforcement 已有独立源码候选 [PR #65](https://github.com/youling/ghostfleet/pull/65)，当前精确 HEAD `ad239cebab4a82b42fb5f40cbf4709cee98f9008`，此前已获源码审查，但仍为 Draft / 未合并。它实现 typed-control 的来源角色与精确目标守卫；HTTP/OAuth/issuer/Console/bootstrap、私有策略接线、凭据隔离及网络 ACL 仍须各自验收。本 PR #73 不重复实现拓扑守卫，也不代表 #65 已上线。
+
 ## English
 
 <!-- topic:purpose -->
@@ -530,3 +532,5 @@ OS operation authority and fleet topology role are independent dimensions:
 | Fleet topology | `MANAGED_ONLY` | Accepts control-plane commands; cannot control other nodes |
 
 A `MANAGED_ONLY` node may execute a local root command after Human approval, but does not thereby become a controller. New public nodes should default to `MANAGED_ONLY`; until the topology source tranche and private deployment policy are merged and deployed, this remains a **target policy, not an enforced live guarantee**.
+
+GhostFleet #64 already has a separate typed-origin enforcement candidate in [PR #65](https://github.com/youling/ghostfleet/pull/65), exact HEAD `ad239cebab4a82b42fb5f40cbf4709cee98f9008`. It has received source review but remains Draft and unmerged. It implements the typed-control origin-role and exact-target guard; HTTP/OAuth/issuer/Console/bootstrap, private policy wiring, credential isolation and network ACLs still require separate acceptance. PR #73 does not duplicate the topology guard and does not imply #65 is deployed.
