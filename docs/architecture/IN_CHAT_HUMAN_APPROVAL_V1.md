@@ -67,7 +67,7 @@ last_updated: 2026-11-10
 
 OAuth `sub` 只能证明当前令牌代表哪个身份；scope 只能证明令牌被授予什么权限。二者都不能单独证明此刻有人点击了批准。
 
-**UI 可见性不是授权边界，OAuth scope 也不是用户在场证明。**
+MCP Apps 的 `visibility: ["app"]` 是 Host 侧工具可见性/调用路由约束：Host 不应把该工具列入模型工具目录，并应拒绝 App 调用不含 `app` 可见性的工具。但它不是服务端 OAuth 授权，也不会给服务端提供独立的逐调用来源证明。双可见工具的模型调用与 App 调用在服务端可能无法区分，见 [MCP Apps issue #738](https://github.com/modelcontextprotocol/ext-apps/issues/738)。因此审批工具必须 app-only，不能双可见；服务端仍须校验审批 scope、Human 主体、请求摘要和 DO 状态。
 
 <!-- topic:interaction -->
 ### 4. MCP App 交互合同
@@ -104,8 +104,8 @@ App-only 决策工具：
 2. `fleet_admin_human_decide` 单独声明审批 scope。
 3. 使用 MCP OAuth 资源服务器元数据和 per-tool `securitySchemes`；按官方要求配置授权服务器发现、PKCE、resource、issuer identification 和 scope。
 4. 服务端每次请求验证签名、`iss`、`aud/resource`、`exp/nbf`、scope、撤销状态和主体映射。
-5. 必须实测 Host 是否为 UI 决策调用提供独立、仅含审批 scope 的授权上下文；不能假定模型工具 token 与 UI token 自动隔离。
-6. 若 Host 无法证明决策工具仅能由 App UI 调用，或无法把审批 scope 限定到该调用，先保持该路径 BLOCKED，并向 Human 提交可选补救方案（例如独立 Human step-up）供裁决；不得自行把 WebAuthn/passkey 或额外权限层升级为强制产品要求，也不得发明 Host 签名的“用户点击证明”。
+5. 必须实测 ChatGPT Host 对 app-only 工具的实际执行：模型工具目录不包含该工具，App 可经 Host Bridge `tools/call` 调用，Host 拒绝越权调用；同时验证该调用具备审批 scope。不能把自定义 `_meta` 参数或服务端收到的普通 `tools/call` 当成来源证明。
+6. 若 Host 无法执行 app-only 过滤/调用约束，或无法把审批 scope 授予该调用，先保持该路径 BLOCKED，并向 Human 提交可选补救方案（例如独立 Human step-up）供裁决；不得自行把 WebAuthn/passkey 或额外权限层升级为强制产品要求，也不得发明 Host 签名的“用户点击证明”。
 
 审批决定必须绑定：
 
@@ -273,7 +273,7 @@ Do not define separation solely as `requester_user_id !== human_approver_user_id
 
 OAuth `sub` proves which identity a token represents. A scope proves which permission was granted. Neither alone proves that a person clicked Approve at that moment.
 
-**UI visibility is not an authorization boundary, and an OAuth scope is not proof of user presence.**
+MCP Apps `visibility: ["app"]` is a Host-side tool visibility/routing constraint: the Host must omit the tool from the model tool list and reject App calls to tools without `app` visibility. It is not server-side OAuth authorization and does not provide the server with independent per-call origin attestation. Model and App calls to a dual-visible tool may be indistinguishable at the server boundary; see [MCP Apps issue #738](https://github.com/modelcontextprotocol/ext-apps/issues/738). Therefore the decision tool must be app-only, never dual-visible; the server still validates approval scope, Human principal, request digest and DO state.
 
 <!-- topic:interaction -->
 ### 4. MCP App interaction contract
@@ -310,8 +310,8 @@ Prototype per-tool OAuth scopes first, for example `fleet.admin.approve`:
 2. `fleet_admin_human_decide` declares the approval scope separately.
 3. Use MCP OAuth resource-server metadata and per-tool `securitySchemes`; configure discovery, PKCE, resource, issuer identification and scopes as required by the official contract.
 4. On every request, verify signature, `iss`, `aud/resource`, `exp/nbf`, scope, revocation state and principal mapping.
-5. Test whether the Host supplies an independent approval-only authorization context to UI decisions. Never assume the model tool token and UI token are automatically isolated.
-6. If the Host cannot prove that the decision tool is callable only through the App UI, or cannot scope approval authorization to that invocation, keep this path BLOCKED and present optional remedies (such as independent Human step-up) for Human decision. Do not unilaterally make WebAuthn/passkey or another permission tier mandatory, and never invent a Host-signed “user clicked” assertion.
+5. Test actual ChatGPT Host enforcement for app-only tools: the tool is absent from the model tool list, the App can call it through Host Bridge `tools/call`, and the Host rejects unauthorized invocation; also verify that the call receives the approval scope. Do not treat custom `_meta` arguments or an ordinary server-side `tools/call` as origin proof.
+6. If the Host cannot enforce app-only filtering/call restrictions, or cannot grant the approval scope to that call, keep this path BLOCKED and present optional remedies (such as independent Human step-up) for Human decision. Do not unilaterally make WebAuthn/passkey or another permission tier mandatory, and never invent a Host-signed “user clicked” assertion.
 
 Bind every decision to:
 
