@@ -107,7 +107,7 @@ systemd 250+、统一 cgroup v2、root 管理且含签名库的 Python 缺一不
 
 本阶段没有自动回收终态 transient unit/timer。部署方应在维护中按终态回执和精确 unit 名清理它们，并核对 cgroup 空状态；保留账本和租约 tombstone，不删除 UNKNOWN 记录来重试。长期自动回收仍待后续实现。
 
-后续交付包括生产 Human 审批签发与 key 保管、入口工具/Console、受授权诊断输出或 artifact 读取、交互 session、跨主体策略、设备首次 root bootstrap 和逐节点部署验收。当前版本没有这些能力，不应据此宣称“一般管理员运维已全部可用”。
+后续交付包括生产 Human 审批签发与 key 保管、入口工具/Console、受授权诊断输出或 artifact 读取、交互 session、跨主体策略、设备首次 root bootstrap 和逐节点部署验收。ChatGPT 对话内审批的可选客户端合同、身份分离、OAuth、移动端限制与验收门见[对话内人工审批 v1](IN_CHAT_HUMAN_APPROVAL_V1.md)。当前版本没有这些能力，不应据此宣称“一般管理员运维已全部可用”。
 
 ## English
 
@@ -218,4 +218,4 @@ The `approved-admin-disposable` workflow runs only on a GitHub-hosted Ubuntu run
 
 This tranche does not automatically reap terminal transient units/timers. The deployment owner must clean them by exact unit name after terminal-receipt/cgroup verification during maintenance, retaining the ledger and lease tombstones. Deleting UNKNOWN records to retry is prohibited. Automatic long-term reaping remains future work.
 
-Remaining work includes production Human approval issuance/key custody, ingress tools/Console, authorized diagnostic output/artifact retrieval, interactive sessions, multiple-subject policy, first-root bootstrap and individual node deployment acceptance. The current tranche does not implement those and must not be advertised as complete general administrator operations.
+Remaining work includes production Human approval issuance/key custody, ingress tools/Console, authorized diagnostic output/artifact retrieval, interactive sessions, multiple-subject policy, first-root bootstrap and individual node deployment acceptance. The optional ChatGPT in-conversation approval contract, principal separation, OAuth, mobile limitation and acceptance gates are documented in [In-chat Human approval v1](IN_CHAT_HUMAN_APPROVAL_V1.md). The current tranche does not implement those and must not be advertised as complete general administrator operations.
