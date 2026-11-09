@@ -333,12 +333,14 @@ export async function runApprovedAdminCommand(
         ? error.message : "ADMIN_REQUEST_OR_RESPONSE_INVALID");
     // Lost responses and all malformed post-dispatch replies remain uncertain
     // until exact-lease status reconciliation. Never silently mint a new ID.
-    return {
-      outcome:dispatched ? "UNKNOWN" : "NOT_DISPATCHED",
+    const result = {
       error:code,
       ...(validation ? {validation_fields: validation.fields} : {}),
-      reconcile_required:dispatched,
-      retry_safe:false,
+      retry_safe:false as const,
     };
+    if (dispatched) {
+      return {outcome:"UNKNOWN", ...result, reconcile_required:true};
+    }
+    return {outcome:"NOT_DISPATCHED", ...result, reconcile_required:false};
   }
 }
