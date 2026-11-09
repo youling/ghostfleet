@@ -98,11 +98,11 @@ App-only 决策工具：
 <!-- topic:oauth -->
 ### 5. OAuth、用户在场与服务端仲裁
 
-推荐先验证按工具 scope 的 OAuth 方案，例如 `fleet.admin.approve`：
+推荐先验证按工具 scope 的 OAuth 方案，例如现有常量 `fleet.privileged.approve`：
 
 1. 普通 Agent 工具只拥有普通请求/查询/执行所需 scope。
-2. `fleet_admin_human_decide` 单独声明审批 scope。
-3. 使用 MCP OAuth 资源服务器元数据和 per-tool `securitySchemes`；按官方要求配置授权服务器发现、PKCE、resource、issuer identification 和 scope。
+2. `fleet_admin_human_decide` 单独声明现有 `PRIVILEGED_APPROVE_SCOPE`（`fleet.privileged.approve`），不另造 `fleet.admin.approve` 同义 scope。
+3. 使用 MCP OAuth 资源服务器元数据和 per-tool `securitySchemes`；按官方要求配置授权服务器发现、PKCE、resource、issuer identification 和 scope。私有 Worker 的 `CONTROL_SCOPES` 当前尚未纳入该 scope，接线时必须同步补齐授权服务器支持列表与 consent 描述。
 4. 服务端每次请求验证签名、`iss`、`aud/resource`、`exp/nbf`、scope、撤销状态和主体映射。
 5. 必须实测 ChatGPT Host 对 app-only 工具的实际执行：模型工具目录不包含该工具，App 可经 Host Bridge `tools/call` 调用，Host 拒绝越权调用；同时验证该调用具备审批 scope。不能把自定义 `_meta` 参数或服务端收到的普通 `tools/call` 当成来源证明。
 6. 若 Host 无法执行 app-only 过滤/调用约束，或无法把审批 scope 授予该调用，先保持该路径 BLOCKED，并向 Human 提交可选补救方案（例如独立 Human step-up）供裁决；不得自行把 WebAuthn/passkey 或额外权限层升级为强制产品要求，也不得发明 Host 签名的“用户点击证明”。
@@ -196,7 +196,17 @@ stateDiagram-v2
 - 派发后响应丢失、UNKNOWN 和同请求恢复；
 - Web 与原生移动端分别验收，不能互相代替。
 
-### 8. 当前状态
+### 8. 当前实现差距与状态
+
+已只读核对 2026-11-10 的 GhostFleet 与 ai-hub main：
+
+- ai-hub OAuth Provider 已存在，MCP access token TTL 为 900 秒；Cloudflare Access 用于 OAuth 授权登录。
+- ai-hub 私有 `CONTROL_SCOPES` 当前仅列 `fleet.read`、`fleet.operate`、`fleet.exec`、`fleet.privileged`，没有把现有 `fleet.privileged.approve` 加入 OAuth 支持列表。
+- 当前 MCP catalog 只有四个 `fleet_admin_*` 工具（request/status/execute/cancel），没有 `fleet_admin_human_decide`，也没有 app-only visibility 接线。
+- 当前 `/admin/approve` 与 `/admin/deny` 仍通过 `cf-access-jwt-assertion` 和 `verifyAccessOwner` 认证；这是现有 Access Human recovery 路径，不是 MCP App 的 per-tool OAuth 决策入口。
+- `CloudflareAdminIssuer` 签发 Ed25519 节点租约；OAuth access token 由 Worker 的 OAuth Provider 管理。两者不可混称。
+- 现有 DO CAS 与 Ed25519 租约签发已由 ai-hub PR #357 合入；不重复实现。
+- 当前 manager 以 `requester_user_id`、`actor_ref` 做拒绝判断；旧 Access 路由使用邮箱作为 Human userId，而 MCP OAuth 请求使用 provider subject。新 App-only OAuth 路径若让同一 Human 的请求和审批共享同一 `sub`，不能沿用“请求者 ID 必须不同于审批者 ID”的判断。应以 Host 强制 app-only 工具可见性、审批 scope 和明确的 actor kind/decision path 阻止 Agent 调用；同一 Human 可以批准自己发起的工作。
 
 截至 2026-11-10：
 
@@ -304,11 +314,11 @@ Provide explicit Approve / Deny actions. On narrow screens, show key risks and a
 <!-- topic:oauth -->
 ### 5. OAuth, user presence and server-side arbitration
 
-Prototype per-tool OAuth scopes first, for example `fleet.admin.approve`:
+Prototype per-tool OAuth scopes first, using the existing `fleet.privileged.approve` constant:
 
 1. Ordinary Agent tools receive only the scopes required for normal request/read/execute operations.
-2. `fleet_admin_human_decide` declares the approval scope separately.
-3. Use MCP OAuth resource-server metadata and per-tool `securitySchemes`; configure discovery, PKCE, resource, issuer identification and scopes as required by the official contract.
+2. `fleet_admin_human_decide` declares the existing `PRIVILEGED_APPROVE_SCOPE` (`fleet.privileged.approve`); do not create `fleet.admin.approve` as a synonymous second scope.
+3. Use MCP OAuth resource-server metadata and per-tool `securitySchemes`; configure discovery, PKCE, resource, issuer identification and scopes as required by the official contract. The private Worker's current `CONTROL_SCOPES` does not yet include this scope; the integration must add it to the authorization-server supported-scope list and consent description.
 4. On every request, verify signature, `iss`, `aud/resource`, `exp/nbf`, scope, revocation state and principal mapping.
 5. Test actual ChatGPT Host enforcement for app-only tools: the tool is absent from the model tool list, the App can call it through Host Bridge `tools/call`, and the Host rejects unauthorized invocation; also verify that the call receives the approval scope. Do not treat custom `_meta` arguments or an ordinary server-side `tools/call` as origin proof.
 6. If the Host cannot enforce app-only filtering/call restrictions, or cannot grant the approval scope to that call, keep this path BLOCKED and present optional remedies (such as independent Human step-up) for Human decision. Do not unilaterally make WebAuthn/passkey or another permission tier mandatory, and never invent a Host-signed “user clicked” assertion.
@@ -397,7 +407,17 @@ Required negative tests:
 - Lost response after dispatch, UNKNOWN and same-request recovery;
 - Separate Web and native mobile acceptance; neither substitutes for the other.
 
-### 8. Current status
+### 8. Current implementation gap and status
+
+Read-only checked GhostFleet and ai-hub main as of 2026-11-10:
+
+- The ai-hub OAuth Provider already exists; MCP access-token TTL is 900 seconds, and Cloudflare Access is used for OAuth authorization login.
+- The private ai-hub `CONTROL_SCOPES` currently lists only `fleet.read`, `fleet.operate`, `fleet.exec` and `fleet.privileged`; it does not yet include the existing `fleet.privileged.approve` scope in the OAuth supported-scope list.
+- The current MCP catalog has only four `fleet_admin_*` tools (request/status/execute/cancel). There is no `fleet_admin_human_decide` tool and no app-only visibility wiring.
+- Current `/admin/approve` and `/admin/deny` routes still authenticate through `cf-access-jwt-assertion` and `verifyAccessOwner`. This is the existing Access Human recovery path, not the MCP App per-tool OAuth decision entrypoint.
+- `CloudflareAdminIssuer` signs Ed25519 node leases; the Worker's OAuth Provider manages OAuth access tokens. Do not conflate them.
+- Existing DO CAS and Ed25519 lease issuance were merged by ai-hub PR #357; do not reimplement them.
+- The current manager uses `requester_user_id` and `actor_ref` comparisons. The old Access route uses the email as the Human userId, while MCP OAuth requests use the provider subject. If the new App-only OAuth path uses the same `sub` for a Human's request and approval, the current “requester ID must differ from approver ID” check cannot be reused unchanged. Use Host-enforced app-only visibility, approval scope and an explicit actor kind/decision path to prevent Agent invocation; the same Human may approve work they initiated.
 
 As of 2026-11-10:
 
