@@ -24,6 +24,7 @@ last_updated: 2026-11-10
 - GhostFleet 只定义可复用的 UI、MCP 工具、认证边界和验收合同。
 - 普通执行身份不因接入 UI 或 OAuth 而获得管理员权限。
 
+<!-- topic:platform -->
 ### 2. 平台能力与限制
 
 截至本文件日期，OpenAI 官方资料确认：
@@ -51,6 +52,7 @@ last_updated: 2026-11-10
 
 若原生移动端没有受信的审批交互路径，移动端特权执行必须 fail closed。不得把聊天文字“批准”、模型生成文本或普通工具确认降级为审批凭据。
 
+<!-- topic:identity -->
 ### 3. 身份与信任模型
 
 必须区分：
@@ -67,6 +69,7 @@ OAuth `sub` 只能证明当前令牌代表哪个身份；scope 只能证明令�
 
 **UI 可见性不是授权边界，OAuth scope 也不是用户在场证明。**
 
+<!-- topic:interaction -->
 ### 4. MCP App 交互合同
 
 模型可见工具：
@@ -92,6 +95,7 @@ App-only 决策工具：
 
 卡片提供明确的 Approve / Deny 操作。窄屏优先展示关键风险与摘要，展开后可查看完整命令细节。卡片渲染本身绝不能触发审批或执行。
 
+<!-- topic:oauth -->
 ### 5. OAuth、用户在场与服务端仲裁
 
 推荐先验证按工具 scope 的 OAuth 方案，例如 `fleet.admin.approve`：
@@ -111,6 +115,7 @@ App-only 决策工具：
 
 不得把 30 天 bearer 或可复用审批 token 放在客户端。短期 OAuth access token 由 Host 按授权协议管理；任何 refresh/session policy 均由服务端控制，具备撤销与重新认证策略。
 
+<!-- topic:diagrams -->
 ### 6. 时序与状态图
 
 ```mermaid
@@ -168,6 +173,7 @@ stateDiagram-v2
 
 `UNKNOWN` 不允许创建新请求来掩盖旧请求，也不允许盲目重复派发。所有恢复都沿用原 request/lease 进行对账。
 
+<!-- topic:acceptance -->
 ### 7. Phase 与验收门
 
 | Phase | 交付 | 通过条件 |
@@ -224,6 +230,7 @@ Continue the existing GhostFleet #69 / private `ai-hub#300` lineage:
 - GhostFleet owns only the reusable UI, MCP tool, authentication-boundary and acceptance contracts.
 - Ordinary execution identity does not gain administrator authority merely by using the UI or OAuth.
 
+<!-- topic:platform -->
 ### 2. Platform capabilities and limitations
 
 As of this document date, official OpenAI documentation confirms:
@@ -251,6 +258,7 @@ Track platform status independently:
 
 If native mobile has no trusted approval interaction, privileged execution from mobile must fail closed. Chat text saying “approved”, model-generated text, or ordinary tool confirmation must never become an approval credential.
 
+<!-- topic:identity -->
 ### 3. Principals and trust model
 
 Distinguish three principals:
@@ -267,6 +275,7 @@ OAuth `sub` proves which identity a token represents. A scope proves which permi
 
 **UI visibility is not an authorization boundary, and an OAuth scope is not proof of user presence.**
 
+<!-- topic:interaction -->
 ### 4. MCP App interaction contract
 
 Model-visible tools:
@@ -292,6 +301,7 @@ Render the card from the authoritative server snapshot, not a model-generated co
 
 Provide explicit Approve / Deny actions. On narrow screens, show key risks and a compact summary first, with full command details expandable. Rendering the card must never trigger approval or execution.
 
+<!-- topic:oauth -->
 ### 5. OAuth, user presence and server-side arbitration
 
 Prototype per-tool OAuth scopes first, for example `fleet.admin.approve`:
@@ -311,6 +321,7 @@ The existing DO ledger uses atomic CAS so only one terminal decision wins. After
 
 Do not store a 30-day bearer or reusable approval token on the client. The Host manages short-lived OAuth access tokens under the authorization protocol; any refresh/session policy remains server-controlled with revocation and reauthentication.
 
+<!-- topic:diagrams -->
 ### 6. Sequence and state diagrams
 
 ```mermaid
@@ -363,6 +374,7 @@ stateDiagram-v2
 
 `UNKNOWN` must not be hidden by creating a new request, and must never trigger blind redispatch. Recovery reconciles the original request/lease.
 
+<!-- topic:acceptance -->
 ### 7. Phases and acceptance gates
 
 | Phase | Deliverable | Acceptance |
