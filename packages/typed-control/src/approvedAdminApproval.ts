@@ -673,7 +673,13 @@ export class AdminApprovalManager {
     if (!existing) throw new Error("ADMIN_REQUEST_NOT_FOUND");
 
     const approverRef = await controlActorRef(humanActor);
-    if (existing.actor_ref === approverRef || existing.requester_user_id === humanActor.userId) {
+    const sameUser = existing.actor_ref === approverRef || existing.requester_user_id === humanActor.userId;
+    // An Agent bearer must never approve its own request. A Human may approve
+    // work they initiated only through a separately authenticated Human decision
+    // context: actorAllows above requires BOTH approval scope and Human role for
+    // OAuth. The MCP Host must additionally enforce app-only tool visibility.
+    // This check is not a cryptographic proof of a browser click.
+    if (sameUser && humanActor.authKind !== "oauth") {
       throw new Error("APPROVER_CANNOT_BE_REQUESTER");
     }
 
