@@ -955,7 +955,7 @@ describe("Architect R4 Remediation: approvedAdminApproval unit & integration tes
     it("real multi-process concurrency: serializes concurrent CAS across separate OS child processes", async () => {
       const distPath = path.resolve(__dirname, "../dist/approvedAdminApproval.js");
       if (!existsSync(distPath)) {
-        execSync("npm run build", { cwd: path.resolve(__dirname, ".."), stdio: "ignore" });
+        execSync("npm run build", { cwd: path.resolve(__dirname, ".."), stdio: "inherit" });
       }
 
       const tmp = await mkdtemp(path.join(tmpdir(), "gf-multi-process-cas-test-"));
