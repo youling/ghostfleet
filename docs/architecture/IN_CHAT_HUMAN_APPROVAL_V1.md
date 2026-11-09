@@ -236,9 +236,9 @@ As of this document date, official OpenAI documentation confirms:
 - ChatGPT write-action confirmation prompts depend on app permissions and action context. They are not cryptographic proof of a user click.
 
 Official references:
-- [Connecting custom MCP servers in ChatGPT](https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt)
-- [ChatGPT MCP UI](https://developers.openai.com/plugins/build/chatgpt-ui)
-- [MCP OAuth authentication](https://developers.openai.com/plugins/build/auth)
+- OpenAI Help Center: “Connecting custom MCP servers in ChatGPT”
+- OpenAI Developer Docs: “Add UI to your MCP server”
+- OpenAI Developer Docs: “Authentication”
 
 Track platform status independently:
 
