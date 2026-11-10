@@ -1108,20 +1108,21 @@ describe("Architect R4 Remediation: approvedAdminApproval unit & integration tes
       expect(approved.state).toBe("APPROVED");
     });
 
-    it("enforces approver cannot be requester", async () => {
+    it("allows the same Human to approve their own work only with independently resolved scope and role", async () => {
       const store = new InMemoryAdminApprovalLedgerStore();
       const { issuer } = generateTestIssuer();
       const manager = new AdminApprovalManager(store, issuer);
 
-      // User submits their own request
+      // A Human can initiate ordinary work with the same OAuth sub that later
+      // authorizes an explicit, Host-enforced app-only decision. User ID equality
+      // must not be mistaken for workload self-approval.
       const req = await manager.submitRequest(humanActor, {
         node_uid: uid,
-        work_ref: "ops/self-approval#503",
-        purpose: "Self-approval rejection test",
+        work_ref: "ops/human-approval#503",
+        purpose: "Same Human with distinct decision authority",
         command: { argv: ["/usr/bin/id"], cwd: "/", executable_sha256: "d".repeat(64), env: {}, output: "discard" },
         rollback_ref: "ops/rb#503",
       });
-
       const policy: NodeGenerationPolicy = {
         generation: "b".repeat(64),
         profile_generation: "sha256:" + "c".repeat(64),
@@ -1129,10 +1130,52 @@ describe("Architect R4 Remediation: approvedAdminApproval unit & integration tes
         issuer_ids: ["human-issuer-v1"],
       };
 
-      // Same user attempts to approve their own request
-      await expect(manager.approveRequest(humanActor, req.request_id, policy)).rejects.toThrow(
-        "APPROVER_CANNOT_BE_REQUESTER",
-      );
+      // Scope alone is not a Human session; role alone is not an approval grant.
+      const scopeOnly: ControlActor = {
+        userId: humanActor.userId, authKind: "oauth",
+        scopes: ["fleet.privileged", PRIVILEGED_APPROVE_SCOPE],
+      };
+      const roleOnly: ControlActor = {
+        userId: humanActor.userId, authKind: "oauth",
+        scopes: ["fleet.privileged"], roles: ["human-approver"],
+      };
+      await expect(manager.approveRequest(scopeOnly, req.request_id, policy)).rejects.toThrow("APPROVER_NOT_AUTHORIZED");
+      await expect(manager.approveRequest(roleOnly, req.request_id, policy)).rejects.toThrow("APPROVER_NOT_AUTHORIZED");
+      expect((await manager.getRequest(req.request_id))?.state).toBe("PENDING");
+
+      const approved = await manager.approveRequest(humanActor, req.request_id, policy);
+      expect(approved.state).toBe("APPROVED");
+      expect(approved.decision?.decided_by).toBe(humanActor.userId);
+      expect(approved.lease?.signature_b64).toBeDefined();
+      // The exact same Human cannot approve again after the atomic decision.
+      await expect(manager.approveRequest(humanActor, req.request_id, policy)).rejects.toThrow();
+    });
+
+    it("denies same requester via an ordinary workload or break-glass bearer", async () => {
+      const store = new InMemoryAdminApprovalLedgerStore();
+      const { issuer } = generateTestIssuer();
+      const manager = new AdminApprovalManager(store, issuer);
+      const req = await manager.submitRequest(humanActor, {
+        node_uid: uid,
+        work_ref: "ops/human-approval#505",
+        purpose: "Same principal anti-bypass",
+        command: { argv: ["/usr/bin/id"], cwd: "/", executable_sha256: "e".repeat(64), env: {}, output: "discard" },
+        rollback_ref: "ops/rb#505",
+      });
+      const policy: NodeGenerationPolicy = {
+        generation: "b".repeat(64),
+        profile_generation: "sha256:" + "c".repeat(64),
+        subject_ref: await controlActorRef(humanActor),
+        issuer_ids: ["human-issuer-v1"],
+      };
+      await expect(manager.approveRequest({
+        userId: humanActor.userId, authKind: "oauth", scopes: ["fleet.privileged"],
+        roles: ["workload"],
+      }, req.request_id, policy)).rejects.toThrow("APPROVER_NOT_AUTHORIZED");
+      await expect(manager.approveRequest({
+        userId: humanActor.userId, authKind: "break_glass", scopes: [],
+      }, req.request_id, policy)).rejects.toThrow("APPROVER_CANNOT_BE_REQUESTER");
+      expect((await manager.getRequest(req.request_id))?.state).toBe("PENDING");
     });
 
     it("rejects unauthorized issuer for node generation policy", async () => {

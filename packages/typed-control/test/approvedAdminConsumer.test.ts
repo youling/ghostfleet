@@ -191,18 +191,17 @@ describe("G1/G2 Trusted Admin Approval and Consumer API", () => {
     ).rejects.toThrow("APPROVER_NOT_AUTHORIZED");
   });
 
-  it("Blocker 1: forbids requester self-approval (APPROVER_CANNOT_BE_REQUESTER)", async () => {
+  it("Blocker 1 revised: only independently authorized Human context may approve its own work", async () => {
     const { issuer } = generateTestIssuer();
     const manager = new AdminApprovalManager(new InMemoryAdminApprovalLedgerStore(), issuer);
 
     const res = await requestAdminCommand(manager, humanActor, {
       node_uid: uid,
       work_ref: "work-self",
-      purpose: "attempt self-approval",
+      purpose: "explicit Human approval of initiated work",
       command: { argv: ["/usr/bin/id"], cwd: "/", executable_sha256: "a".repeat(64), env: {}, output: "discard" },
       rollback_ref: "rb-self",
     });
-
     const policy: NodeGenerationPolicy = {
       generation: "b".repeat(64),
       profile_generation: "sha256:" + "c".repeat(64),
@@ -210,9 +209,19 @@ describe("G1/G2 Trusted Admin Approval and Consumer API", () => {
       issuer_ids: ["human-issuer-v1"],
     };
 
-    await expect(
-      manager.approveRequest(humanActor, res.request_id, policy),
-    ).rejects.toThrow("APPROVER_CANNOT_BE_REQUESTER");
+    // A normal Agent/workload with the same OAuth subject still cannot decide.
+    await expect(manager.approveRequest({
+      userId: humanActor.userId, authKind: "oauth",
+      scopes: ["fleet.privileged", PRIVILEGED_APPROVE_SCOPE],
+    }, res.request_id, policy)).rejects.toThrow("APPROVER_NOT_AUTHORIZED");
+
+    // Identity equality is valid for an independently authenticated Human UI
+    // path with BOTH the canonical scope and server-assigned approver role.
+    const approved = await manager.approveRequest(humanActor, res.request_id, policy);
+    expect(approved.state).toBe("APPROVED");
+    expect(approved.lease?.lease_id).toBeDefined();
+
+    await expect(manager.approveRequest(humanActor, res.request_id, policy)).rejects.toThrow();
   });
 
   it("R2 P1-4: enforces node-level allowed approvers and work_ref authorization", async () => {
