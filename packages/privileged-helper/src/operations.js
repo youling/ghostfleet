@@ -2,6 +2,33 @@ function receiptRefs(before,after,recovery_ref=null) {
   return {before_state_ref:before?.state_ref ?? null,after_state_ref:after?.state_ref ?? null,recovery_ref};
 }
 
+function managerOwnershipCurrent(value) {
+  if (!value || typeof value !== "object") return false;
+  let found = false;
+  let safe = true;
+  for (const [key, val] of Object.entries(value)) {
+    const k = String(key).toLowerCase();
+    const isManager = k.includes("manager");
+    const isCurrent = k.includes("current");
+    if (!isManager && !isCurrent) continue;
+    found = true;
+    if (typeof val === "boolean") {
+      if (!val) safe = false;
+    } else if (typeof val === "string") {
+      const v = val.toLowerCase();
+      if (["unknown", "unmanaged", "none", "conflict", "ambiguous", "missing", "false", "null"].includes(v)) safe = false;
+      if (isCurrent && !["true", "known", "current", "managed", "controlled", "owned", "yes"].includes(v)) safe = false;
+    } else if (typeof val === "object" && val !== null) {
+      if (val.current === false || val.owner === false || val.known === false) safe = false;
+      if (typeof val.state === "string" && !["managed", "current", "known", "controlled", "owned"].includes(val.state.toLowerCase())) safe = false;
+      if (Object.keys(val).length === 0) safe = false;
+    } else if (val === null || val === undefined) {
+      safe = false;
+    }
+  }
+  return found && safe;
+}
+
 export function createLinuxTypedOperations(os) {
   if(!os) throw new Error("OS_BACKEND_REQUIRED");
   const map=new Map();
@@ -25,6 +52,59 @@ export function createLinuxTypedOperations(os) {
       const after=await os.serviceStatus(target_ref);
       if(!after?.state_ref) return {result:"RECONCILE_REQUIRED",before_state_ref:before.state_ref,recovery_ref:applied?.recovery_ref ?? null};
       return {result:"SUCCESS",...receiptRefs(before,after,applied?.recovery_ref ?? null)};
+    },
+  }));
+
+  map.set("network.interface.enable",Object.freeze({
+    mutating:true,
+    async execute({target_ref,parameters}) {
+      // target_ref is the lease-bound stable interface reference, never a raw device name.
+      if(typeof target_ref!=="string" || !target_ref || !parameters || typeof parameters!=="object" || Array.isArray(parameters) ||
+         Object.keys(parameters).length!==1 || parameters.admin_state!=="UP") {
+        return {result:"DENIED",code:"NETWORK_INTERFACE_PARAMETERS_INVALID"};
+      }
+      if(typeof os.networkInterfaceStatus!=="function" || typeof os.networkInterfaceEnable!=="function") {
+        return {result:"DENIED",code:"NETWORK_INTERFACE_BACKEND_UNAVAILABLE"};
+      }
+      const before=await os.networkInterfaceStatus(target_ref);
+      const safeObservation=(value) =>
+        value && value.interface_ref===target_ref &&
+        typeof value.state_ref==="string" && value.state_ref.length>0 &&
+        ["UP","DOWN"].includes(value.admin_state) &&
+        value.autoconfig_on_up===false &&
+        value.route_impact==="NONE" &&
+        value.control_path_dependency===false &&
+        managerOwnershipCurrent(value);
+      if(!safeObservation(before)) {
+        return {result:"DENIED",code:"NETWORK_INTERFACE_PREFLIGHT_NOT_SAFE"};
+      }
+      if(before.admin_state==="UP") {
+        return {result:"SUCCESS",code:"NETWORK_INTERFACE_ALREADY_UP",...receiptRefs(before,before)};
+      }
+      // Fixed typed backend call only. Backend must re-check expected state before effect.
+      const applied=await os.networkInterfaceEnable(target_ref,{
+        expected_before_state_ref:before.state_ref,
+        admin_state:"UP",
+      });
+      if(applied?.outcome!=="SUCCESS") {
+        return {
+          result:"RECONCILE_REQUIRED",
+          code:applied?.code ?? "NETWORK_INTERFACE_ENABLE_OUTCOME_UNKNOWN",
+          before_state_ref:before.state_ref,
+          recovery_ref:applied?.recovery_ref ?? null,
+        };
+      }
+      const after=await os.networkInterfaceStatus(target_ref);
+      if(!safeObservation(after) || after.admin_state!=="UP") {
+        return {
+          result:"RECONCILE_REQUIRED",
+          code:"NETWORK_INTERFACE_POSTCONDITION_UNPROVEN",
+          before_state_ref:before.state_ref,
+          after_state_ref:after?.state_ref ?? null,
+          recovery_ref:applied.recovery_ref ?? null,
+        };
+      }
+      return {result:"SUCCESS",...receiptRefs(before,after,applied.recovery_ref ?? null)};
     },
   }));
 
