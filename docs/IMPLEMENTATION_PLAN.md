@@ -8,11 +8,13 @@ status: `IN_PROGRESS`
 
 
 
-### 阶段 0 — 架构冻结
+### 阶段 0 — V0 架构基线
 
-- `fleet#289` 作为来源；
-- 公共仓库 `docs/ARCHITECTURE.md` 作为实现基线；
-- 不再开平行 GhostFleet 架构工单。
+- 早期 `fleet#289` 只保留为历史来源，不拥有当前公共产品架构；
+- 当前通用实现与架构边界以本仓 [AGENTS](../AGENTS.md)、[ADR 001](adr/001-public-canonical-packages.md) 和 [架构](ARCHITECTURE.md) 为准；
+- 私有 Fleet 管理域已归入 `youling/ai-hub`，旧 `youling/fleet` 不再承接新工程主线；沿用既有领域语义，不另建平行控制面。
+
+下列阶段描述 V0 产品基线；[对话内审批](architecture/IN_CHAT_HUMAN_APPROVAL_V1.md)的 Web Phase 0 是独立的平台可行性验收，不能以本阶段完成推定其通过。源码、部署与实际消费者分别验收。
 
 ### 阶段 1 — 核心端到端实现
 
@@ -91,11 +93,13 @@ status: `IN_PROGRESS`
 
 
 
-### Phase 0 — Architecture freeze
+### Phase 0 — V0 architecture baseline
 
-- `fleet#289` remains the architecture source;
-- public `docs/ARCHITECTURE.md` is the implementation baseline;
-- no parallel GhostFleet architecture issue.
+- Early `fleet#289` is historical provenance, not the current public architecture owner;
+- Current generic implementation and architecture boundaries are defined by this repository's [AGENTS](../AGENTS.md), [ADR 001](adr/001-public-canonical-packages.md) and [Architecture](ARCHITECTURE.md);
+- The private Fleet domain now lives in `youling/ai-hub`; `youling/fleet` no longer receives new engineering work. Existing domain semantics are retained without a parallel control plane.
+
+The phases below describe the V0 product baseline. Web Phase 0 in the [in-chat approval contract](architecture/IN_CHAT_HUMAN_APPROVAL_V1.md) is a separate platform-feasibility acceptance; completing this baseline phase does not establish that proof. Source, deployment and actual consumers require separate acceptance.
 
 ### Phase 1 — Core vertical slice
 

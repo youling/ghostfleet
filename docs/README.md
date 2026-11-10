@@ -5,6 +5,8 @@
 <!-- topic:navigation -->
 ### 按任务阅读
 
+先从[架构总览与生命周期图](ARCHITECTURE.md)了解机制、实例和证据的边界，再按下表下钻。图是现行契约的导航投影，不另立状态或授权来源。
+
 | 任务 | 文档 |
 | --- | --- |
 | 新用户安装/本地开发 | [快速开始](GETTING_STARTED.md)、[云端开发](CLOUD_DEVELOPMENT.md)、[控制台](CONSOLE.md) |
@@ -27,6 +29,8 @@
 
 <!-- topic:navigation -->
 ### Read by task
+
+Start with the [architecture and lifecycle diagrams](ARCHITECTURE.md) to locate mechanism, deployment and evidence boundaries, then follow the task links below. Diagrams project the current contracts for navigation; they do not create another state or authority source.
 
 | Task | Documentation |
 | --- | --- |
