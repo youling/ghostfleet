@@ -48,7 +48,7 @@ This proposal is not a released bootstrap, an executable installer, a new author
 ```text
 manifest_digest = "sha256:" + hex(SHA256(JCS(ReleaseManifestPayloadV1)))
 ```
-载荷本身在结构上排除 `digest` 字段与分离签名/封套字段。校验器在哈希前必须拒绝重复 JSON 键、非 I-JSON 输入、格式错误的数值与未归一化的 Unicode。
+载荷本身在结构上排除 `digest` 字段与分离签名/封套字段。校验器在哈希前必须拒绝重复 JSON 键、非 I-JSON 输入、超出 I-JSON 数值范围的表示和无效 Unicode（例如孤立代理项）。RFC 8785 要求保留合法 Unicode 字符串原样，不得擅自做 NFC/NFD 归一化。
 
 摘要一致仅证明字节未被篡改，绝不等于发布者真实可信。在执行任何特权安装或更新前，必须通过已建立的可信根验证发布者签名与来源证明。随不可变清单附带的公钥不能自声明为信任锚点；缺失发布者证明时，系统报告 `PUBLISHER_UNVERIFIED` / `UNKNOWN`，绝不因摘要匹配而放行安装。
 
@@ -202,13 +202,13 @@ PLANNED → PREPARED → DISPATCHED → ACKNOWLEDGED → VERIFIED
 
 测试结果采用封闭词汇：`PASS`、`FAIL`、`BLOCKED`、`UNKNOWN`、`NOT_RUN`、`DEFERRED`。只有 `PASS` 计入验收；`NOT_RUN`、`DEFERRED` 与 `BLOCKED` 绝不能通过汇总或包装伪造成 `PASS`。
 
-[24 项机器可读验收场景](../../test/fixtures/versioned-enrollment-v1.acceptance.json) 是**未来执行合同，当前保持 NOT_RUN**。用例覆盖 6 大分组与 T0–T5 全部层级：
+[24 项机器可读验收场景](../../test/fixtures/versioned-enrollment-v1.acceptance.json) 是**未来执行合同，当前保持 NOT_RUN**。用例覆盖 6 大分组，产品与治理验收的最低证据等级为 T1–T5；T0 仅负责本规范与 fixture 的结构校验，不能充当 VE-24 的真实任务状态验收：
 - 版本与兼容：VE-01 (T2), VE-02 (T1), VE-03 (T1), VE-04 (T2), VE-05 (T2)
-- 身份与纳管：VE-06 (T1), VE-07 (T3), VE-08 (T1)
+- 身份与纳管：VE-06 (T3), VE-07 (T3), VE-08 (T1)
 - 幂等收敛：VE-09 (T3), VE-10 (T3), VE-11 (T4), VE-12 (T1)
 - 恢复与并发：VE-13 (T3), VE-14 (T2), VE-15 (T3), VE-16 (T1), VE-17 (T3), VE-18 (T3)
-- 授权与本地施工：VE-19 (T1), VE-20 (T2), VE-21 (T1)
-- 消费者与设备验收：VE-22 (T5), VE-23 (T4), VE-24 (T0)
+- 授权与本地施工：VE-19 (T3), VE-20 (T2), VE-21 (T1)
+- 消费者与设备验收：VE-22 (T5), VE-23 (T4), VE-24 (T2)
 
 24 个用例标识已严格冻结，不为虚增覆盖率而增减用例。
 
@@ -269,7 +269,7 @@ Canonical digests are computed using RFC 8785 JSON Canonicalization Scheme (JCS)
 ```text
 manifest_digest = "sha256:" + hex(SHA256(JCS(ReleaseManifestPayloadV1)))
 ```
-The payload strictly excludes the `digest` field and detached signature/envelope fields by design. The verifier rejects duplicate JSON properties, non-I-JSON inputs, malformed numeric values, and non-normalized Unicode prior to hashing.
+The payload strictly excludes the `digest` field and detached signature/envelope fields by design. The verifier rejects duplicate JSON properties, non-I-JSON inputs, unsupported numeric forms and invalid Unicode (including lone surrogates) before hashing. RFC 8785 requires valid Unicode strings to remain as-is; do not impose NFC/NFD normalization.
 
 Digest match proves artifact integrity, not publisher authenticity. Privileged execution requires verifying the publisher signature against an independently established trust anchor. An untrusted manifest cannot bootstrap trust by providing its own embedded public key. If publisher verification fails or is absent, the system reports `PUBLISHER_UNVERIFIED` / `UNKNOWN`.
 
@@ -401,13 +401,13 @@ Every acceptance case and test execution declares an explicit evidence tier; wea
 
 Test results use a closed vocabulary: `PASS`, `FAIL`, `BLOCKED`, `UNKNOWN`, `NOT_RUN`, `DEFERRED`. Only `PASS` contributes to acceptance.
 
-The [24 acceptance scenarios](../../test/fixtures/versioned-enrollment-v1.acceptance.json) are **future execution contracts, currently retained as NOT_RUN**. The 24 cases span all six groups and T0–T5 tiers:
+The [24 acceptance scenarios](../../test/fixtures/versioned-enrollment-v1.acceptance.json) are **future execution contracts, currently retained as NOT_RUN**. The 24 cases span all six groups with minimum T1–T5 evidence; T0 validates only the specification/fixture structure, not VE-24's real task state:
 - Version & Compatibility: VE-01 (T2), VE-02 (T1), VE-03 (T1), VE-04 (T2), VE-05 (T2)
-- Identity & Enrollment: VE-06 (T1), VE-07 (T3), VE-08 (T1)
+- Identity & Enrollment: VE-06 (T3), VE-07 (T3), VE-08 (T1)
 - Convergence: VE-09 (T3), VE-10 (T3), VE-11 (T4), VE-12 (T1)
 - Recovery & Concurrency: VE-13 (T3), VE-14 (T2), VE-15 (T3), VE-16 (T1), VE-17 (T3), VE-18 (T3)
-- Authority & Local Execution: VE-19 (T1), VE-20 (T2), VE-21 (T1)
-- Acceptance & Storage Safety: VE-22 (T5), VE-23 (T4), VE-24 (T0)
+- Authority & Local Execution: VE-19 (T3), VE-20 (T2), VE-21 (T1)
+- Acceptance & Storage Safety: VE-22 (T5), VE-23 (T4), VE-24 (T2)
 
 The 24 case IDs are frozen as the v1 acceptance set.
 
