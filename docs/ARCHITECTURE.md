@@ -132,7 +132,7 @@ Static Console
 
 ### 生产节点纳管与特权执行
 
-首台 Linux 消费者的真实特权远控闭环已在一个私有部署中验收；它不等于首次纳管或第二节点通过。跨层契约、预检矩阵、`UNKNOWN` 对账和 JG/OMV8 分流见[生产节点纳管与特权金丝雀 runbook](architecture/PRODUCTION_NODE_ONBOARDING_AND_ADMIN_CANARY_V1.md)。图中的 Worker/DO/Tunnel 是参考部署组件，不是核心强制依赖。 公网/边缘节点的 `MANAGED_ONLY` 来源拒绝由独立的 [#64 / PR #65](https://github.com/youling/ghostfleet/pull/65) typed-origin tranche 承担；该 PR 当前仍未合并/部署，私有拓扑策略和网络层无中继验收也未完成。
+首台 Linux 消费者的真实特权远控闭环已在一个私有部署中验收；它不等于首次纳管或第二节点通过。跨层契约、预检矩阵、`UNKNOWN` 对账和 JG/OMV8 分流见[生产节点纳管与特权金丝雀 runbook](architecture/PRODUCTION_NODE_ONBOARDING_AND_ADMIN_CANARY_V1.md)。图中的 Worker/DO/Tunnel 是参考部署组件，不是核心强制依赖。ChatGPT 对话内人工审批的可选交互、OAuth 身份边界与 Web/Mobile 能力门见[对话内人工审批 v1](architecture/IN_CHAT_HUMAN_APPROVAL_V1.md)。 公网/边缘节点的 `MANAGED_ONLY` 来源拒绝由独立的 [#64 / PR #65](https://github.com/youling/ghostfleet/pull/65) typed-origin tranche 承担；该 PR 当前仍未合并/部署，私有拓扑策略和网络层无中继验收也未完成。
 
 ### 当前源码预览与可选模块
 
@@ -274,7 +274,7 @@ One-time provider material uses a two-phase private service binding. Ticket gene
 
 ### Production node onboarding and approved-admin execution
 
-The first Linux consumer's live approved-admin path has passed in one private deployment; this does not mean first-use enrollment or a second node has passed. Cross-layer contracts, preflight, `UNKNOWN` reconciliation and the JG/OMV8 split are documented in the [production node onboarding and admin canary runbook](architecture/PRODUCTION_NODE_ONBOARDING_AND_ADMIN_CANARY_V1.md). Worker/DO/Tunnel in its diagrams are reference-deployment components, not mandatory core dependencies. The `MANAGED_ONLY` origin denial for public/edge nodes is owned by the separate [#64 / PR #65](https://github.com/youling/ghostfleet/pull/65) typed-origin tranche; that PR remains unmerged/undeployed, and private topology policy plus network no-relay acceptance remain outstanding.
+The first Linux consumer's live approved-admin path has passed in one private deployment; this does not mean first-use enrollment or a second node has passed. Cross-layer contracts, preflight, `UNKNOWN` reconciliation and the JG/OMV8 split are documented in the [production node onboarding and admin canary runbook](architecture/PRODUCTION_NODE_ONBOARDING_AND_ADMIN_CANARY_V1.md). Worker/DO/Tunnel in its diagrams are reference-deployment components, not mandatory core dependencies. The optional in-chat Human approval interaction, OAuth principal boundary and Web/Mobile platform gates are documented in [In-chat Human approval v1](architecture/IN_CHAT_HUMAN_APPROVAL_V1.md). The `MANAGED_ONLY` origin denial for public/edge nodes is owned by the separate [#64 / PR #65](https://github.com/youling/ghostfleet/pull/65) typed-origin tranche; that PR remains unmerged/undeployed, and private topology policy plus network no-relay acceptance remain outstanding.
 
 ### Current source preview and optional modules
 

@@ -397,6 +397,18 @@
         "timing",
         "roles"
       ]
+    },
+    {
+      "path": "docs/architecture/IN_CHAT_HUMAN_APPROVAL_V1.md",
+      "topics": [
+        "decision",
+        "platform",
+        "identity",
+        "interaction",
+        "oauth",
+        "diagrams",
+        "acceptance"
+      ]
     }
   ]
 }
