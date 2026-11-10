@@ -409,6 +409,15 @@
         "diagrams",
         "acceptance"
       ]
+    },
+    {
+      "path": "docs/architecture/CHATGPT_APPROVAL_PHASE0_PROBE.md",
+      "topics": [
+        "purpose",
+        "wiring",
+        "flow",
+        "rollout"
+      ]
     }
   ]
 }
