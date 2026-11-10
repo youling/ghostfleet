@@ -49,7 +49,7 @@ V0 HumanGate 至少包含 `gate_id`、`gate_type`、`subject`、状态、`prompt
 
 状态迁移和证据同时保存。每个必需证据类型的最新观测必须显式为 `data.status = PASS`；新的 `FAIL` 或 `UNKNOWN` 使该类型的旧 `PASS` 失效。命令退出码为 0、包已安装、服务运行或网络可达等单独事实都不能自动推导纳管成功。真实适配器还须校验证据来源、对象（`subject`）和权限；合成证据不证明真实设备。
 
-核心拥有的身份和目录证据只能从已存储的 NodeIdentity 和投影生成，公共证据写入口不能伪造。`PROVISIONAL` 仅用于纳管观察，完整验收后才晋升 `ACTIVE`。核心投影证据不替代真实设备与适配器的绑定，也不替代传输、控制、收敛和重启证据。`ACTIVE` 和七项证据仅证明本控制面的准入；独立调用方仍须分别验收目录发现、认证配置、调用路由、正负权限、同一身份回读和回滚。
+核心拥有的身份和目录证据只能从已存储的 NodeIdentity 和投影生成。旧 HTTP 公共证据写入路径已对所有 Operator 拒绝（403），防止直接上报伪造的标准五项 PASS 促进准入；必须经私有受信观察器与受保护服务器写入边界。`PROVISIONAL` 仅用于纳管观察，完整验收后才晋升 `ACTIVE`。核心投影证据不替代真实设备与适配器的绑定，也不替代传输、控制、收敛和重启证据。`ACTIVE` 和七项证据仅证明本控制面的准入；独立调用方仍须分别验收目录发现、认证配置、调用路由、正负权限、同一身份回读和回滚。
 
 ### 私有目录与 provider preparation 边界
 
@@ -118,7 +118,7 @@ Human-facing pairing codes belong to their enrollment ceremony/attempt, not the 
 
 State transitions and evidence are stored together. For each required evidence type, the latest observation must explicitly have `data.status = PASS`; a newer `FAIL` or `UNKNOWN` invalidates that type's older `PASS`. A command exit code of 0, installed package, active service or reachable transport alone never proves successful admission. Real adapters must also validate evidence source, subject and authority; synthetic evidence does not establish real-device acceptance.
 
-Core-owned identity/catalog proofs derive only from stored NodeIdentity/projection and cannot be forged through the public evidence endpoint. PROVISIONAL supports enrollment inspection only; full acceptance promotes it to ACTIVE. Core projection evidence does not replace binding to a real device/adapter or transport/control/convergence/reboot proofs. `ACTIVE` and seven evidence types establish admission in this control plane only. Independent consumers still need separate acceptance for catalog discovery, authentication/configuration, call routes, positive/negative permissions, same-identity readback and rollback.
+Core-owned identity/catalog proofs derive only from stored NodeIdentity/projection. The legacy public Operator evidence POST returns 403 for all client-supplied evidence, preventing the untrusted HTTP caller from manufacturing Linux acceptance PASS. A private verified observer and protected server-side writer must be installed before real-device admission. PROVISIONAL supports enrollment inspection only; full acceptance promotes it to ACTIVE. Core projection evidence does not replace binding to a real device/adapter or transport/control/convergence/reboot proofs. `ACTIVE` and seven evidence types establish admission in this control plane only. Independent consumers still need separate acceptance for catalog discovery, authentication/configuration, call routes, positive/negative permissions, same-identity readback and rollback.
 
 ### Private catalog and provider-preparation boundary
 

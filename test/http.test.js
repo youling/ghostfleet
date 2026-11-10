@@ -53,3 +53,46 @@ test("HTTP and read-only MCP expose the same provisional identity before and aft
   assert.equal(active.node_uid, m.node_uid);
   assert.deepEqual((await (await handle(new Request("http://ghostfleet.test/v0/nodes"))).json()).nodes, (await mcp("ghostfleet_list_nodes")).nodes);
 });
+
+
+test("operator HTTP cannot forge Linux admission evidence or bootstrap completion", async () => {
+  const c = new GhostFleetController();
+  const handle = createHttpHandler(c);
+  const attempt = c.createEnrollmentAttempt({ asset_hint: "synthetic-target" });
+  c.prepareEnrollmentAttempt(attempt.attempt_id);
+  c.claimEnrollmentAttempt(attempt.attempt_id);
+  const materialized = c.startMaterialization(attempt.attempt_id, { node_id: "synthetic-target", platform: "linux" });
+  const prior = c.getEnrollmentAttempt(attempt.attempt_id);
+  const required = DEFAULT_ACCEPTANCE_EVIDENCE.filter((type) => !CORE_OWNED_EVIDENCE.includes(type));
+  for (const type of [...required, ...CORE_OWNED_EVIDENCE, "BOOTSTRAP_COMPLETION", "synthetic.arbitrary"]) {
+    const response = await handle(new Request("https://ghostfleet.invalid/v0/enrollment-attempts/" +
+      encodeURIComponent(attempt.attempt_id) + "/evidence", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type, source: "ghostfleet-linux-adapter", data: { status: "PASS" } }),
+    }));
+    assert.equal(response.status, 403, type);
+    assert.deepEqual(await response.json(), { ok: false, error: "EVIDENCE_TRUSTED_INGRESS_REQUIRED" });
+  }
+  assert.deepEqual(c.getEnrollmentAttempt(attempt.attempt_id), prior);
+  const admission = await handle(new Request("https://ghostfleet.invalid/v0/enrollment-attempts/" +
+    encodeURIComponent(attempt.attempt_id) + "/accept", {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  }));
+  const outcome = await admission.json();
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.error, "ACCEPTANCE_EVIDENCE_MISSING");
+  assert.deepEqual(new Set(outcome.missing), new Set(required));
+  assert.equal(c.getNode(materialized.node_uid).lifecycle, "PROVISIONAL");
+  assert.equal(c.listEvents().some((event) => event.type === "NodeAdmitted"), false);
+});
+
+test("SDK-side evidence remains a separate integration responsibility, not HTTP authority", async () => {
+  const c = new GhostFleetController();
+  const attempt = c.createEnrollmentAttempt();
+  // Legacy server SDK can still store non-admission diagnostic evidence.
+  const result = c.recordEvidence(attempt.attempt_id, {
+    type: "synthetic.diagnostic", source: "synthetic-test", data: { status: "UNKNOWN" },
+  });
+  assert.equal(result.type, "synthetic.diagnostic");
+  assert.equal(c.getEnrollmentAttempt(attempt.attempt_id).evidence.length, 1);
+});
