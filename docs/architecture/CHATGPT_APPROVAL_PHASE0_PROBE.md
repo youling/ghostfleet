@@ -66,20 +66,23 @@ flowchart TD
   V --> UI["ChatGPT MCP App 展示不可变摘要"]
   UI -->|"Human 点击 Approve / Deny"| H["Host Bridge · app-only decision tool"]
   H --> AUTH["OAuth scope + 服务端 Human role 校验"]
-  AUTH --> CAS["DO CAS：request_id + digest + version + expiry + nonce"]
-  CAS -->|"DENIED / STALE / REPLAY"| STOP["终止，不签发、不执行"]
-  CAS -->|"APPROVED"| SIGN["现有 CloudflareAdminIssuer · Ed25519"]
-  SIGN --> LEASE["一次性、短 TTL、有界 lease"]
+  AUTH -->|"Approve"| SIGN["现有 Issuer 预签候选 lease"]
+  AUTH -->|"Deny"| DENY["现有账本 CAS 提交 DENIED"]
+  SIGN --> CAS["现有账本 CAS 提交 APPROVED 和 lease"]
+  CAS -->|"失败或状态已变"| STOP["丢弃未获批候选，不执行"]
+  CAS -->|"成功"| LEASE["可消费的一次性有界 lease"]
   LEASE --> EX["独立 execute 调用"]
   EX --> NODE["现有 GhostFleet DCR / Node"]
 ```
+
+目标链沿用[现行审批合同 §6](IN_CHAT_HUMAN_APPROVAL_V1.md#6-时序与状态图)：服务端核对请求身份、摘要、版本、有效期和挑战；批准路径先预签候选租约，再由现有账本 CAS 建立权威 APPROVED。预签本身不是批准；CAS 失败的候选不能发布或消费。图是 DERIVED 导航，不改变现有签发/CAS 顺序。
 
 目标链必须继续区分审批状态与执行状态；Host 隐藏工具不是授权本身，OAuth scope 也不是点击证明。Phase 0 不注册真实 decision/execute 新入口，不触碰 DO 与签发器。
 
 <!-- topic:rollout -->
 ### 不能跨越的门禁
 
-本探针源码可以提交、测试、Review；不能凭测试通过直接部署到生产 Worker、修改 Access/OAuth secret、替用户发起/批准真实申请或执行 JG/TP/OMV8 管理员命令。Phase 0 Web 受信 UI 与授权通过后，才可在既有 GhostFleet #69 / 私有部署 owner 工作线下实现 `fleet_admin_human_decide` 和真实审批卡片。后续必须维持一套账本、一套签发器与既有 Host 执行权限边界。
+本探针源码可以提交、测试、Review；不能凭测试通过直接部署到生产 Worker、修改 Access/OAuth secret、替用户发起/批准真实申请或执行受管节点管理员命令。Phase 0 Web 受信 UI 与授权通过后，才可在既有 GhostFleet #69 / 私有部署 owner 工作线下实现 `fleet_admin_human_decide` 和真实审批卡片。后续必须维持一套账本、一套签发器与既有 Host 执行权限边界。
 
 ## English
 
@@ -143,17 +146,21 @@ flowchart TD
   V --> UI["ChatGPT MCP App shows immutable summary"]
   UI -->|"Human clicks Approve / Deny"| H["Host Bridge · app-only decision tool"]
   H --> AUTH["OAuth scope + server-side Human role"]
-  AUTH --> CAS["DO CAS: request_id + digest + version + expiry + nonce"]
-  CAS -->|"DENIED / STALE / REPLAY"| STOP["Stop: no signing or execution"]
-  CAS -->|"APPROVED"| SIGN["Existing CloudflareAdminIssuer · Ed25519"]
-  SIGN --> LEASE["One-use, short-TTL, bounded lease"]
+  AUTH -->|"Approve"| SIGN["Existing issuer pre-signs candidate lease"]
+  AUTH -->|"Deny"| DENY["Existing ledger CAS commits DENIED"]
+  SIGN --> CAS["Existing ledger CAS commits APPROVED and lease"]
+  CAS -->|"Failed or state changed"| STOP["Discard unapproved candidate; no execution"]
+  CAS -->|"Success"| LEASE["Consumable one-use bounded lease"]
   LEASE --> EX["Separate execute call"]
   EX --> NODE["Existing GhostFleet DCR / Node"]
 ```
+
+The target path follows the [current approval contract §6](IN_CHAT_HUMAN_APPROVAL_V1.md#6-sequence-and-state-diagrams): the server validates request identity, digest, version, expiry and challenge; the approval path pre-signs a candidate lease before the existing ledger CAS establishes authoritative APPROVED. Pre-signing is not approval, and a candidate from a failed CAS must not be published or consumed. This is a DERIVED diagram, preserving the existing signing/CAS order.
 
 The target path must keep approval state separate from execution state. Host-hidden visibility is not authorization, and OAuth scope is not proof of a click. Phase 0 registers no real decision/execute entry and does not touch the DO ledger or signer.
 
 <!-- topic:rollout -->
 ### Remaining gates
 
-Source may be committed, tested and reviewed; passing tests does not authorize production Worker deployment, Access/OAuth secret changes, actual approval requests or privileged TP/JG/OMV8 execution. Only after trusted Web UI and OAuth acceptance should the existing GhostFleet #69 and deployment owner implement the real `fleet_admin_human_decide` and approval card, reusing the single existing ledger, issuer and Host execution authority.
+Source may be committed, tested and reviewed; passing tests does not authorize production Worker deployment, Access/OAuth secret changes, actual approval requests or privileged managed-node execution. Only after trusted Web UI and OAuth acceptance should the existing GhostFleet #69 and deployment owner implement the real `fleet_admin_human_decide` and approval card, reusing the single existing ledger, issuer and Host execution authority.
+
