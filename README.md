@@ -7,6 +7,8 @@
 
 GhostFleet 是开源设备管理控制面，与 AI 客户端无关。人工操作员和标准 HTTP/MCP 客户端共享生命周期、能力、权限、人工确认和证据对象。通用实现由公开仓维护；具体部署保留自己的配置、凭据和真实设备事实。许可证为 **AGPL-3.0-only**。
 
+[架构总览与生命周期图](docs/ARCHITECTURE.md) · [源码与实例边界](docs/MIGRATION.md) · [文档目录](docs/README.md)
+
 当前源码包含可运行的核心、Console、HTTP API、只读 MCP、Linux 回执校验器，以及可选的类型化控制、bootstrap 和 Python 运行时包。根目录一级 `console/` 是 Control Panel 的 canonical Human-facing 产品目录，Enrollment、Nodes、Capabilities、Privilege、Recovery、Settings 等 UI 域从这里继续演化。默认界面不会安装、重启或控制设备；高权限操作必须由部署集成者明确配置并验收。目前是源码开发版本，不宣称已经发布 npm/PyPI 插件或正式生产服务。
 
 <!-- topic:startup -->
@@ -43,7 +45,7 @@ npm run dev
 <!-- topic:development -->
 ### 贡献与验收
 
-后续**所有通用远控产品开发**以本仓为准，包括 core/API/MCP/Console、typed-control、enrollment、capability、consumer-acceptance、通用平台适配与客户端适配。`youling/fleet` 只维护礼宏的私有舰队实例、部署配置、真实设备/账号 evidence、私有 provider binding、consumer cutover 与运维；不得把通用功能继续写回 Fleet 形成第二实现。[贡献](CONTRIBUTING.md)、[插件开发](docs/PLUGIN_DEVELOPMENT.md)、[架构](docs/ARCHITECTURE.md)、[API](docs/API.md)、[MCP](docs/MCP.md) 和 [安全](docs/SECURITY.md) 提供实现方法与边界。公开 CI 不需要私有凭据或设备。
+后续**所有通用远控产品开发**以本仓为准，包括 core/API/MCP/Console、typed-control、enrollment、capability、consumer-acceptance、通用平台适配与客户端适配。`youling/ai-hub` 的 Fleet 管理域维护礼宏的私有舰队实例、部署配置、真实设备/账号 evidence、私有 provider binding、consumer cutover 与运维；旧 `youling/fleet` 仅保留历史来源。该仓库迁移沿用既有领域分工，私有实例不另建通用功能实现。[贡献](CONTRIBUTING.md)、[插件开发](docs/PLUGIN_DEVELOPMENT.md)、[架构](docs/ARCHITECTURE.md)、[API](docs/API.md)、[MCP](docs/MCP.md) 和 [安全](docs/SECURITY.md) 提供实现方法与边界。公开 CI 不需要私有凭据或设备。
 
 ```sh
 npm run check:publication
@@ -62,6 +64,8 @@ npm run verify:cloud
 ### Product and support boundary
 
 GhostFleet is an open-source, AI-client-neutral device fleet control plane. Humans and standard HTTP/MCP clients share lifecycle, capability, permission, HumanGate and evidence objects. The public implementation owns generic mechanisms; deployments own configuration, credentials and real device facts. Licensed under **AGPL-3.0-only**.
+
+[Architecture and lifecycle diagrams](docs/ARCHITECTURE.md) · [Source and deployment boundaries](docs/MIGRATION.md) · [Documentation](docs/README.md)
 
 The source includes a runnable core/Console/HTTP/read-only MCP surface, Linux receipt validation and explicit optional typed-control/bootstrap/Python runtime packages. The top-level `console/` directory is the canonical Human-facing Control Panel product surface; Enrollment, Nodes, Capabilities, Privilege, Recovery and Settings UI domains evolve there. The default UI neither installs nor reboots nor controls hardware. Deployment integrators must explicitly configure and validate high-authority operations. This is a source-development version, not a claim of published npm/PyPI plugins or a formal production service.
 
@@ -99,7 +103,7 @@ One protected Linux integration passed a real canary. `ACTIVE` establishes admis
 <!-- topic:development -->
 ### Contribution and acceptance
 
-This repository is the canonical home for generic plugin development. [Contributing](CONTRIBUTING.md), [Plugin development](docs/PLUGIN_DEVELOPMENT.md), [Architecture](docs/ARCHITECTURE.md), [API](docs/API.md), [MCP](docs/MCP.md) and [Security](docs/SECURITY.md) define implementation and boundaries. Public CI needs no private credentials or devices.
+This repository is the canonical home for all generic remote-control product development: core/API/MCP/Console, typed control, enrollment, capabilities, consumer acceptance, generic platform and client adapters. The Fleet domain in `youling/ai-hub` owns Youling's private deployment, real device/account evidence, provider bindings, consumer cutover and operations; `youling/fleet` is retained as historical provenance. The repository migration preserves those domain responsibilities and does not create another generic implementation. [Contributing](CONTRIBUTING.md), [Plugin development](docs/PLUGIN_DEVELOPMENT.md), [Architecture](docs/ARCHITECTURE.md), [API](docs/API.md), [MCP](docs/MCP.md) and [Security](docs/SECURITY.md) define implementation and boundaries. Public CI needs no private credentials or devices.
 
 ```sh
 npm run check:publication

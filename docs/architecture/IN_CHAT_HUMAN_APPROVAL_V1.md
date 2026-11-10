@@ -212,8 +212,8 @@ stateDiagram-v2
 - ChatGPT Web MCP App：`WEB_POC_REQUIRED`。
 - Native ChatGPT Mobile custom MCP：`BLOCKED_BY_HOST_PLATFORM`。
 - Existing Fleet DCR native mobile：`UNVERIFIED`。
-- JG/其他节点是否 READY、是否可创建请求、是否可执行，必须以各自私有部署工单的当前证据为准；本公共规范不授予执行权限。
-- OMV8 等独立冻结边界不受本规范改变。
+- 各目标节点是否 READY、是否可创建请求、是否可执行，必须以各自私有部署工单的当前证据为准；本公共规范不授予执行权限。
+- NAS 等实例的独立冻结边界不受本规范改变。
 
 任何源码合并、合成测试通过或 Host 预检通过，都不能替代 UI、真实身份和单笔金丝雀验收。
 
@@ -424,7 +424,7 @@ As of 2026-11-10:
 - ChatGPT Web MCP App: `WEB_POC_REQUIRED`.
 - Native ChatGPT Mobile custom MCP: `BLOCKED_BY_HOST_PLATFORM`.
 - Existing Fleet DCR native mobile: `UNVERIFIED`.
-- Whether JG/another node is READY, may receive a request, or may execute must be determined from current evidence in its private deployment work item; this public contract grants no execution authority.
-- Independent OMV8 and other frozen boundaries are unchanged by this contract.
+- Whether a target node is READY, may receive a request, or may execute must be determined from current evidence in its private deployment work item; this public contract grants no execution authority.
+- Independent NAS and other deployment-specific frozen boundaries are unchanged by this contract.
 
 Source merges, synthetic test passes and Host preflight do not substitute for UI, real identity and single-request canary acceptance.

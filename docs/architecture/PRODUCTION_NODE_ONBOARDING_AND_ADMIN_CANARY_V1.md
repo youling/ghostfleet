@@ -1,18 +1,18 @@
 # Production node onboarding and approved-admin canary v1 / 生产节点纳管与特权金丝雀 v1
 
 status: `OPERATIONAL_RUNBOOK / SOURCE_CONTRACT`
-source_baseline: `youling/ghostfleet@2d69c4cbba3bd809d9cf18855c134cba59857a7e`
+source_baseline: `youling/ghostfleet@be9f0d9ec97ecd4d75f006e3960c3c4e3a0d020f`
 topology_enforcement: `PENDING_PR_65_UNMERGED_PRIVATE_ROLLOUT`
 topology_source_ref: `youling/ghostfleet#64 / PR #65 @ ad239cebab4a82b42fb5f40cbf4709cee98f9008`
 scope: Linux typed-control V4, deployment-owned Worker/issuer, root-owned node helper
-last_updated: 2026-11-09
+last_updated: 2026-11-10
 
 ## 中文
 
 <!-- topic:purpose -->
 ### 1. 目的与适用范围
 
-本文把首台 ThinkPad 生产特权远控的故障经验固化为可重复的工程流程，供后续 Linux 生产节点复用。它覆盖**已存在 Fleet 控制连接上的特权执行接入与验收**，不把它等同于设备首次纳管。
+本文把首个私有 Linux 消费者生产特权远控的故障经验固化为可重复的工程流程，供后续 Linux 生产节点复用。它覆盖**已存在 Fleet 控制连接上的特权执行接入与验收**，不把它等同于设备首次纳管。上层边界见[架构总览](../ARCHITECTURE.md)；审批状态与签发顺序见[对话内人工审批合同](IN_CHAT_HUMAN_APPROVAL_V1.md)。
 
 必须区分四个独立结果：
 
@@ -23,7 +23,7 @@ last_updated: 2026-11-09
 | `NODE_READY` | 单节点身份、专属 ops 入口、Host policy、Helper 与代际一致 | 真实 root canary 已成功 |
 | `ADMIN_CANARY_ACCEPTED` | 一笔真实请求经 Human 批准、节点 root Helper 执行、DO 终态消费回读 | 另一台节点或完整 Enrollment 生命周期通过 |
 
-2026-11-09，首个私有 Linux 消费者完成一笔只读 `/usr/bin/id` 生产金丝雀：真实签名租约、root Helper 回执、exit 0、输出丢弃、DO `CONSUMED`。这只是**单个消费者的一次特权通道验收**；不代表第二节点、Windows、OMV8、所有部署或正式软件发布通过。真实节点标识、请求 ID、密钥、指纹和原始日志留在私有部署工单。
+2026-11-09，首个私有 Linux 消费者完成一笔只读 `/usr/bin/id` 生产金丝雀：真实签名租约、root Helper 回执、exit 0、输出丢弃、DO `CONSUMED`。这只是**单个消费者的一次特权通道验收**；不代表第二节点、Windows、NAS、所有部署或正式软件发布通过。真实节点标识、请求 ID、密钥、指纹和原始日志留在私有部署工单。
 
 <!-- topic:timeline -->
 ### 2. 首台节点复盘：时间为什么被拉长
@@ -50,7 +50,7 @@ last_updated: 2026-11-09
 
 - `actor_ref` 由可信认证入口从 `authKind + userId` 派生；不得由工具输入自报。
 - 每台节点的 Host 配置、私有 Worker policy 与请求租约必须同时匹配 `subject_ref`、`node_uid`、`generation`、`profile_generation`、`issuer_id`。
-- 同一 Human/服务主体在多台节点上可能得到同一个 `subject_ref`，但必须在每个节点上重新计算并核对；不得把 ThinkPad 的配置文件或摘要直接复制到 JG/OMV8。
+- 同一 Human/服务主体在多台节点上可能得到同一个 `subject_ref`，但必须在每个节点上重新计算并核对；不得把首个已验收节点的配置文件或摘要直接复制到第二节点或 NAS。
 - SSH 目标必须匹配该节点登记的 Host key 指纹、专用 ops 用户名和独立私钥身份。普通 SSH key 与特权 ops key 必须分离。
 
 #### 3.2 引用字段
@@ -80,7 +80,7 @@ effective_runtime =
 
 - 缺少节点上限或当前代际时，不得假设 300/600 秒；应拒绝签发或先完成只读策略同步。
 - 节点上限是安全边界，不因客户端默认值更大而放宽。
-- 当前 ThinkPad Host 基准为 max TTL 300 秒、max runtime 120 秒；这只是该实例事实，不是所有 Linux 节点的全局默认。
+- 首个已验收消费者的历史 Host 基准为 max TTL 300 秒、max runtime 120 秒；这只是该实例事实，不是所有 Linux 节点的全局默认。
 - 生产请求应显式使用已核对的 TTL（该节点示例为 300 秒）或省略以使用经验证的部署默认值。不得盲目沿用另一节点参数。
 
 #### 3.4 SSH adapter 与派发状态
@@ -164,9 +164,10 @@ flowchart TD
     J --> I
     H -- STARTED --> K[RUNNING / status poll]
     K --> H
-    H -- terminal SUCCEEDED --> L[CONSUMED + exact receipt]
-    H -- terminal FAILED --> M[FAILED + exact receipt]
+    H -- terminal SUCCEEDED / FAILED / STOPPED --> L["state=CONSUMED; dispatch_state=receipt outcome"]
 ~~~
+
+此流程图是 [审批服务 `recordDispatchOutcome`](../../packages/typed-control/src/approvedAdminApproval.ts) 的 `DERIVED` 投影。`CONSUMED` 属于审批账本 `state`；`SUCCEEDED`、`FAILED`、`STOPPED` 和 `UNKNOWN` 属于独立的 `dispatch_state`。有效终态回执将账本置为 `CONSUMED`，并保留具体执行结果；`UNKNOWN` 不产生新的审批状态，继续沿原请求对账。
 
 ### 5. 可重复预检：生产金丝雀之前必须覆盖什么
 
@@ -216,22 +217,22 @@ flowchart TD
 
 1. 默认 topology role 设为 `MANAGED_ONLY`：它只接受可信控制端下发，不成为控制器、签发者、审批者或跨节点 relay。当前公开拓扑策略仍需消费独立 source/deployment acceptance；未部署强制策略前，不得把“设计默认”说成已生效。
 2. 通过现有 Enrollment Console/Provider 路径建立唯一 node identity；新节点拥有独立 TS/CF provider material、SSH Host key、ops key、Host config、state ledger 与 node generation。
-3. 不复制 ThinkPad/JG 的 `tailscaled.state`、Tunnel UUID/secret、SSH 私钥/公钥、Host key、node UID、账本或 profile generation。
+3. 不复制其他节点的 `tailscaled.state`、Tunnel UUID/secret、SSH 私钥/公钥、Host key、node UID、账本或 profile generation。
 4. 首次 root/bootstrap 由节点所有者按该平台受审流程执行；Phase 0 只读检查先于任何 materialization。
 5. 为该节点从可信认证主体计算 subject_ref，并与 Worker policy/Host config 对齐；验证专用 ops principal、Host key pin、密钥导入、TTL/runtime 上限。
 6. 通过预检后只做一笔 Human-approved 只读 canary；普通 NORMAL 与 Human-approved ADMIN 分开验收。
 7. 只有 identity、normal control、topology negative、admin canary（若该节点需要）、rollback 与独立 consumer readback 全部按目标通过，才晋升相应生命周期状态。
 
-#### C. JG 第二节点
+#### C. 已纳管的第二节点：独立特权验收
 
-- JG 已有 Fleet node identity 和普通 DCR 路径；不应再次创建重复 node UID，也不应把普通 DCR 已通写成特权管理员已通。
-- 沿现有 Host owner 工单独立安装/核验 Helper 与 ops principal；使用 JG 自己的 key、Host key、generation/profile、Host policy 与 Tunnel。
-- ThinkPad 成功证明公共 V4 链路有一条可用实现路径；它不证明 JG 的 systemd、Host policy、SSH、OCI workload 或生产数据已就绪。
-- JG 的 OCI admission/import/smoke 是另一项验收，不得和 Fleet admin canary 合并成一个 PASS。
+- 若目标已有 Fleet node identity 和普通 DCR 路径，不应再次创建重复 node UID，也不应把普通 DCR 已通写成特权管理员已通。
+- 沿现有 Host owner 工单独立安装/核验 Helper 与 ops principal；使用目标节点自己的 key、Host key、generation/profile、Host policy 与 Tunnel。
+- 首个消费者成功证明公共 V4 链路有一条可用实现路径；它不证明第二节点的 systemd、Host policy、SSH、OCI workload 或生产数据已就绪。
+- 第二节点的 OCI admission/import/smoke 是另一项验收，不得和 Fleet admin canary 合并成一个 PASS。
 
-#### D. OMV8 / NAS
+#### D. NAS 首次使用
 
-- OMV8 走独立 NAS first-use 流程，不复制 JG/TP 凭据；必须先有当前部署版本的受保护 Console、真实 Operator、TS Provider、NAS 专属 CF Tunnel/credential 与有效一次性票据。
+- NAS 走独立 first-use 流程，不复制其他节点的凭据；必须先有当前部署版本的受保护 Console、真实 Operator、TS Provider、NAS 专属 CF Tunnel/credential 与有效一次性票据。
 - 唯一一次本机 Human root ceremony 前先执行内建只读 Phase 0，确认 OMV/Debian、systemd、现有 TS/cloudflared 状态、磁盘/RAID/卷/共享/核心服务和恢复条件。
 - 第一轮不做格式化、分区/RAID/文件系统变化、挂载/卸载业务卷、SMB/NFS 变更、业务容器变更或自动 reboot。
 - 首次纳管后日常操作使用 NORMAL；需要提权时才走独立 Human-approved ADMIN。若首次纳管 Provider/Ticket 尚未 READY，NAS 保持未触碰，不用手工 SSH/复制密钥绕过产品路径。
@@ -277,7 +278,7 @@ GhostFleet #64 的 typed-origin enforcement 已有独立源码候选 [PR #65](ht
 <!-- topic:purpose -->
 ### 1. Purpose and scope
 
-This document turns the first ThinkPad production approved-admin integration into a repeatable engineering procedure for later Linux nodes. It covers **approved-admin enablement and acceptance on an existing Fleet control path**; it is not the same as first-time device enrollment.
+This document turns the first private Linux consumer's production approved-admin integration into a repeatable engineering procedure for later Linux nodes. It covers **approved-admin enablement and acceptance on an existing Fleet control path**; it is not the same as first-time device enrollment. See the [architecture overview](../ARCHITECTURE.md) for the parent boundary and the [in-chat approval contract](IN_CHAT_HUMAN_APPROVAL_V1.md) for approval states and signing order.
 
 Keep four results separate:
 
@@ -288,7 +289,7 @@ Keep four results separate:
 | `NODE_READY` | Node identity, dedicated ops ingress, Host policy, helper and generations agree | A real root canary passed |
 | `ADMIN_CANARY_ACCEPTED` | One real request passed Human approval, node root-helper execution and DO terminal consumption readback | Another node or the complete enrollment lifecycle passed |
 
-On 2026-11-09, the first private Linux consumer completed one read-only production `/usr/bin/id` canary: real signed lease, root-helper receipt, exit 0, discarded output and DO `CONSUMED`. This is **one consumer's single privileged-lane acceptance**, not a claim that a second node, Windows, OMV8, every deployment or a formal software release passed. Real node IDs, request IDs, keys, fingerprints and raw logs remain in private deployment records.
+On 2026-11-09, the first private Linux consumer completed one read-only production `/usr/bin/id` canary: real signed lease, root-helper receipt, exit 0, discarded output and DO `CONSUMED`. This is **one consumer's single privileged-lane acceptance**, not a claim that a second node, Windows, NAS, every deployment or a formal software release passed. Real node IDs, request IDs, keys, fingerprints and raw logs remain in private deployment records.
 
 <!-- topic:timeline -->
 ### 2. First-node retrospective: why it took so long
@@ -315,7 +316,7 @@ The Host config's 14-key semantic comparison changed only the production caller 
 
 - `actor_ref` is derived by the trusted authenticated ingress from `authKind + userId`; tools must not self-assert it.
 - The node Host config, private Worker policy and request lease must all agree on `subject_ref`, `node_uid`, `generation`, `profile_generation` and `issuer_id`.
-- The same Human/service principal may derive the same `subject_ref` across multiple nodes, but it must be independently recomputed and checked for each node. Never copy ThinkPad's config file or digest to JG/OMV8.
+- The same Human/service principal may derive the same `subject_ref` across multiple nodes, but it must be independently recomputed and checked for each node. Never copy the first accepted node's config file or digest to a second node or NAS.
 - SSH target identity must match that node's registered Host-key fingerprint, dedicated ops username and separate private-key identity. Ordinary SSH and privileged ops keys remain distinct.
 
 #### 3.2 Reference fields
@@ -345,7 +346,7 @@ effective_runtime =
 
 - If the node cap or current generation is unknown, do not assume 300/600 seconds; refuse signing or complete a read-only policy sync first.
 - The node cap is a security boundary. Do not relax it to match a larger client default.
-- The current ThinkPad Host baseline was max TTL 300 seconds and max runtime 120 seconds. These are instance facts, not universal Linux defaults.
+- The first accepted consumer's historical Host baseline was max TTL 300 seconds and max runtime 120 seconds. These are instance facts, not universal Linux defaults.
 - Use the verified node-specific TTL explicitly (300 seconds in that instance) or omit it only when the deployed default is known to be within the node cap.
 
 #### 3.4 SSH adapter and dispatch state
@@ -429,9 +430,10 @@ flowchart TD
     J --> I
     H -- STARTED --> K[RUNNING / status poll]
     K --> H
-    H -- terminal SUCCEEDED --> L[CONSUMED + exact receipt]
-    H -- terminal FAILED --> M[FAILED + exact receipt]
+    H -- terminal SUCCEEDED / FAILED / STOPPED --> L["state=CONSUMED; dispatch_state=receipt outcome"]
 ~~~
+
+This flowchart is a `DERIVED` projection of [`recordDispatchOutcome` in the approval service](../../packages/typed-control/src/approvedAdminApproval.ts). `CONSUMED` is an approval-ledger `state`; `SUCCEEDED`, `FAILED`, `STOPPED` and `UNKNOWN` belong to the separate `dispatch_state`. A valid terminal receipt sets the ledger to `CONSUMED` while preserving the execution outcome. `UNKNOWN` creates no new approval state and requires reconciliation of the same request.
 
 ### 5. Repeatable preflight before production canary
 
@@ -481,22 +483,22 @@ Synthetic 10/10 is not real-device 10/10. Disposable root integration proves gen
 
 1. Default topology role is `MANAGED_ONLY`: it accepts commands from the trusted control plane but cannot become a controller, issuer, approver or cross-node relay. Until public topology policy and private deployment enforcement are merged/deployed, mark this as a target policy, not a live guarantee.
 2. Enroll through the existing Enrollment Console/Provider path with one NodeIdentity. The node owns independent TS/CF material, SSH Host key, ops key, Host config, state ledger and node generation.
-3. Never copy ThinkPad/JG `tailscaled.state`, Tunnel UUID/secret, SSH keys, Host key, node UID, ledger or profile generation.
+3. Never copy another node's `tailscaled.state`, Tunnel UUID/secret, SSH keys, Host key, node UID, ledger or profile generation.
 4. First root/bootstrap uses the reviewed local process for that node; read-only Phase 0 precedes materialization.
 5. Derive subject_ref from the trusted authenticated actor for this node and compare it with Worker policy/Host config; verify dedicated ops principal, Host-key pin, key import and TTL/runtime caps.
 6. Run deterministic preflight and then one low-risk read-only canary. Accept NORMAL and Human-approved ADMIN as separate lanes.
 7. Promote the intended lifecycle only after identity, normal control, topology negative, admin canary (if required), rollback and independent consumer readback all pass.
 
-#### C. JG as the second node
+#### C. Independent admin acceptance for an enrolled second node
 
-- JG already has a Fleet node identity and ordinary DCR path. Do not create a duplicate node UID or infer privileged-admin acceptance from ordinary DCR success.
-- Under the existing Host owner, independently install/verify the helper and ops principal with JG's own key, Host key, generation/profile, Host policy and Tunnel.
-- ThinkPad's success proves one public V4 path works; it does not prove JG's systemd, Host policy, SSH, OCI workload or production data are ready.
-- JG OCI admission/import/smoke is a separate acceptance and must not be folded into one Fleet admin PASS.
+- If the target already has a Fleet node identity and ordinary DCR path, do not create a duplicate node UID or infer privileged-admin acceptance from ordinary DCR success.
+- Under the existing Host owner, independently install/verify the helper and ops principal with the target node's own key, Host key, generation/profile, Host policy and Tunnel.
+- The first consumer's success proves one public V4 path works; it does not prove the second node's systemd, Host policy, SSH, OCI workload or production data are ready.
+- The second node's OCI admission/import/smoke is a separate acceptance and must not be folded into one Fleet admin PASS.
 
-#### D. OMV8 / NAS
+#### D. NAS first use
 
-- OMV8 uses its own NAS first-use path. Do not copy JG/TP credentials. Require the current protected Console, real Operator, TS Provider, NAS-specific CF Tunnel/credential and valid one-time ticket.
+- A NAS uses its own first-use path. Do not copy another node's credentials. Require the current protected Console, real Operator, TS Provider, NAS-specific CF Tunnel/credential and valid one-time ticket.
 - Before the one local Human root ceremony, run the built-in read-only Phase 0 to inspect OMV/Debian, systemd, current TS/cloudflared state, disks/RAID/volumes/shares/core services and recovery conditions.
 - First pass must not format, repartition, change RAID/filesystems, mount/unmount business volumes, change SMB/NFS, mutate business containers or reboot automatically.
 - After enrollment, normal operations use NORMAL; only elevated actions use separate Human-approved ADMIN. If Provider/Ticket is not truly READY, leave the NAS untouched; do not bypass the product path with manual SSH or copied keys.
