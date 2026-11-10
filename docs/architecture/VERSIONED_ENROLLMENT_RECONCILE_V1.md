@@ -154,10 +154,10 @@ DEFERRED != PASS
 <!-- topic:prior-art -->
 ### 8. 外部依据与采用范围
 
-- [SemVer 2.0.0](https://semver.org/spec/v2.0.0.html)：借鉴不可变发布内容与接口变更的版本表达；SemVer 本身不是兼容测试。
-- [Kubernetes version skew policy](https://kubernetes.io/releases/version-skew-policy/)：借鉴按组件明确受支持版本差异，而不照搬其具体版本窗口或升级顺序。
-- [Ansible declarative modules](https://docs.ansible.com/projects/ansible/latest/command_guide/intro_adhoc.html)：借鉴观察实际状态、只修改目标差异。没有要求引入 Ansible 作为必需依赖。
-- [Ansible check mode](https://docs.ansible.com/projects/ansible/latest/playbook_guide/playbooks_checkmode.html)：计划/模拟与实际执行须分别证明，不能用 check 结果替代设备验收。
+- [SemVer 2.0.0](https://github.com/semver/semver.org/blob/gh-pages/spec/v2.0.0.md)：借鉴不可变发布内容与接口变更的版本表达；SemVer 本身不是兼容测试。
+- [Kubernetes version skew policy](https://github.com/kubernetes/website/blob/main/content/en/releases/version-skew-policy.md)：借鉴按组件明确受支持版本差异，而不照搬其具体版本窗口或升级顺序。
+- [Ansible declarative modules](https://github.com/ansible/ansible-documentation/blob/devel/docs/docsite/rst/command_guide/intro_adhoc.rst)：借鉴观察实际状态、只修改目标差异。没有要求引入 Ansible 作为必需依赖。
+- [Ansible check mode](https://github.com/ansible/ansible-documentation/blob/devel/docs/docsite/rst/playbook_guide/playbooks_checkmode.rst)：计划/模拟与实际执行须分别证明，不能用 check 结果替代设备验收。
 
 ## English
 
