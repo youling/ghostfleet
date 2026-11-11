@@ -68,7 +68,7 @@
       "components": [
         "linux-bootstrap",
         "convergence-payload",
-    "selected-capability-artifacts"
+        "selected-capability-artifacts"
       ],
       "check": "npm run check:bootstrap",
       "test": "npm run test:bootstrap",

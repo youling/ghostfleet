@@ -6,16 +6,17 @@ import { fileURLToPath } from "node:url";
 import { GhostFleetController } from "../src/control-plane/controller.js";
 import { createHttpHandler } from "../src/control-plane/http.js";
 import { InMemoryStore } from "../src/control-plane/store.js";
+import { createEnrollmentTemplateCatalog } from "../src/control-plane/enrollment-templates.js";
 import { createCapabilitySelectionProvider } from "../src/control-plane/capability-selection.js";
-import { decodeCapabilitySelection } from "../packages/bootstrap/src/capability.js";
+import { decodeCapabilitySelection, encodeCapabilitySelection } from "../packages/bootstrap/src/capability.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "../packages/bootstrap/test/fixtures");
 const preflight = "sha256:" + "a".repeat(64);
+const origin = "https://ghostfleet.invalid";
 // Synthetic UID assembled at runtime: the publication guard reserves literal
 // node identifiers for reviewed fixtures.
 const NODE_UID = ["node", "00000000", "0000", "4000", "8000", "000000000001"].join("-");
-const origin = "https://ghostfleet.invalid";
 
 async function artifacts() {
   return [
@@ -26,15 +27,11 @@ async function artifacts() {
   ];
 }
 
-async function bundle() {
-  // Deployment-owned pinned artifacts, template-agnostic.
-  const provider = createCapabilitySelectionProvider({});
-  assert.equal(provider, null);
-  const { encodeCapabilitySelection } = await import("../packages/bootstrap/src/capability.js");
+async function bundleFor(template_digest, overrides = {}) {
   return encodeCapabilitySelection({
     source: "template",
     version: "managed-linux-privileged-operations/2026.11",
-    template_digest: "sha256:" + "0".repeat(64),
+    template_digest,
     helper_required: true,
     linger_required: true,
     user_service_required: true,
@@ -43,6 +40,7 @@ async function bundle() {
     privileged_key: "privileged-ops.pub",
     user_unit: { name: "ghostfleet-managed.service", artifact: "ghostfleet-managed.service" },
     artifacts: await artifacts(),
+    ...overrides,
   });
 }
 
@@ -71,74 +69,105 @@ function controller(overrides = {}) {
   });
 }
 
-async function issue(c, template_id) {
-  const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection: { template_id } });
-  return c.issueEnrollmentTicket(attempt.attempt_id, { public_origin: origin });
+async function attemptFor(c, template_id) {
+  return c.createEnrollmentAttempt({ asset_hint: "node", template_selection: { template_id } });
 }
 
-test("a template that selects managed privilege ships pinned artifacts with the claim", async () => {
-  const provider = createCapabilitySelectionProvider({ bundle_base64: await bundle() });
-  const c = controller({ capabilitySelectionProvider: provider });
-  const issued = await issue(c, "managed-linux-standard");
-  const claim = await c.claimEnrollmentTicket({ ticket_id: issued.ticket.ticket_id, short_code: "12345678", preflight_digest: preflight });
-  assert.equal(claim.capability_required, true);
-  assert.equal(typeof claim.capability_selection, "string");
-  // The selection is bound to the ticket template, not to the client request.
-  assert.equal(claim.template_digest, issued.ticket.template_digest);
-  const selection = decodeCapabilitySelection(Buffer.from(claim.capability_selection, "base64").toString("utf8"));
-  assert.equal(selection.template_digest, issued.ticket.template_digest);
+async function issue(c, attempt_id) {
+  return c.issueEnrollmentTicket(attempt_id, { public_origin: origin });
+}
+
+async function claim(c, ticket_id) {
+  return c.claimEnrollmentTicket({ ticket_id, short_code: "12345678", preflight_digest: preflight });
+}
+
+async function scoped(template_id, overrides = {}) {
+  const probe = controller();
+  const attempt = await attemptFor(probe, template_id);
+  const digest = attempt.template_binding.template_digest;
+  const provider = createCapabilitySelectionProvider({ bundle_base64: await bundleFor(digest, overrides) });
+  const c = controller({ store: probe.store, capabilitySelectionProvider: provider });
+  return { c, attempt, digest };
+}
+
+test("a managed template ships only its own pinned artifacts, bound to the ticket", async () => {
+  const { c, attempt, digest } = await scoped("managed-linux-standard");
+  const issued = await issue(c, attempt.attempt_id);
+  const claimed = await claim(c, issued.ticket.ticket_id);
+  assert.equal(claimed.capability_required, true);
+  assert.equal(claimed.template_digest, issued.ticket.template_digest);
+  const selection = decodeCapabilitySelection(Buffer.from(claimed.capability_selection, "base64").toString("utf8"));
+  assert.equal(selection.template_digest, digest);
   assert.equal(selection.helper_required, true);
   assert.equal(selection.linger_required, true);
-  assert.equal(selection.control_account, "ghostfleet-ops");
   assert.deepEqual(selection.artifacts.map((item) => item.name).sort(), [
     "fleet-privctl.py", "ghostfleet-managed.service",
     "managed-linux-privileged-operations.sh", "privileged-ops.pub",
   ]);
-  // Delivered material is public-safe: no secret and no private key body.
-  const text = Buffer.from(claim.capability_selection, "base64").toString("utf8");
+  const text = Buffer.from(claimed.capability_selection, "base64").toString("utf8");
   assert.doesNotMatch(text, /BEGIN .*PRIVATE KEY|auth_key|resume_session/i);
 });
 
 test("a template that requests no privilege claims with no capability material", async () => {
-  const provider = createCapabilitySelectionProvider({ bundle_base64: await bundle() });
-  const c = controller({ capabilitySelectionProvider: provider });
-  const issued = await issue(c, "customer-managed-limited");
-  const claim = await c.claimEnrollmentTicket({ ticket_id: issued.ticket.ticket_id, short_code: "12345678", preflight_digest: preflight });
-  assert.equal(claim.capability_required, false);
-  assert.equal(claim.capability_selection, null);
+  const { c, attempt } = await scoped("customer-managed-limited");
+  const issued = await issue(c, attempt.attempt_id);
+  const claimed = await claim(c, issued.ticket.ticket_id);
+  assert.equal(claimed.capability_required, false);
+  assert.equal(claimed.capability_selection, null);
+});
+
+test("a bundle reviewed for another template cannot be relabelled onto this ticket", async () => {
+  const probe = controller();
+  const attempt = await attemptFor(probe, "managed-linux-standard");
+  const other = await attemptFor(controller(), "managed-linux-tailscale");
+  const foreign = createCapabilitySelectionProvider({
+    bundle_base64: await bundleFor(other.template_binding.template_digest),
+  });
+  const c = controller({ store: probe.store, capabilitySelectionProvider: foreign });
+  const issued = await issue(c, attempt.attempt_id);
+  await assert.rejects(() => claim(c, issued.ticket.ticket_id), /CAPABILITY_SELECTION_BINDING_MISMATCH/);
+  assert.equal(c.store.getEnrollmentTicket(issued.ticket.ticket_id).state, "ISSUED");
+});
+
+test("a selection that does not cover the reviewed plan is refused, not silently installed", async () => {
+  // The template requires the privileged helper; a linger-only bundle would
+  // under-install, so the claim must fail closed.
+  const { c, attempt } = await scoped("managed-linux-standard", { helper_required: false, installer: null, privileged_key: null });
+  const issued = await issue(c, attempt.attempt_id);
+  await assert.rejects(() => claim(c, issued.ticket.ticket_id), /CAPABILITY_SELECTION_INCOMPLETE/);
+  assert.equal(c.store.getEnrollmentTicket(issued.ticket.ticket_id).state, "ISSUED");
+});
+
+test("an unresolvable template fails the claim closed instead of installing nothing", async () => {
+  const real = createEnrollmentTemplateCatalog();
+  let strict = false;
+  const catalog = {
+    resolveSelection(selection) {
+      if (strict) throw new Error("TEMPLATE_NOT_FOUND");
+      return real.resolveSelection(selection);
+    },
+  };
+  const c = controller({ enrollmentTemplates: catalog });
+  const attempt = await attemptFor(c, "managed-linux-standard");
+  const issued = await issue(c, attempt.attempt_id);
+  strict = true;
+  await assert.rejects(() => claim(c, issued.ticket.ticket_id), /TEMPLATE_RESOLUTION_FAILED/);
+  assert.equal(c.store.getEnrollmentTicket(issued.ticket.ticket_id).state, "ISSUED");
 });
 
 test("a managed template without deployment artifacts still reports the requirement", async () => {
   const c = controller();
-  const issued = await issue(c, "managed-linux-standard");
-  const claim = await c.claimEnrollmentTicket({ ticket_id: issued.ticket.ticket_id, short_code: "12345678", preflight_digest: preflight });
-  // The node must fail closed rather than silently under-install.
-  assert.equal(claim.capability_required, true);
-  assert.equal(claim.capability_selection, null);
-});
-
-test("a selection bound to another template is refused and the ticket stays claimable", async () => {
-  const c = controller({
-    capabilitySelectionProvider: {
-      async select() {
-        return { encoded: "c2VsZWN0aW9u", template_digest: "sha256:" + "b".repeat(64) };
-      },
-    },
-  });
-  const issued = await issue(c, "managed-linux-standard");
-  await assert.rejects(
-    () => c.claimEnrollmentTicket({ ticket_id: issued.ticket.ticket_id, short_code: "12345678", preflight_digest: preflight }),
-    /CAPABILITY_SELECTION_BINDING_MISMATCH/,
-  );
-  assert.equal(c.store.getEnrollmentTicket(issued.ticket.ticket_id).state, "ISSUED");
+  const attempt = await attemptFor(c, "managed-linux-standard");
+  const issued = await issue(c, attempt.attempt_id);
+  const claimed = await claim(c, issued.ticket.ticket_id);
+  assert.equal(claimed.capability_required, true);
+  assert.equal(claimed.capability_selection, null);
 });
 
 test("claim material fields outside the explicit allowlist are dropped", async () => {
   const c = new GhostFleetController({
     store: new InMemoryStore(),
     ticketCodeFactory: () => "12345678",
-    // A materializer that tries to smuggle extra material must not reach the
-    // node: the claim response is built from an explicit allowlist.
     enrollmentClaimMaterializer: async ({ ticket, preflight_digest }) => ({
       outcome: "READY",
       delivery: {
@@ -155,21 +184,19 @@ test("claim material fields outside the explicit allowlist are dropped", async (
       preflight_digest,
     }),
   });
-  const issued = await issue(c, "managed-linux-standard");
-  const claim = await c.claimEnrollmentTicket({ ticket_id: issued.ticket.ticket_id, short_code: "12345678", preflight_digest: preflight });
-  assert.equal(claim.capability_selection, null, "materializer material never becomes a selection");
-  assert.equal(claim.capability_required, true, "the template, not the materializer, decides");
-  assert.equal("extra_material" in claim, false);
-  assert.equal(JSON.stringify(claim).includes("bWFsaWNpb3Vz"), false);
+  const attempt = await attemptFor(c, "managed-linux-standard");
+  const issued = await issue(c, attempt.attempt_id);
+  const claimed = await claim(c, issued.ticket.ticket_id);
+  assert.equal(claimed.capability_selection, null, "materializer material never becomes a selection");
+  assert.equal(claimed.capability_required, true, "the template, not the materializer, decides");
+  assert.equal("extra_material" in claimed, false);
+  assert.equal(JSON.stringify(claimed).includes("bWFsaWNpb3Vz"), false);
 });
 
 test("the HTTP claim never lets a client supply or widen the selection", async () => {
-  const provider = createCapabilitySelectionProvider({ bundle_base64: await bundle() });
-  const c = controller({ capabilitySelectionProvider: provider });
+  const { c, attempt } = await scoped("managed-linux-standard");
   const handler = createHttpHandler(c);
-  const issued = await issue(c, "managed-linux-standard");
-  // The wire contract is a plain-text short code plus a preflight-digest header;
-  // there is no field through which a client could supply capability material.
+  const issued = await issue(c, attempt.attempt_id);
   const response = await handler(new Request(origin + "/v1/enrollment-tickets/" + issued.ticket.ticket_id + "/claim", {
     method: "POST",
     headers: { "content-type": "text/plain", "x-ghostfleet-preflight-digest": preflight },
@@ -182,9 +209,7 @@ test("the HTTP claim never lets a client supply or widen the selection", async (
   assert.doesNotMatch(text, /evil/);
   assert.match(text, /artifact=managed-linux-privileged-operations\.sh\|/);
 
-  // Injecting capability text into the claim body is a wrong short code, not a
-  // selection: it never reaches the server-side provider.
-  const injected = await issue(c, "managed-linux-standard");
+  const injected = await issue(c, (await attemptFor(c, "managed-linux-standard")).attempt_id);
   const injectedResponse = await handler(new Request(origin + "/v1/enrollment-tickets/" + injected.ticket.ticket_id + "/claim", {
     method: "POST",
     headers: { "content-type": "text/plain", "x-ghostfleet-preflight-digest": preflight },

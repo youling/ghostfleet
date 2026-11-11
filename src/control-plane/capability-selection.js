@@ -1,5 +1,5 @@
 import {
-  decodeCapabilitySelection, encodeCapabilitySelection,
+  decodeCapabilitySelection, selectionCovers,
 } from "../../packages/bootstrap/src/capability.js";
 
 // The template posture decides whether a node needs the bounded privileged
@@ -13,24 +13,31 @@ export function templateRequiresCapability(installationPlan) {
 }
 
 /**
- * Deployment-owned pinned artifacts. The bundle is the compact selection text
- * without a ticket binding; the ticket's own template digest is injected per
- * claim so a selection can never be replayed onto another template.
+ * Deployment-owned pinned artifacts. The bundle is a complete selection,
+ * including the template digest it was reviewed for: a bundle can never be
+ * relabelled onto another template, so the controller's binding check is real.
  */
 export function createCapabilitySelectionProvider({ bundle_base64 = "" } = {}) {
   const encoded = typeof bundle_base64 === "string" ? bundle_base64.trim() : "";
   if (!encoded) return null;
   const text = Buffer.from(encoded, "base64").toString("utf8");
   // Validated and digest-checked once at startup, never per request.
-  const template = decodeCapabilitySelection(text, { templateDigest: "sha256:" + "0".repeat(64) });
+  const selection = decodeCapabilitySelection(text);
   return Object.freeze({
-    version: template.version,
-    async select({ template_digest }) {
-      if (typeof template_digest !== "string") throw new Error("CAPABILITY_TEMPLATE_DIGEST_REQUIRED");
+    version: selection.version,
+    template_digest: selection.template_digest,
+    selection,
+    async select() {
       return Object.freeze({
-        encoded: encodeCapabilitySelection(template, { templateDigest: template_digest }),
-        template_digest,
+        encoded,
+        template_digest: selection.template_digest,
+        selection,
       });
     },
   });
+}
+
+export function selectionMissingComponents(selection, installationPlan) {
+  const required = (installationPlan?.components ?? []).map((component) => component.id);
+  return selectionCovers(selection, required);
 }
