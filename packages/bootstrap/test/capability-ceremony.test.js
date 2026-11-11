@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, rm, stat, readdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -11,6 +11,11 @@ import {
 } from "../src/index.js";
 
 const linuxOnly = process.platform !== "linux";
+// A real ordinary account: the courier resolves and validates this identity.
+// A root test runner (the disposable jobs) supplies an ordinary account.
+const OPERATING_USER = process.getuid?.() === 0
+  ? (process.env.GHOSTFLEET_TEST_ORDINARY_USER || "ghostfleet-test")
+  : userInfo().username;
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtureDir = join(here, "fixtures");
 const NODE_ID = "fleet-node-fixture";
@@ -75,7 +80,7 @@ async function makeHost() {
     FIXTURE_NODE_ID: NODE_ID,
     FIXTURE_ACCOUNT_HOME: host.accountHome,
     FIXTURE_AUTHKEY: join(host.run, "ts-authkey"),
-    GHOSTFLEET_CONTROL_ORDINARY_USER: "operator",
+    GHOSTFLEET_OPERATING_USER: OPERATING_USER,
   };
   return host;
 }
@@ -208,7 +213,7 @@ test("the template-selected privileged capability installs inside the same root 
     // installer, the unit was materialized, and Linger was enabled.
     const pinnedKey = await readFixture("privileged-ops.pub");
     const applyLine = installJournal.find((line) => line.startsWith("installer --apply"));
-    assert.match(applyLine, /user=operator /);
+    assert.ok(applyLine.includes("user=" + OPERATING_USER + " "), applyLine);
     assert.ok(applyLine.includes("key=" + createHash("sha256").update(pinnedKey, "utf8").digest("hex")));
     assert.equal(await readFile(UNIT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
     assert.equal((await stat(UNIT_PATH(host))).mode & 0o777, 0o644);
@@ -355,7 +360,7 @@ test("a partially applied capability is never reported as completion and repairs
     assert.equal((await readJson(join(host.checkpoint, "capability-state.json"))).mode, "REPAIR");
     const installed = await readJson(join(host.fixtureState, "installed.json"));
     assert.equal(installed.complete, true);
-    assert.equal(installed.ordinary_user, "operator");
+    assert.equal(installed.ordinary_user, OPERATING_USER);
     assert.equal(installed.applies, 2, "the retry repairs, it does not duplicate the account or key");
     assert.equal(await readFile(UNIT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
     assert.ok(await exists(join(host.fixtureState, "linger")));
@@ -730,6 +735,28 @@ test("a legacy reconcile refuses a claim for a different node identity", { skip:
     assert.equal((await calls(host)).filter((line) => line === "tailscale-up").length, 1);
     assert.deepEqual(await installerLog(host).then((lines) => lines.filter((line) => line.includes("--apply"))).then((lines) => lines.length), 1);
   } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("the courier refuses an operating Human identity it cannot trust", { skip: linuxOnly }, async () => {
+  const cases = [
+    { name: "absent", env: { GHOSTFLEET_OPERATING_USER: "", SUDO_USER: "" } },
+    { name: "root", env: { GHOSTFLEET_OPERATING_USER: "root", SUDO_USER: "" } },
+    { name: "unknown account", env: { GHOSTFLEET_OPERATING_USER: "ghostfleet-no-such-human", SUDO_USER: "" } },
+    { name: "injection", env: { GHOSTFLEET_OPERATING_USER: "ops;touch /tmp/owned", SUDO_USER: "" } },
+    { name: "system account", env: { GHOSTFLEET_OPERATING_USER: "daemon", SUDO_USER: "" } },
+  ];
+  for (const item of cases) {
+    const host = await makeHost();
+    try {
+      await freshCheckpoint(host);
+      const selection = await buildSelection();
+      await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
+      const result = await runCourier(host, null, { env: item.env });
+      assert.notEqual(result.status, 0, item.name + " must fail closed");
+      assert.match(result.stderr, /operating Human account/, item.name);
+      assert.deepEqual(await installerLog(host), [], item.name + " installed nothing");
+    } finally { await rm(host.root, { recursive: true, force: true }); }
+  }
 });
 
 test("the selected capability is validated before the preclaim fence and installed before completion", () => {

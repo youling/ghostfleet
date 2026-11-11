@@ -122,8 +122,25 @@ case "$name" in
   chown) record "chown $*" ;;
   getent)
     case "${1:-}" in
-      passwd) [ "${2:-}" = ghostfleet-ops ] && printf 'ghostfleet-ops:x:1234:1234::%s:/bin/sh\n' "${FIXTURE_ACCOUNT_HOME:-/nonexistent}" ;;
+      passwd)
+        if [ "${2:-}" = ghostfleet-ops ]; then
+          printf 'ghostfleet-ops:x:1234:1234::%s:/bin/sh\n' "${FIXTURE_ACCOUNT_HOME:-/nonexistent}"
+        else
+          # The operating Human identity is resolved for real, so the strict
+          # name/uid validation sees a genuine account.
+          for candidate in /usr/bin/getent /bin/getent; do
+            if [ -x "$candidate" ]; then exec "$candidate" "$@"; fi
+          done
+          exit 1
+        fi
+        ;;
       group) exit 0 ;;
+      *)
+        for candidate in /usr/bin/getent /bin/getent; do
+          if [ -x "$candidate" ]; then exec "$candidate" "$@"; fi
+        done
+        exit 1
+        ;;
     esac
     ;;
   loginctl)

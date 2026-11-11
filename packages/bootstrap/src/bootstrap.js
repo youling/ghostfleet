@@ -100,13 +100,25 @@ capability_selected() {
   [ "$CAPABILITY_HELPER_REQUIRED" = 1 ] || [ "$CAPABILITY_LINGER_REQUIRED" = 1 ] || [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]
 }
 
-capability_ordinary_user() {
-  if [ -n "\${GHOSTFLEET_CONTROL_ORDINARY_USER:-}" ]; then
-    printf '%s' "$GHOSTFLEET_CONTROL_ORDINARY_USER"
-  elif [ -n "\${SUDO_USER:-}" ]; then
-    printf '%s' "$SUDO_USER"
-  fi
-  return 0
+# The ordinary Human identity. It is the ONLY value the launcher may hand to
+# this script, and it is only ever used to name the Human owner of the user
+# unit/Linger lane and the installer's admission user. It is never a path, a
+# command, or a source of extra privilege, and it is re-validated here: safe
+# name, existing account, non-root, and an ordinary (uid >= 1000) account.
+# The dedicated managed identity is CAPABILITY_CONTROL_ACCOUNT, which comes
+# from the reviewed template and never from the caller.
+capability_operating_user() {
+  capability_operating="\${GHOSTFLEET_OPERATING_USER:-\${SUDO_USER:-}}"
+  [ -n "$capability_operating" ] || return 0
+  printf '%s' "$capability_operating" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || return 0
+  command -v getent >/dev/null 2>&1 || return 0
+  capability_operating_row="$(getent passwd "$capability_operating" 2>/dev/null || true)"
+  [ -n "$capability_operating_row" ] || return 0
+  capability_operating_uid="$(printf '%s' "$capability_operating_row" | cut -d ':' -f 3)"
+  case "$capability_operating_uid" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$capability_operating_uid" -ne 0 ] || return 0
+  [ "$capability_operating_uid" -ge 1000 ] || return 0
+  printf '%s' "$capability_operating"
 }
 
 capability_artifact_field() {
@@ -211,10 +223,10 @@ capability_validate_selection() {
     for capability_tool in bash python3 useradd usermod passwd visudo sudo getent; do
       command -v "$capability_tool" >/dev/null 2>&1 || fail "preflight failed: $capability_tool is required by the selected privileged helper"
     done
-    capability_ordinary="$(capability_ordinary_user)"
-    [ -n "$capability_ordinary" ] || fail 'selected privileged helper needs the ordinary control user; run the courier from the Human administrator account'
-    printf '%s' "$capability_ordinary" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || fail 'ordinary control user is invalid'
-    [ "$capability_ordinary" != root ] || fail 'ordinary control user must not be root'
+    capability_ordinary="$(capability_operating_user)"
+    [ -n "$capability_ordinary" ] || fail 'selected privileged helper needs the operating Human account, but none was delivered; run the Console one-time command from the Human administrator account (the launcher captures it automatically, sudo also supplies SUDO_USER)'
+    printf '%s' "$capability_ordinary" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || fail 'operating Human user name is invalid'
+    [ "$capability_ordinary" != root ] || fail 'operating Human user must not be root'
     [ "$capability_ordinary" != "$CAPABILITY_CONTROL_ACCOUNT" ] || fail 'ordinary and dedicated control accounts must differ'
   fi
   if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
@@ -266,7 +278,7 @@ capability_stage_cleanup() {
 }
 
 capability_installer() {
-  capability_ordinary="$(capability_ordinary_user)"
+  capability_ordinary="$(capability_operating_user)"
   FLEET_CONTROL_ORDINARY_USER="$capability_ordinary" \\
     FLEET_CONTROL_PRIVILEGED_SSH_PUBLIC_KEY_FILE="$CAPABILITY_STAGE_DIR/$CAPABILITY_PRIVILEGED_KEY" \\
     bash "$CAPABILITY_STAGE_DIR/$CAPABILITY_INSTALLER" "$1"

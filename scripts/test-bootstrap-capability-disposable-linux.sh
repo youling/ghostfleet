@@ -122,7 +122,7 @@ HARNESS
 
 run_capability() {
   CAPABILITY_CHECKPOINT="$1" CAPABILITY_DATA="$2" CAPABILITY_LIBRARY="$work/capability-library.sh" \
-    GHOSTFLEET_CONTROL_ORDINARY_USER="$ordinary" \
+    GHOSTFLEET_OPERATING_USER="$ordinary" \
     sh "$work/harness.sh"
 }
 
@@ -144,7 +144,7 @@ CLAIM_HARNESS
 run_claim() {
   CAPABILITY_CHECKPOINT="$1" CAPABILITY_LIBRARY="$work/capability-library.sh" \
     JSON_LIBRARY="$work/json-library.sh" CLAIM_FILE="$work/claim.json" \
-    GHOSTFLEET_CONTROL_ORDINARY_USER="$ordinary" \
+    GHOSTFLEET_OPERATING_USER="$ordinary" \
     sh "$work/claim-harness.sh"
 }
 expected_helper_sha="$(sha256sum "$privileged_root/fleet_privctl.py" | awk '{print $1}')"

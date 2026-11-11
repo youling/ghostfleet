@@ -138,9 +138,26 @@ function quoteShell(value) {
 // env -i also drops ENV/BASH_ENV/LD_* and TMPDIR that the elevation tool may
 // have preserved (non-login su does), so the privileged script starts from an
 // environment that only this control plane chose.
+// The caller's user name is the only value that crosses the elevation boundary,
+// and it crosses as the shell's first positional parameter ($1), never as an
+// environment variable: env -i keeps dropping everything the caller chose, and
+// the privileged script re-validates the name before it owns anything.
 function cleanRootShell(script) {
-  return [TRUSTED_ENV, "-i", "PATH=" + TRUSTED_PATH, "HOME=/root", TRUSTED_SHELL, "-c", quoteShell(script)].join(" ");
+  return [TRUSTED_ENV, "-i", "PATH=" + TRUSTED_PATH, "HOME=/root", TRUSTED_SHELL, "-c", quoteShell(script), "ghostfleet-enroll"].join(" ");
 }
+
+// The one identity GhostFleet may hand to the privileged script. It is captured
+// before elevation from the kernel (`id -un`), validated here so it can never
+// inject shell syntax, and re-validated by the bootstrap (name, existence, uid).
+const OPERATING_USER_CAPTURE = [
+  "OPERATING_USER=",
+  'if [ "$(id -u)" -ne 0 ]; then',
+  '  OPERATING_USER="$(id -un)"',
+  '  case "$OPERATING_USER" in',
+  "    ''|*[!a-z0-9_-]*) printf '%s\\n' 'GhostFleet cannot determine a safe operating user name; run the command as the Human administrator account' >&2; exit 1 ;;",
+  "  esac",
+  "fi",
+].join("\n");
 
 function portableBootstrapCommand(origin) {
   const downloadUrl = origin + "/v1/bootstrap.sh";
@@ -211,17 +228,22 @@ function portableBootstrapCommand(origin) {
     "  *) printf '%s\\n' 'Invalid enrollment URL for this control plane' >&2; exit 1 ;;",
     "esac",
     "export GHOSTFLEET_ENROLLMENT_URL",
+    // The bootstrap validates this name again before anything becomes its owner.
+    'GHOSTFLEET_OPERATING_USER="${1-}"',
+    "export GHOSTFLEET_OPERATING_USER",
     TRUSTED_SHELL + ' "$BOOTSTRAP"',
   ].join("\n");
   const elevated = cleanRootShell(rootScript);
   return [
     "(",
+    OPERATING_USER_CAPTURE,
     'if [ "$(id -u)" -eq 0 ]; then',
-    "  " + elevated,
+    "  " + elevated + ' "$OPERATING_USER"',
     "elif command -v sudo >/dev/null 2>&1; then",
-    "  sudo " + elevated,
+    "  sudo " + elevated + ' "$OPERATING_USER"',
     "elif command -v su >/dev/null 2>&1; then",
-    "  su --login root -c " + quoteShell(elevated),
+    "  ELEVATED=" + quoteShell(elevated),
+    "  su --login root -c \"$ELEVATED '$OPERATING_USER'\"",
     "else",
     "  printf '%s\\n' 'GhostFleet requires one root confirmation using sudo or su' >&2",
     "  exit 1",

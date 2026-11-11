@@ -35,6 +35,22 @@ function quoteShell(value) {
   return "'" + String(value).replaceAll("'", "'\\''") + "'";
 }
 
+test("the launcher hands over one validated Human name and nothing else", () => {
+  const command = delivery().command;
+  // Captured from the kernel before elevation, validated for shell safety.
+  assert.match(command, /OPERATING_USER="\$\(id -un\)"/);
+  assert.match(command, /case "\$OPERATING_USER" in/);
+  assert.match(command, /\*\[!a-z0-9_-\]\*/);
+  assert.doesNotMatch(command, /\$\{?SUDO_USER\b/);
+  // It crosses as the shell's first positional parameter, for both paths.
+  assert.match(command, /ghostfleet-enroll "\$OPERATING_USER"/);
+  assert.match(command, /su --login root -c "\$ELEVATED '\$OPERATING_USER'"/);
+  // The clean environment keeps exactly the two values it already had.
+  assert.match(command, /\/usr\/bin\/env -i PATH=\/usr\/sbin:\/usr\/bin:\/sbin:\/bin HOME=\/root \/bin\/sh -c /);
+  // The bootstrap re-reads it from its positional parameter, not from argv soup.
+  assert.match(command, /GHOSTFLEET_OPERATING_USER="\$\{1-\}"/);
+});
+
 test("delivered launcher does not disclose one-time material in copied shell history", () => {
   const d = delivery();
   assert.equal(d.one_time_url, url);
@@ -190,8 +206,12 @@ function sandbox({ elevation = "su", pollutePath = false, slowStty = false } = {
 
   writeScript(join(callerBin, "id"), [
     "#!/bin/sh",
-    '[ "$1" = -u ] || exit 2',
-    "printf '%s\\n' '" + (elevation === "root" ? "0" : "1000") + "'",
+    "case \"$1\" in",
+    "  -u) printf '%s\\n' '" + (elevation === "root" ? "0" : "1000") + "' ;;",
+    // The launcher captures the Human name with id -un before elevation.
+    "  -un) printf '%s\\n' 'fixture-human' ;;",
+    "  *) exit 2 ;;",
+    "esac",
   ]);
   if (elevation === "su") {
     // Deliberately leaky: a non-login su keeps the caller environment. The
