@@ -1217,3 +1217,124 @@ test("a recorded lane whose unit bytes are not the reviewed artifact is not dele
       "the record is kept when the lane could not be decommissioned");
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
+
+// ---------------------------------------------------------------------------
+// The declared/recorded cross-check must not depend on the account lane, and a
+// compliant helper must never "converge" without a readable record.
+// ---------------------------------------------------------------------------
+
+const HELPER_ONLY = { linger_required: false, user_service_required: false, user_unit: null };
+
+function prettyRecord(opsUser) {
+  return JSON.stringify({ schema: "youling-fleet-privileged-operations-local/v2", ordinary_user: OPERATING_USER, ops_user: opsUser }, null, 2) + "\n";
+}
+
+test("a helper-only template still cross-checks the declared privileged account", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    // No unit and no Linger lane at all: only the bounded helper is requested.
+    const result = await runCourier(host, await buildSelection({
+      ...HELPER_ONLY, privileged_account: "ghostfleet-ops-alt",
+    }));
+    assert.notEqual(result.status, 0, "a helper-only template must not accept a wrong declaration");
+    assert.match(result.stderr, /CAPABILITY_PRIVILEGED_ACCOUNT_MISMATCH/);
+    assert.match(result.stderr, /admits ghostfleet-ops/);
+    assert.equal(startingWith(await installerLog(host), "installer --apply").length, 1, "the installer really ran");
+    assert.equal(await exists(join(host.fixtureState, "complete-body.json")), false, "no completion is reported");
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a helper-only node that reports compliant but records another account is not zero delta", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection(HELPER_ONLY);
+    const first = await runCourier(host, selection);
+    assert.equal(first.status, 0, first.stderr);
+    // The installer now records a different ops account than the one declared.
+    await writeFile(host.installerState, prettyRecord("ghostfleet-ops-alt"));
+    const second = await runCourier(host, selection);
+    assert.notEqual(second.status, 0);
+    assert.doesNotMatch(second.stderr, /already converged/);
+    assert.match(second.stderr, /CAPABILITY_PRIVILEGED_ACCOUNT_MISMATCH/);
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a compliant helper with no readable record is refused on the zero-delta path", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    const first = await runCourier(host, selection);
+    assert.equal(first.status, 0, first.stderr);
+    // The helper still reports COMPLIANT (its --check never reads control.json),
+    // but the record the declaration is compared against is gone.
+    await rm(host.installerState, { force: true });
+    const second = await runCourier(host, selection);
+    assert.notEqual(second.status, 0);
+    assert.doesNotMatch(second.stderr, /already converged/);
+    assert.match(second.stderr, /CAPABILITY_PRIVILEGED_ACCOUNT_UNVERIFIED/);
+    assert.match(second.stderr, /is missing/);
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("the installer record is parsed, not pattern-matched", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    assert.equal((await runCourier(host, selection)).status, 0);
+    // A reformatted record that names another account is still a mismatch.
+    await writeFile(host.installerState, prettyRecord("ghostfleet-ops-alt"));
+    const mismatched = await runCourier(host, selection);
+    assert.notEqual(mismatched.status, 0);
+    assert.match(mismatched.stderr, /CAPABILITY_PRIVILEGED_ACCOUNT_MISMATCH/);
+    // A reformatted record with the right account is accepted.
+    await writeFile(host.installerState, prettyRecord(PRIVILEGED_ACCOUNT));
+    const accepted = await runCourier(host, selection);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.match(accepted.stderr, /already converged/);
+    // A record that exists but carries no ops_user is unverified, not accepted.
+    await writeFile(host.installerState, JSON.stringify({ schema: "x", ordinary_user: OPERATING_USER }) + "\n");
+    const unreadable = await runCourier(host, selection);
+    assert.notEqual(unreadable.status, 0);
+    assert.match(unreadable.stderr, /CAPABILITY_PRIVILEGED_ACCOUNT_UNVERIFIED/);
+    assert.match(unreadable.stderr, /records no readable ops_user/);
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a stale v1 record with no lane left is removed so the next claim is not blocked", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    assert.equal((await runCourier(host, selection)).status, 0);
+
+    // A v1 record whose lane was already cleaned up by hand: nothing left to
+    // delete, but the record alone would stop the next claim at the schema gate.
+    const text = Buffer.from(encodeCapabilitySelection(selection), "base64").toString("utf8");
+    const v1 = text
+      .replace("schema=ghostfleet-selected-capability/v2", "schema=ghostfleet-selected-capability/v1")
+      .split("\n")
+      .filter((line) => !line.startsWith("privileged_account="))
+      .map((line) => (line.startsWith("control_account=") ? "control_account=" + PRIVILEGED_ACCOUNT : line))
+      .join("\n");
+    await writeFile(join(host.checkpoint, "capability-selection.txt"), Buffer.from(v1).toString("base64") + "\n");
+
+    const second = await runCourier(host, null);
+    assert.notEqual(second.status, 0);
+    assert.match(second.stderr, /CAPABILITY_STALE_PRIVILEGED_LANE/);
+    assert.match(second.stderr, /removed the recorded v1 selection/);
+    assert.equal(await exists(join(host.checkpoint, "capability-selection.txt")), false,
+      "the stale record is removed with the lane it described");
+
+    // The next authorized claim is no longer blocked by the record.
+    await rm(UNIT_PATH(host), { force: true });
+    await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
+    const third = await runCourier(host, null);
+    assert.equal(third.status, 0, third.stderr);
+    assert.doesNotMatch(third.stderr, /CAPABILITY_SCHEMA_V1_UNPROVEN/);
+    assert.ok(await exists(UNIT_PATH(host)), "the claim-installed lane is present");
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});

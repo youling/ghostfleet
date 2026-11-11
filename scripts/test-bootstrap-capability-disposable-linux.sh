@@ -527,6 +527,24 @@ rm -f "$stale_want" "$stale_unit"
 installer_state=/etc/youling-fleet/privileged-operations/control.json
 [[ -r "$installer_state" ]] || fail_check "the reviewed installer recorded no state file"
 cp "$installer_state" "$work/control.json.orig"
+# A helper that reports COMPLIANT with no readable record must not converge.
+rm -f "$installer_state"
+mkdir -p "$work/checkpoint-unrecorded"
+if run_capability "$work/checkpoint-unrecorded" "$work/capability-data.sh" >"$work/unrecorded.log" 2>&1; then
+  cp "$work/control.json.orig" "$installer_state"
+  fail_check "a compliant helper with no recorded ops account reported convergence"
+fi
+grep -q 'CAPABILITY_PRIVILEGED_ACCOUNT_UNVERIFIED' "$work/unrecorded.log" || {
+  cp "$work/control.json.orig" "$installer_state"
+  cat "$work/unrecorded.log" >&2
+  fail_check "the missing record was refused for an unexpected reason"
+}
+if grep -q 'already converged' "$work/unrecorded.log"; then
+  cp "$work/control.json.orig" "$installer_state"
+  fail_check "a node with no readable record reported zero delta"
+fi
+cp "$work/control.json.orig" "$installer_state"
+record_ok "compliant helper without a record refused: $(grep -o 'CAPABILITY_PRIVILEGED_ACCOUNT_UNVERIFIED[^;]*' "$work/unrecorded.log" | head -n1)"
 python3 - "$installer_state" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
@@ -553,4 +571,4 @@ evidence "privileged_account=$privileged_account sudo_rule=$(sudo -l -U "$privil
 evidence "negative=$run_account cannot sudo -n $helper_path; positive=$privileged_account ran it: $(cat "$work/ops-sudo.log")"
 evidence "claim selection_digest=$claim_digest"
 
-echo "PASS published selected-capability lane created the dedicated run account (nologin, locked, no sudo, no root-equivalent group), kept the privileged account separate, installed the real reviewed helper under fixed-pin digests, put the unit and Linger under the run account, refused the account collision and the missing run account without any effect, caught a root-equivalent group granted by the installer after it ran, cross-checked the declared privileged account against the installer record, refused a v1 lane left inside the privileged account, rolled back only the account it created, adopted a pre-existing account without recreating it, and answered the claim channel through the published parser. Real OMV8 Linger/SSH admission and a real managed runtime NOT_RUN"
+echo "PASS published selected-capability lane created the dedicated run account (nologin, locked, no sudo, no root-equivalent group), kept the privileged account separate, installed the real reviewed helper under fixed-pin digests, put the unit and Linger under the run account, refused the account collision and the missing run account without any effect, caught a root-equivalent group granted by the installer after it ran, cross-checked the declared privileged account against the installer record (and refused a compliant helper whose record is missing), refused a v1 lane left inside the privileged account, rolled back only the account it created, adopted a pre-existing account without recreating it, and answered the claim channel through the published parser. Real OMV8 Linger/SSH admission and a real managed runtime NOT_RUN"

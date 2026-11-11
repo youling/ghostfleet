@@ -55,10 +55,17 @@ loginctl show-user ghostfleet-ops -p Linger          # expect Linger=no on a v1-
 Decommission the old lane before rendering a v2 selection:
 
 ```sh
-loginctl disable-linger ghostfleet-ops
+sudo -iu ghostfleet-ops systemctl --user disable --now ghostfleet-managed.service
 rm -f "<privileged home>/.config/systemd/user/default.target.wants/ghostfleet-managed.service"
 rm -f "<privileged home>/.config/systemd/user/ghostfleet-managed.service"
+loginctl disable-linger ghostfleet-ops
+# the v1 record would otherwise block the next claim at the schema gate
+rm -f /var/lib/fleet/capability-selection.txt
 ```
+
+The courier removes a stale v1 record by itself when the lane it describes is
+already gone, but the manual path must do the same or the next claim is refused
+with `[CAPABILITY_SCHEMA_V1_UNPROVEN]`.
 
 The courier deletes that lane itself only in one narrow case: this run restored
 its selection **from this node's own record** (`/var/lib/fleet/capability-selection.txt`,

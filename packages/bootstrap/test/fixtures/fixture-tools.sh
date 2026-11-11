@@ -265,7 +265,17 @@ case "$name" in
       exit 1
     fi
     ;;
-  usermod|passwd|visudo|python3) record "$name $*" ;;
+  python3)
+    # The courier parses the installer's recorded ops account with python3, so the
+    # stub must produce real output rather than a recorded no-op.
+    # Read-only parsing helper: not recorded, so a zero-delta run stays byte- and
+    # journal-identical to the run that installed the lane.
+    for candidate in /usr/bin/python3 /bin/python3; do
+      if [ -x "$candidate" ]; then exec "$candidate" "$@"; fi
+    done
+    exit 1
+    ;;
+  usermod|passwd|visudo) record "$name $*" ;;
   *) record "unexpected-command $name"; exit 7 ;;
 esac
 exit 0
