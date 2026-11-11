@@ -29,6 +29,12 @@ machine.
    its ownership, its bytes matching the pinned artifact and its enablement.
 5. `FLEET_CONTROL_ORDINARY_USER` equals the Human; the unit and Linger belong to
    the template's `control_account`; neither is root; a second run is zero delta.
+6. The run account is created by the courier inside the same ceremony and is
+   least privilege: `sudo -l -U <control_account>` reports no grant, its groups
+   contain no root-equivalent group, and `su -s /bin/sh <control_account> -c
+   'sudo -n /usr/local/libexec/youling-fleet/fleet-privctl'` fails, while the
+   same command run as the privileged `ghostfleet-ops` account reaches the
+   helper. `control_account` and `privileged_account` are never equal.
 
 The only allowed stub is the **Tailscale provider join** (a real tailnet auth key
 is an external credential). Everything else must be real.
