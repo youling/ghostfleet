@@ -29,9 +29,10 @@
     "build:typed": "npm run build --workspace @ghostfleet/typed-control",
     "check:publication": "node scripts/publication-guard.mjs",
     "check:docs": "node scripts/docs-check.mjs",
-    "check:all": "npm run check && npm run check:typed && npm run check:bootstrap && npm run check:publication && npm run check:docs",
+    "check:all": "npm run check && npm run check:typed && npm run check:bootstrap && npm run check:publication && npm run check:docs && npm run check:versioned-enrollment-spec",
     "verify:python-artifact": "python scripts/verify-python-artifact.py",
-    "verify:ai-client-neutral": "node scripts/verify-ai-client-neutral.mjs"
+    "verify:ai-client-neutral": "node scripts/verify-ai-client-neutral.mjs",
+    "check:versioned-enrollment-spec": "node scripts/check-versioned-enrollment-spec.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.0",
