@@ -26,6 +26,11 @@ const FILE_MODE = /^0?[0-7]{3}$/;
 const VERSION = /^[A-Za-z0-9][A-Za-z0-9._+/-]{0,63}$/;
 const ACCOUNT = /^[a-z_][a-z0-9_-]{0,31}$/;
 const UNIT_NAME = /^[a-z][a-z0-9_.-]{0,63}\.service$/;
+const SELECTION_TEXT_KEYS = new Set([
+  "schema", "version", "template_digest", "helper_required", "linger_required",
+  "user_service_required", "control_account", "installer", "privileged_key",
+  "user_unit", "user_unit_artifact", "artifact",
+]);
 const SELECTION_KEYS = [
   "source", "template_digest", "version", "helper_required", "linger_required",
   "user_service_required", "control_account", "installer", "privileged_key",
@@ -271,8 +276,11 @@ export function decodeCapabilitySelection(text, { templateDigest = null } = {}) 
     if (index <= 0) throw invalid("CAPABILITY_SELECTION_INVALID");
     const key = line.slice(0, index);
     const value = line.slice(index + 1);
+    if (!SELECTION_TEXT_KEYS.has(key)) throw invalid("CAPABILITY_SELECTION_INVALID");
     if (key === "artifact") {
-      const [name, sha256, mode, base64] = value.split("|");
+      const parts = value.split("|");
+      if (parts.length !== 4) throw invalid("CAPABILITY_SELECTION_INVALID");
+      const [name, sha256, mode, base64] = parts;
       if (!name || !sha256 || !mode || !base64) throw invalid("CAPABILITY_SELECTION_INVALID");
       artifacts.push({ name, sha256: "sha256:" + sha256, mode, content: Buffer.from(base64, "base64").toString("utf8") });
       continue;
@@ -294,4 +302,35 @@ export function decodeCapabilitySelection(text, { templateDigest = null } = {}) 
     user_unit: fields.get("user_unit") ? { name: fields.get("user_unit"), artifact: fields.get("user_unit_artifact") } : null,
     artifacts,
   });
+}
+/** The digest the node records: byte-identical in shell and JS. */
+export function capabilitySelectionDigest(selection) {
+  const lines = [
+    SELECTED_CAPABILITY_SCHEMA,
+    selection.version,
+    selection.template_digest,
+    (selection.helper_required ? "1" : "0") + (selection.linger_required ? "1" : "0") + (selection.user_service_required ? "1" : "0"),
+    selection.control_account ?? "",
+    selection.installer ?? "",
+    selection.privileged_key ?? "",
+    selection.user_unit?.name ?? "",
+    selection.user_unit?.artifact ?? "",
+  ];
+  const rows = selection.artifacts
+    .map((item) => item.name + "|" + item.sha256 + "|" + item.mode)
+    .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+  return "sha256:" + createHash("sha256").update([...lines, ...rows].join("\n")).digest("hex");
+}
+
+/**
+ * The reviewed plan's required components must all be covered by the delivered
+ * selection; shipping a weaker selection would silently under-install.
+ */
+export function selectionCovers(selection, requiredComponentIds = []) {
+  const missing = [];
+  const required = new Set(requiredComponentIds);
+  if (required.has("privileged_helper") && selection.helper_required !== true) missing.push("privileged_helper");
+  if (required.has("linger") && selection.linger_required !== true) missing.push("linger");
+  if (required.has("user_manager") && selection.linger_required !== true && selection.user_service_required !== true) missing.push("user_manager");
+  return Object.freeze(missing);
 }

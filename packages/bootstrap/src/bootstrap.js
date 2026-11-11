@@ -7,6 +7,10 @@ export PATH
 BROKER_ORIGIN="\${GHOSTFLEET_BROKER_ORIGIN:-}"
 ENROLLMENT_URL="\${GHOSTFLEET_ENROLLMENT_URL:-}"
 if [ -n "$ENROLLMENT_URL" ]; then
+  printf '%s' "$ENROLLMENT_URL" | grep -Eq '^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?/v1/enrollment-tickets/[A-Za-z0-9._~%-]+$' || {
+    printf '%s\\n' 'fleet-enroll: invalid one-time enrollment URL; an exact HTTPS ticket URL is required' >&2
+    exit 1
+  }
   ENROLLMENT_SCHEME="\${ENROLLMENT_URL%%:*}"
   [ "$ENROLLMENT_SCHEME" = https ] || { printf '%s\\n' 'fleet-enroll: invalid one-time enrollment URL scheme' >&2; exit 1; }
   case "$ENROLLMENT_URL" in
@@ -85,6 +89,7 @@ CAPABILITY_LINGER_STATE=UNKNOWN
 CAPABILITY_MODE=NOT_REQUESTED
 CAPABILITY_REQUIRED=0
 CAPABILITY_CLAIM_SELECTION_B64=
+CAPABILITY_RECORD_FILE="$CHECKPOINT_DIR/capability-selection.txt"
 CAPABILITY_STAGE_DIR=
 CAPABILITY_CREATED_UNIT=
 CAPABILITY_CREATED_WANT=
@@ -115,6 +120,52 @@ capability_states_compliant() {
 }
 
 # Read-only. Runs before package, provider, service or credential effects.
+# The digest binds the exact reviewed selection (version, ticket digest, enabled
+# components and every pinned artifact) to what the node recorded and reported.
+capability_selection_digest() {
+  {
+    printf '%s\\n' 'ghostfleet-selected-capability/v1'
+    printf '%s\\n' "$CAPABILITY_VERSION" "$CAPABILITY_TEMPLATE_DIGEST" \\
+      "$CAPABILITY_HELPER_REQUIRED$CAPABILITY_LINGER_REQUIRED$CAPABILITY_USER_SERVICE_REQUIRED" \\
+      "$CAPABILITY_CONTROL_ACCOUNT" "$CAPABILITY_INSTALLER" "$CAPABILITY_PRIVILEGED_KEY" \\
+      "$CAPABILITY_USER_UNIT" "$CAPABILITY_USER_UNIT_ARTIFACT"
+    capability_index=1
+    while [ "$capability_index" -le "$CAPABILITY_ARTIFACT_COUNT" ]; do
+      printf '%s|%s|%s\\n' \\
+        "$(capability_artifact_field "$capability_index" 1)" \\
+        "$(capability_artifact_field "$capability_index" 2)" \\
+        "$(capability_artifact_field "$capability_index" 3)"
+      capability_index=$((capability_index + 1))
+    done | sort
+  } | sha256sum | awk '{print "sha256:" $1}'
+}
+
+capability_selection_text() {
+  printf '%s\\n' "schema=$CAPABILITY_SCHEMA" "version=$CAPABILITY_VERSION" \\
+    "template_digest=$CAPABILITY_TEMPLATE_DIGEST" \\
+    "helper_required=$CAPABILITY_HELPER_REQUIRED" "linger_required=$CAPABILITY_LINGER_REQUIRED" \\
+    "user_service_required=$CAPABILITY_USER_SERVICE_REQUIRED" \\
+    "control_account=$CAPABILITY_CONTROL_ACCOUNT" "installer=$CAPABILITY_INSTALLER" \\
+    "privileged_key=$CAPABILITY_PRIVILEGED_KEY" "user_unit=$CAPABILITY_USER_UNIT" \\
+    "user_unit_artifact=$CAPABILITY_USER_UNIT_ARTIFACT"
+  capability_index=1
+  while [ "$capability_index" -le "$CAPABILITY_ARTIFACT_COUNT" ]; do
+    printf 'artifact=%s\\n' "$(capability_artifact_row "$capability_index")"
+    capability_index=$((capability_index + 1))
+  done
+}
+
+# A converged node re-proves the capability it recorded, without asking for a new
+# enrollment or a new credential. The record is only written after a selection
+# was verified and applied by an authorized first run.
+capability_restore_recorded() {
+  [ -r "$CAPABILITY_RECORD_FILE" ] || return 0
+  if capability_selected; then return 0; fi
+  CAPABILITY_REQUIRED=1
+  CAPABILITY_CLAIM_SELECTION_B64="$(cat "$CAPABILITY_RECORD_FILE")"
+  CAPABILITY_SELECTION_ORIGIN=recorded
+  capability_ingest_claim
+}
 capability_validate_selection() {
   if ! capability_selected; then
     [ "$CAPABILITY_ARTIFACT_COUNT" = 0 ] || fail 'refusing privileged capability artifacts that no template requested'
@@ -161,6 +212,10 @@ capability_validate_selection() {
     [ "$capability_ordinary" != root ] || fail 'ordinary control user must not be root'
     [ "$capability_ordinary" != "$CAPABILITY_CONTROL_ACCOUNT" ] || fail 'ordinary and dedicated control accounts must differ'
   fi
+  if [ "$CAPABILITY_HELPER_REQUIRED" != 1 ] && [ "$CAPABILITY_LINGER_REQUIRED" = 1 ]; then
+    printf '%s' "$CAPABILITY_CONTROL_ACCOUNT" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || fail 'selected-capability control account is invalid'
+    [ "$CAPABILITY_CONTROL_ACCOUNT" != root ] || fail 'selected-capability control account must not be root'
+  fi
   if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
     [ -n "$CAPABILITY_UNIT_INDEX" ] || fail 'selected user service does not pin its unit artifact'
     printf '%s' "$CAPABILITY_USER_UNIT" | grep -Eq '^[a-z][a-z0-9_.-]{0,63}\\.service$' || fail 'selected user unit name is invalid'
@@ -173,6 +228,7 @@ capability_validate_selection() {
   # effect. A mismatching artifact is a missing dependency.
   capability_stage
   capability_stage_cleanup
+  CAPABILITY_SELECTION_DIGEST="$(capability_selection_digest)"
   return 0
 }
 
@@ -336,17 +392,29 @@ capability_rollback_files() {
 capability_state_write() {
   install -d -m 0700 -o root -g root "$CHECKPOINT_DIR"
   capability_state_file="$CHECKPOINT_DIR/capability-state.json"
-  capability_state_body="{\\"schema\\":\\"ghostfleet-capability-state/v1\\",\\"version\\":\\"$CAPABILITY_VERSION\\",\\"selection_digest\\":\\"$CAPABILITY_SELECTION_DIGEST\\",\\"template_digest\\":\\"$CAPABILITY_TEMPLATE_DIGEST\\",\\"mode\\":\\"$CAPABILITY_MODE\\",\\"components\\":{\\"privileged_helper\\":\\"$CAPABILITY_HELPER_STATE\\",\\"user_service\\":\\"$CAPABILITY_USER_SERVICE_STATE\\",\\"linger\\":\\"$CAPABILITY_LINGER_STATE\\"}}"
-  if [ -r "$capability_state_file" ] && [ "$(cat "$capability_state_file")" = "$capability_state_body" ]; then return 0; fi
+  capability_state_body='{"schema":"ghostfleet-capability-state/v1","version":"'"$CAPABILITY_VERSION"'","selection_digest":"'"$CAPABILITY_SELECTION_DIGEST"'","template_digest":"'"$CAPABILITY_TEMPLATE_DIGEST"'","mode":"'"$CAPABILITY_MODE"'","components":{"privileged_helper":"'"$CAPABILITY_HELPER_STATE"'","user_service":"'"$CAPABILITY_USER_SERVICE_STATE"'","linger":"'"$CAPABILITY_LINGER_STATE"'"}}'
+  if [ -r "$capability_state_file" ] && [ "$(cat "$capability_state_file")" = "$capability_state_body" ]; then
+    capability_record_write
+    return 0
+  fi
   printf '%s\\n' "$capability_state_body" > "$capability_state_file.$$"
   chmod 0600 "$capability_state_file.$$"
   chown root:root "$capability_state_file.$$"
   mv -f "$capability_state_file.$$" "$capability_state_file"
+  capability_record_write
 }
 
-# Install exactly the capability the reviewed template selected, inside the
-# single authorized root ceremony. Partial application is reported as a failure
-# and never as completion.
+# The reviewed selection is kept next to the checkpoint so a later run can
+# re-prove the installed lane without a new enrollment or credential.
+capability_record_write() {
+  capability_selected || return 0
+  [ -n "$CAPABILITY_VERSION" ] || return 0
+  capability_selection_text | base64 -w0 > "$CAPABILITY_RECORD_FILE.$$"
+  chmod 0600 "$CAPABILITY_RECORD_FILE.$$"
+  chown root:root "$CAPABILITY_RECORD_FILE.$$"
+  mv -f "$CAPABILITY_RECORD_FILE.$$" "$CAPABILITY_RECORD_FILE"
+}
+
 # The claim is the only server-authoritative source of the selected capability.
 # Values are strict-validated before use and never taken from argv or the URL.
 capability_ingest_claim() {
@@ -355,6 +423,9 @@ capability_ingest_claim() {
       fail 'the enrollment template requires the privileged capability but the claim delivered no pinned artifacts; no privileged component was installed'
     fi
     return 0
+  fi
+  if [ "$CAPABILITY_REQUIRED" != 1 ]; then
+    fail 'the claim delivered a capability selection for a template that requires none; no privileged component was installed'
   fi
   capability_decoded="$(printf '%s' "$CAPABILITY_CLAIM_SELECTION_B64" | base64 -d 2>/dev/null)" || capability_decoded=
   [ -n "$capability_decoded" ] || fail 'claim capability selection is not decodable; no privileged component was installed'
@@ -378,19 +449,19 @@ capability_ingest_claim() {
   while IFS= read -r capability_line; do
     case "$capability_line" in
       '') continue ;;
-      schema=*) [ -z "$CAPABILITY_SCHEMA" ] || fail 'claim capability selection repeats the schema'; CAPABILITY_SCHEMA="\${capability_line#schema=}" ;;
-      version=*) CAPABILITY_VERSION="\${capability_line#version=}" ;;
-      template_digest=*) CAPABILITY_TEMPLATE_DIGEST="\${capability_line#template_digest=}" ;;
-      helper_required=*) CAPABILITY_HELPER_REQUIRED="\${capability_line#helper_required=}" ;;
-      linger_required=*) CAPABILITY_LINGER_REQUIRED="\${capability_line#linger_required=}" ;;
-      user_service_required=*) CAPABILITY_USER_SERVICE_REQUIRED="\${capability_line#user_service_required=}" ;;
-      control_account=*) CAPABILITY_CONTROL_ACCOUNT="\${capability_line#control_account=}" ;;
-      installer=*) CAPABILITY_INSTALLER="\${capability_line#installer=}" ;;
-      privileged_key=*) CAPABILITY_PRIVILEGED_KEY="\${capability_line#privileged_key=}" ;;
-      user_unit=*) CAPABILITY_USER_UNIT="\${capability_line#user_unit=}" ;;
-      user_unit_artifact=*) CAPABILITY_USER_UNIT_ARTIFACT="\${capability_line#user_unit_artifact=}" ;;
+      schema=*) [ -z "$CAPABILITY_SCHEMA" ] || fail 'claim capability selection repeats the schema'; CAPABILITY_SCHEMA="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
+      version=*) CAPABILITY_VERSION="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
+      template_digest=*) CAPABILITY_TEMPLATE_DIGEST="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
+      helper_required=*) CAPABILITY_HELPER_REQUIRED="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
+      linger_required=*) CAPABILITY_LINGER_REQUIRED="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
+      user_service_required=*) CAPABILITY_USER_SERVICE_REQUIRED="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
+      control_account=*) CAPABILITY_CONTROL_ACCOUNT="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
+      installer=*) CAPABILITY_INSTALLER="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
+      privileged_key=*) CAPABILITY_PRIVILEGED_KEY="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
+      user_unit=*) CAPABILITY_USER_UNIT="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
+      user_unit_artifact=*) CAPABILITY_USER_UNIT_ARTIFACT="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
       artifact=*)
-        capability_row="\${capability_line#artifact=}"
+        capability_row="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)"
         printf '%s' "$capability_row" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}[|][0-9a-f]{64}[|]0?[0-7]{3}[|][A-Za-z0-9+/=]+$' || fail 'claim capability artifact row is invalid; no privileged component was installed'
         [ "$capability_slot" -le 16 ] || fail 'claim capability ships more artifacts than this courier supports'
         eval "CAPABILITY_ARTIFACT_\${capability_slot}=\\$capability_row"
@@ -424,11 +495,16 @@ capability_apply() {
     printf '%s\\n' "fleet-enroll: selected capability $CAPABILITY_VERSION already converged; zero delta" >&2
     return 0
   fi
-  capability_drift=0
-  case "$CAPABILITY_HELPER_STATE" in DRIFT_REPAIRABLE|CONFLICT) capability_drift=1 ;; esac
-  case "$CAPABILITY_USER_SERVICE_STATE" in COMPLIANT) capability_drift=1 ;; esac
-  case "$CAPABILITY_LINGER_STATE" in COMPLIANT) capability_drift=1 ;; esac
-  if [ "$capability_drift" = 1 ]; then CAPABILITY_MODE=REPAIR; else CAPABILITY_MODE=NEW; fi
+  case "$CAPABILITY_MODE" in
+    NEW|REPAIR|ADOPT) ;;
+    *)
+      capability_drift=0
+      case "$CAPABILITY_HELPER_STATE" in DRIFT_REPAIRABLE|CONFLICT) capability_drift=1 ;; esac
+      case "$CAPABILITY_USER_SERVICE_STATE" in COMPLIANT) capability_drift=1 ;; esac
+      case "$CAPABILITY_LINGER_STATE" in COMPLIANT) capability_drift=1 ;; esac
+      if [ "$capability_drift" = 1 ]; then CAPABILITY_MODE=REPAIR; else CAPABILITY_MODE=NEW; fi
+      ;;
+  esac
   if [ "$CAPABILITY_HELPER_REQUIRED" = 1 ] && [ "$CAPABILITY_HELPER_STATE" != COMPLIANT ]; then
     if ! capability_installer --apply; then
       capability_stage_cleanup
@@ -541,6 +617,29 @@ live_tailscale_ready() {
 }
 
 checkpoint_is_compliant() {
+  checkpoint_identity_converged || return 1
+  capability_restore_recorded
+  capability_probe_all || return 1
+  return 0
+}
+
+checkpoint_load_identity() {
+  NODE_ID="$(json_file_value "$CHECKPOINT_FILE" node_id)"
+  NODE_UID="$(json_file_value "$CHECKPOINT_FILE" node_uid)"
+  IDENTITY_KIND="$(json_file_value "$CHECKPOINT_FILE" identity_kind)"
+  [ -n "$IDENTITY_KIND" ] || IDENTITY_KIND=canonical
+  ENROLLMENT_ID="$(json_file_value "$CHECKPOINT_FILE" enrollment_id)"
+  OS_FAMILY="$(json_file_value "$CHECKPOINT_FILE" os_family)"
+  OS_ID="$(json_file_value "$CHECKPOINT_FILE" os_id)"
+  OS_VERSION_ID="$(json_file_value "$CHECKPOINT_FILE" os_version_id)"
+  [ -n "$OS_FAMILY" ] || OS_FAMILY=debian-family
+  [ -n "$OS_ID" ] || OS_ID=unknown
+  [ -n "$OS_VERSION_ID" ] || OS_VERSION_ID=unknown
+  PACKAGES_STATE=COMPLIANT
+  TAILSCALE_STATE=COMPLIANT
+}
+
+checkpoint_identity_converged() {
   [ -r "$CHECKPOINT_FILE" ] || return 1
   [ "$(json_file_value "$CHECKPOINT_FILE" schema)" = 'fleet-enroll-checkpoint/v1' ] || return 1
   [ "$(json_file_value "$CHECKPOINT_FILE" status)" = COMPLIANT ] || return 1
@@ -577,14 +676,6 @@ checkpoint_is_compliant() {
   esac
   live_tailscale_ready "$CHECKPOINT_NODE_ID" || return 1
   package_installed curl && package_installed ca-certificates || return 1
-  # The selected capability is part of convergence: a converged-looking host
-  # whose privileged lane drifted is not a zero-delta host.
-  capability_probe_all || return 1
-  # A checkpoint that recorded a privileged component cannot be re-proved by a
-  # payload that selects nothing; never report a false zero delta for it.
-  if ! capability_selected && grep -q '"privileged_helper":"COMPLIANT"' "$CHECKPOINT_FILE" 2>/dev/null; then
-    return 1
-  fi
   return 0
 }
 
@@ -690,11 +781,13 @@ bootstrap_phase0_preflight() {
     NOPASSWD_HINT=present
   fi
 
-  PREFLIGHT_MATERIAL="$(printf '%s\n' "$OS_FAMILY" "$OS_ID" "$OS_VERSION_ID" "$(uname -m)" "$APPLIANCE_KIND" "$DOCKER_SOCKET_HINT" "$NOPASSWD_HINT")"
+  PREFLIGHT_MATERIAL="$(printf '%s
+' "$OS_FAMILY" "$OS_ID" "$OS_VERSION_ID" "$(uname -m)" "$APPLIANCE_KIND" "$DOCKER_SOCKET_HINT" "$NOPASSWD_HINT")"
   PRECHECK_DIGEST="sha256:$(printf '%s' "$PREFLIGHT_MATERIAL" | sha256sum | awk '{print $1}')"
   unset PREFLIGHT_MATERIAL
 
-  printf '%s\n' "fleet-enroll: preflight PASS os=$OS_ID/$OS_VERSION_ID arch=$(uname -m) appliance=$APPLIANCE_KIND docker_socket=$DOCKER_SOCKET_HINT nopasswd_hint=$NOPASSWD_HINT" >&2
+  printf '%s
+' "fleet-enroll: preflight PASS os=$OS_ID/$OS_VERSION_ID arch=$(uname -m) appliance=$APPLIANCE_KIND docker_socket=$DOCKER_SOCKET_HINT nopasswd_hint=$NOPASSWD_HINT" >&2
 }
 bootstrap_phase0_preflight
 
@@ -705,8 +798,22 @@ capability_validate_selection
 # The next steps can update APT source or start a daemon. Refuse an existing
 # foreign/unproven Tailscale session before ANY package or service mutation.
 # Existing machines must use a verified ADOPT/REPAIR plan instead of a new join.
-if checkpoint_is_compliant; then
-  printf '%s\\n' 'fleet-enroll: already converged; no enrollment credentials requested' >&2
+if checkpoint_identity_converged; then
+  capability_restore_recorded
+  if ! capability_selected && grep -q '"privileged_helper"\\|"user_service"\\|"linger"' "$CHECKPOINT_FILE" 2>/dev/null; then
+    fail 'this node recorded a privileged capability but no reviewed selection is stored; reconcile before reporting zero delta'
+  fi
+  if capability_probe_all; then
+    printf '%s\\n' 'fleet-enroll: already converged; no enrollment credentials requested' >&2
+    exit 0
+  fi
+  # Only the selected capability drifted: repair it from the selection the
+  # authorized first run recorded. No new enroll, credential, identity or join.
+  checkpoint_load_identity
+  CAPABILITY_MODE=REPAIR
+  capability_apply
+  checkpoint_write CHECKPOINT COMPLIANT
+  printf '%s\\n' 'fleet-enroll: selected capability repaired from the recorded reviewed selection; no enrollment credentials requested' >&2
   exit 0
 fi
 refuse_unresolved_previous_enrollment
@@ -724,7 +831,8 @@ bootstrap_transport_baseline() {
   if command -v curl >/dev/null 2>&1 && package_installed ca-certificates; then
     return 0
   fi
-  printf '%s\n' 'fleet-enroll: installing bootstrap transport baseline (curl ca-certificates) from distribution base repositories' >&2
+  printf '%s
+' 'fleet-enroll: installing bootstrap transport baseline (curl ca-certificates) from distribution base repositories' >&2
   apt-get update -y || fail 'bootstrap transport baseline failed: apt-get update failed; install curl ca-certificates then rerun'
   apt-get install -y --no-install-recommends curl ca-certificates || fail 'bootstrap transport baseline failed: cannot install curl ca-certificates; install them then rerun'
   command -v curl >/dev/null 2>&1 || fail 'bootstrap transport baseline failed: curl still absent after install'
@@ -745,7 +853,8 @@ ensure_tailscale_apt_source() {
     bullseye|bookworm|trixie|focal|jammy|noble|oracular|plucky|questing|resolute) ;;
     *) fail "unsupported OS release for Tailscale repository: id=$OS_ID codename=$OS_CODENAME (allowed: bullseye,bookworm,trixie,focal,jammy,noble,resolute,oracular,plucky,questing)" ;;
   esac
-  printf '%s\n' "fleet-enroll: configuring official Tailscale APT repository for $OS_ID/$OS_CODENAME" >&2
+  printf '%s
+' "fleet-enroll: configuring official Tailscale APT repository for $OS_ID/$OS_CODENAME" >&2
   install -d -m 0755 /usr/share/keyrings
   install -d -m 0755 /etc/apt/sources.list.d
   TMP_KEY="$(mktemp)"
@@ -806,18 +915,23 @@ fi
 
 CLAIM_URL="$BROKER_ORIGIN/v1/enroll/claim"
 [ -n "$ENROLLMENT_URL" ] && CLAIM_URL="$ENROLLMENT_URL/claim"
+CLAIM_CONFIG=/run/fleet/curl-claim.conf
+# The one-time ticket URL is a bearer handle: keep it out of argv, where any
+# local process with the same uid can read /proc/<pid>/cmdline.
+printf 'url = "%s"\\nheader = "content-type: text/plain"\\nheader = "x-fleet-os-family: %s"\\nheader = "x-fleet-os-id: %s"\\nheader = "x-ghostfleet-preflight-digest: %s"\\n' \\
+  "$CLAIM_URL" "$OS_FAMILY" "$OS_ID" "$PRECHECK_DIGEST" > "$CLAIM_CONFIG"
+chmod 0600 "$CLAIM_CONFIG"
+chown root:root "$CLAIM_CONFIG"
 if ! CLAIM_JSON="$(printf '%s' "$ENROLL_CODE" | curl -fsS \\
+  --config "$CLAIM_CONFIG" \\
   --connect-timeout 10 \\
   --max-time 30 \\
-  --header 'content-type: text/plain' \\
-  --header "x-fleet-os-family: $OS_FAMILY" \\
-  --header "x-fleet-os-id: $OS_ID" \\
-  --header "x-ghostfleet-preflight-digest: $PRECHECK_DIGEST" \\
-  --data-binary @- \\
-  "$CLAIM_URL")"; then
+  --data-binary @- )"; then
+  rm -f "$CLAIM_CONFIG"
   unset ENROLL_CODE
   fail 'claim denied: Enrollment Code is invalid, expired, replayed, or does not match this OS profile'
 fi
+rm -f "$CLAIM_CONFIG"
 unset ENROLL_CODE
 
 json_flag() {
@@ -919,11 +1033,13 @@ if [ "$IDENTITY_KIND" = provisional ]; then
   evidence_line() {
     key="$1"; value="$2"
     encoded="$(printf '%s' "$value" | base64 -w0)"
-    printf '%s\t%s\n' "$key" "$encoded" >> "$EVIDENCE_FILE"
+    printf '%s	%s
+' "$key" "$encoded" >> "$EVIDENCE_FILE"
   }
   bounded_file() {
     [ -r "$1" ] || return 0
-    tr '\r\n\t' '   ' < "$1" | head -c 512
+    tr '
+	' '   ' < "$1" | head -c 512
   }
   evidence_line schema fleet-hardware-evidence/v1
   evidence_line captured_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -937,7 +1053,8 @@ if [ "$IDENTITY_KIND" = provisional ]; then
     vendor="$(bounded_file "$dev/vendor")"
     device="$(bounded_file "$dev/device")"
     class="$(bounded_file "$dev/class")"
-    PCI_EVIDENCE="$PCI_EVIDENCE$(basename "$dev") $vendor $device $class\n"
+    PCI_EVIDENCE="$PCI_EVIDENCE$(basename "$dev") $vendor $device $class
+"
   done
   evidence_line pci "$PCI_EVIDENCE"
   IDENTITY_EVIDENCE_B64="$(base64 -w0 "$EVIDENCE_FILE")"
@@ -960,13 +1077,14 @@ cat > "$REPORT_FILE" <<EOF
   "ssh_host_key_sha256": "$SSH_HOST_KEY_SHA",
   "bootstrap_version": "$BOOTSTRAP_VERSION",
   "capability_version": "$CAPABILITY_VERSION",
-  "capability_mode": "$CAPABILITY_MODE"
+  "capability_mode": "$CAPABILITY_MODE",
+  "capability_selection_digest": "$CAPABILITY_SELECTION_DIGEST"
 }
 EOF
 chmod 0600 "$REPORT_FILE"
 chown root:root "$REPORT_FILE"
 
-if ! printf '{"resume_session":"%s","report":{"identity_kind":"%s","enrollment_id":"%s","node_id":"%s","os_id":"%s","os_version_id":"%s","ssh_host_key_sha256":"%s","bootstrap_version":"%s","identity_evidence_b64":"%s","identity_evidence_sha256":"%s"}}' "$RESUME_SESSION" "$IDENTITY_KIND" "$ENROLLMENT_ID" "$NODE_ID" "$OS_ID" "$OS_VERSION_ID" "$SSH_HOST_KEY_SHA" "$BOOTSTRAP_VERSION" "$IDENTITY_EVIDENCE_B64" "$IDENTITY_EVIDENCE_SHA" | curl -fsS --connect-timeout 10 --max-time 30 --header 'content-type: application/json' --data-binary @- "$BROKER_ORIGIN/v1/enroll/complete" >/dev/null; then
+if ! printf '{"resume_session":"%s","report":{"identity_kind":"%s","enrollment_id":"%s","node_id":"%s","os_id":"%s","os_version_id":"%s","ssh_host_key_sha256":"%s","bootstrap_version":"%s","identity_evidence_b64":"%s","identity_evidence_sha256":"%s","capability_version":"%s","capability_mode":"%s","capability_selection_digest":"%s"}}' "$RESUME_SESSION" "$IDENTITY_KIND" "$ENROLLMENT_ID" "$NODE_ID" "$OS_ID" "$OS_VERSION_ID" "$SSH_HOST_KEY_SHA" "$BOOTSTRAP_VERSION" "$IDENTITY_EVIDENCE_B64" "$IDENTITY_EVIDENCE_SHA" "$CAPABILITY_VERSION" "$CAPABILITY_MODE" "$CAPABILITY_SELECTION_DIGEST" | curl -fsS --connect-timeout 10 --max-time 30 --header 'content-type: application/json' --data-binary @- "$BROKER_ORIGIN/v1/enroll/complete" >/dev/null; then
   fail 'completion report failed'
 fi
 

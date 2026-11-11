@@ -42,6 +42,9 @@ case "$name" in
           *) record "tailscale-up-hostname-mismatch"; exit 9 ;;
         esac
         record "tailscale-up"
+        if [ -n "\${FIXTURE_AUTHKEY:-}" ] && [ -e "$FIXTURE_AUTHKEY" ]; then
+          record "authkey $(stat -c '%a %U %G' "$FIXTURE_AUTHKEY")"
+        fi
         printf '%s' "$FIXTURE_NODE_ID" > "$state/tailscale.hostname"
         : > "$state/tailscale.joined"
         ;;
@@ -63,12 +66,24 @@ case "$name" in
     esac
     ;;
   curl)
+    arguments="$*"
+    config=
+    previous=
+    for argument in "$@"; do
+      if [ "$previous" = "--config" ]; then config="$argument"; fi
+      previous="$argument"
+    done
     url=
     for argument in "$@"; do
       case "$argument" in http*) url="$argument" ;; esac
     done
+    if [ -n "$config" ] && [ -r "$config" ]; then
+      url="$(sed -n 's/^url = "\(.*\)"$/\1/p' "$config" | head -n1)"
+      record "curl-config mode=$(stat -c '%a' "$config")"
+    fi
+    record "curl-argv $arguments"
     case "$url" in
-      */v1/enroll/claim)
+      */claim)
         record "curl claim"
         cat "$state/claim.json"
         ;;

@@ -6,6 +6,7 @@ import {
   BOOTSTRAP_SH, renderBootstrap, CAPABILITY_BLOCK_BEGIN, CAPABILITY_BLOCK_END,
   CAPABILITY_SECTION_BEGIN, CAPABILITY_SECTION_END,
   renderCapabilityBlock, selectedCapabilitiesFromPosture, normalizeSelectedCapability,
+  encodeCapabilitySelection, decodeCapabilitySelection, capabilitySelectionDigest,
 } from "../src/index.js";
 
 const sha256 = (value) => "sha256:" + createHash("sha256").update(value, "utf8").digest("hex");
@@ -117,6 +118,29 @@ test("unrequested, unpinned or inconsistent privilege selections are refused at 
   assert.throws(() => renderBootstrap({
     brokerOrigin: "https://fixture.example.invalid", capabilitySelection: drifted,
   }), /CAPABILITY_ARTIFACT_DIGEST_MISMATCH/);
+});
+
+test("the shell text decoder rejects unknown keys and truncated artifact rows", () => {
+  const valid = encodeCapabilitySelection(selection());
+  const text = Buffer.from(valid, "base64").toString("utf8");
+  assert.ok(decodeCapabilitySelection(text));
+  const unknown = text + "unexpected_field=1\n";
+  assert.throws(() => decodeCapabilitySelection(unknown), /CAPABILITY_SELECTION_INVALID/);
+  const truncated = text.replace(/^artifact=(.+)$/m, (match, row) => "artifact=" + row.split("|").slice(0, 3).join("|"));
+  assert.throws(() => decodeCapabilitySelection(truncated), /CAPABILITY_SELECTION_INVALID/);
+  const extra = text.replace(/^artifact=(.+)$/m, (match, row) => "artifact=" + row + "|extra");
+  assert.throws(() => decodeCapabilitySelection(extra), /CAPABILITY_SELECTION_INVALID/);
+});
+
+test("the recorded selection digest is stable and covers every pinned artifact", () => {
+  const first = normalizeSelectedCapability(selection());
+  assert.equal(capabilitySelectionDigest(first), capabilitySelectionDigest(normalizeSelectedCapability(selection())));
+  const changed = normalizeSelectedCapability(selection({
+    artifacts: [...selection().artifacts, { name: "extra.txt", mode: "0644", content: "extra\n" }],
+  }));
+  assert.notEqual(capabilitySelectionDigest(changed), capabilitySelectionDigest(first));
+  const reordered = normalizeSelectedCapability(selection({ artifacts: [...selection().artifacts].reverse() }));
+  assert.equal(capabilitySelectionDigest(reordered), capabilitySelectionDigest(first));
 });
 
 test("the capability lane is delimited once so a root job can run the published bytes", () => {

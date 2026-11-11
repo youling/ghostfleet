@@ -86,11 +86,20 @@ const selection = {
 };
 writeFileSync(join(work, "capability-data.sh"), module.renderCapabilityBlock(selection) + "\n");
 writeFileSync(join(work, "empty-data.sh"), module.renderCapabilityBlock(null) + "\n");
+// The claim channel: the same selection, base64-encoded exactly as the claim
+// response delivers it, so the published parser is what runs here.
+writeFileSync(join(work, "claim.json"), JSON.stringify({
+  capability_required: true,
+  capability_selection: module.encodeCapabilitySelection(selection),
+}) + "\n");
 const courier = module.BOOTSTRAP_SH;
 const begin = courier.indexOf(module.CAPABILITY_SECTION_BEGIN);
 const end = courier.indexOf(module.CAPABILITY_SECTION_END);
 if (begin < 0 || end < begin) throw new Error("capability section markers missing");
 writeFileSync(join(work, "capability-library.sh"), courier.slice(begin, end + module.CAPABILITY_SECTION_END.length) + "\n");
+const jsonStart = courier.indexOf("json_flag() {");
+const jsonEnd = courier.indexOf(String.fromCharCode(10) + "RESUME_SESSION=");
+writeFileSync(join(work, "json-library.sh"), courier.slice(jsonStart, jsonEnd) + "\n");
 const shape = module.normalizeSelectedCapability(selection);
 writeFileSync(join(work, "selection.json"), JSON.stringify({
   version: shape.version,
@@ -115,6 +124,28 @@ run_capability() {
   CAPABILITY_CHECKPOINT="$1" CAPABILITY_DATA="$2" CAPABILITY_LIBRARY="$work/capability-library.sh" \
     GHOSTFLEET_CONTROL_ORDINARY_USER="$ordinary" \
     sh "$work/harness.sh"
+}
+
+cat > "$work/claim-harness.sh" <<'CLAIM_HARNESS'
+#!/bin/sh
+set -eu
+CHECKPOINT_DIR="$CAPABILITY_CHECKPOINT"
+fail() { printf '%s\n' "fleet-enroll: $*" >&2; exit 1; }
+. "$CAPABILITY_LIBRARY"
+. "$JSON_LIBRARY"
+CLAIM_JSON="$(cat "$CLAIM_FILE")"
+CAPABILITY_REQUIRED="$(json_flag "$CLAIM_JSON" capability_required)"
+CAPABILITY_CLAIM_SELECTION_B64="$(json_get "$CLAIM_JSON" capability_selection)"
+capability_ingest_claim
+capability_apply
+CLAIM_HARNESS
+
+# The claim channel, with real root and the real reviewed installer.
+run_claim() {
+  CAPABILITY_CHECKPOINT="$1" CAPABILITY_LIBRARY="$work/capability-library.sh" \
+    JSON_LIBRARY="$work/json-library.sh" CLAIM_FILE="$work/claim.json" \
+    GHOSTFLEET_CONTROL_ORDINARY_USER="$ordinary" \
+    sh "$work/claim-harness.sh"
 }
 expected_helper_sha="$(sha256sum "$privileged_root/fleet_privctl.py" | awk '{print $1}')"
 expected_entry_sha="$(sha256sum "$privileged_root/fleet_privileged_ssh_entry.py" | awk '{print $1}')"
@@ -187,4 +218,20 @@ grep -q '"mode":"ADOPT"' "$work/checkpoint-adopt/capability-state.json"
   echo "ADOPT re-applied the privileged helper" >&2; exit 1;
 }
 
-echo "PASS published selected-capability lane installed the real reviewed helper, user unit and Linger on a disposable root VM; unrequested and unverifiable selections made no effect; repeat is ADOPT/zero delta. Real NAS/OMV Linger, user-systemd activation and OMV8 SSH admission NOT_RUN"
+# 5. The claim channel on the same host: the published parser consumes the
+# base64 selection, re-verifies against the real installer and reports ADOPT.
+mkdir -p "$work/checkpoint-claim"
+if ! run_claim "$work/checkpoint-claim" >"$work/claim.log" 2>&1; then
+  echo "claim channel failed" >&2
+  cat "$work/claim.log" >&2
+  exit 1
+fi
+grep -q 'already converged; zero delta' "$work/claim.log"
+grep -q '"mode":"ADOPT"' "$work/checkpoint-claim/capability-state.json"
+claim_digest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["selection_digest"])' "$work/checkpoint-claim/capability-state.json")"
+case "$claim_digest" in
+  sha256:*) ;;
+  *) echo "claim channel recorded no reviewed selection digest" >&2; exit 1 ;;
+esac
+
+echo "PASS published selected-capability lane installed the real reviewed helper, user unit and Linger on a disposable root VM; the claim channel consumed the base64 selection through the published parser and reported ADOPT with a recorded digest; unrequested and unverifiable selections made no effect; repeat is ADOPT/zero delta. Real NAS/OMV Linger, user-systemd activation and OMV8 SSH admission NOT_RUN"

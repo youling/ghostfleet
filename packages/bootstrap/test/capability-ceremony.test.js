@@ -6,7 +6,9 @@ import { join, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { renderBootstrap, encodeCapabilitySelection } from "../src/index.js";
+import {
+  renderBootstrap, encodeCapabilitySelection, capabilitySelectionDigest, normalizeSelectedCapability,
+} from "../src/index.js";
 
 const linuxOnly = process.platform !== "linux";
 const here = dirname(fileURLToPath(import.meta.url));
@@ -72,6 +74,7 @@ async function makeHost() {
     FIXTURE_BIN: host.bin,
     FIXTURE_NODE_ID: NODE_ID,
     FIXTURE_ACCOUNT_HOME: host.accountHome,
+    FIXTURE_AUTHKEY: join(host.run, "ts-authkey"),
     GHOSTFLEET_CONTROL_ORDINARY_USER: "operator",
   };
   return host;
@@ -194,7 +197,7 @@ test("the template-selected privileged capability installs inside the same root 
     const installJournal = await installerLog(host);
     // Real full-bootstrap call chain: the broker claim happened, the identity
     // join happened, and the completion report was posted after the capability.
-    assert.deepEqual(journal.filter((line) => line.startsWith("curl")), ["curl claim", "curl complete"]);
+    assert.deepEqual(journal.filter((line) => line === "curl claim" || line === "curl complete"), ["curl claim", "curl complete"]);
     assert.equal(journal.filter((line) => line === "tailscale-up").length, 1);
     assert.ok(installJournal.some((line) => line.startsWith("installer --apply")));
     assert.ok(installJournal.some((line) => line.startsWith("installer --check")));
@@ -419,6 +422,12 @@ test("a claim-delivered selection installs the capability without a rendered pay
     assert.equal((await readJson(join(host.checkpoint, "capability-state.json"))).mode, "NEW");
     assert.equal(await readFile(UNIT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
     assert.ok(await exists(join(host.fixtureState, "linger")));
+    // The recorded digest binds the installed bytes to the reviewed selection.
+    const expected = capabilitySelectionDigest(normalizeSelectedCapability(selection));
+    const state = await readJson(join(host.checkpoint, "capability-state.json"));
+    const report = await readJson(join(host.checkpoint, "enrollment-report.json"));
+    assert.equal(state.selection_digest, expected);
+    assert.equal(report.capability_selection_digest, expected);
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
 
@@ -456,6 +465,139 @@ test("a claim selection that is not decodable or not pinned is refused before th
       assert.equal((await calls(host)).includes("tailscale-up"), false, item.name);
       assert.deepEqual(await installerLog(host), [], item.name);
     }
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a claim-delivered capability repeats as zero delta without a new claim", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
+    const first = await runCourier(host, null);
+    assert.equal(first.status, 0, first.stderr);
+    const applies = (await installerLog(host)).filter((line) => line.includes("--apply")).length;
+    const watched = [
+      join(host.checkpoint, "enrollment-checkpoint.json"),
+      join(host.checkpoint, "capability-state.json"),
+      join(host.checkpoint, "capability-selection.txt"),
+      UNIT_PATH(host),
+    ];
+    const before = await snapshot(watched);
+
+    const second = await runCourier(host, null);
+    assert.equal(second.status, 0, second.stderr);
+    assert.match(second.stderr, /already converged/);
+    assert.deepEqual(await snapshot(watched), before, "a converged node is not rewritten");
+    assert.equal((await calls(host)).filter((line) => line === "curl claim").length, 1, "no second claim");
+    assert.equal((await installerLog(host)).filter((line) => line.includes("--apply")).length, applies);
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a drifted user service or Linger lane is repaired from the recorded selection without a claim", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
+    const first = await runCourier(host, null);
+    assert.equal(first.status, 0, first.stderr);
+    assert.ok(await exists(UNIT_PATH(host)));
+    assert.ok(await exists(join(host.fixtureState, "linger")));
+    const applies = (await installerLog(host)).filter((line) => line.includes("--apply")).length;
+
+    // Break only the user-level lane: the helper stays compliant.
+    await rm(UNIT_PATH(host), { force: true });
+    await rm(join(host.accountHome, ".config/systemd/user/default.target.wants/ghostfleet-managed.service"), { force: true });
+    await rm(join(host.fixtureState, "linger"), { force: true });
+
+    const second = await runCourier(host, null);
+    assert.equal(second.status, 0, second.stderr);
+    assert.match(second.stderr, /repaired from the recorded reviewed selection/);
+    assert.equal((await calls(host)).filter((line) => line === "curl claim").length, 1, "repair needs no new claim");
+    assert.equal((await installerLog(host)).filter((line) => line.includes("--apply")).length, applies, "no helper reinstall");
+    assert.equal(await readFile(UNIT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
+    assert.ok(await exists(join(host.fixtureState, "linger")));
+    const state = await readJson(join(host.checkpoint, "capability-state.json"));
+    assert.equal(state.mode, "REPAIR");
+    const checkpoint = await readJson(join(host.checkpoint, "enrollment-checkpoint.json"));
+    assert.equal(checkpoint.status, "COMPLIANT");
+    assert.equal(checkpoint.components.user_service, "COMPLIANT");
+    assert.equal(checkpoint.components.linger, "COMPLIANT");
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a recorded capability that cannot be re-proved is never reported as zero delta", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
+    assert.equal((await runCourier(host, null)).status, 0);
+    // Losing the reviewed selection removes the only way to re-prove the lane.
+    await rm(join(host.checkpoint, "capability-selection.txt"), { force: true });
+    await setClaim(host, {});
+    const second = await runCourier(host, null);
+    assert.notEqual(second.status, 0);
+    assert.match(second.stderr, /recorded a privileged capability but no reviewed selection is stored/);
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a selection delivered for a template that requires none is refused", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    await setClaim(host, { capability_required: false, capability_selection: encodeCapabilitySelection(selection) });
+    const result = await runCourier(host, null);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /requires none; no privileged component was installed/);
+    assert.equal((await calls(host)).includes("tailscale-up"), false);
+    assert.deepEqual(await installerLog(host), []);
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("the claim selection is verified after the claim and before the identity join", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
+    const result = await runCourier(host, null);
+    assert.equal(result.status, 0, result.stderr);
+    const journal = await calls(host);
+    const claimAt = journal.indexOf("curl claim");
+    const joinAt = journal.indexOf("tailscale-up");
+    const lingerAt = journal.indexOf("loginctl-enable-linger ghostfleet-ops");
+    const completeAt = journal.indexOf("curl complete");
+    // Honest ordering: transport prerequisites precede the claim; the capability
+    // never installs before the claim, and never after the completion report.
+    assert.ok(claimAt > 0 && joinAt > claimAt, "claim precedes the identity join");
+    assert.ok(lingerAt > joinAt, "capability effect follows the join fence");
+    assert.ok(completeAt > lingerAt, "completion follows the capability");
+    assert.deepEqual(await installerLog(host).then((lines) => lines.filter((line) => line.startsWith("installer --apply"))).then((lines) => lines.length), 1);
+    const aptLines = journal.map((line, index) => [line, index]).filter(([line]) => line.startsWith("apt-get"));
+    assert.ok(aptLines.length > 0 && aptLines.every(([, index]) => index < claimAt), "package prerequisites precede the claim");
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("the one-time ticket URL never enters curl argv, and the auth key stays 0600", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
+    const oneTimeUrl = "https://broker.fixture.invalid/v1/enrollment-tickets/ticket-fixture";
+    const result = await runCourier(host, null, { env: { GHOSTFLEET_ENROLLMENT_URL: oneTimeUrl } });
+    assert.equal(result.status, 0, result.stderr);
+    const journal = await calls(host);
+    assert.ok(journal.includes("curl claim"));
+    assert.equal(journal.some((line) => line.includes("enrollment-tickets")), false, "ticket URL is not in argv");
+    assert.ok(journal.includes("curl-config mode=600"), "claim config is root-private");
+    // Root-owned and 0600 while it exists; the fixture chown is recorded, so an
+    // ordinary-user CI run can still prove the intended ownership.
+    assert.ok(journal.some((line) => /^authkey 600 /.test(line)), "one-off auth key is mode 0600 while written");
+    assert.ok(journal.some((line) => line === "chown root:root " + join(host.run, "ts-authkey")), "one-off auth key is chowned to root");
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
 
