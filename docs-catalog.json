@@ -418,6 +418,16 @@
         "flow",
         "rollout"
       ]
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "topics": [
+        "methods",
+        "landscape",
+        "lessons",
+        "decisions",
+        "sources"
+      ]
     }
   ]
 }

@@ -781,6 +781,414 @@
       "sha256": "a41dd0d542d54081493846dbece9251a826ca46acea714e8f80d0a2af2b296e0",
       "reason": "Current official Tailscale Trust credentials admin-console entry for creating scoped OAuth clients; no login factor, credential value, query string or instance identity.",
       "review": "Tailscale OAuth clients primary documentation links directly to this exact HTTPS Trust credentials page. It is a public provider destination, not a Fleet runtime."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "501fca07105e1bd201df865d1aa9b5300d5b7c2b823b2293f3ea2a4a8509c565",
+      "reason": "Public upstream documentation on fleetdm.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "bdb3b9eb8d3c4edf5b82fcd4cb18560edf78fb9bc519b5d58598331b411e6489",
+      "reason": "Public upstream documentation on fleetdm.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "0069594e7660e7184791b065b227319469b3d9231a96bd3cf7c00c5c8f7fe830",
+      "reason": "Public upstream documentation on osquery.readthedocs.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "2aff65534f68241be81ca8c2cad9d3c61b84f8e9e2f26ca7aed9a72653422568",
+      "reason": "Public upstream documentation on osquery.readthedocs.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "e237495187b54ee9bf40f9bf0bb5ca3bac96cded9fe48aa2eaa2f726cbebcff1",
+      "reason": "Public upstream documentation on docs.meshcentral.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "fcd2e02131798d030c43f498383f0b51227e73e36a241378e1c366cc446421eb",
+      "reason": "Public upstream documentation on docs.tacticalrmm.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "9acbeab73aef1f017b2fa3c84f02c1ffbcbb72f76a1db48bb7766a1ab72708b9",
+      "reason": "Public upstream documentation on docs.tacticalrmm.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "71d371af6c704889e0077d02b3bbee1e06ae468c1245d0d0d0d3faced8a12f3d",
+      "reason": "Public upstream documentation on docs.tacticalrmm.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "5cadc7f85a9ff0b94f88b6c4ed4f39f522f4704c1a10e5a709bc3305c9b023f8",
+      "reason": "Public upstream documentation on rustdesk.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "51b9b7b46e634c9468d05c8a3c93f40816ece843a5d2a4ef3e1aa153413e6617",
+      "reason": "Public upstream documentation on goteleport.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "2c817eeba39677e2591fdcd318c7554a7f650f74a81cf70441cb0c1bf8c67645",
+      "reason": "Public upstream documentation on goteleport.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "6852ec8b80c394aecea9e1a650ee34baf0c8203b694e0710515015d5653e75f9",
+      "reason": "Public upstream documentation on goteleport.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "9f342e011ea44447c0fb2807a3888a23e88763dfb777fb4b4580ee84f46eaf4f",
+      "reason": "Public upstream documentation on developer.hashicorp.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "cb250f8095d412f0457fa1344f69a5ad7dd27575c1d9098d989cb1c07bf1a21e",
+      "reason": "Public upstream documentation on developer.hashicorp.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "57cc56074ed9090a0a578e0f7c307c1a90f46eba102420d519f7a3d30ce542ae",
+      "reason": "Public upstream documentation on discuss.hashicorp.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "3c67d91571cd08ae21e35f8ab691fef567d9b9359b3cd6d53e030acec7ce9bd6",
+      "reason": "Public upstream documentation on spiffe.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "54f09811482e53915c2943b3aca4f31a1457de3645eb4963bba9554ac0887acc",
+      "reason": "Public upstream documentation on spiffe.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "b04b4aa3c7ac79ff3db5d6ba967cc9f193b7e82d293858d889ec8cec5be5eee5",
+      "reason": "Public upstream documentation on spiffe.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "90aa2f0cae87195075e212d5fd2405cdda3e19cc2e07a408497c0e6d1078377c",
+      "reason": "Public upstream documentation on smallstep.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "8104226cd4077a6449f68cce7db4b0e09847a8468e1bd249c2e1c4a1e96d680a",
+      "reason": "Public upstream documentation on smallstep.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "766f2508aa61fa070dde79e5440ae0c539d057a4d72ac720c55fb0cf093ec468",
+      "reason": "Public upstream documentation on docs.ansible.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "e5989eb5466dc2c886bfaf6c498c08137717edaef78f02fd1b663c2034750b38",
+      "reason": "Public upstream documentation on docs.saltproject.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "ecfe8ccadbf84cd32b2c1556e0886b3fe6078635dab74522215973dec64b3d27",
+      "reason": "Public upstream documentation on docs.saltproject.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "bdd973b543be2611b092d6f11137e894892f504502038b4c1fafd717b9061c5a",
+      "reason": "Public upstream documentation on docs.saltproject.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "97ee3777af09d9bdbe533b5d1a524863ae792093f0074e2d6847088451ee46a9",
+      "reason": "Public upstream documentation on docs.rudder.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "0e9d54407d2b56aaf77db21886e73d89ab76495d52aa8bf4dad76c8fc384772c",
+      "reason": "Public upstream documentation on docs.cockpit-project.org; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "82a9da94dffb843b0185cc70a5c8f5fd0ec7a7760b214cba295c6dd53757ba05",
+      "reason": "Public upstream documentation on h-mdm.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "b8cca5acb0065b18e6fd38414529d9a600b238487bd7f137eb075869f1491539",
+      "reason": "Public upstream documentation on docs.rudder.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "c97bb1d975d2d1fcca80ecd6d9d2fc28df5e356a8c9d53d69e842c90762b1900",
+      "reason": "Public upstream documentation on tailscale.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "934abd4d15dc27601afd251c9bf7167e40f4baaaa9b80fd07e57e465f669b2cd",
+      "reason": "Public upstream documentation on tailscale.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "34b3d8a30e2e49149698322ac68c7c3a6bf82cb1a126de5657ee4473d995409e",
+      "reason": "Public upstream documentation on headscale.net; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "f8cb6bb7631504c4f25b7ad79da774a0bd9fbbf7682ce6ff77940b35e0067d6a",
+      "reason": "Public upstream documentation on docs.netbird.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "07e5a470dd51f5b41290f523b7def6d1fc51084eced9f0f3199c73775e2ba234",
+      "reason": "Public upstream documentation on docs.netbird.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "e68bb2c217fe631f0a4572fb9e293d813a1e5490d58fd4324e95360129f7f15d",
+      "reason": "Public upstream documentation on docs.netmaker.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "13501a7c941b41ac62112627626d29afe48b214929ffd8a4a8646590afb5d82a",
+      "reason": "Public upstream documentation on nebula.defined.net; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "64d33e4c28ee6fac3ac887a0b48bda172b92f9787d90a2c6fa8199ed23a27293",
+      "reason": "Public upstream documentation on docs.zerotier.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "088c5e14268852de7806d70558943f1eec380456cc81251f384c21a89fbdc186",
+      "reason": "Public upstream documentation on docs.zerotier.com; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "867de2e7dd110f5bfd03879326a0e8cadeba6504eaabc2eb6f01a7d4428fe71a",
+      "reason": "Public upstream documentation on docs.pangolin.net; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "e2be62bec68643a70ccf453ebe2409d6c00331471afc83c4db8049d2490b8e05",
+      "reason": "Public upstream documentation on docs.pangolin.net; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "b82b0ba7d7e1b70b8b7b04885b06c5b907be2165cd978bf89df090b3a56bdc11",
+      "reason": "Public upstream documentation on docs.pangolin.net; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "1d0baadc685fcccc6b028fa373db2b2e9bba06bf4a25e000b689e1686e05f880",
+      "reason": "Public upstream documentation on netfoundry.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "4362f6ead56f926401b6e6e20328ef222b5e53f3f4860d35ad75a064a1b3d8c9",
+      "reason": "Public upstream documentation on netfoundry.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "116a252c4c6d10c0432202a1be36e5e80035b709fb6216fce05dd7b4e31157fa",
+      "reason": "Public upstream documentation on www.samba.org; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "889f371a61d4217032e6766e27f37f9b07e5b547dafca8c9d4d6f0d0083e31f8",
+      "reason": "Public upstream documentation on magic-wormhole.readthedocs.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "81a56d00983a23a30ef820192c802fcb3334b255373b411dbfcfcf87cc807015",
+      "reason": "Public upstream documentation on docs.syncthing.net; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "78377ee5d5e20d614a2052e1089e06690217cc93ce16ff61c36b5af6300c3538",
+      "reason": "Public upstream documentation on docs.syncthing.net; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "a6ad30b313245aceef6a0206e3844c6ccb21eb9ad7d25f3553a13331aacca5c3",
+      "reason": "Public upstream documentation on theupdateframework.github.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "3bb32c4ddcc237a492fb0a4f389bc09407a0f0bab601561821724481ccf442be",
+      "reason": "Public upstream documentation on theupdateframework.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "6381d9ebc91b9555808122c72734b1b84d1584eced23389ef15cf047a4d4abfa",
+      "reason": "Public upstream documentation on uptane.org; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "6b24078662de427f44d07a32f96693d1e135eadaf302f0c487a0749747759360",
+      "reason": "Public upstream documentation on uptane.org; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "82f61e4dc2079ba38c23783d620ebc733ff3e043194b1bbd896bffee12411bb2",
+      "reason": "Public upstream documentation on docs.mender.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "7bcdeb9d66771b316f9249e6279415996da5885016e120394c31716f3acfb8ad",
+      "reason": "Public upstream documentation on docs.mender.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "355c1f6e0ca5224b5636d0a69a7dbacdaef0bdea67cf0391b960da9150b87940",
+      "reason": "Public upstream documentation on mender.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "b668d7dc3ed5fd532b92cdb1a8103ddc9e5c438822b2aae7fd8c3e08170cff90",
+      "reason": "Public upstream documentation on docs.mender.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "2e06d6e5dff01cdc65aac633f28b5cf0a970c5e12f6f3cdc1e37e6627b74d615",
+      "reason": "Public upstream documentation on rauc.readthedocs.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "3f1c9e314a71407b0338e15d4c6ddfdbd4bd3f85caacf1521f91d81cea9d5060",
+      "reason": "Public upstream documentation on docs.balena.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "bb778aabde9e2c5349d10aa20eba2761241f1eb01a900b83f3de553cf864eda0",
+      "reason": "Public upstream documentation on docs.balena.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "7b301ca5ed75be9ecda08dcb0f970915d9ec5ad3c4df13f06b1940378db5732b",
+      "reason": "Public upstream documentation on blog.balena.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "871b3f6d43be7e5d7fe2c4587bdd71ad9c9d3d9200277dbcb6f5dc7d79f07587",
+      "reason": "Public upstream documentation on docs.balena.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "a49f1e5ad723cd04c33ed14b8a2960a15027254d8284a5f33732706bb0d06a49",
+      "reason": "Public upstream documentation on komo.do; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "29f63c9b128778e2c1fc2fc8a231e3c7bc57ca099c181b79d60cc0ec10304f97",
+      "reason": "Public upstream documentation on komo.do; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "a71c25c26db084e70c0bf5c66e1c6f72b9473ce424a495fffafa6df2dff39468",
+      "reason": "Public upstream documentation on coolify.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "909128df87a3d7007a8cc909371c4e7404c8b3da3057b66aaadfc1d59d7ad0dd",
+      "reason": "Public upstream documentation on coolify.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "ce3f141fa216ce635db56ad3c8657f62ed2be91726cfce66d95f1aadd40922e9",
+      "reason": "Public upstream documentation on ts.sdk.modelcontextprotocol.io; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "0c6a34b4462cc34bcfaf1d301f8efabb3eba70df277ac9e648c34dbe47967eb1",
+      "reason": "Public upstream documentation on rclone.org; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "4899193f407ba5790a22c218bff8a0a734e081feea8a5efc4335a9ab3a06c335",
+      "reason": "Public upstream documentation on rclone.org; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "555718e680627fd480cd66386e74eeef4219bebb9bc4bf1660e0b31042126f77",
+      "reason": "Public upstream documentation on rclone.org; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/research/REUSE_RECONNAISSANCE_2026-11-12.md",
+      "sha256": "79dea2111efd5b332dbbfac7afc0ad82494e927b1d5f66e71562c396efd1b9e6",
+      "reason": "Public upstream documentation on rclone.org; research citation, not an instance locator or runtime endpoint.",
+      "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
     }
   ]
 }
