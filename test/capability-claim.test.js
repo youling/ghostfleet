@@ -8,7 +8,9 @@ import { createHttpHandler } from "../src/control-plane/http.js";
 import { InMemoryStore } from "../src/control-plane/store.js";
 import { createEnrollmentTemplateCatalog } from "../src/control-plane/enrollment-templates.js";
 import { createCapabilitySelectionProvider } from "../src/control-plane/capability-selection.js";
-import { decodeCapabilitySelection, encodeCapabilitySelection } from "../packages/bootstrap/src/capability.js";
+import {
+  decodeCapabilitySelection, encodeCapabilitySelection, capabilitySelectionDigest,
+} from "../packages/bootstrap/src/capability.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "../packages/bootstrap/test/fixtures");
@@ -191,6 +193,25 @@ test("claim material fields outside the explicit allowlist are dropped", async (
   assert.equal(claimed.capability_required, true, "the template, not the materializer, decides");
   assert.equal("extra_material" in claimed, false);
   assert.equal(JSON.stringify(claimed).includes("bWFsaWNpb3Vz"), false);
+});
+
+test("an accepted bundle is re-encoded from the validated selection, so shell and JS digests agree", async () => {
+  const probe = controller();
+  const attempt = await attemptFor(probe, "managed-linux-standard");
+  const digest = attempt.template_binding.template_digest;
+  const base = await bundleFor(digest);
+  const text = Buffer.from(base, "base64").toString("utf8");
+  // A hand-made bundle written with three-digit modes must still be accepted
+  // only in normalised form.
+  const loose = text.replace(/\|0(\d{3})\|/g, "|$1|");
+  assert.notEqual(loose, text);
+  const provider = createCapabilitySelectionProvider({ bundle_base64: Buffer.from(loose).toString("base64") });
+  const selected = await provider.select();
+  const normalized = Buffer.from(selected.encoded, "base64").toString("utf8");
+  assert.doesNotMatch(normalized, /\|[0-7]{3}\|/);
+  assert.match(normalized, /\|0750\|/);
+  assert.equal(capabilitySelectionDigest(decodeCapabilitySelection(normalized)),
+    capabilitySelectionDigest(decodeCapabilitySelection(text)));
 });
 
 test("the HTTP claim never lets a client supply or widen the selection", async () => {

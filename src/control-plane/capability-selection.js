@@ -1,5 +1,5 @@
 import {
-  decodeCapabilitySelection, selectionCovers,
+  decodeCapabilitySelection, encodeCapabilitySelection, selectionCovers,
 } from "../../packages/bootstrap/src/capability.js";
 
 // The template posture decides whether a node needs the bounded privileged
@@ -23,13 +23,17 @@ export function createCapabilitySelectionProvider({ bundle_base64 = "" } = {}) {
   const text = Buffer.from(encoded, "base64").toString("utf8");
   // Validated and digest-checked once at startup, never per request.
   const selection = decodeCapabilitySelection(text);
+  // Re-encode from the validated selection so every accepted bundle reaches the
+  // node normalised (four-digit modes); a raw pass-through would let the shell
+  // compute a different selection digest than the verifier.
+  const normalized = encodeCapabilitySelection(selection);
   return Object.freeze({
     version: selection.version,
     template_digest: selection.template_digest,
     selection,
     async select() {
       return Object.freeze({
-        encoded,
+        encoded: normalized,
         template_digest: selection.template_digest,
         selection,
       });
