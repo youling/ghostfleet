@@ -26,6 +26,12 @@ export const BODY_LIMITS = Object.freeze({ claim: 1024, complete: 262144 });
 // absence or failure must never block a legitimate first enrollment.
 export const RATE_LIMIT_RETRY_SECONDS = 30;
 
+// The two real clients send exactly these media types (packages/bootstrap: the
+// claim curl config writes content-type: text/plain; the completion POST uses
+// --header content-type: application/json). Parameters such as charset are
+// allowed and ignored; the media type itself must match.
+export const CONTENT_TYPES = Object.freeze({ claim: "text/plain", complete: "application/json" });
+
 // Forward only what the control plane actually consumes. Everything else is
 // dropped, so a caller cannot smuggle a Console credential, an Access JWT, a
 // spoofed client address or an unexpected content type across the boundary.
@@ -43,6 +49,13 @@ const problem = (status, error, extra = {}) => new Response(
 
 const tooLarge = () => problem(413, "REQUEST_BODY_TOO_LARGE");
 const rateLimited = () => problem(429, "ENROLLMENT_RATE_LIMITED", { retry_after_seconds: RATE_LIMIT_RETRY_SECONDS });
+const unsupportedType = () => problem(415, "UNSUPPORTED_CONTENT_TYPE");
+
+/** Media type only: parameters (charset, boundary, ...) are allowed. */
+function mediaType(value) {
+  if (typeof value !== "string") return null;
+  return value.split(";")[0].trim().toLowerCase();
+}
 
 async function boundedBody(request, limit) {
   const declared = Number(request.headers.get("content-length") ?? "");
@@ -103,6 +116,10 @@ export default {
     const route = claimMatch || url.pathname === COMPLETE;
     // A query string would be an unreviewed handle; the ticket is in the path.
     if (url.search || !route) return problem(404, "NOT_FOUND");
+    // Shape before authority: a request with the wrong media type is refused
+    // here, before the service binding, the limiter and any body read.
+    const expectedType = url.pathname === COMPLETE ? CONTENT_TYPES.complete : CONTENT_TYPES.claim;
+    if (mediaType(request.headers.get("content-type")) !== expectedType) return unsupportedType();
     const control = env?.GHOSTFLEET_CONTROL_PLANE;
     if (!control || typeof control.fetch !== "function") return problem(503, "ENROLLMENT_BRIDGE_UNAVAILABLE");
 

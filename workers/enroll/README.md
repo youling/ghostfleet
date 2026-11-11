@@ -18,9 +18,10 @@
 | `RATE_LIMITER_TICKET` | 同上 | 否 | 按 claim 路径里的 ticket id **派生摘要**限流；辅助维度 |
 
 - **路由前缀**：只上述两条；host/custom domain/route 由部署方注入。`workers_dev: false`、`preview_urls: false` 已写死。
+- **Content-Type（强校验）**：claim 必须是 `text/plain`，complete 必须是 `application/json`；允许 `; charset=...` 等参数与大小写差异（只比较媒体类型）。缺失或不匹配直接 **415 `UNSUPPORTED_CONTENT_TYPE`**，同样发生在触碰 Service Binding / 限流 / 读取 body 之前。这两个值与 `packages/bootstrap` 里真实客户端发送的完全一致（claim 的 curl config 写 `content-type: text/plain`，complete 写 `--header 'content-type: application/json'`）。
 - **body 上限**（代码常量，不可配置）：claim **1024 B**、complete **262144 B**。超限直接 413，且在触碰 Service Binding 之前返回。
 - **转发头白名单**（其余全部丢弃，包含 `cookie`/`authorization`/`cf-access-jwt-assertion`/`cf-connecting-ip`）：`content-type`、`x-ghostfleet-preflight-digest`、`x-fleet-os-family`、`x-fleet-os-id`。
-- **错误码清单**：`NOT_FOUND`(404)、`METHOD_NOT_ALLOWED`(405)、`REQUEST_BODY_TOO_LARGE`(413)、`ENROLLMENT_RATE_LIMITED`(429，`retry_after_seconds: 30`)、`ENROLLMENT_BRIDGE_UNAVAILABLE`(503)；控制面的状态码与 JSON 原样透传。
+- **错误码清单**：`NOT_FOUND`(404)、`METHOD_NOT_ALLOWED`(405)、`REQUEST_BODY_TOO_LARGE`(413)、`UNSUPPORTED_CONTENT_TYPE`(415)、`ENROLLMENT_RATE_LIMITED`(429，`retry_after_seconds: 30`)、`ENROLLMENT_BRIDGE_UNAVAILABLE`(503)；控制面的状态码与 JSON 原样透传。
 - **限流语义是"辅助"**：binding 缺失、抛错、返回非法结构一律 **fail-open**（不能因为限流不可用就让合法首用挂掉）；限流通过**绝不等于授权**，票据仍须在控制面 claim 成功。key 只发送 `ip:`/`ticket:` + SHA-256 前 32 hex，地址与 ticket id 不落日志。
 - **vendor 规则**：`src/index.js` 与本仓逐字节一致；私有仓只允许 `wrangler` 覆盖（routes/bindings/Access），不得改代码。
 
@@ -39,8 +40,13 @@ advisory); only the two routes (host/route injected by the deployment;
 `workers_dev`/`preview_urls` off); body limits are code constants (1 KiB claim,
 256 KiB complete) and 413 happens before the binding; the forwarded-header
 allowlist is the four names above; error codes are `NOT_FOUND`, `METHOD_NOT_ALLOWED`,
-`REQUEST_BODY_TOO_LARGE`, `ENROLLMENT_RATE_LIMITED` (429, `retry_after_seconds: 30`)
-and `ENROLLMENT_BRIDGE_UNAVAILABLE`; upstream status and JSON pass through.
+`REQUEST_BODY_TOO_LARGE`, `UNSUPPORTED_CONTENT_TYPE` (415), `ENROLLMENT_RATE_LIMITED`
+(429, `retry_after_seconds: 30`) and `ENROLLMENT_BRIDGE_UNAVAILABLE`; upstream status
+and JSON pass through. The media type is enforced, not just allowlisted: claim
+must be `text/plain` and complete must be `application/json` (parameters such
+as charset are accepted); a missing or different type is 415 before the service
+binding, the limiter and any body read, and both values match what the published
+courier actually sends.
 
 Rate limiting is advisory only: a missing, failing or malformed limiter fails
 open, and a limiter success is never authorization. Keys are `ip:`/`ticket:` plus
