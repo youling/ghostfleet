@@ -282,10 +282,16 @@ record_ok "no sudoers file mentions $run_account"
 if su -s /bin/sh "$run_account" -c "sudo -n $helper_path </dev/null" >"$work/run-account-sudo.log" 2>&1; then
   fail_check "the run account reached the privileged helper through sudo"
 fi
-grep -q 'not allowed to run sudo\|a password is required' "$work/run-account-sudo.log" || {
+if grep -q '"ok":true' "$work/run-account-sudo.log"; then
+  fail_check "the privileged helper answered the run account"
+fi
+# sudo's refusal wording changes between versions ("not allowed to run sudo",
+# "a password is required", "I'm sorry ... I'm afraid I can't do that"), so the
+# property asserted is the non-zero exit above plus a recognisable refusal here.
+if ! grep -Eq 'not allowed to run sudo|a password is required|I.m sorry|not in the sudoers file' "$work/run-account-sudo.log"; then
   cat "$work/run-account-sudo.log" >&2
   fail_check "the run account's sudo attempt failed for an unexpected reason"
-}
+fi
 record_ok "negative: $run_account cannot sudo -n $helper_path"
 
 # Positive: the privileged operations account still reaches the same helper
