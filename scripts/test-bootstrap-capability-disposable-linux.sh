@@ -221,10 +221,11 @@ start_assets() {
   port="$((41000 + RANDOM % 2000))"
   python3 -m http.server "$port" --bind 127.0.0.1 --directory "$tree" >/dev/null 2>&1 &
   asset_pids+=("$!")
+  local base="http://127.0.0.1:$port"
   deadline=$((SECONDS + 30))
   while (( SECONDS < deadline )); do
-    if curl -fsS --max-time 2 "http://127.0.0.1:$port/" -o /dev/null 2>/dev/null; then
-      printf 'http://127.0.0.1:%s' "$port"
+    if curl -fsS --max-time 2 "$base/" -o /dev/null 2>/dev/null; then
+      printf '%s' "$base"
       return 0
     fi
     sleep 0.2
