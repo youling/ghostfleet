@@ -25,7 +25,24 @@ CHECKPOINT_FILE="$CHECKPOINT_DIR/enrollment-checkpoint.json"
 # the published courier never installs a privileged component the template did
 # not request. Installation happens inside this same root ceremony; it never
 # asks for a second password and never mints a second identity.
+CAPABILITY_ARTIFACT_1=
+CAPABILITY_ARTIFACT_2=
+CAPABILITY_ARTIFACT_3=
+CAPABILITY_ARTIFACT_4=
+CAPABILITY_ARTIFACT_5=
+CAPABILITY_ARTIFACT_6=
+CAPABILITY_ARTIFACT_7=
+CAPABILITY_ARTIFACT_8=
+CAPABILITY_ARTIFACT_9=
+CAPABILITY_ARTIFACT_10=
+CAPABILITY_ARTIFACT_11=
+CAPABILITY_ARTIFACT_12=
+CAPABILITY_ARTIFACT_13=
+CAPABILITY_ARTIFACT_14=
+CAPABILITY_ARTIFACT_15=
+CAPABILITY_ARTIFACT_16=
 # @@GHOSTFLEET_SELECTED_CAPABILITY_BEGIN@@
+CAPABILITY_SELECTION_ORIGIN='none'
 CAPABILITY_SCHEMA=''
 CAPABILITY_SOURCE=''
 CAPABILITY_VERSION=''
@@ -40,14 +57,34 @@ CAPABILITY_PRIVILEGED_KEY=''
 CAPABILITY_USER_UNIT=''
 CAPABILITY_USER_UNIT_ARTIFACT=''
 CAPABILITY_ARTIFACT_COUNT=0
-capability_artifact_row() {
-  return 1
-}
 # @@GHOSTFLEET_SELECTED_CAPABILITY_END@@
+capability_artifact_row() {
+  case "$1" in
+    1) printf '%s' "$CAPABILITY_ARTIFACT_1" ;;
+    2) printf '%s' "$CAPABILITY_ARTIFACT_2" ;;
+    3) printf '%s' "$CAPABILITY_ARTIFACT_3" ;;
+    4) printf '%s' "$CAPABILITY_ARTIFACT_4" ;;
+    5) printf '%s' "$CAPABILITY_ARTIFACT_5" ;;
+    6) printf '%s' "$CAPABILITY_ARTIFACT_6" ;;
+    7) printf '%s' "$CAPABILITY_ARTIFACT_7" ;;
+    8) printf '%s' "$CAPABILITY_ARTIFACT_8" ;;
+    9) printf '%s' "$CAPABILITY_ARTIFACT_9" ;;
+    10) printf '%s' "$CAPABILITY_ARTIFACT_10" ;;
+    11) printf '%s' "$CAPABILITY_ARTIFACT_11" ;;
+    12) printf '%s' "$CAPABILITY_ARTIFACT_12" ;;
+    13) printf '%s' "$CAPABILITY_ARTIFACT_13" ;;
+    14) printf '%s' "$CAPABILITY_ARTIFACT_14" ;;
+    15) printf '%s' "$CAPABILITY_ARTIFACT_15" ;;
+    16) printf '%s' "$CAPABILITY_ARTIFACT_16" ;;
+    *) return 1 ;;
+  esac
+}
 CAPABILITY_HELPER_STATE=UNKNOWN
 CAPABILITY_USER_SERVICE_STATE=UNKNOWN
 CAPABILITY_LINGER_STATE=UNKNOWN
 CAPABILITY_MODE=NOT_REQUESTED
+CAPABILITY_REQUIRED=0
+CAPABILITY_CLAIM_SELECTION_B64=
 CAPABILITY_STAGE_DIR=
 CAPABILITY_CREATED_UNIT=
 CAPABILITY_CREATED_WANT=
@@ -140,9 +177,12 @@ capability_validate_selection() {
 }
 
 capability_stage() {
-  CAPABILITY_STAGE_DIR="$(mktemp -d)"
-  [ -n "$CAPABILITY_STAGE_DIR" ] && [ -d "$CAPABILITY_STAGE_DIR" ] || fail 'selected-capability staging directory could not be created'
-  chmod 0700 "$CAPABILITY_STAGE_DIR"
+  # Stage under the root-owned checkpoint directory: no shared /tmp, no
+  # caller-controlled TMPDIR, and the directory only ever holds pinned bytes.
+  install -d -m 0700 -o root -g root "$CHECKPOINT_DIR" || fail 'selected-capability staging directory could not be created'
+  CAPABILITY_STAGE_DIR="$CHECKPOINT_DIR/.capability-stage.$$"
+  rm -rf "$CAPABILITY_STAGE_DIR"
+  install -d -m 0700 -o root -g root "$CAPABILITY_STAGE_DIR" || fail 'selected-capability staging directory could not be created'
   capability_index=1
   while [ "$capability_index" -le "$CAPABILITY_ARTIFACT_COUNT" ]; do
     capability_name="$(capability_artifact_field "$capability_index" 1)"
@@ -307,6 +347,64 @@ capability_state_write() {
 # Install exactly the capability the reviewed template selected, inside the
 # single authorized root ceremony. Partial application is reported as a failure
 # and never as completion.
+# The claim is the only server-authoritative source of the selected capability.
+# Values are strict-validated before use and never taken from argv or the URL.
+capability_ingest_claim() {
+  if [ -z "$CAPABILITY_CLAIM_SELECTION_B64" ]; then
+    if [ "$CAPABILITY_REQUIRED" = 1 ]; then
+      fail 'the enrollment template requires the privileged capability but the claim delivered no pinned artifacts; no privileged component was installed'
+    fi
+    return 0
+  fi
+  capability_decoded="$(printf '%s' "$CAPABILITY_CLAIM_SELECTION_B64" | base64 -d 2>/dev/null)" || capability_decoded=
+  [ -n "$capability_decoded" ] || fail 'claim capability selection is not decodable; no privileged component was installed'
+  install -d -m 0700 -o root -g root "$CHECKPOINT_DIR" || fail 'claim capability selection cannot be staged'
+  capability_tmp="$CHECKPOINT_DIR/.selection.$$"
+  printf '%s\\n' "$capability_decoded" > "$capability_tmp"
+  CAPABILITY_SCHEMA=
+  CAPABILITY_VERSION=
+  CAPABILITY_TEMPLATE_DIGEST=
+  CAPABILITY_SELECTION_DIGEST=
+  CAPABILITY_HELPER_REQUIRED=0
+  CAPABILITY_LINGER_REQUIRED=0
+  CAPABILITY_USER_SERVICE_REQUIRED=0
+  CAPABILITY_CONTROL_ACCOUNT=
+  CAPABILITY_INSTALLER=
+  CAPABILITY_PRIVILEGED_KEY=
+  CAPABILITY_USER_UNIT=
+  CAPABILITY_USER_UNIT_ARTIFACT=
+  CAPABILITY_ARTIFACT_COUNT=0
+  capability_slot=1
+  while IFS= read -r capability_line; do
+    case "$capability_line" in
+      '') continue ;;
+      schema=*) [ -z "$CAPABILITY_SCHEMA" ] || fail 'claim capability selection repeats the schema'; CAPABILITY_SCHEMA="\${capability_line#schema=}" ;;
+      version=*) CAPABILITY_VERSION="\${capability_line#version=}" ;;
+      template_digest=*) CAPABILITY_TEMPLATE_DIGEST="\${capability_line#template_digest=}" ;;
+      helper_required=*) CAPABILITY_HELPER_REQUIRED="\${capability_line#helper_required=}" ;;
+      linger_required=*) CAPABILITY_LINGER_REQUIRED="\${capability_line#linger_required=}" ;;
+      user_service_required=*) CAPABILITY_USER_SERVICE_REQUIRED="\${capability_line#user_service_required=}" ;;
+      control_account=*) CAPABILITY_CONTROL_ACCOUNT="\${capability_line#control_account=}" ;;
+      installer=*) CAPABILITY_INSTALLER="\${capability_line#installer=}" ;;
+      privileged_key=*) CAPABILITY_PRIVILEGED_KEY="\${capability_line#privileged_key=}" ;;
+      user_unit=*) CAPABILITY_USER_UNIT="\${capability_line#user_unit=}" ;;
+      user_unit_artifact=*) CAPABILITY_USER_UNIT_ARTIFACT="\${capability_line#user_unit_artifact=}" ;;
+      artifact=*)
+        capability_row="\${capability_line#artifact=}"
+        printf '%s' "$capability_row" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}[|][0-9a-f]{64}[|]0?[0-7]{3}[|][A-Za-z0-9+/=]+$' || fail 'claim capability artifact row is invalid; no privileged component was installed'
+        [ "$capability_slot" -le 16 ] || fail 'claim capability ships more artifacts than this courier supports'
+        eval "CAPABILITY_ARTIFACT_\${capability_slot}=\\$capability_row"
+        capability_slot=$((capability_slot + 1))
+        ;;
+      *) fail 'claim capability selection contains an unknown field; no privileged component was installed' ;;
+    esac
+  done < "$capability_tmp"
+  rm -f "$capability_tmp"
+  CAPABILITY_ARTIFACT_COUNT=$((capability_slot - 1))
+  CAPABILITY_SELECTION_ORIGIN=claim
+  capability_validate_selection
+}
+
 capability_apply() {
   if ! capability_selected; then
     CAPABILITY_HELPER_STATE=NOT_REQUESTED
@@ -482,6 +580,11 @@ checkpoint_is_compliant() {
   # The selected capability is part of convergence: a converged-looking host
   # whose privileged lane drifted is not a zero-delta host.
   capability_probe_all || return 1
+  # A checkpoint that recorded a privileged component cannot be re-proved by a
+  # payload that selects nothing; never report a false zero delta for it.
+  if ! capability_selected && grep -q '"privileged_helper":"COMPLIANT"' "$CHECKPOINT_FILE" 2>/dev/null; then
+    return 1
+  fi
   return 0
 }
 
@@ -523,21 +626,11 @@ else
 fi
 
 if [ "$(id -u)" -ne 0 ]; then
-  case "$0" in
-    /*) FLEET_BOOTSTRAP_SELF="$0" ;;
-    *) FLEET_BOOTSTRAP_SELF="$(pwd)/$0" ;;
-  esac
-  if [ ! -f "$FLEET_BOOTSTRAP_SELF" ] || [ ! -r "$FLEET_BOOTSTRAP_SELF" ]; then
-    fail 'root privileges are required; use the published downloader-to-file launcher so bootstrap can elevate safely'
-  fi
-  if command -v sudo >/dev/null 2>&1; then
-    exec sudo env GHOSTFLEET_BROKER_ORIGIN="$BROKER_ORIGIN" GHOSTFLEET_ENROLLMENT_URL="$ENROLLMENT_URL" sh "$FLEET_BOOTSTRAP_SELF"
-  fi
-  if command -v su >/dev/null 2>&1; then
-    export FLEET_BOOTSTRAP_SELF
-    exec su -c 'exec sh "$FLEET_BOOTSTRAP_SELF"' root
-  fi
-  fail 'root privileges are required and neither sudo nor su is available'
+  # This courier never re-executes itself through sudo or su: a self-elevation
+  # would inherit the caller PATH, TMPDIR and environment, and the run could be
+  # redirected to a different binary or terminal. The Console-generated one-shot
+  # command already runs this script as root with a clean environment.
+  fail 'root privileges are required; run the whole Console-generated one-click command instead of elevating this script'
 fi
 
 if [ "$(uname -s)" != 'Linux' ]; then
@@ -727,6 +820,10 @@ if ! CLAIM_JSON="$(printf '%s' "$ENROLL_CODE" | curl -fsS \\
 fi
 unset ENROLL_CODE
 
+json_flag() {
+  if printf '%s' "$1" | grep -Eq '"'$2'"[[:space:]]*:[[:space:]]*true'; then printf '1'; else printf '0'; fi
+}
+
 json_get() {
   JSON_VALUE="$(printf '%s' "$1" | grep -Eo '"'$2'"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 || true)"
   [ -n "$JSON_VALUE" ] || return 0
@@ -753,7 +850,14 @@ case "$IDENTITY_KIND" in
     ;;
   *) fail 'broker returned unknown identity_kind' ;;
 esac
+CAPABILITY_REQUIRED="$(json_flag "$CLAIM_JSON" capability_required)"
+CAPABILITY_CLAIM_SELECTION_B64="$(json_get "$CLAIM_JSON" capability_selection)"
 unset CLAIM_JSON
+
+# The selected capability arrives with the claim, so it is verified and applied
+# inside this same root ceremony.
+capability_ingest_claim
+
 
 detect_live_components() {
   PACKAGES_STATE=ABSENT

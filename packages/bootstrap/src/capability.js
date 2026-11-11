@@ -18,6 +18,7 @@ export const CAPABILITY_BLOCK_END = "# @@GHOSTFLEET_SELECTED_CAPABILITY_END@@";
 export const CAPABILITY_SECTION_BEGIN = "# @@GHOSTFLEET_CAPABILITY_SECTION_BEGIN@@";
 export const CAPABILITY_SECTION_END = "# @@GHOSTFLEET_CAPABILITY_SECTION_END@@";
 
+export const CAPABILITY_MAX_ARTIFACTS = 16;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const RAW_DIGEST = /^[0-9a-f]{64}$/;
 const ARTIFACT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -112,6 +113,7 @@ export function normalizeSelectedCapability(selection) {
   const user_service_required = selection.user_service_required === true;
   const selected = helper_required || linger_required || user_service_required;
   const artifacts = normalizeArtifacts(selection.artifacts ?? []);
+  if (artifacts.length > CAPABILITY_MAX_ARTIFACTS) throw invalid("CAPABILITY_TOO_MANY_ARTIFACTS");
   // The template — not the caller — decides whether a privileged component is
   // installed. Supplying pinned artifacts without a template request is refused
   // rather than silently ignored.
@@ -174,19 +176,17 @@ export function renderCapabilityBlock(selection) {
   const normalized = normalizeSelectedCapability(selection ?? null);
   const lines = [];
   if (!normalized) {
-    lines.push("CAPABILITY_SCHEMA=''", "CAPABILITY_SOURCE=''", "CAPABILITY_VERSION=''",
+    lines.push("CAPABILITY_SELECTION_ORIGIN='none'", "CAPABILITY_SCHEMA=''", "CAPABILITY_SOURCE=''", "CAPABILITY_VERSION=''",
       "CAPABILITY_TEMPLATE_DIGEST=''", "CAPABILITY_SELECTION_DIGEST=''",
       "CAPABILITY_HELPER_REQUIRED=0", "CAPABILITY_LINGER_REQUIRED=0",
       "CAPABILITY_USER_SERVICE_REQUIRED=0", "CAPABILITY_CONTROL_ACCOUNT=''",
       "CAPABILITY_INSTALLER=''", "CAPABILITY_PRIVILEGED_KEY=''",
       "CAPABILITY_USER_UNIT=''", "CAPABILITY_USER_UNIT_ARTIFACT=''",
-      "CAPABILITY_ARTIFACT_COUNT=0",
-      "capability_artifact_row() {",
-      "  return 1",
-      "}");
+      "CAPABILITY_ARTIFACT_COUNT=0");
     return lines.join("\n");
   }
   lines.push(
+    "CAPABILITY_SELECTION_ORIGIN='render'",
     "CAPABILITY_SCHEMA=" + quote(normalized.schema),
     "CAPABILITY_SOURCE=" + quote(normalized.source),
     "CAPABILITY_VERSION=" + quote(normalized.version),
@@ -206,12 +206,92 @@ export function renderCapabilityBlock(selection) {
     const row = [item.name, item.sha256, item.mode, item.base64].join("|");
     lines.push("CAPABILITY_ARTIFACT_" + (index + 1) + "=" + quote(row));
   });
-  // Rendered as shell so the courier never needs eval or string surgery to
-  // read a pinned artifact row.
-  lines.push("capability_artifact_row() {", "  case \"$1\" in");
-  normalized.artifacts.forEach((item, index) => {
-    lines.push("    " + (index + 1) + ") printf '%s' \"$CAPABILITY_ARTIFACT_" + (index + 1) + "\" ;;");
-  });
-  lines.push("    *) return 1 ;;", "  esac", "}");
+  // Rows are data; the courier owns the fixed-width accessor so a claim-time
+  // selection and a deployment-rendered selection share one implementation.
   return lines.join("\n");
+}
+
+/** Encode a selection as the compact, shell-parsable text the claim delivers. */
+function selectionInput(selection) {
+  // A normalized selection carries derived fields; rebuild only the input shape
+  // so encode/decode round-trips without re-declaring digests.
+  return {
+    source: selection.source ?? "template",
+    version: selection.version,
+    template_digest: selection.template_digest,
+    helper_required: selection.helper_required === true,
+    linger_required: selection.linger_required === true,
+    user_service_required: selection.user_service_required === true,
+    control_account: selection.control_account ?? null,
+    installer: selection.installer ?? null,
+    privileged_key: selection.privileged_key ?? null,
+    user_unit: selection.user_unit ?? null,
+    artifacts: (selection.artifacts ?? []).map((item) => ({
+      name: item.name,
+      mode: item.mode,
+      content: item.content,
+    })),
+  };
+}
+
+export function encodeCapabilitySelection(selection, { templateDigest = null } = {}) {
+  const input = selectionInput(selection);
+  const normalized = normalizeSelectedCapability(
+    templateDigest ? { ...input, template_digest: templateDigest } : input,
+  );
+  if (!normalized) throw invalid("CAPABILITY_SELECTION_REQUIRED");
+  const lines = [
+    "schema=" + normalized.schema,
+    "version=" + normalized.version,
+    "template_digest=" + normalized.template_digest,
+    "helper_required=" + (normalized.helper_required ? "1" : "0"),
+    "linger_required=" + (normalized.linger_required ? "1" : "0"),
+    "user_service_required=" + (normalized.user_service_required ? "1" : "0"),
+    "control_account=" + normalized.control_account,
+    "installer=" + (normalized.installer ?? ""),
+    "privileged_key=" + (normalized.privileged_key ?? ""),
+    "user_unit=" + (normalized.user_unit?.name ?? ""),
+    "user_unit_artifact=" + (normalized.user_unit?.artifact ?? ""),
+  ];
+  for (const item of normalized.artifacts) {
+    lines.push("artifact=" + [item.name, item.sha256, item.mode, item.base64].join("|"));
+  }
+  return Buffer.from(lines.join("\n") + "\n", "utf8").toString("base64");
+}
+
+/** Parse the claim-delivered selection back into the validated shape. */
+export function decodeCapabilitySelection(text, { templateDigest = null } = {}) {
+  if (typeof text !== "string" || !text.length) throw invalid("CAPABILITY_SELECTION_INVALID");
+  const fields = new Map();
+  const artifacts = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const index = line.indexOf("=");
+    if (index <= 0) throw invalid("CAPABILITY_SELECTION_INVALID");
+    const key = line.slice(0, index);
+    const value = line.slice(index + 1);
+    if (key === "artifact") {
+      const [name, sha256, mode, base64] = value.split("|");
+      if (!name || !sha256 || !mode || !base64) throw invalid("CAPABILITY_SELECTION_INVALID");
+      artifacts.push({ name, sha256: "sha256:" + sha256, mode, content: Buffer.from(base64, "base64").toString("utf8") });
+      continue;
+    }
+    if (fields.has(key)) throw invalid("CAPABILITY_SELECTION_INVALID");
+    fields.set(key, value);
+  }
+  if (fields.get("schema") !== SELECTED_CAPABILITY_SCHEMA) throw invalid("CAPABILITY_SELECTION_INVALID");
+  return normalizeSelectedCapability({
+    source: "template",
+    version: fields.get("version"),
+    template_digest: templateDigest ?? fields.get("template_digest"),
+    helper_required: fields.get("helper_required") === "1",
+    linger_required: fields.get("linger_required") === "1",
+    user_service_required: fields.get("user_service_required") === "1",
+    control_account: fields.get("control_account"),
+    installer: fields.get("installer") || null,
+    privileged_key: fields.get("privileged_key") || null,
+    user_unit: fields.get("user_unit") ? { name: fields.get("user_unit"), artifact: fields.get("user_unit_artifact") } : null,
+    artifacts,
+  });
 }

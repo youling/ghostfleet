@@ -8,6 +8,7 @@ export {
   SELECTED_CAPABILITY_SCHEMA, CAPABILITY_BLOCK_BEGIN, CAPABILITY_BLOCK_END,
   CAPABILITY_SECTION_BEGIN, CAPABILITY_SECTION_END,
   selectedCapabilitiesFromPosture, normalizeSelectedCapability, renderCapabilityBlock, capabilityDigest,
+  encodeCapabilitySelection, decodeCapabilitySelection, CAPABILITY_MAX_ARTIFACTS,
 } from "./capability.js";
 export {createBootstrapSession, recordRootCeremony, attachPreflight, attachClaim, completeBootstrap, assertNoPostBootstrapPasswordPrompt, createBootstrapReceipt} from "./session.js";
 import {BOOTSTRAP_SH} from "./bootstrap.js";
