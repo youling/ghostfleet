@@ -682,6 +682,56 @@ test("a claim selection with a non-normalised mode or a root control account is 
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
 
+test("a legacy node cannot be downgraded by a claim that delivers no capability", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
+    assert.equal((await runCourier(host, null)).status, 0);
+    const stateBefore = await readJson(join(host.checkpoint, "capability-state.json"));
+    const checkpointBefore = await readJson(join(host.checkpoint, "enrollment-checkpoint.json"));
+    const reportBefore = await readJson(join(host.checkpoint, "enrollment-report.json"));
+    await rm(join(host.checkpoint, "capability-selection.txt"), { force: true });
+
+    // The next claim comes from a template that requests no capability at all.
+    await setClaim(host, { capability_required: false, capability_selection: null });
+    const result = await runCourier(host, null);
+    assert.notEqual(result.status, 0, "a claim without a selection must not complete");
+    assert.match(result.stderr, /recorded a privileged capability but the claim delivered no reviewed selection/);
+    assert.equal((await calls(host)).filter((line) => line === "curl complete").length, 1, "only the first run reported completion");
+    // Every piece of evidence still describes the installed lane.
+    assert.deepEqual(await readJson(join(host.checkpoint, "capability-state.json")), stateBefore);
+    assert.deepEqual(await readJson(join(host.checkpoint, "enrollment-checkpoint.json")), checkpointBefore);
+    assert.deepEqual(await readJson(join(host.checkpoint, "enrollment-report.json")), reportBefore);
+    assert.equal(await exists(join(host.checkpoint, "capability-selection.txt")), false);
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a legacy reconcile refuses a claim for a different node identity", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
+    assert.equal((await runCourier(host, null)).status, 0);
+    await rm(join(host.checkpoint, "capability-selection.txt"), { force: true });
+    await rm(UNIT_PATH(host), { force: true });
+
+    // Same node id, different node uid: not the node this checkpoint belongs to.
+    await setClaim(host, {
+      capability_required: true,
+      capability_selection: encodeCapabilitySelection(selection),
+      node_uid: NODE_UID.slice(0, -1) + "2",
+    });
+    const result = await runCourier(host, null);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /different node identity/);
+    assert.equal((await calls(host)).filter((line) => line === "tailscale-up").length, 1);
+    assert.deepEqual(await installerLog(host).then((lines) => lines.filter((line) => line.includes("--apply"))).then((lines) => lines.length), 1);
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
 test("the selected capability is validated before the preclaim fence and installed before completion", () => {
   return import("../src/bootstrap.js").then(({ BOOTSTRAP_SH }) => {
     const preflight = BOOTSTRAP_SH.indexOf("\nbootstrap_phase0_preflight\n");

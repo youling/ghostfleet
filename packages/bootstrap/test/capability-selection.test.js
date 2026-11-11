@@ -132,6 +132,20 @@ test("the shell text decoder rejects unknown keys and truncated artifact rows", 
   assert.throws(() => decodeCapabilitySelection(extra), /CAPABILITY_SELECTION_INVALID/);
 });
 
+test("the published courier carries no literal control bytes or split printf formats", async () => {
+  const { BOOTSTRAP_SH } = await import("../src/bootstrap.js");
+  // A literal tab or CR inside the template would change what the node executes.
+  assert.doesNotMatch(BOOTSTRAP_SH, /[\u0000-\u0008\u000b\u000c\u000e-\u001f\t\r]/);
+  const lines = BOOTSTRAP_SH.split("\n");
+  const split = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (/printf '[^']*%s$/.test(lines[index]) && (lines[index + 1] ?? "").startsWith("'")) {
+      split.push(index + 1);
+    }
+  }
+  assert.deepEqual(split, [], "printf formats must keep explicit \\n escapes");
+});
+
 test("the recorded selection digest is stable and covers every pinned artifact", () => {
   const first = normalizeSelectedCapability(selection());
   assert.equal(capabilitySelectionDigest(first), capabilitySelectionDigest(normalizeSelectedCapability(selection())));

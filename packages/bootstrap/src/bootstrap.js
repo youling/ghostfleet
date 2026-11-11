@@ -208,8 +208,6 @@ capability_validate_selection() {
   if [ "$CAPABILITY_HELPER_REQUIRED" = 1 ]; then
     [ -n "$CAPABILITY_INSTALLER_INDEX" ] || fail 'selected privileged helper does not pin its installer artifact'
     [ -n "$CAPABILITY_KEY_INDEX" ] || fail 'selected privileged helper does not pin the admitted privileged SSH public key'
-    printf '%s' "$CAPABILITY_CONTROL_ACCOUNT" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || fail 'selected-capability control account is invalid'
-    [ "$CAPABILITY_CONTROL_ACCOUNT" != root ] || fail 'selected-capability control account must not be root'
     for capability_tool in bash python3 useradd usermod passwd visudo sudo getent; do
       command -v "$capability_tool" >/dev/null 2>&1 || fail "preflight failed: $capability_tool is required by the selected privileged helper"
     done
@@ -806,6 +804,7 @@ if checkpoint_identity_converged; then
     # reviewed selection. It is machine-reconcilable: the next authorized claim
     # re-delivers the selection and this run converges it. No manual state edit.
     CAPABILITY_LEGACY_STATE=1
+    rm -f /run/fleet/ts-authkey
     printf '%s\\n' 'fleet-enroll: this node recorded a privileged capability without a reviewed selection (legacy checkpoint); the next authorized claim reconciles it' >&2
   fi
   if [ "$CAPABILITY_LEGACY_STATE" = 1 ]; then
@@ -985,11 +984,30 @@ CAPABILITY_CLAIM_SELECTION_B64="$(json_get "$CLAIM_JSON" capability_selection)"
 unset CLAIM_JSON
 
 if [ "$CAPABILITY_LEGACY_STATE" = 1 ]; then
+  # Reconciliation may only continue on the very node this checkpoint belongs to.
   capability_checkpoint_node="$(json_file_value "$CHECKPOINT_FILE" node_id)"
   [ "$NODE_ID" = "$capability_checkpoint_node" ] ||
     fail 'this claim is for a different node; a legacy capability record can only be reconciled on its original node'
+  case "$IDENTITY_KIND" in
+    provisional)
+      capability_checkpoint_enrollment="$(json_file_value "$CHECKPOINT_FILE" enrollment_id)"
+      [ "$ENROLLMENT_ID" = "$capability_checkpoint_enrollment" ] ||
+        fail 'this claim belongs to a different provisional enrollment; a legacy capability record cannot be reconciled with it'
+      ;;
+    *)
+      capability_checkpoint_uid="$(json_file_value "$CHECKPOINT_FILE" node_uid)"
+      capability_checkpoint_kind="$(json_file_value "$CHECKPOINT_FILE" identity_kind)"
+      [ "$NODE_UID" = "$capability_checkpoint_uid" ] ||
+        fail 'this claim carries a different node identity; a legacy capability record cannot be reconciled with it'
+      [ -n "$capability_checkpoint_kind" ] || capability_checkpoint_kind=canonical
+      [ "$IDENTITY_KIND" = "$capability_checkpoint_kind" ] ||
+        fail 'this claim changes the identity kind of a legacy capability checkpoint; reconcile manually'
+      ;;
+  esac
+  # The installed privileged lane must be re-delivered, never silently dropped.
+  [ "$CAPABILITY_REQUIRED" = 1 ] && [ -n "$CAPABILITY_CLAIM_SELECTION_B64" ] ||
+    fail 'this node recorded a privileged capability but the claim delivered no reviewed selection; the installed lane cannot be reconciled by this claim'
 fi
-
 # The selected capability arrives with the claim, so it is verified and applied
 # inside this same root ceremony.
 capability_ingest_claim
