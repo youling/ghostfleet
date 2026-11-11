@@ -77,6 +77,31 @@ test("elevated script keeps the download in a root-created workspace", () => {
   assert.match(command, /\/bin\/rm -rf "\$WORK_DIR"/);
 });
 
+test("delivered command is origin-only: claim-material fields cannot reach argv, URL or script", () => {
+  const plain = createTicketDelivery({ record: { ticket_id: ticketId }, short_code: shortCode, public_origin: origin });
+  const enriched = createTicketDelivery({
+    record: {
+      ticket_id: ticketId,
+      // #55 adds a server-authoritative capability_selection to claim material.
+      // The launcher must stay a pure function of the public origin: no claim
+      // field may become command argv, a URL query handle, or script input.
+      capability_selection: {
+        capability_id: "helper-user-service",
+        pinned_version: "1.0.0",
+        sha256: "sha256:" + "c".repeat(64),
+        template_digest: "sha256:" + "d".repeat(64),
+      },
+    },
+    short_code: shortCode,
+    public_origin: origin,
+  });
+  assert.equal(enriched.command, plain.command);
+  assert.equal(enriched.one_time_url, plain.one_time_url);
+  assert.doesNotMatch(plain.command, /capability/i);
+  assert.doesNotMatch(plain.command, /\/v1\/bootstrap\.sh\?/);
+  assert.doesNotMatch(plain.one_time_url, /\?/);
+});
+
 test("interruption traps clean up and restore terminal echo", () => {
   const script = unquoteShell(delivery().command);
   assert.match(script, /trap cleanup EXIT/);
