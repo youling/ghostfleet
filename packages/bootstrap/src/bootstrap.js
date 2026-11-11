@@ -136,7 +136,7 @@ capability_selection_digest() {
         "$(capability_artifact_field "$capability_index" 2)" \\
         "$(capability_artifact_field "$capability_index" 3)"
       capability_index=$((capability_index + 1))
-    done | sort
+    done | LC_ALL=C sort
   } | sha256sum | awk '{print "sha256:" $1}'
 }
 

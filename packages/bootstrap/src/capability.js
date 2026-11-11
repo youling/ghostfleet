@@ -319,7 +319,8 @@ export function capabilitySelectionDigest(selection) {
   const rows = selection.artifacts
     .map((item) => item.name + "|" + item.sha256 + "|" + item.mode)
     .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
-  return "sha256:" + createHash("sha256").update([...lines, ...rows].join("\n")).digest("hex");
+  // The shell writes every line with printf, so the stream ends with a newline.
+  return "sha256:" + createHash("sha256").update([...lines, ...rows].join("\n") + "\n").digest("hex");
 }
 
 /**
