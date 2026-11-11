@@ -128,6 +128,11 @@ capability_operating_user() {
   case "$capability_operating_uid" in ''|*[!0-9]*) return 0 ;; esac
   [ "$capability_operating_uid" -ne 0 ] || return 0
   [ "$capability_operating_uid" -ge 1000 ] || return 0
+  # Ordinary login accounts only: nobody (65534) and any nologin/false
+  # shell is not a person who can run the Console command.
+  [ "$capability_operating_uid" -lt 60000 ] || return 0
+  capability_operating_shell="$(printf '%s' "$capability_operating_row" | cut -d ':' -f 7)"
+  case "$capability_operating_shell" in */nologin|*/false) return 0 ;; esac
   printf '%s' "$capability_operating"
 }
 

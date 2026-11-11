@@ -151,13 +151,28 @@ function cleanRootShell(script) {
 // inject shell syntax, and re-validated by the bootstrap (name, existence, uid).
 const OPERATING_USER_CAPTURE = [
   "OPERATING_USER=",
-  'if [ "$(id -u)" -ne 0 ]; then',
-  '  OPERATING_USER="$(id -un)"',
+  "TRUSTED_ID=/usr/bin/id",
+  'if [ ! -x "$TRUSTED_ID" ]; then',
+  "  printf '%s\\n' 'GhostFleet requires /usr/bin/id to identify the Human account; install coreutils at the trusted path' >&2",
+  "  exit 1",
+  "fi",
+  'CALLER_UID="$("$TRUSTED_ID" -u 2>/dev/null)"',
+'case "$CALLER_UID" in',
+"  ''|*[!0-9]*) printf '%s\\n' 'GhostFleet cannot determine the invoking account id from /usr/bin/id' >&2; exit 1 ;;",
+'esac',
+'if [ "$CALLER_UID" -ne 0 ]; then',
+  '  OPERATING_USER="$("$TRUSTED_ID" -un)"',
   '  case "$OPERATING_USER" in',
-  "    ''|*[!a-z0-9_-]*) printf '%s\\n' 'GhostFleet cannot determine a safe operating user name; run the command as the Human administrator account' >&2; exit 1 ;;",
+  "    ''|[!a-z_]*|*[!a-z0-9_-]*) OPERATING_USER_INVALID=1 ;;",
   "  esac",
+  '  if [ "$(printf "%s" "$OPERATING_USER" | wc -c)" -gt 32 ]; then OPERATING_USER_INVALID=1; fi',
+  '  if [ "$OPERATING_USER_INVALID" = 1 ]; then',
+  "    printf '%s\\n' 'GhostFleet cannot use this account name as the Human owner: it must start with a lowercase letter or underscore, contain only [a-z0-9_-], and be at most 32 characters' >&2",
+  "    exit 1",
+  "  fi",
   "fi",
 ].join("\n");
+
 
 function portableBootstrapCommand(origin) {
   const downloadUrl = origin + "/v1/bootstrap.sh";
@@ -237,7 +252,7 @@ function portableBootstrapCommand(origin) {
   return [
     "(",
     OPERATING_USER_CAPTURE,
-    'if [ "$(id -u)" -eq 0 ]; then',
+    'if [ "$CALLER_UID" -eq 0 ]; then',
     "  " + elevated + ' "$OPERATING_USER"',
     "elif command -v sudo >/dev/null 2>&1; then",
     "  sudo " + elevated + ' "$OPERATING_USER"',
