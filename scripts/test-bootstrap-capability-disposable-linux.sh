@@ -521,9 +521,36 @@ record_ok "stale privileged lane refused: $(grep -o 'CAPABILITY_STALE_PRIVILEGED
 loginctl disable-linger "$privileged_account" 2>/dev/null || true
 rm -f "$stale_want" "$stale_unit"
 
+# 11. The declared privileged account is cross-checked against the account the
+#     reviewed installer actually recorded. A well-formed declaration for a
+#     different account must be refused even though every other check passes.
+installer_state=/etc/youling-fleet/privileged-operations/control.json
+[[ -r "$installer_state" ]] || fail_check "the reviewed installer recorded no state file"
+cp "$installer_state" "$work/control.json.orig"
+python3 - "$installer_state" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+state = json.loads(path.read_text(encoding="utf-8"))
+state["ops_user"] = "ghostfleet-ops-alt"
+path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+PY
+mkdir -p "$work/checkpoint-mismatch"
+if run_capability "$work/checkpoint-mismatch" "$work/capability-data.sh" >"$work/mismatch.log" 2>&1; then
+  cp "$work/control.json.orig" "$installer_state"
+  fail_check "a privileged declaration the installer does not admit was accepted"
+fi
+cp "$work/control.json.orig" "$installer_state"
+grep -q 'CAPABILITY_PRIVILEGED_ACCOUNT_MISMATCH' "$work/mismatch.log" || {
+  cat "$work/mismatch.log" >&2
+  fail_check "the mismatched declaration was refused for an unexpected reason"
+}
+grep -q 'admits ghostfleet-ops-alt' "$work/mismatch.log" || fail_check "the refusal does not name the admitted account"
+[[ -f "$unit" ]] || fail_check "the converged unit was disturbed by the mismatch refusal"
+record_ok "declared privileged account cross-checked: $(grep -o 'CAPABILITY_PRIVILEGED_ACCOUNT_MISMATCH[^;]*' "$work/mismatch.log" | head -n1)"
+
 evidence "run_account=$run_account uid=$run_uid home=$run_home groups=$run_groups"
 evidence "privileged_account=$privileged_account sudo_rule=$(sudo -l -U "$privileged_account" 2>/dev/null | grep -o "$helper_path" | head -n1)"
 evidence "negative=$run_account cannot sudo -n $helper_path; positive=$privileged_account ran it: $(cat "$work/ops-sudo.log")"
 evidence "claim selection_digest=$claim_digest"
 
-echo "PASS published selected-capability lane created the dedicated run account (nologin, locked, no sudo, no root-equivalent group), kept the privileged account separate, installed the real reviewed helper under fixed-pin digests, put the unit and Linger under the run account, refused the account collision and the missing run account without any effect, caught a root-equivalent group granted by the installer after it ran, refused a v1 lane left inside the privileged account, rolled back only the account it created, adopted a pre-existing account without recreating it, and answered the claim channel through the published parser. Real OMV8 Linger/SSH admission and a real managed runtime NOT_RUN"
+echo "PASS published selected-capability lane created the dedicated run account (nologin, locked, no sudo, no root-equivalent group), kept the privileged account separate, installed the real reviewed helper under fixed-pin digests, put the unit and Linger under the run account, refused the account collision and the missing run account without any effect, caught a root-equivalent group granted by the installer after it ran, cross-checked the declared privileged account against the installer record, refused a v1 lane left inside the privileged account, rolled back only the account it created, adopted a pre-existing account without recreating it, and answered the claim channel through the published parser. Real OMV8 Linger/SSH admission and a real managed runtime NOT_RUN"

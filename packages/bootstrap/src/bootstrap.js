@@ -417,6 +417,9 @@ capability_probe_all() {
   if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ] || [ "$CAPABILITY_LINGER_REQUIRED" = 1 ]; then
     capability_probe_criteria="$(capability_account_criteria_state "$CAPABILITY_CONTROL_ACCOUNT")"
     [ "$capability_probe_criteria" = SAFE ] || capability_result=1
+    if ! ( capability_verify_declared_privileged_account optional ) >/dev/null 2>&1; then
+      capability_result=1
+    fi
   fi
   capability_stage_cleanup
   return "$capability_result"
@@ -621,6 +624,41 @@ capability_provision_control_account() {
 # The reviewed installer runs as root. After it has run, the run account is
 # proved again: nothing may be installed into its home, enabled through Linger or
 # recorded as converged while the account's least privilege is unproven.
+# The reviewed installer records the account it actually admits in its own state
+# file. The selection only DECLARES one, so comparing the two is what turns a
+# well-formed but wrong declaration into a refusal.
+CAPABILITY_PRIVILEGED_STATE_FILE=/etc/youling-fleet/privileged-operations/control.json
+
+# The reviewed installer runs as root. After it has run, the run account is
+# proved again and the declared privileged account is cross-checked against what
+# the installer recorded: nothing may be installed into the run account's home,
+# enabled through Linger or recorded as converged while either is unproven.
+capability_installer_ops_user() {
+  [ -r "$CAPABILITY_PRIVILEGED_STATE_FILE" ] || return 0
+  sed -n 's/.*"ops_user"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' "$CAPABILITY_PRIVILEGED_STATE_FILE" 2>/dev/null | head -n1 || true
+}
+
+# The selection DECLARES the privileged account; the installer RECORDS the one it
+# admits. "required" is used where the installer has just run and must have
+# recorded something; "optional" is used where the helper may legitimately not be
+# installed on this host yet.
+capability_verify_declared_privileged_account() {
+  [ "$CAPABILITY_HELPER_REQUIRED" = 1 ] || return 0
+  capability_installer_ops="$(capability_installer_ops_user)"
+  if [ -z "$capability_installer_ops" ]; then
+    [ "$1" = required ] || return 0
+    CAPABILITY_ACCOUNT_STATE=UNKNOWN
+    printf '%s\\n' "fleet-enroll: [CAPABILITY_PRIVILEGED_ACCOUNT_UNVERIFIED] the reviewed installer recorded no ops account in $CAPABILITY_PRIVILEGED_STATE_FILE, so privileged_account=$CAPABILITY_PRIVILEGED_ACCOUNT cannot be cross-checked against the account that actually holds the bounded fleet-privctl rule; no completion is reported" >&2
+    return 1
+  fi
+  if [ "$capability_installer_ops" != "$CAPABILITY_PRIVILEGED_ACCOUNT" ]; then
+    CAPABILITY_ACCOUNT_STATE=UNKNOWN
+    printf '%s\\n' "fleet-enroll: [CAPABILITY_PRIVILEGED_ACCOUNT_MISMATCH] the selection declares privileged_account=$CAPABILITY_PRIVILEGED_ACCOUNT but the reviewed installer admits $capability_installer_ops; the declared account is not the one holding the bounded fleet-privctl rule, so the isolation proof would name the wrong identity" >&2
+    return 1
+  fi
+  return 0
+}
+
 capability_reprove_control_account() {
   if [ "$CAPABILITY_USER_SERVICE_REQUIRED" != 1 ] && [ "$CAPABILITY_LINGER_REQUIRED" != 1 ]; then
     return 0
@@ -631,6 +669,7 @@ capability_reprove_control_account() {
     capability_account_criteria_fail "$capability_account_reproof"
     return 1
   fi
+  capability_verify_declared_privileged_account required || return 1
   return 0
 }
 
@@ -638,10 +677,11 @@ capability_reprove_control_account() {
 # a node upgraded from one still owns a unit, an enablement link and Linger in
 # that account. Installing the v2 lane beside it would leave two long-running
 # services, one of them privileged, and silently widen what the runtime inherits.
-# The residue is detected before any effect. It is only REMOVED when this node's
-# own recorded v1 selection proves the product created it; otherwise the run
-# stops and prints the exact decommission steps, because deleting a pre-existing
-# account's files is never this courier's decision.
+# The residue is detected before any effect. It is only REMOVED when this run
+# restored its selection from this node's own record (channel-scoped provenance)
+# AND the bytes at those paths are the reviewed ones; otherwise the run stops and
+# prints the exact decommission steps, because deleting a pre-existing account's
+# files is never this courier's decision.
 capability_probe_privileged_lane_residue() {
   CAPABILITY_STALE_LANE_FOUND=
   CAPABILITY_STALE_UNIT=
@@ -691,21 +731,88 @@ capability_recorded_control_account() {
   base64 -d "$CAPABILITY_RECORD_FILE" 2>/dev/null | sed -n 's/^control_account=//p' | head -n1 || true
 }
 
+capability_declared_unit_digest() {
+  capability_index=1
+  while [ "$capability_index" -le "$CAPABILITY_ARTIFACT_COUNT" ]; do
+    if [ "$(capability_artifact_field "$capability_index" 1)" = "$CAPABILITY_USER_UNIT_ARTIFACT" ]; then
+      capability_artifact_field "$capability_index" 2
+      return 0
+    fi
+    capability_index=$((capability_index + 1))
+  done
+  return 0
+}
+
+# Deletes only bytes this product's own record reviewed: the enablement link must
+# point at this unit and the unit must hash to the pinned artifact digest. A path
+# that now belongs to something else is reported and left untouched.
+capability_decommission_stale_lane() {
+  capability_stale_removed=
+  case "$CAPABILITY_STALE_LANE_FOUND" in
+    *linger*)
+      if command -v loginctl >/dev/null 2>&1; then
+        loginctl disable-linger "$CAPABILITY_STALE_ACCOUNT" >/dev/null 2>&1 || true
+        capability_stale_removed="$capability_stale_removed linger"
+      fi
+      ;;
+  esac
+  if [ -n "$CAPABILITY_STALE_WANT" ]; then
+    capability_want_target="$(readlink "$CAPABILITY_STALE_WANT" 2>/dev/null || true)"
+    if [ "$capability_want_target" = "../$CAPABILITY_USER_UNIT" ] || [ "$capability_want_target" = "$CAPABILITY_STALE_UNIT" ]; then
+      rm -f "$CAPABILITY_STALE_WANT"
+      capability_stale_removed="$capability_stale_removed enablement-link"
+    else
+      printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_WANT does not point at $CAPABILITY_USER_UNIT (target: $capability_want_target); left in place" >&2
+      return 1
+    fi
+  fi
+  if [ -n "$CAPABILITY_STALE_UNIT" ]; then
+    capability_expected_unit="$(capability_declared_unit_digest)"
+    capability_actual_unit=
+    if [ -f "$CAPABILITY_STALE_UNIT" ] && [ ! -L "$CAPABILITY_STALE_UNIT" ]; then
+      capability_actual_unit="$(sha256sum "$CAPABILITY_STALE_UNIT" 2>/dev/null | cut -d ' ' -f 1 || true)"
+    fi
+    if [ -z "$capability_expected_unit" ] || [ "$capability_actual_unit" != "$capability_expected_unit" ]; then
+      capability_actual_unit_label="$capability_actual_unit"
+      if [ -z "$capability_actual_unit_label" ]; then
+        capability_actual_unit_label='not a regular file'
+      fi
+      printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_UNIT does not hash to the reviewed unit artifact (reviewed: $capability_expected_unit, found: $capability_actual_unit_label); left in place" >&2
+      return 1
+    fi
+    rm -f "$CAPABILITY_STALE_UNIT"
+    capability_stale_removed="$capability_stale_removed unit"
+  fi
+  return 0
+}
+
 capability_refuse_stale_privileged_lane() {
   capability_probe_privileged_lane_residue
   [ -n "$CAPABILITY_STALE_LANE_FOUND" ] || return 0
-  if [ "$(capability_recorded_control_account)" = "$CAPABILITY_STALE_ACCOUNT" ]; then
-    # The node's own record says this product put the lane there, so removing
-    # exactly those three paths is a rollback of our own earlier effect.
-    case "$CAPABILITY_STALE_LANE_FOUND" in
-      *linger*) loginctl disable-linger "$CAPABILITY_STALE_ACCOUNT" >/dev/null 2>&1 || true ;;
-    esac
-    if [ -n "$CAPABILITY_STALE_WANT" ]; then rm -f "$CAPABILITY_STALE_WANT"; fi
-    if [ -n "$CAPABILITY_STALE_UNIT" ]; then rm -f "$CAPABILITY_STALE_UNIT"; fi
-    printf '%s\\n' "fleet-enroll: decommissioned the v1 managed lane this node recorded under the privileged account $CAPABILITY_STALE_ACCOUNT ($CAPABILITY_STALE_LANE_FOUND)" >&2
-    fail "[CAPABILITY_STALE_PRIVILEGED_LANE] the recorded v1 selection owned the managed unit inside the privileged operations account; that lane was removed and this run stops without installing anything; re-run the authorized Console command so the v2 selection is delivered"
+  # Provenance is channel-scoped: only a selection this run restored from the
+  # node's own record proves the product created that lane. A delivered payload
+  # that merely finds the file never authorises a delete.
+  if [ "$CAPABILITY_SELECTION_ORIGIN" = recorded ] &&
+     [ "$(capability_recorded_control_account)" = "$CAPABILITY_STALE_ACCOUNT" ]; then
+    if ! capability_decommission_stale_lane; then
+      fail "[CAPABILITY_STALE_PRIVILEGED_LANE] the recorded v1 lane under $CAPABILITY_STALE_ACCOUNT contains something this courier will not delete automatically (see the line above); review it, remove it by hand, then re-run the authorized Console command"
+    fi
+    rm -f "$CAPABILITY_RECORD_FILE"
+    printf '%s\\n' "fleet-enroll: decommissioned the v1 managed lane this node recorded under the privileged account $CAPABILITY_STALE_ACCOUNT ($capability_stale_removed) and removed the recorded v1 selection" >&2
+    fail "[CAPABILITY_STALE_PRIVILEGED_LANE] the recorded v1 selection owned the managed unit inside the privileged operations account; that lane and the record were removed and this run stops without installing anything; re-run the authorized Console command so the next claim delivers the v2 selection"
   fi
-  fail "[CAPABILITY_STALE_PRIVILEGED_LANE] the account $CAPABILITY_STALE_ACCOUNT still owns $CAPABILITY_STALE_LANE_FOUND from a v1 managed lane; installing the v2 lane beside it would leave two long-running services, one of them privileged. Decommission it first: systemctl --user disable $CAPABILITY_USER_UNIT; rm -f $CAPABILITY_STALE_WANT; rm -f $CAPABILITY_STALE_UNIT; loginctl disable-linger $CAPABILITY_STALE_ACCOUNT; then re-run the authorized Console command with the v2 selection"
+  capability_stale_steps=
+  if [ -n "$CAPABILITY_STALE_UNIT" ]; then
+    capability_stale_steps="$capability_stale_steps sudo -iu $CAPABILITY_STALE_ACCOUNT systemctl --user disable --now $CAPABILITY_USER_UNIT;"
+    capability_stale_steps="$capability_stale_steps rm -f $CAPABILITY_STALE_UNIT;"
+  fi
+  if [ -n "$CAPABILITY_STALE_WANT" ]; then
+    capability_stale_steps="$capability_stale_steps rm -f $CAPABILITY_STALE_WANT;"
+  fi
+  case "$CAPABILITY_STALE_LANE_FOUND" in
+    *linger*) capability_stale_steps="$capability_stale_steps loginctl disable-linger $CAPABILITY_STALE_ACCOUNT;" ;;
+  esac
+  fail "[CAPABILITY_STALE_PRIVILEGED_LANE] the account $CAPABILITY_STALE_ACCOUNT still owns $CAPABILITY_STALE_LANE_FOUND from a v1 managed lane; installing the v2 lane beside it would leave two long-running services, one of them privileged. Decommission it first, in that account (the sudo -iu line stops a running instance): $capability_stale_steps then re-run the authorized Console command with the v2 selection"
 }
 
 capability_rollback_files() {
@@ -863,6 +970,13 @@ capability_apply() {
     capability_stage_cleanup
     fail 'the dedicated managed run account could not be provisioned and proved least-privilege; no completion is reported'
   fi
+  # A converged node re-proves the declaration too: a selection that names an
+  # account the installer does not admit must never answer "already converged".
+  if ! capability_verify_declared_privileged_account optional; then
+    capability_rollback
+    capability_stage_cleanup
+    fail 'the declared privileged account does not match the account the reviewed installer admits; no completion is reported'
+  fi
   if capability_states_compliant; then
     CAPABILITY_MODE=ADOPT
     capability_state_write
@@ -899,7 +1013,7 @@ capability_apply() {
   if ! capability_reprove_control_account; then
     capability_rollback
     capability_stage_cleanup
-    fail 'the managed run account lost its least-privilege proof after the reviewed installer ran; no completion is reported'
+    fail 'the managed run account lost its least-privilege proof after the reviewed installer ran; inspect /etc/youling-fleet/privileged-operations/control.json and /etc/sudoers.d/90-youling-fleet-privileged-operations, remove the account privilege shown above, then re-run the authorized Console command; no completion is reported'
   fi
   if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ] && [ "$CAPABILITY_USER_SERVICE_STATE" != COMPLIANT ]; then
     if ! capability_user_service_apply; then

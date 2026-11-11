@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, readFile, rm, stat, readdir } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm, stat, readdir, symlink } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { join, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -47,6 +47,7 @@ async function makeHost() {
     checkpoint: join(root, "checkpoint"),
     run: join(root, "run"),
     homeRoot: join(root, "homes"),
+    installerState: join(root, "fixture-state", "control.json"),
     tty: join(root, "dev-tty"),
     ttyOut: join(root, "dev-tty-out"),
     osRelease: join(root, "os-release"),
@@ -164,6 +165,7 @@ async function runCourier(host, selection, options = {}) {
   script = script.replaceAll("/usr/share/keyrings", () => host.keyrings);
   script = script.replaceAll("/etc/apt/sources.list.d", () => host.aptSources);
   script = script.replaceAll("/var/lib/tailscale/tailscaled.state", () => host.tailscaleStateMarker);
+  script = script.replaceAll("/etc/youling-fleet/privileged-operations/control.json", () => host.installerState);
   if (options.tamper) script = options.tamper(script);
   const file = join(host.root, "courier.sh");
   await writeFile(file, script);
@@ -1067,8 +1069,8 @@ test("a managed lane left inside the privileged account is refused before any ef
     const staleUnit = join(privilegedHome, ".config/systemd/user/ghostfleet-managed.service");
     const staleWant = join(privilegedHome, ".config/systemd/user/default.target.wants/ghostfleet-managed.service");
     await mkdir(join(privilegedHome, ".config/systemd/user/default.target.wants"), { recursive: true });
-    await writeFile(staleUnit, "[Service]\nExecStart=/bin/true\n");
-    await writeFile(staleWant, "stale enablement link\n");
+    await writeFile(staleUnit, await readFixture("ghostfleet-managed.service"));
+    await symlink("../ghostfleet-managed.service", staleWant);
     await mkdir(join(host.fixtureState, "linger"), { recursive: true });
     await writeFile(join(host.fixtureState, "linger", PRIVILEGED_ACCOUNT), "yes\n");
 
@@ -1111,8 +1113,8 @@ test("a v1 lane this node recorded is decommissioned before the v2 selection is 
     const staleUnit = join(privilegedHome, ".config/systemd/user/ghostfleet-managed.service");
     const staleWant = join(privilegedHome, ".config/systemd/user/default.target.wants/ghostfleet-managed.service");
     await mkdir(join(privilegedHome, ".config/systemd/user/default.target.wants"), { recursive: true });
-    await writeFile(staleUnit, "[Service]\nExecStart=/bin/true\n");
-    await writeFile(staleWant, "stale enablement link\n");
+    await writeFile(staleUnit, await readFixture("ghostfleet-managed.service"));
+    await symlink("../ghostfleet-managed.service", staleWant);
     await mkdir(join(host.fixtureState, "linger"), { recursive: true });
     await writeFile(join(host.fixtureState, "linger", PRIVILEGED_ACCOUNT), "yes\n");
 
@@ -1126,6 +1128,39 @@ test("a v1 lane this node recorded is decommissioned before the v2 selection is 
     assert.equal(await exists(join(host.fixtureState, "linger", PRIVILEGED_ACCOUNT)), false, "the recorded v1 Linger is removed");
     // The v2 lane was not reapplied on top of the residue.
     assert.equal(startingWith(await installerLog(host), "installer --apply").length, 1);
+    // The record goes with the lane: leaving a v1 record behind would block the
+    // next authorized claim before it could deliver the v2 selection.
+    assert.equal(await exists(join(host.checkpoint, "capability-selection.txt")), false,
+      "the recorded v1 selection is removed with the lane it describes");
+
+    // Drift the lane, then prove a claim-only run still reaches the claim.
+    await rm(UNIT_PATH(host), { force: true });
+    await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
+    const claimsBefore = (await calls(host)).filter((line) => line === "curl claim").length;
+    const third = await runCourier(host, null);
+    assert.equal(third.status, 0, third.stderr);
+    assert.doesNotMatch(third.stderr, /CAPABILITY_SCHEMA_V1_UNPROVEN|CAPABILITY_STALE_PRIVILEGED_LANE/);
+    assert.equal((await calls(host)).filter((line) => line === "curl claim").length, claimsBefore + 1,
+      "the removed v1 record no longer blocks the claim");
+    assert.ok(await exists(UNIT_PATH(host)), "the claim-installed v2 lane is present again");
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a privileged declaration the installer does not admit is refused after it runs", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    // Well-formed and distinct from the run account, but not the account the
+    // installer actually admits: only the cross-check can catch this.
+    const result = await runCourier(host, await buildSelection({ privileged_account: "ghostfleet-ops-alt" }));
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /CAPABILITY_PRIVILEGED_ACCOUNT_MISMATCH/);
+    assert.match(result.stderr, /admits ghostfleet-ops/);
+    assert.equal(startingWith(await installerLog(host), "installer --apply").length, 1, "the installer really ran");
+    assert.equal(await exists(UNIT_PATH(host)), false, "no unit is installed on a mismatched declaration");
+    assert.equal(await exists(LINGER(host)), false);
+    assert.equal(await accountExists(host, CONTROL_ACCOUNT), false, "the account this run created is rolled back");
+    assert.equal(await exists(join(host.fixtureState, "complete-body.json")), false);
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
 
@@ -1149,4 +1184,36 @@ test("an adopted run account must satisfy the same criteria as a created one", {
       assert.ok(await accountExists(host, CONTROL_ACCOUNT), item.name + ": the adopted account is untouched");
     } finally { await rm(host.root, { recursive: true, force: true }); }
   }
+});
+
+test("a recorded lane whose unit bytes are not the reviewed artifact is not deleted", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    assert.equal((await runCourier(host, selection)).status, 0);
+
+    // A v1 record claims the lane, but the file at that path is something else.
+    const text = Buffer.from(encodeCapabilitySelection(selection), "base64").toString("utf8");
+    const v1 = text
+      .replace("schema=ghostfleet-selected-capability/v2", "schema=ghostfleet-selected-capability/v1")
+      .split("\n")
+      .filter((line) => !line.startsWith("privileged_account="))
+      .map((line) => (line.startsWith("control_account=") ? "control_account=" + PRIVILEGED_ACCOUNT : line))
+      .join("\n");
+    await writeFile(join(host.checkpoint, "capability-selection.txt"), Buffer.from(v1).toString("base64") + "\n");
+
+    const privilegedHome = await seedAccount(host, PRIVILEGED_ACCOUNT);
+    const staleUnit = join(privilegedHome, ".config/systemd/user/ghostfleet-managed.service");
+    await mkdir(join(privilegedHome, ".config/systemd/user"), { recursive: true });
+    await writeFile(staleUnit, "[Service]\nExecStart=/bin/false\n");
+
+    const second = await runCourier(host, null);
+    assert.notEqual(second.status, 0);
+    assert.match(second.stderr, /does not hash to the reviewed unit artifact/);
+    assert.match(second.stderr, /left in place/);
+    assert.ok(await exists(staleUnit), "unreviewed bytes are never deleted");
+    assert.equal(await exists(join(host.checkpoint, "capability-selection.txt")), true,
+      "the record is kept when the lane could not be decommissioned");
+  } finally { await rm(host.root, { recursive: true, force: true }); }
 });

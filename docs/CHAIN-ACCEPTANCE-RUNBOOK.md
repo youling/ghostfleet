@@ -60,11 +60,17 @@ rm -f "<privileged home>/.config/systemd/user/default.target.wants/ghostfleet-ma
 rm -f "<privileged home>/.config/systemd/user/ghostfleet-managed.service"
 ```
 
-A node that still records the v1 selection in `/var/lib/fleet/capability-selection.txt`
-proves the product created that lane, and the courier deletes exactly those three
-paths itself before refusing the run; the record is then removed so the next
-authorized claim can deliver the v2 selection. Nothing else is ever deleted
-automatically.
+The courier deletes that lane itself only in one narrow case: this run restored
+its selection **from this node's own record** (`/var/lib/fleet/capability-selection.txt`,
+no rendered payload was delivered) and the record names the privileged account as
+the unit owner. Even then it verifies the bytes first — the unit must hash to the
+pinned artifact digest and the enablement link must point at that unit — and it
+removes the record in the same step so the next authorized claim can deliver the
+v2 selection. A delivered payload that merely finds the file never authorises a
+delete: the residue is reported and left in place. A *running* instance is not
+stopped by the courier; stop it in that account's session
+(`sudo -iu <account> systemctl --user disable --now <unit>`) before removing the
+files by hand.
 
 ## Step 1 — disposable VM and a Human account
 
