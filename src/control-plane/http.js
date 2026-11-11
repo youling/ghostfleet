@@ -2,9 +2,45 @@ function json(value, status = 200) {
   return new Response(JSON.stringify(value, null, 2), { status, headers: { "content-type": "application/json; charset=utf-8" } });
 }
 
-async function body(request) {
-  if (!request.body) return {};
-  const text = await request.text();
+// Public, unauthenticated routes share one global control-plane object, so an
+// anonymous oversized body must be refused before it is buffered or parsed.
+// The claim body is one short code; a completion report has its own controller
+// bound (128 KiB); everything else keeps a modest default.
+export const BODY_LIMITS = Object.freeze({ default: 1048576, claim: 1024, complete: 262144 });
+
+export class RequestBodyTooLarge extends Error {
+  constructor(limit) {
+    super("REQUEST_BODY_TOO_LARGE");
+    this.name = "RequestBodyTooLarge";
+    this.code = "REQUEST_BODY_TOO_LARGE";
+    this.status = 413;
+    this.limit = limit;
+  }
+}
+
+async function readText(request, limit) {
+  const declared = Number(request.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > limit) throw new RequestBodyTooLarge(limit);
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel().catch(() => {});
+      throw new RequestBodyTooLarge(limit);
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
+async function body(request, limit = BODY_LIMITS.default) {
+  const text = await readText(request, limit);
   return text ? JSON.parse(text) : {};
 }
 
@@ -37,8 +73,10 @@ export function createHttpHandler(controller) {
       match = /^\/v0\/enrollment-attempts\/([^/]+)\/ticket$/.exec(path);
       if (request.method === "GET" && match) return json({ ok: true, ticket: controller.getEnrollmentTicket(match[1]) });
       if (request.method === "POST" && match) {
-        const input = await body(request);
-        return json({ ok: true, ...(await controller.issueEnrollmentTicket(match[1], { ...input, enroll_origin: url.origin })) }, 201);
+        const input = await body(request, BODY_LIMITS.default);
+        // The delivery coordinates are deployment configuration; the request
+        // origin is never used as a fallback.
+        return json({ ok: true, ...(await controller.issueEnrollmentTicket(match[1], input)) }, 201);
       }
 
       match = /^\/v0\/enrollment-attempts\/([^/]+)\/ticket\/revoke$/.exec(path);
@@ -46,13 +84,13 @@ export function createHttpHandler(controller) {
 
       match = /^\/v1\/enrollment-tickets\/([^/]+)\/claim$/.exec(path);
       if (request.method === "POST" && match) {
-        const short_code = (await request.text()).trim();
+        const short_code = (await readText(request, BODY_LIMITS.claim)).trim();
         const preflight_digest = request.headers.get("x-ghostfleet-preflight-digest") || "";
         return json({ ok: true, ...(await controller.claimEnrollmentTicket({ ticket_id: decodeURIComponent(match[1]), short_code, preflight_digest })) });
       }
 
       if (request.method === "POST" && path === "/v1/enroll/complete") {
-        const input = await body(request);
+        const input = await body(request, BODY_LIMITS.complete);
         return json({ ok: true, ...controller.completeEnrollmentTicket(input) });
       }
 

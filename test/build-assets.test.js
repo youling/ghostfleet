@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  ASSETS_INVENTORY_SCHEMA, ASSETS_MANIFEST_SCHEMA, buildAssets, readInventory, sha256Hex,
+  ASSETS_INVENTORY_SCHEMA, ASSETS_MANIFEST_SCHEMA, assertSafeOutDir, buildAssets, readInventory, sha256Hex,
 } from "../scripts/build-assets.mjs";
 import { scanAssetDirectory } from "../scripts/asset-safety.mjs";
 
@@ -56,6 +56,29 @@ test("builds a digest-named tree and a manifest with no local paths", async () =
     assert.deepEqual((await readdir(out)).sort(), ["manifest.json", "sha256"]);
     // The published tree itself must pass the hygiene scan.
     assert.equal((await scanAssetDirectory(out)).ok, true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("the output directory is refused when removing it could destroy the workspace", async () => {
+  const root = await workspace();
+  try {
+    const invPath = await inventory(root, []);
+    const inv = await readInventory(invPath);
+    const cases = [
+      // The inventory's own directory holds the reviewed inputs.
+      { outDir: root, inventoryPath: invPath, code: /ASSET_OUT_DIR_UNSAFE/ },
+      { outDir: resolve(root, ".."), inventoryPath: invPath, code: /ASSET_OUT_DIR_UNSAFE/ },
+      { outDir: resolve("/"), inventoryPath: invPath, code: /ASSET_OUT_DIR_UNSAFE/ },
+    ];
+    for (const item of cases) {
+      await assert.rejects(
+        () => buildAssets({ outDir: item.outDir, inventory: inv, courierBytes: COURIER, inventoryPath: item.inventoryPath }),
+        item.code,
+        item.outDir,
+      );
+    }
+    // A dedicated deep path is accepted.
+    assert.equal(assertSafeOutDir(join(root, "dist", "assets"), { cwd: root }), resolve(root, "dist", "assets"));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

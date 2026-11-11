@@ -81,7 +81,7 @@ async function attemptFor(c, template_id) {
 }
 
 async function issue(c, attempt_id) {
-  return c.issueEnrollmentTicket(attempt_id, { enroll_origin: enroll });
+  return c.issueEnrollmentTicket(attempt_id);
 }
 
 async function claim(c, ticket_id) {

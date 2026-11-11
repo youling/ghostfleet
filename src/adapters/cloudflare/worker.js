@@ -3,7 +3,6 @@ import { createHttpHandler } from "../../control-plane/http.js";
 import { InMemoryStore } from "../../control-plane/store.js";
 import { authorizeApi, getAccessLevel } from "./auth.js";
 import { handleMcpRequest } from "../../integrations/mcp-http.js";
-import { BOOTSTRAP_SH } from "../../../packages/bootstrap/src/bootstrap.js";
 import { createEnrollmentClaimMaterializer, createEnrollmentClaimPreparer } from "./enrollment-materializer.js";
 import { createCapabilitySelectionProvider } from "../../control-plane/capability-selection.js";
 import { createDeploymentEnrollmentTemplateCatalog } from "./deployment-templates.js";
@@ -53,7 +52,14 @@ export default {
     const isEnrollmentClaim = request.method === "POST" && /^\/v1\/enrollment-tickets\/[^/]+\/claim$/.test(path);
     const isEnrollmentComplete = request.method === "POST" && path === "/v1/enroll/complete";
     if (request.method === "GET" && path === "/v1/bootstrap.sh") {
-      return new Response(BOOTSTRAP_SH, { headers: { "content-type": "text/x-shellscript; charset=utf-8", "cache-control": "no-store" } });
+      // Retired: this was an unpinned second entrance to the courier. The only
+      // supported delivery is the Console-generated command, which pins the
+      // asset origin and the bootstrap SHA-256 and verifies it before execution.
+      return Response.json({
+        ok: false,
+        error: "BOOTSTRAP_ENTRYPOINT_RETIRED",
+        remediation: "Use the Console-generated one-click command; it downloads the courier from the asset origin by SHA-256 and verifies it before execution.",
+      }, { status: 410, headers: { "cache-control": "no-store" } });
     }
     if (path === "/v0/providers/setup" && request.method === "GET") {
       const denial = await authorizeApi(request, env, { readOnly: true });

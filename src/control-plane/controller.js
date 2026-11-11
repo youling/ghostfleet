@@ -47,18 +47,23 @@ export class GhostFleetController {
     this.ticketCodeFactory = ticketCodeFactory;
   }
 
-  #deliveryCoordinates(request_origin) {
-    const configured = this.enrollmentDelivery && typeof this.enrollmentDelivery === "object" ? this.enrollmentDelivery : {};
-    const enroll_origin = configured.enroll_origin ?? request_origin ?? null;
-    if (!configured.assets_origin || !configured.bootstrap_sha256 || !enroll_origin) {
+  // Delivery coordinates come from deployment configuration only. The request
+  // origin is never a fallback: behind a service binding it is
+  // "https://control-plane.invalid", and minting a ticket on it would be both
+  // wrong and unrecoverable. A partly configured deployment therefore refuses
+  // to issue before any provider authority or short code exists, and stays
+  // refuse-only until an operator fixes the configuration.
+  #deliveryCoordinates() {
+    const configured = this.enrollmentDelivery;
+    if (!configured || typeof configured !== "object") {
       throw new EnrollmentTicketError("ENROLLMENT_DELIVERY_NOT_CONFIGURED", 503);
     }
+    const supplied = [configured.assets_origin, configured.enroll_origin, configured.bootstrap_sha256]
+      .filter((value) => typeof value === "string" && value.length > 0).length;
+    if (supplied === 0) throw new EnrollmentTicketError("ENROLLMENT_DELIVERY_NOT_CONFIGURED", 503);
+    if (supplied < 3) throw new EnrollmentTicketError("ENROLLMENT_DELIVERY_INCOMPLETE", 503);
     try {
-      return validateDeliveryCoordinates({
-        assets_origin: configured.assets_origin,
-        enroll_origin,
-        bootstrap_sha256: configured.bootstrap_sha256,
-      });
+      return validateDeliveryCoordinates(configured);
     } catch (error) {
       throw new EnrollmentTicketError(error?.code || "ENROLLMENT_DELIVERY_INVALID", 503);
     }
@@ -156,12 +161,12 @@ export class GhostFleetController {
     return expiresAt;
   }
 
-  async issueEnrollmentTicket(id, { enroll_origin = null, ttl_seconds = 600, replace = false } = {}) {
+  async issueEnrollmentTicket(id, { ttl_seconds = 600, replace = false } = {}) {
     if (!this.enrollmentClaimMaterializer) throw new EnrollmentTicketError("PROVIDER_CLAIM_MATERIAL_UNAVAILABLE", 503);
     // Both public surfaces and the pinned bootstrap digest are part of the
-    // delivery, so an unconfigured or colliding deployment fails before any
-    // provider authority is prepared or a short code is minted.
-    const coordinates = this.#deliveryCoordinates(enroll_origin);
+    // delivery, so an unconfigured, incomplete or colliding deployment fails
+    // before any provider authority is prepared or a short code is minted.
+    const coordinates = this.#deliveryCoordinates();
     let attempt = this.requireLiveAttempt(this.getEnrollmentAttempt(id));
     if (!attempt.template_binding?.template_digest) throw new EnrollmentTicketError("TEMPLATE_BINDING_REQUIRED", 409);
     if (![EnrollmentState.CREATED, EnrollmentState.PREPARING].includes(attempt.state)) throw new EnrollmentTicketError("TICKET_ATTEMPT_STATE_INVALID", 409);

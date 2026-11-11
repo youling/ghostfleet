@@ -91,6 +91,18 @@ test("the legacy public_origin alias is the enrollment bridge, never the console
   assert.match(result.stdout, new RegExp("'" + enroll_origin.replaceAll(".", "\\.") + "/v1/enrollment-tickets/'"));
 });
 
+test("a mistyped flag is an error, never a silently ignored option", () => {
+  for (const extra of [["--jsno"], ["--print-sha256=x"], ["--assets-origin"]]) {
+    const result = spawnSync(process.execPath, [
+      script, "--assets-origin", assets_origin, "--enroll-origin", enroll_origin,
+      "--bootstrap-sha256", bootstrap_sha256, "--ticket-id", ticket_id, ...extra,
+    ], { encoding: "utf8" });
+    assert.equal(result.status, 2, JSON.stringify(extra));
+    assert.equal(result.stdout, "", JSON.stringify(extra) + " must not render a command");
+    assert.match(result.stderr, /UNKNOWN_ARGUMENT|MISSING_VALUE/);
+  }
+});
+
 test("invalid coordinates fail closed with an actionable code", () => {
   const cases = [
     { extra: ["--enroll-origin", assets_origin], code: "DELIVERY_ORIGINS_NOT_SEPARATED" },

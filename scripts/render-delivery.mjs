@@ -22,16 +22,22 @@
 import { createHash } from "node:crypto";
 import { createTicketDelivery } from "../src/control-plane/tickets.js";
 
+// Strict allowlists: a mistyped optional flag must fail loudly instead of
+// silently rendering a command without the requested mode.
+const STRING_FLAGS = new Set(["assets-origin", "enroll-origin", "public-origin", "bootstrap-sha256", "ticket-id", "short-code"]);
+const BOOLEAN_FLAGS = new Set(["json", "print-sha256"]);
+
 function parse(argv) {
   const values = {};
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
-    if (flag === "--json") { values.json = true; continue; }
-    if (flag === "--print-sha256") { values.print_sha256 = true; continue; }
     if (!flag.startsWith("--")) throw new Error("UNKNOWN_ARGUMENT " + flag);
+    const name = flag.slice(2);
+    if (BOOLEAN_FLAGS.has(name)) { values[name.replaceAll("-", "_")] = true; continue; }
+    if (!STRING_FLAGS.has(name)) throw new Error("UNKNOWN_ARGUMENT " + flag);
     const value = argv[++index];
-    if (value === undefined) throw new Error("MISSING_VALUE " + flag);
-    values[flag.slice(2).replaceAll("-", "_")] = value;
+    if (value === undefined || value.startsWith("--")) throw new Error("MISSING_VALUE " + flag);
+    values[name.replaceAll("-", "_")] = value;
   }
   return values;
 }

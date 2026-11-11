@@ -68,6 +68,22 @@ test("only the two POST routes exist", async () => {
   assert.equal(env.GHOSTFLEET_CONTROL_PLANE.calls.length, 0, "a refused request never reaches the control plane");
 });
 
+test("an oversized public body is refused before the control plane is touched", async () => {
+  const env = { GHOSTFLEET_CONTROL_PLANE: controlPlane() };
+  // A claim is one 8-digit code. A megabyte of anonymous bytes must never reach
+  // the single serialized control-plane object.
+  const claim = await bridge.fetch(new Request(origin + "/v1/enrollment-tickets/" + ticketId + "/claim", post({ body: "9".repeat(2048) })), env);
+  assert.equal(claim.status, 413);
+  assert.deepEqual(await claim.json(), { ok: false, error: "REQUEST_BODY_TOO_LARGE" });
+  const complete = await bridge.fetch(new Request(origin + "/v1/enroll/complete", post({ body: "x".repeat(300_000) })), env);
+  assert.equal(complete.status, 413);
+  assert.equal(env.GHOSTFLEET_CONTROL_PLANE.calls.length, 0, "nothing crossed the binding");
+  // A normal body still crosses.
+  const ok = await bridge.fetch(new Request(origin + "/v1/enroll/complete", post({ body: "{}" })), env);
+  assert.equal(ok.status, 200);
+  assert.equal(env.GHOSTFLEET_CONTROL_PLANE.calls.length, 1);
+});
+
 test("an unavailable control plane is reported as 503, not retried", async () => {
   const missing = await bridge.fetch(new Request(origin + "/v1/enroll/complete", post({ body: "{}" })), {});
   assert.equal(missing.status, 503);

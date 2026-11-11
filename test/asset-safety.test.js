@@ -88,6 +88,42 @@ test("a directory scan reports paths and rules without echoing the value", async
   }
 });
 
+test("generated directories are skipped by default, and the skip is explicit and testable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gf-asset-ignored-"));
+  try {
+    await writeFile(join(root, "clean.sh"), "#!/bin/sh\nset -eu\n");
+    await mkdir(join(root, "__pycache__"));
+    await writeFile(join(root, "__pycache__", "cached.pyc"), Buffer.from([0x00, 0xff, 0x10]));
+    await mkdir(join(root, "dist"));
+    await writeFile(join(root, "dist", "built.txt"), "token = " + '"' + "Y".repeat(20) + '"' + "\n");
+    const skipped = await scanAssetDirectory(root);
+    assert.equal(skipped.ok, true, JSON.stringify(skipped.findings));
+    // The skip is a declared list, not a hidden behavior: opting out proves the
+    // same bytes would otherwise be refused.
+    const strict = await scanAssetDirectory(root, { ignoreDirectories: [] });
+    assert.equal(strict.ok, false);
+    assert.deepEqual(strict.findings.map((finding) => finding.rule).sort(), ["credential-literal", "unreviewed-binary"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the publish path is a scan root, so a dist parent cannot hide packaged bytes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gf-asset-publish-"));
+  try {
+    // build-output BECOMES the scan root; the skip list applies to entries below
+    // it, never to the root's own path.
+    const out = join(root, "dist", "assets");
+    await mkdir(join(out, "sha256"), { recursive: true });
+    await writeFile(join(out, "sha256", "a".repeat(64)), "token = " + '"' + "W".repeat(20) + '"' + "\n");
+    const result = await scanAssetDirectory(out);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.findings.map((finding) => finding.rule), ["credential-literal"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a clean directory scans as ok and refuses a missing root", async () => {
   const root = await mkdtemp(join(tmpdir(), "gf-asset-clean-"));
   try {

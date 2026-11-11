@@ -291,9 +291,11 @@ capability_validate_selection() {
   if [ "$CAPABILITY_LINGER_REQUIRED" = 1 ] || [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
     command -v loginctl >/dev/null 2>&1 || fail 'preflight failed: loginctl is required by the selected capability'
   fi
-  # The pinned bytes are a dependency, not a later step: prove every digest in a
-  # private staging directory before ANY package, provider, service or credential
-  # effect. A mismatching artifact is a missing dependency.
+  # The pinned bytes are a dependency, not a later step. On the rendered channel
+  # this runs before any effect; on the claim channel the authorized claim has
+  # already happened, but nothing is installed and no one-off credential is
+  # written or used until every digest matched in a private staging directory.
+  # A mismatching artifact is a missing dependency.
   capability_stage
   capability_stage_cleanup
   CAPABILITY_SELECTION_DIGEST="$(capability_selection_digest)"

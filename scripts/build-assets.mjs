@@ -11,7 +11,7 @@
 // mean "safe to publish".
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { scanAssetBytes, scanAssetDirectory, summarizeAssetSafety } from "./asset-safety.mjs";
 
@@ -21,6 +21,29 @@ const ARTIFACT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const FILE_MODE = /^0?[0-7]{3}$/;
 
 export const sha256Hex = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+/**
+ * The build removes the output directory before writing it. That is only safe
+ * for a dedicated, deep path: never the filesystem root, the current workspace,
+ * an ancestor of it, or the inventory's own directory.
+ */
+export function assertSafeOutDir(value, { cwd = process.cwd(), inventoryPath = null } = {}) {
+  if (typeof value !== "string" || !value.trim()) throw new Error("ASSET_OUT_DIR_INVALID");
+  const outDir = resolve(value);
+  const root = parse(outDir).root;
+  if (outDir === root) throw new Error("ASSET_OUT_DIR_UNSAFE");
+  const containsCwd = relative(outDir, resolve(cwd));
+  if (outDir === resolve(cwd) || (!containsCwd.startsWith("..") && !isAbsolute(containsCwd))) throw new Error("ASSET_OUT_DIR_UNSAFE");
+  if (inventoryPath) {
+    const inventoryDir = dirname(resolve(inventoryPath));
+    const containsInventory = relative(outDir, inventoryDir);
+    if (outDir === inventoryDir || (!containsInventory.startsWith("..") && !isAbsolute(containsInventory))) throw new Error("ASSET_OUT_DIR_UNSAFE");
+  }
+  // A single top-level entry (/tmp, D:\) is a shared location, not an asset tree.
+  const depth = outDir.slice(root.length).split(sep).filter(Boolean).length;
+  if (depth < 2) throw new Error("ASSET_OUT_DIR_TOO_SHALLOW");
+  return outDir;
+}
 
 export function normalizeArtifactEntry(entry, baseDir) {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("ASSET_ENTRY_INVALID");
@@ -53,7 +76,8 @@ export async function readInventory(inventoryPath) {
  * hygiene finding, duplicate content under two names with different modes, or
  * an unreadable input.
  */
-export async function buildAssets({ outDir, inventory, courierBytes, denyHosts = [] }) {
+export async function buildAssets({ outDir, inventory, courierBytes, denyHosts = [], cwd = process.cwd(), inventoryPath = null }) {
+  const safeOutDir = assertSafeOutDir(outDir, { cwd, inventoryPath });
   const findings = [];
   const assets = [];
   const bytesByDigest = new Map();
@@ -89,13 +113,13 @@ export async function buildAssets({ outDir, inventory, courierBytes, denyHosts =
 
   // Content addressing deduplicates identical bytes by design; two different
   // names for the same bytes are allowed only with the same mode.
-  await rm(outDir, { recursive: true, force: true });
-  await mkdir(join(outDir, "sha256"), { recursive: true });
-  for (const [digest, bytes] of bytesByDigest) await writeFile(join(outDir, "sha256", digest), bytes, { mode: 0o644 });
-  await writeFile(join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+  await rm(safeOutDir, { recursive: true, force: true });
+  await mkdir(join(safeOutDir, "sha256"), { recursive: true });
+  for (const [digest, bytes] of bytesByDigest) await writeFile(join(safeOutDir, "sha256", digest), bytes, { mode: 0o644 });
+  await writeFile(join(safeOutDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
 
   // Postcondition: scan what will actually be uploaded, not just the inputs.
-  const published = await scanAssetDirectory(outDir, { denyHosts });
+  const published = await scanAssetDirectory(safeOutDir, { denyHosts });
   if (!published.ok) return { ok: false, findings: published.findings, assets, manifest };
   return { ok: true, findings: [], assets, manifest, safety: summarizeAssetSafety(published) };
 }
@@ -126,7 +150,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       if (!args.inventory) throw new Error("--inventory is required");
       const inventory = await readInventory(args.inventory);
       const result = await buildAssets({
-        outDir: resolve(args.outDir), inventory, courierBytes: BOOTSTRAP_SH,
+        outDir: args.outDir, inventory, courierBytes: BOOTSTRAP_SH, inventoryPath: args.inventory,
         denyHosts: [...inventory.denyHosts, ...args.denyHosts],
       });
       if (!result.ok) {

@@ -45,7 +45,7 @@ test("ticket issue persists only digests/public metadata and returns one-time de
   const store = new InMemoryStore();
   const c = controller({ store });
   const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
-  const issued = await c.issueEnrollmentTicket(attempt.attempt_id, { enroll_origin });
+  const issued = await c.issueEnrollmentTicket(attempt.attempt_id);
   assert.equal(issued.ticket.state, "ISSUED");
   assert.equal(issued.delivery.short_code, "12345678");
   assert.equal(issued.delivery.one_time_url.split("/").at(-1), issued.ticket.ticket_id);
@@ -59,7 +59,7 @@ test("ticket issue persists only digests/public metadata and returns one-time de
 test("ticket issue stops at provider/custody gate when no claim materializer is configured", async () => {
   const c = new GhostFleetController();
   const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
-  await assert.rejects(() => c.issueEnrollmentTicket(attempt.attempt_id, { enroll_origin }), /PROVIDER_CLAIM_MATERIAL_UNAVAILABLE/);
+  await assert.rejects(() => c.issueEnrollmentTicket(attempt.attempt_id), /PROVIDER_CLAIM_MATERIAL_UNAVAILABLE/);
   assert.equal(c.getEnrollmentAttempt(attempt.attempt_id).state, "CREATED");
 });
 
@@ -103,14 +103,14 @@ test("ambiguous provider preparation creates no GhostFleet ticket and retries on
   });
   const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
   await assert.rejects(
-    () => c.issueEnrollmentTicket(attempt.attempt_id, { enroll_origin }),
+    () => c.issueEnrollmentTicket(attempt.attempt_id),
     /TICKET_PREPARATION_RECONCILE_REQUIRED/,
   );
   assert.equal(c.getEnrollmentAttempt(attempt.attempt_id).state, "PREPARING");
   assert.throws(() => c.getEnrollmentTicket(attempt.attempt_id), /TICKET_NOT_FOUND/);
   assert.equal(codeCalls, 0);
 
-  const issued = await c.issueEnrollmentTicket(attempt.attempt_id, { enroll_origin });
+  const issued = await c.issueEnrollmentTicket(attempt.attempt_id);
   assert.equal(issued.ticket.state, "ISSUED");
   assert.equal(codeCalls, 1);
   assert.deepEqual(attempts, [attempt.attempt_id, attempt.attempt_id]);
@@ -118,12 +118,33 @@ test("ambiguous provider preparation creates no GhostFleet ticket and retries on
 
 test("an invalid enrollment origin cannot persist an unrecoverable ticket", async () => {
   const store = new InMemoryStore();
-  const c = controller({ store, enrollmentDelivery: { assets_origin, enroll_origin: null, bootstrap_sha256 } });
+  const c = controller({ store, enrollmentDelivery: { assets_origin, enroll_origin: "http://example.invalid", bootstrap_sha256 } });
   const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
   await assert.rejects(
-    () => c.issueEnrollmentTicket(attempt.attempt_id, { enroll_origin: "http://example.invalid" }),
+    () => c.issueEnrollmentTicket(attempt.attempt_id),
     /ENROLL_ORIGIN_INVALID/,
   );
+  assert.equal(store.findEnrollmentTicketByAttempt(attempt.attempt_id), null);
+});
+
+test("a deployment that forgot the enrollment origin refuses to issue and mints nothing", async () => {
+  // Reproducer for the fallback finding: assets + digest are configured, the
+  // enrollment bridge origin is not. The request origin must never stand in for
+  // it (behind the service binding that value is "https://control-plane.invalid").
+  const store = new InMemoryStore();
+  let prepared = 0;
+  let codes = 0;
+  const c = new GhostFleetController({
+    store,
+    enrollmentClaimMaterializer: syntheticMaterializer(),
+    enrollmentClaimPreparer: async () => { prepared += 1; return { outcome: "READY", expires_at: new Date(Date.now() + 300_000).toISOString() }; },
+    enrollmentDelivery: { assets_origin, bootstrap_sha256 },
+    ticketCodeFactory: () => { codes += 1; return "12345678"; },
+  });
+  const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
+  await assert.rejects(() => c.issueEnrollmentTicket(attempt.attempt_id), /ENROLLMENT_DELIVERY_INCOMPLETE/);
+  assert.equal(prepared, 0, "no provider authority may be prepared");
+  assert.equal(codes, 0, "no short code may be minted");
   assert.equal(store.findEnrollmentTicketByAttempt(attempt.attempt_id), null);
 });
 
@@ -138,7 +159,7 @@ test("a deployment without the immutable asset coordinates mints nothing and pre
   });
   const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
   await assert.rejects(
-    () => c.issueEnrollmentTicket(attempt.attempt_id, { enroll_origin }),
+    () => c.issueEnrollmentTicket(attempt.attempt_id),
     /ENROLLMENT_DELIVERY_NOT_CONFIGURED/,
   );
   assert.equal(prepared, 0, "no provider authority may be minted for a delivery that cannot name its material");
@@ -159,7 +180,7 @@ test("collapsing the asset and enrollment origins onto one host is refused", asy
 test("delivery names the asset origin, the pinned bootstrap digest and the enrollment origin", async () => {
   const c = controller();
   const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
-  const issued = await c.issueEnrollmentTicket(attempt.attempt_id, { enroll_origin });
+  const issued = await c.issueEnrollmentTicket(attempt.attempt_id);
   assert.equal(issued.delivery.assets_origin, assets_origin);
   assert.equal(issued.delivery.bootstrap_sha256, bootstrap_sha256);
   assert.equal(issued.delivery.one_time_url, enroll_origin + "/v1/enrollment-tickets/" + issued.ticket.ticket_id);
@@ -171,7 +192,7 @@ test("delivery names the asset origin, the pinned bootstrap digest and the enrol
 test("wrong code is rate-limited without consuming a valid ticket", async () => {
   const c = controller();
   const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
-  await c.issueEnrollmentTicket(attempt.attempt_id, { enroll_origin });
+  await c.issueEnrollmentTicket(attempt.attempt_id);
   for (let i = 0; i < 4; i++) {
     await assert.rejects(() => c.claimEnrollmentTicket({ ticket_id: c.getEnrollmentTicket(attempt.attempt_id).ticket_id, short_code: "00000000", preflight_digest: preflight }), /TICKET_SHORT_CODE_INVALID/);
   }
@@ -183,7 +204,7 @@ test("successful claim consumes ticket, returns raw material transiently, and de
   const store = new InMemoryStore();
   const c = controller({ store });
   const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
-  await c.issueEnrollmentTicket(attempt.attempt_id, { enroll_origin });
+  await c.issueEnrollmentTicket(attempt.attempt_id);
   const result = await c.claimEnrollmentTicket({ ticket_id: c.getEnrollmentTicket(attempt.attempt_id).ticket_id, short_code: "12345678", preflight_digest: preflight });
   assert.equal(result.identity_kind, "provisional");
   assert.equal(result.auth_key, "synthetic-one-time-provider-material");
@@ -198,7 +219,7 @@ test("successful claim consumes ticket, returns raw material transiently, and de
 test("completion is resume-bound, materializes exact provisional identity, and is idempotent for the same report", async () => {
   const c = controller();
   const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
-  await c.issueEnrollmentTicket(attempt.attempt_id, { enroll_origin });
+  await c.issueEnrollmentTicket(attempt.attempt_id);
   const claim = await c.claimEnrollmentTicket({ ticket_id: c.getEnrollmentTicket(attempt.attempt_id).ticket_id, short_code: "12345678", preflight_digest: preflight });
   const report = { identity_kind: "provisional", enrollment_id: claim.enrollment_id, node_id: claim.node_id, os_id: "debian", os_version_id: "13", bootstrap_version: "synthetic-v1" };
   const first = c.completeEnrollmentTicket({ resume_session: claim.resume_session, report });
@@ -222,6 +243,43 @@ test("public HTTP claim route is ticket-authenticated while operator ticket issu
   const claimed = await handle(new Request("https://ghostfleet.invalid/v1/enrollment-tickets/" + ticketId + "/claim", { method: "POST", headers: { "x-ghostfleet-preflight-digest": preflight }, body: "12345678" }));
   assert.equal(claimed.status, 200);
   assert.equal((await claimed.json()).identity_kind, "provisional");
+});
+
+test("oversized public bodies are refused with 413 before any claim or completion effect", async () => {
+  const c = controller();
+  const handle = createHttpHandler(c);
+  const created = await handle(new Request("https://ghostfleet.invalid/v0/enrollment-attempts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ asset_hint: "node", template_selection }),
+  }));
+  const attempt = (await created.json()).attempt;
+  const issued = await handle(new Request("https://ghostfleet.invalid/v0/enrollment-attempts/" + attempt.attempt_id + "/ticket", {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  }));
+  const ticketId = (await issued.json()).delivery.one_time_url.split("/").at(-1);
+
+  // A short code is a few bytes; anything larger never reaches the controller.
+  const hugeClaim = await handle(new Request("https://ghostfleet.invalid/v1/enrollment-tickets/" + ticketId + "/claim", {
+    method: "POST",
+    headers: { "x-ghostfleet-preflight-digest": preflight },
+    body: "9".repeat(2048),
+  }));
+  assert.equal(hugeClaim.status, 413);
+  assert.equal((await hugeClaim.json()).error, "REQUEST_BODY_TOO_LARGE");
+  assert.equal(c.getEnrollmentTicket(attempt.attempt_id).state, "ISSUED", "the oversized body consumed nothing");
+
+  // The claim still works with the real short code afterwards.
+  const claimed = await handle(new Request("https://ghostfleet.invalid/v1/enrollment-tickets/" + ticketId + "/claim", {
+    method: "POST", headers: { "x-ghostfleet-preflight-digest": preflight }, body: "12345678",
+  }));
+  assert.equal(claimed.status, 200);
+
+  const hugeComplete = await handle(new Request("https://ghostfleet.invalid/v1/enroll/complete", {
+    method: "POST", headers: { "content-type": "application/json" }, body: "x".repeat(300_000),
+  }));
+  assert.equal(hugeComplete.status, 413);
+  assert.equal((await hugeComplete.json()).error, "REQUEST_BODY_TOO_LARGE");
 });
 
 test("bootstrap consumes the actual formatted HTTP claim response", { skip: process.platform === "win32" }, async () => {
