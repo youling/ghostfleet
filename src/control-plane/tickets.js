@@ -103,7 +103,20 @@ export function validatePublicOrigin(value) {
 //   under /run. A caller-owned TMPDIR (or its directory entries) is never a root
 //   execution point, even while the Human is typing the hidden URL.
 // - HUP, INT, TERM and EXIT all remove that directory, restore the terminal echo
-//   state and exit with 128+signal (or the original status).
+//   state and exit with 128+signal (or the original status). Cleanup restores the
+//   terminal first and resets the traps last, and HUP/INT/TERM are ignored for
+//   the whole cleanup, so a second Ctrl-C (a normal Human action) cannot leave
+//   the terminal unechoed or the private workspace behind.
+//
+// Known trade-offs, recorded for review:
+// - su --login runs root's login profile (/etc/profile and root-owned dotfiles)
+//   before the elevated script starts. env -i is the actual execution boundary
+//   for the privileged script; login mode is what guarantees the caller
+//   environment is dropped before that profile runs.
+// - The elevation entry point itself (id, command -v sudo/su, sudo, su) still
+//   resolves through the caller PATH for portability and never crosses the root
+//   boundary. A caller whose PATH is already compromised can intercept its own
+//   password prompt; that is outside this launcher's boundary.
 const TRUSTED_ENV = "/usr/bin/env";
 const TRUSTED_SHELL = "/bin/sh";
 const TRUSTED_PATH = "/usr/sbin:/usr/bin:/sbin:/bin";
@@ -133,7 +146,10 @@ function portableBootstrapCommand(origin) {
     "WORK_DIR=",
     "cleanup() {",
     "  status=$?",
-    "  trap - EXIT HUP INT TERM",
+    // Ignore signals for the whole cleanup. A second Ctrl-C is a normal Human
+    // action and must not kill the shell before the terminal echo is back and
+    // the private workspace is gone. The trap set is reset only at the end.
+    "  trap '' HUP INT TERM",
     '  if [ -n "$TTY_STATE" ]; then',
     "    " + TRUSTED_STTY + ' "$TTY_STATE" < /dev/tty 2>/dev/null || :',
     "  fi",
@@ -142,12 +158,19 @@ function portableBootstrapCommand(origin) {
     "    " + TRUSTED_RM + ' -rf "$WORK_DIR" 2>/dev/null || :',
     "  fi",
     "  WORK_DIR=",
+    "  trap - EXIT HUP INT TERM",
     '  exit "$status"',
     "}",
+    // The first statement of the signal path ignores HUP/INT/TERM, so a burst
+    // of signals cannot re-enter cleanup or abort it half way.
+    "stop() {",
+    "  trap '' HUP INT TERM",
+    '  exit "$1"',
+    "}",
     "trap cleanup EXIT",
-    "trap 'exit 129' HUP",
-    "trap 'exit 130' INT",
-    "trap 'exit 143' TERM",
+    "trap 'stop 129' HUP",
+    "trap 'stop 130' INT",
+    "trap 'stop 143' TERM",
     "TMPROOT=/run/",
     'if [ ! -d "$TMPROOT" ]; then TMPROOT=/var/tmp/; fi',
     'WORK_DIR="$(' + TRUSTED_MKTEMP + ' -d "$TMPROOT"ghostfleet-enroll.XXXXXXXX)"',
@@ -164,7 +187,10 @@ function portableBootstrapCommand(origin) {
     "  printf '%s\\n' 'GhostFleet bootstrap download is empty' >&2",
     "  exit 1",
     "fi",
-    'TTY_STATE="$(' + TRUSTED_STTY + ' -g < /dev/tty)"',
+    'if ! TTY_STATE="$(' + TRUSTED_STTY + ' -g < /dev/tty 2>/dev/null)"; then',
+    "  printf '%s\\n' 'GhostFleet needs an interactive terminal: run the command in a terminal session and paste the one-time URL at the prompt' >&2",
+    "  exit 1",
+    "fi",
     TRUSTED_STTY + " -echo < /dev/tty",
     "printf 'One-time enrollment URL from protected Console: ' > /dev/tty",
     "if ! IFS= read -r GHOSTFLEET_ENROLLMENT_URL < /dev/tty; then",
@@ -196,7 +222,6 @@ function portableBootstrapCommand(origin) {
     ")",
   ].join("\n");
 }
-
 export function createTicketDelivery({ record, short_code, public_origin }) {
   const origin = validatePublicOrigin(public_origin);
   const one_time_url = origin + "/v1/enrollment-tickets/" + encodeURIComponent(record.ticket_id);

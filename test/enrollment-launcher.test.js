@@ -105,12 +105,26 @@ test("delivered command is origin-only: claim-material fields cannot reach argv,
 test("interruption traps clean up and restore terminal echo", () => {
   const script = unquoteShell(delivery().command);
   assert.match(script, /trap cleanup EXIT/);
-  assert.match(script, /trap 'exit 129' HUP/);
-  assert.match(script, /trap 'exit 130' INT/);
-  assert.match(script, /trap 'exit 143' TERM/);
+  assert.match(script, /trap 'stop 129' HUP/);
+  assert.match(script, /trap 'stop 130' INT/);
+  assert.match(script, /trap 'stop 143' TERM/);
+  assert.match(script, /trap '' HUP INT TERM/);
   assert.match(script, /trap - EXIT HUP INT TERM/);
   assert.match(script, /\/usr\/bin\/stty "\$TTY_STATE" < \/dev\/tty/);
   assert.match(script, /IFS= read -r GHOSTFLEET_ENROLLMENT_URL < \/dev\/tty/);
+  // NEW-1: cleanup ignores signals before it touches the terminal, restores the
+  // terminal, removes the workspace, and only then resets the trap set.
+  const cleanup = script.slice(script.indexOf("cleanup() {"), script.indexOf("trap cleanup EXIT"));
+  const ignore = cleanup.indexOf("trap '' HUP INT TERM");
+  const restore = cleanup.indexOf('/usr/bin/stty "$TTY_STATE"');
+  const remove = cleanup.indexOf('/bin/rm -rf "$WORK_DIR"');
+  const reset = cleanup.indexOf("trap - EXIT HUP INT TERM");
+  assert.ok(ignore >= 0 && ignore < restore, "signals must be ignored before the terminal restore");
+  assert.ok(restore < remove, "terminal echo must be restored before the workspace removal");
+  assert.ok(remove < reset, "the trap set may only be reset after the workspace is gone");
+  // The signal path ignores further signals before it decides the exit code.
+  const stop = script.slice(script.indexOf("stop() {"), script.indexOf("trap cleanup EXIT"));
+  assert.ok(stop.indexOf("trap '' HUP INT TERM") >= 0 && stop.indexOf("trap '' HUP INT TERM") < stop.indexOf('exit "$1"'));
 });
 
 test("portable root launcher is valid POSIX sh", { skip: process.platform === "win32" }, () => {
@@ -141,7 +155,7 @@ function callerStub(marker) {
   return ["#!/bin/sh", "printf 'caller-controlled\\n' >> " + quoteShell(marker), "exit 78"];
 }
 
-function sandbox({ elevation = "su", pollutePath = false } = {}) {
+function sandbox({ elevation = "su", pollutePath = false, slowStty = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ghostfleet-launcher-"));
   const runRoot = join(dir, "run");
   const callerBin = join(dir, "caller-bin");
@@ -158,7 +172,19 @@ function sandbox({ elevation = "su", pollutePath = false } = {}) {
   mkdirSync(callerTmp, { mode: 0o700 });
 
   // System tools the fixture still runs for real inside the rewritten tree.
-  for (const name of ["env", "mktemp", "stty", "stat", "cat"]) symlinkSync(systemTool(name), join(dir, "usr/bin", name));
+  for (const name of ["env", "mktemp", "stat", "cat"]) symlinkSync(systemTool(name), join(dir, "usr/bin", name));
+  if (slowStty) {
+    // Delay the terminal restore so a second signal is guaranteed to land inside
+    // cleanup. The real stty still performs the restore; only the timing moves,
+    // which is the same race window a loaded machine has.
+    writeScript(join(dir, "usr/bin/stty"), [
+      "#!/bin/sh",
+      systemTool("sleep") + " 0.15",
+      "exec " + systemTool("stty") + ' "$@"',
+    ]);
+  } else {
+    symlinkSync(systemTool("stty"), join(dir, "usr/bin/stty"));
+  }
   for (const name of ["sh", "rm"]) symlinkSync(systemTool(name), join(dir, "bin", name));
 
   writeScript(join(callerBin, "id"), [
@@ -386,3 +412,54 @@ for (const [signal, expected] of [["SIGTERM", 143], ["SIGINT", 130], ["SIGHUP", 
     }
   });
 }
+
+// NEW-1: a second (or burst of) signals while cleanup runs must not abort the
+// restore. The fixture delays the terminal restore by 150 ms, so at least one
+// burst signal is guaranteed to land inside cleanup (the same race a loaded
+// machine or a Human double Ctrl-C produces).
+for (const [signal, expected] of [["SIGTERM", 143], ["SIGINT", 130]]) {
+  test("signal burst during cleanup " + signal + " still restores echo and removes the workspace", { skip: !hasPty }, async () => {
+    const fx = sandbox({ elevation: "su", slowStty: true });
+    try {
+      const run = runAsync(fx);
+      await run.waitFor(/from protected Console/);
+      const downloadPath = downloadedFile(fx);
+      const pid = privilegedShellPid(fx);
+      assert.ok(downloadPath, "download must exist before the interruption");
+      assert.ok(Number.isInteger(pid) && pid > 0, "fixture must see the privileged shell pid");
+      process.kill(pid, signal);
+      for (let attempt = 0; attempt < 12; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        try {
+          process.kill(pid, signal);
+        } catch {
+          break;
+        }
+      }
+      const { code } = await run.closed;
+      assert.equal(code, expected, "the first signal decides the exit status: " + run.output());
+      assert.equal(temporaryFileLeft(downloadPath), false, "temporary_file_left=false");
+      assert.equal(echoRestored(fx.echoState), true, "echo_restored=true");
+      assert.equal(existsSync(fx.receipt), false, "an interrupted delivery must not run the bootstrap");
+    } finally {
+      rmSync(fx.dir, { recursive: true, force: true });
+    }
+  });
+}
+
+const setsid = ["/usr/bin/setsid", "/bin/setsid"].find((candidate) => existsSync(candidate));
+
+test("a session without a controlling terminal fails with an explicit remediation", { skip: !hasPty || !setsid }, () => {
+  const fx = sandbox({ elevation: "su" });
+  try {
+    const result = spawnSync(setsid, ["/bin/sh", fx.launcher], { env: fx.env, encoding: "utf8", timeout: 12000 });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /interactive terminal/);
+    const downloadPath = downloadedFile(fx);
+    assert.ok(downloadPath, "the download happens before the terminal check");
+    assert.equal(temporaryFileLeft(downloadPath), false, "temporary_file_left=false");
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
