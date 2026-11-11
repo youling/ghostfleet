@@ -28,6 +28,7 @@ from typing import Any
 
 SCHEMA = "youling-fleet-privileged-operations/v2"
 SCHEMA_V3 = "youling-fleet-privileged-operations/v3"
+SCHEMA_V4 = "youling-fleet-privileged-operations/v4"
 VERSION = "3.0.0"
 OPS_USER = "ghostfleet-ops"
 MAX_REQUEST_BYTES = 32768
@@ -257,11 +258,13 @@ def read_request(stream: Any = sys.stdin.buffer) -> dict[str, Any]:
     if not isinstance(value, dict):
         fail("PRIVILEGED_REQUEST_INVALID")
     allowed = {"schema", "request_id", "actor_ref", "node_uid", "operation", "vendor_ids"}
-    if value.get("schema") == SCHEMA_V3:
+    if value.get("schema") == SCHEMA_V4:
+        allowed = {"schema", "action", "node_uid", "actor_ref", "lease_b64", "signature_b64"}
+    elif value.get("schema") == SCHEMA_V3:
         allowed |= {"action", "generation", "profile_generation"}
     if set(value) - allowed:
         fail("PRIVILEGED_REQUEST_UNKNOWN_FIELD")
-    if value.get("schema") not in {SCHEMA, SCHEMA_V3}:
+    if value.get("schema") not in {SCHEMA, SCHEMA_V3, SCHEMA_V4}:
         fail("PRIVILEGED_REQUEST_SCHEMA_MISMATCH")
     return value
 
@@ -754,6 +757,23 @@ def run() -> dict[str, Any]:
     require_runtime()
     ops_user = dedicated_caller_identity()
     value = read_request()
+    if value["schema"] == SCHEMA_V4:
+        # V4 never turns the legacy test-root switch into an administrator backend.
+        if TEST_MODE:
+            fail("ADMIN_TEST_MODE_NOT_SUPPORTED")
+        import importlib.util
+        module_path = Path(__file__).resolve().with_name("fleet_admin_command.py")
+        for protected in [module_path, *module_path.parents]:
+            info = protected.lstat()
+            if (stat.S_ISLNK(info.st_mode) or info.st_uid != 0
+                    or stat.S_IMODE(info.st_mode) & 0o022):
+                fail("ADMIN_MODULE_UNTRUSTED")
+        spec = importlib.util.spec_from_file_location("fleet_admin_command", module_path)
+        if spec is None or spec.loader is None:
+            fail("ADMIN_MODULE_UNAVAILABLE")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.handle_request(value, ops_user)
     if value["schema"] == SCHEMA_V3:
         return run_v3(value, ops_user)
     request = validate_request(value)

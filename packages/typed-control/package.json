@@ -5,13 +5,33 @@
   "type": "module",
   "description": "Opt-in AI-client-neutral typed device control with injected trusted backends",
   "license": "AGPL-3.0-only",
-  "engines": { "node": ">=22" },
-  "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
-    "./authorization": { "types": "./dist/authorization/index.d.ts", "import": "./dist/authorization/index.js" },
-    "./cloudflare": { "types": "./dist/cloudflareBackend.d.ts", "import": "./dist/cloudflareBackend.js" }
+  "engines": {
+    "node": ">=22"
   },
-  "files": ["dist", "src", "LICENSE", "THIRD_PARTY_NOTICES.md"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./authorization": {
+      "types": "./dist/authorization/index.d.ts",
+      "import": "./dist/authorization/index.js"
+    },
+    "./cloudflare": {
+      "types": "./dist/cloudflareBackend.d.ts",
+      "import": "./dist/cloudflareBackend.js"
+    },
+    "./chatgpt-approval-phase0": {
+      "types": "./dist/compat/chatgptApprovalPhase0.d.ts",
+      "import": "./dist/compat/chatgptApprovalPhase0.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
   "scripts": {
     "check": "tsc --noEmit",
     "build": "tsc",

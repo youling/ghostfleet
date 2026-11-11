@@ -376,6 +376,48 @@
         "boundary",
         "acceptance"
       ]
+    },
+    {
+      "path": "docs/architecture/APPROVED_ADMIN_COMMAND_V1.md",
+      "topics": [
+        "boundary",
+        "wire",
+        "execution",
+        "installation",
+        "verification"
+      ]
+    },
+    {
+      "path": "docs/architecture/PRODUCTION_NODE_ONBOARDING_AND_ADMIN_CANARY_V1.md",
+      "topics": [
+        "purpose",
+        "timeline",
+        "flow",
+        "runbook",
+        "timing",
+        "roles"
+      ]
+    },
+    {
+      "path": "docs/architecture/IN_CHAT_HUMAN_APPROVAL_V1.md",
+      "topics": [
+        "decision",
+        "platform",
+        "identity",
+        "interaction",
+        "oauth",
+        "diagrams",
+        "acceptance"
+      ]
+    },
+    {
+      "path": "docs/architecture/CHATGPT_APPROVAL_PHASE0_PROBE.md",
+      "topics": [
+        "purpose",
+        "wiring",
+        "flow",
+        "rollout"
+      ]
     }
   ]
 }

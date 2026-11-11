@@ -19,6 +19,7 @@ esac
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 HELPER_SRC="$SCRIPT_DIR/fleet_privctl.py"
 ENTRY_SRC="$SCRIPT_DIR/fleet_privileged_ssh_entry.py"
+ADMIN_SRC="$SCRIPT_DIR/fleet_admin_command.py"
 HELPER_DIR=/usr/local/libexec/youling-fleet
 HELPER_DST="$HELPER_DIR/fleet-privctl"
 ENTRY_DST="$HELPER_DIR/fleet-privileged-ssh-entry"
@@ -36,7 +37,7 @@ die() { echo "[fleet-privilege][ERROR] $*" >&2; exit 1; }
 for tool in python3 sha256sum sudo useradd usermod passwd visudo; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool required"
 done
-[[ -r "$HELPER_SRC" && -r "$ENTRY_SRC" ]] || die "helper sources missing"
+[[ -r "$HELPER_SRC" && -r "$ENTRY_SRC" && -r "$ADMIN_SRC" ]] || die "helper sources missing"
 
 normalize_public_key() {
   local file="$1" line alg blob extra
@@ -267,6 +268,8 @@ for path in sys.argv[1:]:
 PY
 install -m 0755 -o root -g root "$HELPER_SRC" "$HELPER_DST"
 install -m 0755 -o root -g root "$ENTRY_SRC" "$ENTRY_DST"
+# Optional V4 remains disabled until its independent root-owned approval configuration exists.
+install -m 0755 -o root -g root "$ADMIN_SRC" "$HELPER_DIR/fleet_admin_command.py"
 
 if ! id "$OPS_USER" >/dev/null 2>&1; then
   useradd --system --create-home --home-dir "$OPS_HOME" --shell /bin/sh "$OPS_USER"

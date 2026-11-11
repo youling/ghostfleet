@@ -11,16 +11,21 @@ architecture_source: [Public canonical packages ADR](adr/001-public-canonical-pa
 
 GhostFleet 为人工操作员和 AI 代理提供设备舰队生命周期控制面，通过明确的身份、状态、能力、证据与人工确认管理真实设备的准入和操作。
 
-~~~text
-Human / AI
-   |
-Console / MCP / API
-   |
-GhostFleet Control Plane
-   |
-Provider / Device adapters
-   |
-Real devices
+以下总图是 `DERIVED` 导航，语义来源为 [项目规则](../AGENTS.md)、[公共包归属 ADR](adr/001-public-canonical-packages.md) 与 [迁移/实例边界](MIGRATION.md)。图中的接线须由部署方独立配置和验收；存在适配器不等于获得设备执行权限。
+
+~~~mermaid
+flowchart TD
+    Client["人工操作员 / 标准客户端"] --> Entry["Console / HTTP / 默认只读 MCP"]
+    subgraph Public["公开通用机制"]
+        Entry --> Core["身份 / 生命周期 / HumanGate / Evidence"]
+        Core --> Optional["可选 typed-control / 平台契约"]
+    end
+    subgraph Private["私有实例与运行证据"]
+        Config["私有策略 / 凭据托管"] --> Adapter["已配置的提供方 / 执行适配器"]
+        Adapter --> Device["授权范围内的设备"]
+    end
+    Optional -. "独立接线与授权验收" .-> Adapter
+    Adapter -. "回执与证据" .-> Core
 ~~~
 
 ### 2. 单入口，多个领域
@@ -45,20 +50,26 @@ Real devices
 
 ### 4. EnrollmentAttempt 状态机
 
-~~~text
-CREATED
-  -> PREPARING
-  -> WAITING_HUMAN -> CLAIMED
-  -> MATERIALIZING
-  -> ACCEPTED
+主路径与恢复路径如下；图是 [现行转换表](../src/core/state-machine.js) 的 `DERIVED` 投影，终止转换见图后说明。审批与执行仍使用各自的契约。
 
-CLAIMED / MATERIALIZING
-  -> RECONCILE_REQUIRED
-  -> CLAIMED or MATERIALIZING
-
-non-terminal
-  -> FAILED / CANCELLED
+~~~mermaid
+stateDiagram-v2
+    direction TB
+    [*] --> CREATED
+    CREATED --> PREPARING
+    PREPARING --> WAITING_HUMAN
+    PREPARING --> CLAIMED
+    WAITING_HUMAN --> CLAIMED
+    CLAIMED --> MATERIALIZING
+    MATERIALIZING --> ACCEPTED
+    CLAIMED --> RECONCILE_REQUIRED
+    MATERIALIZING --> RECONCILE_REQUIRED
+    RECONCILE_REQUIRED --> CLAIMED
+    RECONCILE_REQUIRED --> MATERIALIZING
+    ACCEPTED --> [*]
 ~~~
+
+`CREATED`、`PREPARING`、`WAITING_HUMAN`、`RECONCILE_REQUIRED` 允许转为 `CANCELLED`；这四态以及 `CLAIMED`、`MATERIALIZING` 允许转为 `FAILED`。`ACCEPTED`、`FAILED`、`CANCELLED` 没有后续转换。不能把“尚未终止”概括成任何阶段都可直接取消。
 
 响应丢失或提供方结果不确定时进入 `RECONCILE_REQUIRED`，先对账，不能盲目重试或重新生成身份。
 
@@ -100,12 +111,7 @@ V0 MCP 提供节点、纳管尝试和能力目录的观察与检查工具。模�
 
 核心与提供方无关。V0 提供 Cloudflare 参考适配器：
 
-~~~text
-Static Console
- -> Worker API
- -> Durable Object state
- -> adapters
-~~~
+参考部署由静态 Console 调用 Worker API，后者使用 Durable Object 保存状态并连接适配器。
 
 其他部署可实现相同的存储、API 与适配器契约。
 
@@ -130,6 +136,10 @@ Static Console
 
 一次性 provider material 使用两阶段私有 service binding：Generate ticket 时可先调用 `/v1/prepare`，按 exact `EnrollmentAttempt` 预备并对账私有一次性 authority；只有 READY 后才生成 GhostFleet ticket/short code。节点随后 claim 时调用 `/v1/materialize`，只消费已预备材料。这样 provider mint 不依赖可重试的 public claim callback。公共 Durable Object 仍不保存原始 provider credential，私有 service 的 provider/API/custody 实现属于 deployment owner。
 
+### 生产节点纳管与特权执行
+
+首台 Linux 消费者的真实特权远控闭环已在一个私有部署中验收；它不等于首次纳管或第二节点通过。跨层契约、预检矩阵、`UNKNOWN` 对账、第二节点与 NAS 首次使用的区别见[生产节点纳管与特权金丝雀 runbook](architecture/PRODUCTION_NODE_ONBOARDING_AND_ADMIN_CANARY_V1.md)。图中的 Worker/DO/Tunnel 是参考部署组件，不是核心强制依赖。ChatGPT 对话内人工审批的可选交互、OAuth 身份边界与 Web/Mobile 能力门见[对话内人工审批 v1](architecture/IN_CHAT_HUMAN_APPROVAL_V1.md)。 公网/边缘节点的 `MANAGED_ONLY` 来源拒绝由独立的 [#64 / PR #65](https://github.com/youling/ghostfleet/pull/65) typed-origin tranche 承担；该 PR 当前仍未合并/部署，私有拓扑策略和网络层无中继验收也未完成。
+
 ### 当前源码预览与可选模块
 
 公开 `main` 包含类型化控制、bootstrap、Python 平台运行时和显式可选的授权基础模块。[导出清单](export-manifest.json) 列出入口、组件和测试。默认 MCP 四个只读工具与 Console 的生命周期对象管理没有设备执行后端。生产 OAuth、Pages 托管和第二台独立硬件分别验收。核心、API、权限与标准 AI 客户端无关，无需 OpenAI/ChatGPT 配置；特定客户端的配置、重定向、身份和权限范围通过可选适配器精确绑定。详见 [操作](OPERATIONS.md)、[授权](AUTHORIZATION.md) 和 [迁移](MIGRATION.md)。
@@ -144,16 +154,21 @@ Static Console
 
 GhostFleet is a lifecycle control plane for AI agents and humans managing real device fleets. Its core abstraction is not remote command execution; it is explicit identity, state, capability, evidence, and human authority around real machines.
 
-~~~text
-Human / AI
-   |
-Console / MCP / API
-   |
-GhostFleet Control Plane
-   |
-Provider / Device adapters
-   |
-Real devices
+This overview is `DERIVED` navigation from the [project rules](../AGENTS.md), [public package ownership ADR](adr/001-public-canonical-packages.md) and [migration/deployment boundary](MIGRATION.md). Deployment wiring needs independent configuration and acceptance; an available adapter does not grant device-execution authority.
+
+~~~mermaid
+flowchart TD
+    Client["Human operators / standard clients"] --> Entry["Console / HTTP / default read-only MCP"]
+    subgraph Public["Public reusable mechanisms"]
+        Entry --> Core["Identity / lifecycle / HumanGate / Evidence"]
+        Core --> Optional["Optional typed control / platform contracts"]
+    end
+    subgraph Private["Private deployment and runtime evidence"]
+        Config["Private policy / secret custody"] --> Adapter["Configured provider / execution adapters"]
+        Adapter --> Device["Devices within authorized scope"]
+    end
+    Optional -. "Separate wiring and authority acceptance" .-> Adapter
+    Adapter -. "Receipts and evidence" .-> Core
 ~~~
 
 ### 2. Single entry point, multiple domains
@@ -178,20 +193,26 @@ Sharing one UX entry point never means the browser receives provider root author
 
 ### 4. EnrollmentAttempt state machine
 
-~~~text
-CREATED
-  -> PREPARING
-  -> WAITING_HUMAN -> CLAIMED
-  -> MATERIALIZING
-  -> ACCEPTED
+The main and reconciliation paths below are a `DERIVED` projection of the [current transition table](../src/core/state-machine.js); terminal transitions are specified immediately after the diagram. Approval and execution retain their separate contracts.
 
-CLAIMED / MATERIALIZING
-  -> RECONCILE_REQUIRED
-  -> CLAIMED or MATERIALIZING
-
-non-terminal
-  -> FAILED / CANCELLED
+~~~mermaid
+stateDiagram-v2
+    direction TB
+    [*] --> CREATED
+    CREATED --> PREPARING
+    PREPARING --> WAITING_HUMAN
+    PREPARING --> CLAIMED
+    WAITING_HUMAN --> CLAIMED
+    CLAIMED --> MATERIALIZING
+    MATERIALIZING --> ACCEPTED
+    CLAIMED --> RECONCILE_REQUIRED
+    MATERIALIZING --> RECONCILE_REQUIRED
+    RECONCILE_REQUIRED --> CLAIMED
+    RECONCILE_REQUIRED --> MATERIALIZING
+    ACCEPTED --> [*]
 ~~~
+
+`CREATED`, `PREPARING`, `WAITING_HUMAN` and `RECONCILE_REQUIRED` may transition to `CANCELLED`. Those four states plus `CLAIMED` and `MATERIALIZING` may transition to `FAILED`. `ACCEPTED`, `FAILED` and `CANCELLED` have no outgoing transitions. Being nonterminal does not imply cancellation is allowed at every stage.
 
 A lost response or ambiguous provider outcome becomes `RECONCILE_REQUIRED`; it must not trigger blind retry or blind remint.
 
@@ -235,12 +256,7 @@ Chat/AI is not a high-frequency polling daemon. Persistent executors may consume
 
 The core is provider neutral. V0 includes a Cloudflare reference adapter:
 
-~~~text
-Static Console
- -> Worker API
- -> Durable Object state
- -> adapters
-~~~
+The reference deployment uses a static Console calling the Worker API, which persists state in a Durable Object and connects the adapters.
 
 Other deployments can implement the same store/API/adapter contracts.
 
@@ -267,6 +283,10 @@ It excludes real account IDs, private node inventory, live endpoints, long-lived
 Public GhostFleet stores neither instance-private defaults nor provider authority. The Cloudflare reference deployment may add deployment-specific templates/overlays/display through the non-secret `GHOSTFLEET_ENROLLMENT_CATALOG_JSON`; without it the public catalog is unchanged, and malformed, colliding, stale or secret-shaped input fails closed.
 
 One-time provider material uses a two-phase private service binding. Ticket generation may first call `/v1/prepare` keyed to the exact `EnrollmentAttempt` so private one-time authority is prepared/reconciled before GhostFleet creates an unrecoverable short code. Node claim later calls `/v1/materialize` only to consume already-prepared material. Provider mint therefore never depends on retrying the public claim callback. Raw provider credentials remain outside the public Durable Object; provider/API/custody implementation belongs to the deployment owner.
+
+### Production node onboarding and approved-admin execution
+
+The first Linux consumer's live approved-admin path has passed in one private deployment; this does not mean first-use enrollment or a second node has passed. Cross-layer contracts, preflight, `UNKNOWN` reconciliation and the distinction between second-node acceptance and NAS first use are documented in the [production node onboarding and admin canary runbook](architecture/PRODUCTION_NODE_ONBOARDING_AND_ADMIN_CANARY_V1.md). Worker/DO/Tunnel in its diagrams are reference-deployment components, not mandatory core dependencies. The optional in-chat Human approval interaction, OAuth principal boundary and Web/Mobile platform gates are documented in [In-chat Human approval v1](architecture/IN_CHAT_HUMAN_APPROVAL_V1.md). The `MANAGED_ONLY` origin denial for public/edge nodes is owned by the separate [#64 / PR #65](https://github.com/youling/ghostfleet/pull/65) typed-origin tranche; that PR remains unmerged/undeployed, and private topology policy plus network no-relay acceptance remain outstanding.
 
 ### Current source preview and optional modules
 

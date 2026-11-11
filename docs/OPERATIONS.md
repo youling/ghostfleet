@@ -60,6 +60,8 @@ Linux `fleet-jobctl.py` 在 runner 已建立原子 `run.json` 后捕捉 `SIGTERM
 创建交互会话使用相同的参数和运行时间限制，另有 `rows` 10–200、`cols` 20–400、`cwd_profile:home`。输入文本最多 16384 UTF-8 字节，`control_keys` 最多 16 个且必须属于枚举，`input_seq` 为 1…2³¹−1，禁止空输入。关闭必须提供 `confirm:true`。辅助程序回执绑定操作、规格、调用主体、句柄和代次；待确认的 `pending_input_seq` 或 `UNKNOWN` 需要对账。责任方维护旧协议/存储布局、辅助程序 SHA 和私有代次，不在公开测试样本中复制真实值。
 
 <!-- topic:privileged -->
+
+V4 通用命令效果/状态通道的跨层契约、Host TTL、引用字段、`ok:false` 错误回执和生产金丝雀流程见[生产节点纳管与特权金丝雀 runbook](architecture/PRODUCTION_NODE_ONBOARDING_AND_ADMIN_CANARY_V1.md)。
 ### 独立的特权通道
 
 `runPrivilegedOperation` 仅接受 `root-probe` 和 `android-udev-access`，不接受 shell 命令。请求绑定 `request_id`、`actor_ref`、`generation`、`profile_generation` 和排序去重后的 `vendor_ids`。`root-probe` 不含厂商 ID；udev 操作要求明确的厂商集合。登录主体和密钥须与普通通道分离，并核对导入后的密钥身份，不能只比较字符串。
@@ -126,6 +128,8 @@ Job start requires an absolute executable argv: 1–64 arguments, each ≤4096 b
 Session creation uses the same argv/runtime limits plus rows 10–200, cols 20–400 and cwd_profile:home. Input text is ≤16384 UTF-8 bytes, control_keys ≤16 from the enum, input_seq 1…2³¹−1, and input cannot be empty. Close requires confirm:true. Helper receipts bind operation/spec/actor/handle/generation; pending_input_seq or UNKNOWN requires reconciliation. Owners maintain wire/storage ABI, helper SHA and private generations/state; public fixtures copy no real values.
 
 <!-- topic:privileged -->
+
+The V4 generic command-effect/status lane's cross-layer contracts, Host TTL, reference grammar, structured `ok:false` diagnostics and production canary procedure are documented in the [production node onboarding and admin canary runbook](architecture/PRODUCTION_NODE_ONBOARDING_AND_ADMIN_CANARY_V1.md).
 ### Separate privileged lane
 
 `runPrivilegedOperation` accepts only the typed root-probe and android-udev-access enum, never shell commands. It binds request_id, actor_ref, generation, profile_generation and sorted unique vendor_ids. Root-probe has no vendor IDs; udev requires an explicit vendor set. Principal/key are separate from ordinary control, verified by imported key identity rather than string difference alone.
