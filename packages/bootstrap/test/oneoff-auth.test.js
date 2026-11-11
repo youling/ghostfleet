@@ -29,7 +29,7 @@ async function runShell(root, filename, source, env = {}) {
 test("preclaim and original attempt guard execute BEFORE any package/provider effects", () => {
   const preflight = BOOTSTRAP_SH.indexOf("\nbootstrap_phase0_preflight\n");
   const compliant = BOOTSTRAP_SH.indexOf("\nif checkpoint_identity_converged; then");
-  const guard = BOOTSTRAP_SH.indexOf("\nrefuse_unresolved_previous_enrollment\n");
+  const guard = BOOTSTRAP_SH.indexOf("refuse_unresolved_previous_enrollment", BOOTSTRAP_SH.indexOf("checkpoint_identity_converged; then"));
   const preclaim = BOOTSTRAP_SH.indexOf('\ncase "$(tailscale_preclaim_state)" in');
   const baseline = BOOTSTRAP_SH.indexOf("\nbootstrap_transport_baseline\n");
   const claim = BOOTSTRAP_SH.indexOf("\nCLAIM_URL=");

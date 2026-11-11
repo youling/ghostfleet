@@ -88,6 +88,7 @@ CAPABILITY_USER_SERVICE_STATE=UNKNOWN
 CAPABILITY_LINGER_STATE=UNKNOWN
 CAPABILITY_MODE=NOT_REQUESTED
 CAPABILITY_REQUIRED=0
+CAPABILITY_LEGACY_STATE=0
 CAPABILITY_CLAIM_SELECTION_B64=
 CAPABILITY_RECORD_FILE="$CHECKPOINT_DIR/capability-selection.txt"
 CAPABILITY_STAGE_DIR=
@@ -161,6 +162,10 @@ capability_selection_text() {
 capability_restore_recorded() {
   [ -r "$CAPABILITY_RECORD_FILE" ] || return 0
   if capability_selected; then return 0; fi
+  # The record authorizes an install, so it is only usable on a checkpoint that
+  # recorded the same components. A record copied from another node is refused.
+  grep -Eq '"privileged_helper"|"user_service"|"linger"' "$CHECKPOINT_FILE" 2>/dev/null ||
+    fail 'a reviewed capability record exists but this checkpoint records no capability; refusing to install from an unrelated record'
   CAPABILITY_REQUIRED=1
   CAPABILITY_CLAIM_SELECTION_B64="$(cat "$CAPABILITY_RECORD_FILE")"
   CAPABILITY_SELECTION_ORIGIN=recorded
@@ -198,6 +203,8 @@ capability_validate_selection() {
     [ "$capability_name" != "$CAPABILITY_USER_UNIT_ARTIFACT" ] || CAPABILITY_UNIT_INDEX="$capability_index"
     capability_index=$((capability_index + 1))
   done
+  printf '%s' "$CAPABILITY_CONTROL_ACCOUNT" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || fail 'selected-capability control account is invalid'
+  [ "$CAPABILITY_CONTROL_ACCOUNT" != root ] || fail 'selected-capability control account must not be root'
   if [ "$CAPABILITY_HELPER_REQUIRED" = 1 ]; then
     [ -n "$CAPABILITY_INSTALLER_INDEX" ] || fail 'selected privileged helper does not pin its installer artifact'
     [ -n "$CAPABILITY_KEY_INDEX" ] || fail 'selected privileged helper does not pin the admitted privileged SSH public key'
@@ -211,10 +218,6 @@ capability_validate_selection() {
     printf '%s' "$capability_ordinary" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || fail 'ordinary control user is invalid'
     [ "$capability_ordinary" != root ] || fail 'ordinary control user must not be root'
     [ "$capability_ordinary" != "$CAPABILITY_CONTROL_ACCOUNT" ] || fail 'ordinary and dedicated control accounts must differ'
-  fi
-  if [ "$CAPABILITY_HELPER_REQUIRED" != 1 ] && [ "$CAPABILITY_LINGER_REQUIRED" = 1 ]; then
-    printf '%s' "$CAPABILITY_CONTROL_ACCOUNT" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || fail 'selected-capability control account is invalid'
-    [ "$CAPABILITY_CONTROL_ACCOUNT" != root ] || fail 'selected-capability control account must not be root'
   fi
   if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
     [ -n "$CAPABILITY_UNIT_INDEX" ] || fail 'selected user service does not pin its unit artifact'
@@ -781,13 +784,11 @@ bootstrap_phase0_preflight() {
     NOPASSWD_HINT=present
   fi
 
-  PREFLIGHT_MATERIAL="$(printf '%s
-' "$OS_FAMILY" "$OS_ID" "$OS_VERSION_ID" "$(uname -m)" "$APPLIANCE_KIND" "$DOCKER_SOCKET_HINT" "$NOPASSWD_HINT")"
+  PREFLIGHT_MATERIAL="$(printf '%s\\n' "$OS_FAMILY" "$OS_ID" "$OS_VERSION_ID" "$(uname -m)" "$APPLIANCE_KIND" "$DOCKER_SOCKET_HINT" "$NOPASSWD_HINT")"
   PRECHECK_DIGEST="sha256:$(printf '%s' "$PREFLIGHT_MATERIAL" | sha256sum | awk '{print $1}')"
   unset PREFLIGHT_MATERIAL
 
-  printf '%s
-' "fleet-enroll: preflight PASS os=$OS_ID/$OS_VERSION_ID arch=$(uname -m) appliance=$APPLIANCE_KIND docker_socket=$DOCKER_SOCKET_HINT nopasswd_hint=$NOPASSWD_HINT" >&2
+  printf '%s\\n' "fleet-enroll: preflight PASS os=$OS_ID/$OS_VERSION_ID arch=$(uname -m) appliance=$APPLIANCE_KIND docker_socket=$DOCKER_SOCKET_HINT nopasswd_hint=$NOPASSWD_HINT" >&2
 }
 bootstrap_phase0_preflight
 
@@ -800,26 +801,43 @@ capability_validate_selection
 # Existing machines must use a verified ADOPT/REPAIR plan instead of a new join.
 if checkpoint_identity_converged; then
   capability_restore_recorded
-  if ! capability_selected && grep -q '"privileged_helper"\\|"user_service"\\|"linger"' "$CHECKPOINT_FILE" 2>/dev/null; then
-    fail 'this node recorded a privileged capability but no reviewed selection is stored; reconcile before reporting zero delta'
+  if ! capability_selected && grep -Eq '"privileged_helper"|"user_service"|"linger"' "$CHECKPOINT_FILE" 2>/dev/null; then
+    # A checkpoint written by an older courier recorded the components but no
+    # reviewed selection. It is machine-reconcilable: the next authorized claim
+    # re-delivers the selection and this run converges it. No manual state edit.
+    CAPABILITY_LEGACY_STATE=1
+    printf '%s\\n' 'fleet-enroll: this node recorded a privileged capability without a reviewed selection (legacy checkpoint); the next authorized claim reconciles it' >&2
   fi
-  if capability_probe_all; then
+  if [ "$CAPABILITY_LEGACY_STATE" = 1 ]; then
+    # Converge through the authorized claim below: the selection is re-delivered
+    # and applied inside the same ceremony. Never a selection-less "repair".
+    :
+  elif capability_probe_all; then
     printf '%s\\n' 'fleet-enroll: already converged; no enrollment credentials requested' >&2
     exit 0
+  else
+    # Only the selected capability drifted: repair it from the selection the
+    # authorized first run recorded. No new enroll, credential, identity or join.
+    checkpoint_load_identity
+    CAPABILITY_MODE=REPAIR
+    capability_apply
+    checkpoint_write CHECKPOINT COMPLIANT
+    printf '%s\\n' 'fleet-enroll: selected capability repaired from the recorded reviewed selection; no enrollment credentials requested' >&2
+    exit 0
   fi
-  # Only the selected capability drifted: repair it from the selection the
-  # authorized first run recorded. No new enroll, credential, identity or join.
-  checkpoint_load_identity
-  CAPABILITY_MODE=REPAIR
-  capability_apply
-  checkpoint_write CHECKPOINT COMPLIANT
-  printf '%s\\n' 'fleet-enroll: selected capability repaired from the recorded reviewed selection; no enrollment credentials requested' >&2
-  exit 0
 fi
-refuse_unresolved_previous_enrollment
+if [ "$CAPABILITY_LEGACY_STATE" != 1 ]; then
+  refuse_unresolved_previous_enrollment
+fi
 case "$(tailscale_preclaim_state)" in
   FRESH) ;;
-  EXISTING) fail 'existing Tailscale identity detected; use verified ADOPT/REPAIR flow; no new enrollment effects attempted' ;;
+  EXISTING)
+    if [ "$CAPABILITY_LEGACY_STATE" = 1 ] && live_tailscale_ready "$(json_file_value "$CHECKPOINT_FILE" node_id)"; then
+      printf '%s\\n' 'fleet-enroll: reconciling a legacy capability record on this already-joined node; no new identity will be minted' >&2
+    else
+      fail 'existing Tailscale identity detected; use verified ADOPT/REPAIR flow; no new enrollment effects attempted'
+    fi
+    ;;
   *) fail 'Tailscale identity unknown before setup; reconcile before enrollment effects' ;;
 esac
 [ -c /dev/tty ] || fail '/dev/tty required before any enrollment package effects'
@@ -831,8 +849,7 @@ bootstrap_transport_baseline() {
   if command -v curl >/dev/null 2>&1 && package_installed ca-certificates; then
     return 0
   fi
-  printf '%s
-' 'fleet-enroll: installing bootstrap transport baseline (curl ca-certificates) from distribution base repositories' >&2
+  printf '%s\\n' 'fleet-enroll: installing bootstrap transport baseline (curl ca-certificates) from distribution base repositories' >&2
   apt-get update -y || fail 'bootstrap transport baseline failed: apt-get update failed; install curl ca-certificates then rerun'
   apt-get install -y --no-install-recommends curl ca-certificates || fail 'bootstrap transport baseline failed: cannot install curl ca-certificates; install them then rerun'
   command -v curl >/dev/null 2>&1 || fail 'bootstrap transport baseline failed: curl still absent after install'
@@ -853,8 +870,7 @@ ensure_tailscale_apt_source() {
     bullseye|bookworm|trixie|focal|jammy|noble|oracular|plucky|questing|resolute) ;;
     *) fail "unsupported OS release for Tailscale repository: id=$OS_ID codename=$OS_CODENAME (allowed: bullseye,bookworm,trixie,focal,jammy,noble,resolute,oracular,plucky,questing)" ;;
   esac
-  printf '%s
-' "fleet-enroll: configuring official Tailscale APT repository for $OS_ID/$OS_CODENAME" >&2
+  printf '%s\\n' "fleet-enroll: configuring official Tailscale APT repository for $OS_ID/$OS_CODENAME" >&2
   install -d -m 0755 /usr/share/keyrings
   install -d -m 0755 /etc/apt/sources.list.d
   TMP_KEY="$(mktemp)"
@@ -968,6 +984,12 @@ CAPABILITY_REQUIRED="$(json_flag "$CLAIM_JSON" capability_required)"
 CAPABILITY_CLAIM_SELECTION_B64="$(json_get "$CLAIM_JSON" capability_selection)"
 unset CLAIM_JSON
 
+if [ "$CAPABILITY_LEGACY_STATE" = 1 ]; then
+  capability_checkpoint_node="$(json_file_value "$CHECKPOINT_FILE" node_id)"
+  [ "$NODE_ID" = "$capability_checkpoint_node" ] ||
+    fail 'this claim is for a different node; a legacy capability record can only be reconciled on its original node'
+fi
+
 # The selected capability arrives with the claim, so it is verified and applied
 # inside this same root ceremony.
 capability_ingest_claim
@@ -990,6 +1012,9 @@ detect_live_components
 case "$TAILSCALE_STATE" in
   *CONFLICT*|*UNKNOWN*|DRIFT_REPAIRABLE) fail 'Tailscale identity stopped, foreign or uncertain; reconcile without reauthentication' ;;
 esac
+if [ "$CAPABILITY_LEGACY_STATE" = 1 ] && [ "$TAILSCALE_STATE" != COMPLIANT ]; then
+  fail 'legacy reconcile requires the existing identity to still match this node'
+fi
 
 # Preserve the Phase-0-pinned SSH host fingerprint for both completion receipts.
 
@@ -1033,13 +1058,11 @@ if [ "$IDENTITY_KIND" = provisional ]; then
   evidence_line() {
     key="$1"; value="$2"
     encoded="$(printf '%s' "$value" | base64 -w0)"
-    printf '%s	%s
-' "$key" "$encoded" >> "$EVIDENCE_FILE"
+    printf '%s\\t%s\\n' "$key" "$encoded" >> "$EVIDENCE_FILE"
   }
   bounded_file() {
     [ -r "$1" ] || return 0
-    tr '
-	' '   ' < "$1" | head -c 512
+    tr '\\r\\n\\t' '    ' < "$1" | head -c 512
   }
   evidence_line schema fleet-hardware-evidence/v1
   evidence_line captured_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"

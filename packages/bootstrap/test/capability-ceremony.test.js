@@ -534,12 +534,18 @@ test("a recorded capability that cannot be re-proved is never reported as zero d
     const selection = await buildSelection();
     await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
     assert.equal((await runCourier(host, null)).status, 0);
-    // Losing the reviewed selection removes the only way to re-prove the lane.
+    // Losing the reviewed selection removes the only way to re-prove the lane,
+    // and the lane has drifted: zero delta must not be reported.
     await rm(join(host.checkpoint, "capability-selection.txt"), { force: true });
+    await rm(UNIT_PATH(host), { force: true });
     await setClaim(host, {});
     const second = await runCourier(host, null);
-    assert.notEqual(second.status, 0);
-    assert.match(second.stderr, /recorded a privileged capability but no reviewed selection is stored/);
+    // The fixture broker accepts any code, so the code alone cannot prove the
+    // refusal; what must never happen is a zero-delta claim for a lane that
+    // cannot be re-proved.
+    assert.doesNotMatch(second.stderr, /already converged/);
+    assert.match(second.stderr, /legacy checkpoint/);
+    assert.equal((await calls(host)).filter((line) => line === "tailscale-up").length, 1);
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
 
@@ -601,11 +607,86 @@ test("the one-time ticket URL never enters curl argv, and the auth key stays 060
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
 
+test("a legacy checkpoint without a reviewed record converges through the next claim", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
+    assert.equal((await runCourier(host, null)).status, 0);
+    // A checkpoint written by an older courier: components recorded, no record.
+    // The lane drifted, so the record cannot be re-proved and only a fresh
+    // authorized claim can converge it — without manual state surgery.
+    await rm(join(host.checkpoint, "capability-selection.txt"), { force: true });
+    await rm(UNIT_PATH(host), { force: true });
+    await rm(join(host.accountHome, ".config/systemd/user/default.target.wants/ghostfleet-managed.service"), { force: true });
+    await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
+    const legacy = await runCourier(host, null);
+    assert.equal(legacy.status, 0, legacy.stderr);
+    assert.match(legacy.stderr, /legacy checkpoint/);
+    assert.match(legacy.stderr, /reconciling a legacy capability record/);
+    assert.equal((await calls(host)).filter((line) => line === "tailscale-up").length, 1, "no second identity join");
+    assert.ok(await exists(join(host.checkpoint, "capability-selection.txt")), "the record is rebuilt");
+    assert.equal((await readJson(join(host.checkpoint, "enrollment-checkpoint.json"))).status, "COMPLIANT");
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a capability record from another node is refused when this checkpoint recorded none", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
+    assert.equal((await runCourier(host, null)).status, 0);
+    // Simulate a record that belongs to another node: the checkpoint is rewritten
+    // so it never recorded a privileged component, while the record survives.
+    const checkpointPath = join(host.checkpoint, "enrollment-checkpoint.json");
+    const checkpoint = await readJson(checkpointPath);
+    await writeFile(checkpointPath, JSON.stringify({
+      ...checkpoint,
+      components: { packages: "COMPLIANT", tailscale: "COMPLIANT" },
+    }));
+    await setClaim(host, {});
+    const applied = (await installerLog(host)).filter((line) => line.includes("--apply")).length;
+    const result = await runCourier(host, null);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /refusing to install from an unrelated record/);
+    assert.equal((await installerLog(host)).filter((line) => line.includes("--apply")).length, applied);
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a claim selection with a non-normalised mode or a root control account is refused", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    const selection = await buildSelection();
+    const text = Buffer.from(encodeCapabilitySelection(selection), "base64").toString("utf8");
+    const cases = [
+      {
+        name: "user-service only with root account",
+        body: text
+          .replace("helper_required=1", "helper_required=0")
+          .replace("linger_required=1", "linger_required=0")
+          .replace("control_account=ghostfleet-ops", "control_account=root"),
+        expected: /control account must not be root/,
+      },
+    ];
+    for (const item of cases) {
+      await freshCheckpoint(host);
+      await setClaim(host, { capability_required: true, capability_selection: Buffer.from(item.body).toString("base64") });
+      const result = await runCourier(host, null);
+      assert.notEqual(result.status, 0, item.name);
+      assert.match(result.stderr, item.expected, item.name);
+      assert.equal((await calls(host)).includes("tailscale-up"), false, item.name);
+      assert.deepEqual(await installerLog(host), [], item.name);
+    }
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
 test("the selected capability is validated before the preclaim fence and installed before completion", () => {
   return import("../src/bootstrap.js").then(({ BOOTSTRAP_SH }) => {
     const preflight = BOOTSTRAP_SH.indexOf("\nbootstrap_phase0_preflight\n");
     const validate = BOOTSTRAP_SH.indexOf("\ncapability_validate_selection\n");
-    const guard = BOOTSTRAP_SH.indexOf("\nrefuse_unresolved_previous_enrollment\n");
+    const guard = BOOTSTRAP_SH.indexOf("refuse_unresolved_previous_enrollment", BOOTSTRAP_SH.indexOf("checkpoint_identity_converged; then"));
     const baseline = BOOTSTRAP_SH.indexOf("\nbootstrap_transport_baseline\n");
     const claim = BOOTSTRAP_SH.indexOf("\nCLAIM_URL=");
     const join = BOOTSTRAP_SH.indexOf('if [ "$TAILSCALE_STATE" != COMPLIANT ]; then');
