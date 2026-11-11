@@ -259,6 +259,16 @@ A Capability is a bounded ability declaration, not a credential. A definition in
 
 High-authority device actions are not implemented directly inside the core. The core owns discovery, authority contracts, Human Gates and receipts/evidence; Linux, Windows and Android adapters own platform execution.
 
+### 6.1 Account isolation inside one authorized ceremony
+
+Three accounts are involved in a Linux first-root ceremony and none of them is interchangeable:
+
+- the **dedicated run account** (`control_account`) owns the managed user unit and Linger, so every process the managed runtime starts inherits exactly its rights. It is created inside the same authorized ceremony when absent (`useradd --create-home --user-group --shell /usr/sbin/nologin`, locked password, no sudo, no supplementary group) and recorded as created-by-the-courier;
+- the **privileged operations account** (`privileged_account`, additive selection field, rendered by the deployment from the reviewed installer) holds the bounded NOPASSWD `fleet-privctl` rule and the forced-command SSH entry;
+- the **ordinary Human account** is only the helper's admission user.
+
+The rule is negative and testable: the run account must not be able to invoke `sudo -n fleet-privctl`, so `control_account == privileged_account` is refused before any installation effect, a pre-existing account is adopted only after `sudo -l -U` and group membership prove no privilege (otherwise the ceremony fails closed with the concrete risk), and the same proof is re-run on the zero-delta path. Because the boundary is closed inside the single root ceremony, no second manual root command and no new Human-visible privilege tier appears; rollback removes only what that run created. The synthetic tests prove the refusals and the rollback, and a disposable root job proves the negative with real `sudo` against the installed helper while the privileged account still reaches it.
+
 ### 7. AI interface
 
 The V0 MCP surface begins with observation and inspection: nodes, EnrollmentAttempts and the Capability Registry. The model sees objects and lifecycle state before it ever sees mutation authority.

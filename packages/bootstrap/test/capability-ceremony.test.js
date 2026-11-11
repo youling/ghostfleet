@@ -20,9 +20,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const fixtureDir = join(here, "fixtures");
 const NODE_ID = "fleet-node-fixture";
 const NODE_UID = "node-00000000-0000-4000-8000-000000000001";
+// The dedicated run identity the courier owns, and the privileged operations
+// identity the reviewed installer owns. Different accounts, different rights.
+const CONTROL_ACCOUNT = "ghostfleet-managed";
+const PRIVILEGED_ACCOUNT = "ghostfleet-ops";
 const STUB_COMMANDS = [
   "id", "uname", "dpkg-query", "systemctl", "apt-get", "curl", "ssh-keygen",
-  "install", "chown", "getent", "loginctl", "useradd", "usermod", "passwd",
+  "install", "chown", "getent", "loginctl", "useradd", "userdel", "usermod", "passwd",
   "visudo", "sudo", "python3",
 ];
 
@@ -42,7 +46,7 @@ async function makeHost() {
     fixtureState: join(root, "fixture-state"),
     checkpoint: join(root, "checkpoint"),
     run: join(root, "run"),
-    accountHome: join(root, "home-ghostfleet-ops"),
+    homeRoot: join(root, "homes"),
     tty: join(root, "dev-tty"),
     ttyOut: join(root, "dev-tty-out"),
     osRelease: join(root, "os-release"),
@@ -55,7 +59,7 @@ async function makeHost() {
   };
   await mkdir(host.bin);
   await mkdir(host.fixtureState);
-  await mkdir(host.accountHome);
+  await mkdir(host.homeRoot);
   await mkdir(host.systemdDir);
   await mkdir(host.sshDir);
   await mkdir(host.keyrings);
@@ -78,7 +82,7 @@ async function makeHost() {
     FIXTURE_STATE: host.fixtureState,
     FIXTURE_BIN: host.bin,
     FIXTURE_NODE_ID: NODE_ID,
-    FIXTURE_ACCOUNT_HOME: host.accountHome,
+    FIXTURE_HOME_ROOT: host.homeRoot,
     FIXTURE_AUTHKEY: join(host.run, "ts-authkey"),
     GHOSTFLEET_OPERATING_USER: OPERATING_USER,
   };
@@ -123,7 +127,10 @@ async function buildSelection(overrides = {}) {
     helper_required: true,
     linger_required: true,
     user_service_required: true,
-    control_account: "ghostfleet-ops",
+    // The run identity owns the unit and Linger; the privileged identity stays
+    // with the reviewed installer. They are never the same account.
+    control_account: CONTROL_ACCOUNT,
+    privileged_account: PRIVILEGED_ACCOUNT,
     installer: "managed-linux-privileged-operations.sh",
     privileged_key: "privileged-ops.pub",
     user_unit: { name: "ghostfleet-managed.service", artifact: "ghostfleet-managed.service" },
@@ -187,8 +194,30 @@ async function snapshot(paths) {
   return result;
 }
 
-const UNIT_PATH = (host) => join(host.accountHome, ".config/systemd/user/ghostfleet-managed.service");
-const WANT_PATH = (host) => join(host.accountHome, ".config/systemd/user/default.target.wants/ghostfleet-managed.service");
+// Model a run account that already existed before the ceremony. Everything the
+// courier reads about it comes from the fixture state, never from the host.
+async function seedAccount(host, name, { groups = [name], sudo = false, home = null, shell = "/usr/sbin/nologin" } = {}) {
+  const accountHome = home ?? join(host.homeRoot, name);
+  await mkdir(accountHome, { recursive: true });
+  for (const directory of ["accounts", "groups", "sudo-grant"]) {
+    await mkdir(join(host.fixtureState, directory), { recursive: true });
+  }
+  await writeFile(join(host.fixtureState, "accounts", name), accountHome + "|" + shell + "\n");
+  await writeFile(join(host.fixtureState, "groups", name), groups.join(" ") + "\n");
+  if (sudo) await writeFile(join(host.fixtureState, "sudo-grant", name), "granted\n");
+  return accountHome;
+}
+async function accountExists(host, name) {
+  return exists(join(host.fixtureState, "accounts", name));
+}
+function startingWith(journal, prefix) {
+  return journal.filter((line) => line.startsWith(prefix));
+}
+
+const RUN_HOME = (host) => join(host.homeRoot, CONTROL_ACCOUNT);
+const UNIT_PATH = (host) => join(RUN_HOME(host), ".config/systemd/user/ghostfleet-managed.service");
+const WANT_PATH = (host) => join(RUN_HOME(host), ".config/systemd/user/default.target.wants/ghostfleet-managed.service");
+const LINGER = (host, name = CONTROL_ACCOUNT) => join(host.fixtureState, "linger", name);
 
 test("the template-selected privileged capability installs inside the same root ceremony", { skip: linuxOnly }, async () => {
   const host = await makeHost();
@@ -218,8 +247,8 @@ test("the template-selected privileged capability installs inside the same root 
     assert.equal(await readFile(UNIT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
     assert.equal((await stat(UNIT_PATH(host))).mode & 0o777, 0o644);
     assert.equal(await readFile(WANT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
-    assert.ok(await exists(join(host.fixtureState, "linger")));
-    assert.ok(journal.includes("loginctl-enable-linger ghostfleet-ops"));
+    assert.ok(await exists(LINGER(host)));
+    assert.ok(journal.includes("loginctl-enable-linger " + CONTROL_ACCOUNT));
 
     const checkpoint = await readJson(join(host.checkpoint, "enrollment-checkpoint.json"));
     assert.deepEqual(checkpoint.components, {
@@ -253,7 +282,7 @@ test("a template that requests no privileged capability installs nothing", { ski
     assert.deepEqual(await installerLog(host), []);
     assert.equal((await calls(host)).filter((line) => line.startsWith("loginctl")).length, 0);
     assert.equal(await exists(UNIT_PATH(host)), false);
-    assert.equal(await exists(join(host.fixtureState, "linger")), false);
+    assert.equal(await exists(LINGER(host)), false);
     assert.equal(await exists(join(host.checkpoint, "capability-state.json")), false);
     const checkpoint = await readJson(join(host.checkpoint, "enrollment-checkpoint.json"));
     assert.deepEqual(checkpoint.components, { packages: "COMPLIANT", tailscale: "COMPLIANT" });
@@ -315,7 +344,7 @@ test("NEW, ADOPT and REPAIR are distinguishable and only repair real drift", { s
 
     // REPAIR: drift the helper and the Linger lane, then converge only that.
     await writeFile(join(host.fixtureState, "drift"), "drifted\n");
-    await rm(join(host.fixtureState, "linger"), { force: true });
+    await rm(LINGER(host), { force: true });
     await resetProviderIdentity(host);
     await freshCheckpoint(host);
     const repair = await runCourier(host, selection);
@@ -323,7 +352,7 @@ test("NEW, ADOPT and REPAIR are distinguishable and only repair real drift", { s
     assert.equal((await readJson(join(host.checkpoint, "capability-state.json"))).mode, "REPAIR");
     assert.equal((await installerLog(host)).filter((line) => line.includes("--apply")).length, appliesBefore + 1);
     assert.equal(await exists(join(host.fixtureState, "drift")), false);
-    assert.ok(await exists(join(host.fixtureState, "linger")));
+    assert.ok(await exists(LINGER(host)));
     const checkpoint = await readJson(join(host.checkpoint, "enrollment-checkpoint.json"));
     assert.equal(checkpoint.components.privileged_helper, "COMPLIANT");
     assert.equal(checkpoint.components.linger, "COMPLIANT");
@@ -363,7 +392,7 @@ test("a partially applied capability is never reported as completion and repairs
     assert.equal(installed.ordinary_user, OPERATING_USER);
     assert.equal(installed.applies, 2, "the retry repairs, it does not duplicate the account or key");
     assert.equal(await readFile(UNIT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
-    assert.ok(await exists(join(host.fixtureState, "linger")));
+    assert.ok(await exists(LINGER(host)));
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
 
@@ -426,7 +455,7 @@ test("a claim-delivered selection installs the capability without a rendered pay
     assert.equal(checkpoint.components.linger, "COMPLIANT");
     assert.equal((await readJson(join(host.checkpoint, "capability-state.json"))).mode, "NEW");
     assert.equal(await readFile(UNIT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
-    assert.ok(await exists(join(host.fixtureState, "linger")));
+    assert.ok(await exists(LINGER(host)));
     // The recorded digest binds the installed bytes to the reviewed selection.
     const expected = capabilitySelectionDigest(normalizeSelectedCapability(selection));
     const state = await readJson(join(host.checkpoint, "capability-state.json"));
@@ -508,13 +537,13 @@ test("a drifted user service or Linger lane is repaired from the recorded select
     const first = await runCourier(host, null);
     assert.equal(first.status, 0, first.stderr);
     assert.ok(await exists(UNIT_PATH(host)));
-    assert.ok(await exists(join(host.fixtureState, "linger")));
+    assert.ok(await exists(LINGER(host)));
     const applies = (await installerLog(host)).filter((line) => line.includes("--apply")).length;
 
     // Break only the user-level lane: the helper stays compliant.
     await rm(UNIT_PATH(host), { force: true });
-    await rm(join(host.accountHome, ".config/systemd/user/default.target.wants/ghostfleet-managed.service"), { force: true });
-    await rm(join(host.fixtureState, "linger"), { force: true });
+    await rm(WANT_PATH(host), { force: true });
+    await rm(LINGER(host), { force: true });
 
     const second = await runCourier(host, null);
     assert.equal(second.status, 0, second.stderr);
@@ -522,7 +551,7 @@ test("a drifted user service or Linger lane is repaired from the recorded select
     assert.equal((await calls(host)).filter((line) => line === "curl claim").length, 1, "repair needs no new claim");
     assert.equal((await installerLog(host)).filter((line) => line.includes("--apply")).length, applies, "no helper reinstall");
     assert.equal(await readFile(UNIT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
-    assert.ok(await exists(join(host.fixtureState, "linger")));
+    assert.ok(await exists(LINGER(host)));
     const state = await readJson(join(host.checkpoint, "capability-state.json"));
     assert.equal(state.mode, "REPAIR");
     const checkpoint = await readJson(join(host.checkpoint, "enrollment-checkpoint.json"));
@@ -579,7 +608,7 @@ test("the claim selection is verified after the claim and before the identity jo
     const journal = await calls(host);
     const claimAt = journal.indexOf("curl claim");
     const joinAt = journal.indexOf("tailscale-up");
-    const lingerAt = journal.indexOf("loginctl-enable-linger ghostfleet-ops");
+    const lingerAt = journal.indexOf("loginctl-enable-linger " + CONTROL_ACCOUNT);
     const completeAt = journal.indexOf("curl complete");
     // Honest ordering: transport prerequisites precede the claim; the capability
     // never installs before the claim, and never after the completion report.
@@ -624,7 +653,7 @@ test("a legacy checkpoint without a reviewed record converges through the next c
     // authorized claim can converge it — without manual state surgery.
     await rm(join(host.checkpoint, "capability-selection.txt"), { force: true });
     await rm(UNIT_PATH(host), { force: true });
-    await rm(join(host.accountHome, ".config/systemd/user/default.target.wants/ghostfleet-managed.service"), { force: true });
+    await rm(WANT_PATH(host), { force: true });
     await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
     const legacy = await runCourier(host, null);
     assert.equal(legacy.status, 0, legacy.stderr);
@@ -671,7 +700,7 @@ test("a claim selection with a non-normalised mode or a root control account is 
         body: text
           .replace("helper_required=1", "helper_required=0")
           .replace("linger_required=1", "linger_required=0")
-          .replace("control_account=ghostfleet-ops", "control_account=root"),
+          .replace("control_account=" + CONTROL_ACCOUNT, "control_account=root"),
         expected: /control account must not be root/,
       },
     ];
@@ -776,4 +805,222 @@ test("the selected capability is validated before the preclaim fence and install
     assert.match(BOOTSTRAP_SH, /capability_selected; then\n  printf/);
     assert.match(BOOTSTRAP_SH, /no completion is reported/);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Account isolation: the identity that owns the unit and Linger is never the
+// identity that holds the bounded privileged helper entry.
+// ---------------------------------------------------------------------------
+
+test("the managed run account may never be the privileged operations account", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    // The deployment-rendered channel: a colliding selection must stop before
+    // any effect at all, so the journal is empty.
+    const tampered = await runCourier(host, selection, {
+      tamper: (script) => script.replace(
+        "CAPABILITY_PRIVILEGED_ACCOUNT='" + PRIVILEGED_ACCOUNT + "'",
+        () => "CAPABILITY_PRIVILEGED_ACCOUNT='" + CONTROL_ACCOUNT + "'",
+      ),
+    });
+    assert.notEqual(tampered.status, 0);
+    assert.match(tampered.stderr, /must not be the privileged operations account/);
+    assert.match(tampered.stderr, /NOPASSWD fleet-privctl/);
+    assert.deepEqual(await calls(host), [], "no claim, package, account or service effect");
+    assert.deepEqual(await installerLog(host), [], "the installer never ran");
+    assert.equal(await exists(UNIT_PATH(host)), false);
+    assert.equal(await accountExists(host, CONTROL_ACCOUNT), false);
+
+    // The claim channel arrives later, so the claim happens; the installer, the
+    // account and the unit still never do.
+    const text = Buffer.from(encodeCapabilitySelection(selection), "base64").toString("utf8");
+    const colliding = text.replace(
+      "control_account=" + CONTROL_ACCOUNT,
+      "control_account=" + PRIVILEGED_ACCOUNT,
+    );
+    assert.notEqual(colliding, text);
+    await freshCheckpoint(host);
+    await setClaim(host, { capability_required: true, capability_selection: Buffer.from(colliding).toString("base64") });
+    const claimed = await runCourier(host, null);
+    assert.notEqual(claimed.status, 0);
+    assert.match(claimed.stderr, /must not be the privileged operations account/);
+    assert.deepEqual(await installerLog(host), [], "the installer never ran for the colliding claim");
+    assert.equal(await accountExists(host, CONTROL_ACCOUNT), false);
+    assert.equal(await exists(UNIT_PATH(host)), false);
+    assert.equal((await calls(host)).some((line) => line === "tailscale-up"), false, "no identity effect");
+    assert.equal(await exists(join(host.checkpoint, "capability-state.json")), false);
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("the courier creates the dedicated run account once, inside the same ceremony", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    const result = await runCourier(host, selection);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /created the dedicated managed run account ghostfleet-managed/);
+
+    const journal = await calls(host);
+    const useradds = startingWith(journal, "useradd ");
+    assert.equal(useradds.length, 1, "the account is created exactly once");
+    assert.match(useradds[0], /--create-home/);
+    assert.match(useradds[0], /--user-group/);
+    assert.match(useradds[0], /--shell \/usr\/sbin\/nologin/);
+    assert.match(useradds[0], /ghostfleet-managed$/);
+    assert.equal(startingWith(journal, "usermod ").length, 0, "no group is added to the run account");
+    assert.equal(journal.some((line) => line === "sudo -l -U " + CONTROL_ACCOUNT), false, "the check is read-only");
+    assert.ok(await accountExists(host, CONTROL_ACCOUNT));
+    assert.equal(await readFile(UNIT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
+    assert.ok(await exists(LINGER(host)));
+    assert.ok(journal.includes("loginctl-enable-linger " + CONTROL_ACCOUNT));
+    assert.equal(journal.some((line) => line.includes(PRIVILEGED_ACCOUNT) && line.startsWith("loginctl")), false);
+
+    const state = await readJson(join(host.checkpoint, "capability-state.json"));
+    assert.equal(state.control_account, CONTROL_ACCOUNT);
+    assert.equal(state.control_account_state, "CREATED");
+    assert.equal(state.control_account_created_by_courier, true);
+    assert.equal(state.privileged_account, PRIVILEGED_ACCOUNT);
+
+    // Idempotency: the same ceremony again creates nothing and rewrites nothing.
+    const watched = [UNIT_PATH(host), join(host.checkpoint, "capability-state.json")];
+    const before = await snapshot(watched);
+    const second = await runCourier(host, selection);
+    assert.equal(second.status, 0, second.stderr);
+    assert.match(second.stderr, /already converged/);
+    assert.equal(startingWith(await calls(host), "useradd ").length, 1, "no second account creation");
+    assert.deepEqual(await snapshot(watched), before, "a converged node is not rewritten");
+    assert.deepEqual(await readJson(join(host.checkpoint, "capability-state.json")), state,
+      "the converged node keeps the provenance it recorded");
+
+    // A repair run adopts the account instead of creating it, and must keep the
+    // "created by this product" provenance so the account stays attributable.
+    await rm(UNIT_PATH(host), { force: true });
+    const repair = await runCourier(host, selection);
+    assert.equal(repair.status, 0, repair.stderr);
+    assert.equal(startingWith(await calls(host), "useradd ").length, 1, "a repair never recreates the account");
+    const repaired = await readJson(join(host.checkpoint, "capability-state.json"));
+    assert.equal(repaired.mode, "REPAIR");
+    assert.equal(repaired.control_account_state, "EXISTING");
+    assert.equal(repaired.control_account_created_by_courier, true,
+      "provenance survives the adopting run");
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a pre-existing run account with any sudo grant is refused with the concrete risk", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    await seedAccount(host, CONTROL_ACCOUNT, { sudo: true });
+    const result = await runCourier(host, await buildSelection());
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /has a sudo grant/);
+    assert.match(result.stderr, /bounded fleet-privctl entry exists to prevent/);
+    assert.equal(startingWith(await installerLog(host), "installer --apply").length, 0, "the installer never applied");
+    assert.equal(await exists(UNIT_PATH(host)), false);
+    assert.equal(await exists(LINGER(host)), false);
+    assert.ok(await accountExists(host, CONTROL_ACCOUNT), "a pre-existing account is never removed");
+    assert.equal(startingWith(await calls(host), "userdel ").length, 0);
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a pre-existing run account in a root-equivalent group is refused", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    await seedAccount(host, CONTROL_ACCOUNT, { groups: [CONTROL_ACCOUNT, "docker"] });
+    const result = await runCourier(host, await buildSelection());
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /root-equivalent group docker/);
+    assert.equal(startingWith(await installerLog(host), "installer --apply").length, 0);
+    assert.equal(await exists(UNIT_PATH(host)), false);
+    assert.ok(await accountExists(host, CONTROL_ACCOUNT));
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a converged node stops reporting zero delta when the run account gains sudo", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    assert.equal((await runCourier(host, selection)).status, 0);
+
+    // The account gains a sudo grant after the ceremony. That is drift against
+    // the boundary, so the node must not answer "already converged".
+    await mkdir(join(host.fixtureState, "sudo-grant"), { recursive: true });
+    await writeFile(join(host.fixtureState, "sudo-grant", CONTROL_ACCOUNT), "granted\n");
+    const second = await runCourier(host, selection);
+    assert.notEqual(second.status, 0);
+    assert.doesNotMatch(second.stderr, /already converged/);
+    assert.match(second.stderr, /has a sudo grant/);
+    assert.ok(await accountExists(host, CONTROL_ACCOUNT), "the adopted account is left in place");
+    assert.equal(startingWith(await calls(host), "userdel ").length, 0);
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("rollback removes only the run account this ceremony created", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    // The run account is created, then the privileged helper fails.
+    const failed = await runCourier(host, await buildSelection(), { env: { FAKE_INSTALLER_FAIL: "1" } });
+    assert.notEqual(failed.status, 0);
+    assert.match(failed.stderr, /selected privileged helper apply failed/);
+    assert.equal(await accountExists(host, CONTROL_ACCOUNT), false, "the account this run created is gone");
+    assert.equal(await exists(RUN_HOME(host)), false, "its home is gone");
+    assert.equal(await exists(UNIT_PATH(host)), false);
+    assert.equal(await exists(LINGER(host)), false);
+    assert.equal(startingWith(await calls(host), "userdel ").length, 1);
+
+    // A different host with the same account already present: a failure must
+    // leave that pre-existing account and its home untouched.
+    const preexisting = await makeHost();
+    try {
+      await freshCheckpoint(preexisting);
+      const home = await seedAccount(preexisting, CONTROL_ACCOUNT);
+      await writeFile(join(home, "pre-existing-marker"), "deployment owned\n");
+      const second = await runCourier(preexisting, await buildSelection(), { env: { FAKE_INSTALLER_FAIL: "1" } });
+      assert.notEqual(second.status, 0);
+      assert.ok(await accountExists(preexisting, CONTROL_ACCOUNT), "a pre-existing account survives");
+      assert.equal(await readFile(join(home, "pre-existing-marker"), "utf8"), "deployment owned\n");
+      assert.equal(startingWith(await calls(preexisting), "userdel ").length, 0);
+    } finally { await rm(preexisting.root, { recursive: true, force: true }); }
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a selection that does not declare the privileged account is refused with an actionable error", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    const selection = await buildSelection();
+    const text = Buffer.from(encodeCapabilitySelection(selection), "base64").toString("utf8");
+    const withoutField = (value) => Buffer.from(
+      value.split("\n").filter((line) => !line.startsWith("privileged_account=")).join("\n"),
+    ).toString("base64");
+    const cases = [
+      {
+        name: "v1 selection",
+        selection: withoutField(text.replace("schema=ghostfleet-selected-capability/v2", "schema=ghostfleet-selected-capability/v1")),
+        expected: /schema v1 does not declare privileged_account/,
+      },
+      {
+        name: "v2 selection with the field dropped",
+        selection: withoutField(text),
+        expected: /declares no privileged_account/,
+      },
+    ];
+    for (const item of cases) {
+      await resetProviderIdentity(host);
+      await freshCheckpoint(host);
+      await setClaim(host, { capability_required: true, capability_selection: item.selection });
+      const result = await runCourier(host, null);
+      assert.notEqual(result.status, 0, item.name);
+      assert.match(result.stderr, item.expected, item.name);
+      assert.match(result.stderr, /re-render the reviewed/, item.name + ": the error must say what to do");
+      assert.deepEqual(await installerLog(host), [], item.name + ": the installer never ran");
+      assert.equal(await accountExists(host, CONTROL_ACCOUNT), false, item.name);
+      assert.equal(await exists(UNIT_PATH(host)), false, item.name);
+    }
+  } finally { await rm(host.root, { recursive: true, force: true }); }
 });

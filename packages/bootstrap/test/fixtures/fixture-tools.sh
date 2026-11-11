@@ -2,21 +2,42 @@
 # Synthetic fixture for the published bootstrap courier. Every command here
 # replaces one privileged host tool so the real courier script can run the whole
 # first-root ceremony without root, a provider, or a network.
+#
+# Account state is modelled, not real: ${FIXTURE_STATE}/accounts/<name> holds
+# "<home>|<shell>", groups/<name> the account's group list, sudo-grant/<name>,
+# unlocked/<name> and linger/<name> the corresponding facts. A test seeds any of
+# them to stand for a host that already had that account.
 set -u
 name="$(basename "$0")"
 state="${FIXTURE_STATE:?FIXTURE_STATE is required}"
+home_root="${FIXTURE_HOME_ROOT:-$state/homes}"
 record() { printf '%s\n' "$*" >> "$state/calls.log"; }
+account_exists() { [ -f "$state/accounts/$1" ]; }
+account_home() { cut -d'|' -f1 "$state/accounts/$1"; }
+account_shell() { cut -d'|' -f2 "$state/accounts/$1"; }
 
 case "$name" in
   id)
     case "${1:-}" in
       -u)
-        if [ -n "${2:-}" ]; then printf '1234\n'; else printf '0\n'; fi
+        if [ -n "${2:-}" ]; then
+          account_exists "$2" || exit 1
+          printf '1234\n'
+        else
+          printf '0\n'
+        fi
         ;;
-      -nG) printf 'users\n' ;;
+      -nG)
+        if [ -n "${2:-}" ]; then
+          account_exists "$2" || exit 1
+          if [ -f "$state/groups/$2" ]; then cat "$state/groups/$2"; else printf '%s\n' "$2"; fi
+        else
+          printf 'users\n'
+        fi
+        ;;
       *)
-        [ "${1:-}" = ghostfleet-ops ] && exit 0
-        exit 1
+        [ -n "${1:-}" ] || exit 1
+        account_exists "$1" || exit 1
         ;;
     esac
     ;;
@@ -42,7 +63,7 @@ case "$name" in
           *) record "tailscale-up-hostname-mismatch"; exit 9 ;;
         esac
         record "tailscale-up"
-        if [ -n "\${FIXTURE_AUTHKEY:-}" ] && [ -e "$FIXTURE_AUTHKEY" ]; then
+        if [ -n "${FIXTURE_AUTHKEY:-}" ] && [ -e "$FIXTURE_AUTHKEY" ]; then
           record "authkey $(stat -c '%a %U %G' "$FIXTURE_AUTHKEY")"
         fi
         printf '%s' "$FIXTURE_NODE_ID" > "$state/tailscale.hostname"
@@ -120,21 +141,80 @@ case "$name" in
     exec /usr/bin/install "${arguments[@]}"
     ;;
   chown) record "chown $*" ;;
+  useradd)
+    record "useradd $*"
+    account=
+    account_home_value=
+    account_shell_value=/usr/sbin/nologin
+    create_home=0
+    user_group=0
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --create-home|-m) create_home=1; shift ;;
+        --user-group|-U) user_group=1; shift ;;
+        --shell) account_shell_value="$2"; shift 2 ;;
+        --home-dir|-d) account_home_value="$2"; shift 2 ;;
+        --system) shift ;;
+        -*) shift ;;
+        *) account="$1"; shift ;;
+      esac
+    done
+    [ -n "$account" ] || { printf 'useradd: no account name\n' >&2; exit 2; }
+    if account_exists "$account"; then printf 'useradd: %s exists\n' "$account" >&2; exit 9; fi
+    [ -n "$account_home_value" ] || account_home_value="$home_root/$account"
+    if [ "$create_home" = 1 ]; then mkdir -p "$account_home_value"; fi
+    if [ "$user_group" = 1 ]; then mkdir -p "$state/groups"; printf '%s\n' "$account" > "$state/groups/$account"; fi
+    mkdir -p "$state/accounts"
+    printf '%s|%s\n' "$account_home_value" "$account_shell_value" > "$state/accounts/$account"
+    ;;
+  userdel)
+    record "userdel $*"
+    account=
+    for argument in "$@"; do
+      case "$argument" in -*) ;; *) account="$argument" ;; esac
+    done
+    if ! account_exists "$account"; then printf 'userdel: %s does not exist\n' "$account" >&2; exit 6; fi
+    account_home_value="$(account_home "$account")"
+    rm -f "$state/accounts/$account" "$state/groups/$account" "$state/sudo-grant/$account" "$state/linger/$account"
+    case "$account_home_value" in
+      "$home_root"/*) rm -rf "$account_home_value" ;;
+    esac
+    ;;
   getent)
     case "${1:-}" in
       passwd)
-        if [ "${2:-}" = ghostfleet-ops ]; then
-          printf 'ghostfleet-ops:x:1234:1234::%s:/bin/sh\n' "${FIXTURE_ACCOUNT_HOME:-/nonexistent}"
+        if account_exists "${2:-}"; then
+          printf '%s:x:1234:1234::%s:%s\n' "$2" "$(account_home "$2")" "$(account_shell "$2")"
         else
-          # The operating Human identity is resolved for real, so the strict
-          # name/uid validation sees a genuine account.
+          # Any other account (the operating Human) is resolved for real, so the
+          # strict name/uid/shell validation sees a genuine account.
           for candidate in /usr/bin/getent /bin/getent; do
             if [ -x "$candidate" ]; then exec "$candidate" "$@"; fi
           done
           exit 1
         fi
         ;;
-      group) exit 0 ;;
+      shadow)
+        if account_exists "${2:-}"; then
+          if [ -f "$state/unlocked/${2:-}" ]; then
+            printf '%s:%s:19000:0:99999:7:::\n' "$2" '$6$fixture$synthetic'
+          else
+            printf '%s:!:19000:0:99999:7:::\n' "$2"
+          fi
+        else
+          exit 2
+        fi
+        ;;
+      group)
+        if [ -f "$state/groups/${2:-}" ] || account_exists "${2:-}"; then
+          printf '%s:x:1234:\n' "$2"
+        else
+          for candidate in /usr/bin/getent /bin/getent; do
+            if [ -x "$candidate" ]; then exec "$candidate" "$@"; fi
+          done
+          exit 1
+        fi
+        ;;
       *)
         for candidate in /usr/bin/getent /bin/getent; do
           if [ -x "$candidate" ]; then exec "$candidate" "$@"; fi
@@ -146,15 +226,43 @@ case "$name" in
   loginctl)
     case "${1:-}" in
       show-user)
-        if [ -f "$state/linger" ]; then printf 'Linger=yes\n'; else printf 'Linger=no\n'; fi
+        if [ -f "$state/linger/${2:-}" ]; then printf 'Linger=yes\n'; else printf 'Linger=no\n'; fi
         ;;
       enable-linger)
-        : > "$state/linger"
+        mkdir -p "$state/linger"
+        : > "$state/linger/${2:-}"
         record "loginctl-enable-linger ${2:-}"
+        ;;
+      disable-linger)
+        rm -f "$state/linger/${2:-}"
+        record "loginctl-disable-linger ${2:-}"
         ;;
     esac
     ;;
-  useradd|usermod|passwd|visudo|sudo|python3) record "$name $*" ;;
+  sudo)
+    # Only the read-only privilege listing the courier performs is modelled.
+    # Anything else is a real elevation attempt and must fail here.
+    listing=0
+    account=
+    previous=
+    for argument in "$@"; do
+      if [ "$previous" = "-U" ]; then account="$argument"; fi
+      case "$argument" in -l) listing=1 ;; esac
+      previous="$argument"
+    done
+    if [ "$listing" = 1 ] && [ -n "$account" ]; then
+      if [ -f "$state/sudo-grant/$account" ]; then
+        printf 'User %s may run the following commands on fixture:\n    (root) NOPASSWD: ALL\n' "$account"
+      else
+        printf 'User %s is not allowed to run sudo on fixture.\n' "$account"
+      fi
+    else
+      record "sudo $*"
+      printf 'sudo: a password is required\n' >&2
+      exit 1
+    fi
+    ;;
+  usermod|passwd|visudo|python3) record "$name $*" ;;
   *) record "unexpected-command $name"; exit 7 ;;
 esac
 exit 0

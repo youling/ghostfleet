@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 // a second password. A template that does not request a capability renders the
 // immutable default block, which selects nothing and installs nothing.
 
-export const SELECTED_CAPABILITY_SCHEMA = "ghostfleet-selected-capability/v1";
+export const SELECTED_CAPABILITY_SCHEMA = "ghostfleet-selected-capability/v2";
 export const CAPABILITY_BLOCK_BEGIN = "# @@GHOSTFLEET_SELECTED_CAPABILITY_BEGIN@@";
 export const CAPABILITY_BLOCK_END = "# @@GHOSTFLEET_SELECTED_CAPABILITY_END@@";
 // The whole capability lane, including the data block and its functions, is
@@ -28,13 +28,13 @@ const ACCOUNT = /^[a-z_][a-z0-9_-]{0,31}$/;
 const UNIT_NAME = /^[a-z][a-z0-9_.-]{0,63}\.service$/;
 const SELECTION_TEXT_KEYS = new Set([
   "schema", "version", "template_digest", "helper_required", "linger_required",
-  "user_service_required", "control_account", "installer", "privileged_key",
-  "user_unit", "user_unit_artifact", "artifact",
+  "user_service_required", "control_account", "privileged_account", "installer",
+  "privileged_key", "user_unit", "user_unit_artifact", "artifact",
 ]);
 const SELECTION_KEYS = [
   "source", "template_digest", "version", "helper_required", "linger_required",
-  "user_service_required", "control_account", "installer", "privileged_key",
-  "user_unit", "artifacts",
+  "user_service_required", "control_account", "privileged_account", "installer",
+  "privileged_key", "user_unit", "artifacts",
 ];
 
 const invalid = (code) => new Error(code);
@@ -48,6 +48,7 @@ export function capabilityDigest(selection) {
     linger_required: selection.linger_required,
     user_service_required: selection.user_service_required,
     control_account: selection.control_account,
+    privileged_account: selection.privileged_account,
     artifacts: selection.artifacts.map((item) => [item.name, item.sha256, item.mode]),
   });
   return "sha256:" + createHash("sha256").update(canonical).digest("hex");
@@ -127,11 +128,20 @@ export function normalizeSelectedCapability(selection) {
   const names = new Set(artifacts.map((item) => item.name));
 
   let control_account = selection.control_account ?? null;
+  // The privileged account is the identity the reviewed installer provisions
+  // with the bounded NOPASSWD helper rule. It is a deployment fact the courier
+  // must be told: guessing a default here would forge the security boundary the
+  // run account is supposed to be separated from.
+  let privileged_account = selection.privileged_account ?? null;
   if (helper_required || linger_required || user_service_required) {
     if (typeof control_account !== "string" || !ACCOUNT.test(control_account)) throw invalid("CAPABILITY_CONTROL_ACCOUNT_INVALID");
     if (control_account === "root") throw invalid("CAPABILITY_CONTROL_ACCOUNT_INVALID");
+    if (typeof privileged_account !== "string" || !ACCOUNT.test(privileged_account)) throw invalid("CAPABILITY_PRIVILEGED_ACCOUNT_REQUIRED");
+    if (privileged_account === "root") throw invalid("CAPABILITY_PRIVILEGED_ACCOUNT_INVALID");
+    if (privileged_account === control_account) throw invalid("CAPABILITY_ACCOUNT_COLLISION");
   } else {
     control_account = null;
+    privileged_account = null;
   }
 
   let installer = selection.installer ?? null;
@@ -165,6 +175,7 @@ export function normalizeSelectedCapability(selection) {
     linger_required,
     user_service_required,
     control_account,
+    privileged_account,
     installer,
     privileged_key,
     user_unit,
@@ -185,6 +196,7 @@ export function renderCapabilityBlock(selection) {
       "CAPABILITY_TEMPLATE_DIGEST=''", "CAPABILITY_SELECTION_DIGEST=''",
       "CAPABILITY_HELPER_REQUIRED=0", "CAPABILITY_LINGER_REQUIRED=0",
       "CAPABILITY_USER_SERVICE_REQUIRED=0", "CAPABILITY_CONTROL_ACCOUNT=''",
+      "CAPABILITY_PRIVILEGED_ACCOUNT=''",
       "CAPABILITY_INSTALLER=''", "CAPABILITY_PRIVILEGED_KEY=''",
       "CAPABILITY_USER_UNIT=''", "CAPABILITY_USER_UNIT_ARTIFACT=''",
       "CAPABILITY_ARTIFACT_COUNT=0");
@@ -201,6 +213,7 @@ export function renderCapabilityBlock(selection) {
     "CAPABILITY_LINGER_REQUIRED=" + flag(normalized.linger_required),
     "CAPABILITY_USER_SERVICE_REQUIRED=" + flag(normalized.user_service_required),
     "CAPABILITY_CONTROL_ACCOUNT=" + quote(normalized.control_account),
+    "CAPABILITY_PRIVILEGED_ACCOUNT=" + quote(normalized.privileged_account ?? ""),
     "CAPABILITY_INSTALLER=" + quote(normalized.installer ?? ""),
     "CAPABILITY_PRIVILEGED_KEY=" + quote(normalized.privileged_key ?? ""),
     "CAPABILITY_USER_UNIT=" + quote(normalized.user_unit?.name ?? ""),
@@ -228,6 +241,7 @@ function selectionInput(selection) {
     linger_required: selection.linger_required === true,
     user_service_required: selection.user_service_required === true,
     control_account: selection.control_account ?? null,
+    privileged_account: selection.privileged_account ?? null,
     installer: selection.installer ?? null,
     privileged_key: selection.privileged_key ?? null,
     user_unit: selection.user_unit ?? null,
@@ -253,6 +267,7 @@ export function encodeCapabilitySelection(selection, { templateDigest = null } =
     "linger_required=" + (normalized.linger_required ? "1" : "0"),
     "user_service_required=" + (normalized.user_service_required ? "1" : "0"),
     "control_account=" + normalized.control_account,
+    "privileged_account=" + (normalized.privileged_account ?? ""),
     "installer=" + (normalized.installer ?? ""),
     "privileged_key=" + (normalized.privileged_key ?? ""),
     "user_unit=" + (normalized.user_unit?.name ?? ""),
@@ -297,6 +312,7 @@ export function decodeCapabilitySelection(text, { templateDigest = null } = {}) 
     linger_required: fields.get("linger_required") === "1",
     user_service_required: fields.get("user_service_required") === "1",
     control_account: fields.get("control_account"),
+    privileged_account: fields.get("privileged_account"),
     installer: fields.get("installer") || null,
     privileged_key: fields.get("privileged_key") || null,
     user_unit: fields.get("user_unit") ? { name: fields.get("user_unit"), artifact: fields.get("user_unit_artifact") } : null,
@@ -311,6 +327,7 @@ export function capabilitySelectionDigest(selection) {
     selection.template_digest,
     (selection.helper_required ? "1" : "0") + (selection.linger_required ? "1" : "0") + (selection.user_service_required ? "1" : "0"),
     selection.control_account ?? "",
+    selection.privileged_account ?? "",
     selection.installer ?? "",
     selection.privileged_key ?? "",
     selection.user_unit?.name ?? "",

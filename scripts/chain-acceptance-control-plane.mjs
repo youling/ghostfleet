@@ -71,7 +71,10 @@ const selection = {
   helper_required: true,
   linger_required: true,
   user_service_required: true,
-  control_account: "ghostfleet-ops",
+  // The run identity owns the unit and Linger; the privileged identity stays with
+  // the reviewed installer. The courier creates the former when it is absent.
+  control_account: "ghostfleet-managed",
+  privileged_account: "ghostfleet-ops",
   installer: "managed-linux-privileged-operations.sh",
   privileged_key: "privileged-ops.pub",
   user_unit: { name: "ghostfleet-managed.service", artifact: "ghostfleet-managed.service" },
@@ -237,6 +240,7 @@ server.listen(0, "127.0.0.1", () => {
     selection_digest: shape.selection_digest,
     node_id: nodeId,
     control_account: shape.control_account,
+    privileged_account: shape.privileged_account,
     unit_sha256: artifactSha("ghostfleet-managed.service"),
     helper_sha256: artifactSha("fleet_privctl.py"),
     installer_sha256: artifactSha("managed-linux-privileged-operations.sh"),
