@@ -13,8 +13,6 @@ const pty = existsSync("/usr/bin/script") ? "/usr/bin/script" : "/bin/script";
 const linuxOnly = process.platform === "win32" || !existsSync(pty) || process.getuid?.() !== 0;
 const ticketId = "ticket-12345678-1234-1234-1234-123456789abc";
 const caller = userInfo().username;
-// Run as root, only the root path is meaningful: there is no Human to hand over.
-const isRoot = process.getuid?.() === 0;
 const ROOT_PATH = "/usr/sbin:/usr/bin:/sbin:/bin";
 
 function serve(body) {
@@ -84,7 +82,7 @@ async function compose({ mode, pollute = false }) {
   return { code, output, value, poisoned: existsSync(marker) };
 }
 
-test("the Console launcher hands the Human identity through sudo and su without weakening env -i", { skip: linuxOnly || isRoot }, async () => {
+test("the Console launcher hands the Human identity through sudo and su without weakening env -i", { skip: linuxOnly }, async () => {
   for (const mode of ["sudo", "su"]) {
     const result = await compose({ mode });
     assert.equal(result.code, 0, mode + " output: " + result.output);
@@ -105,7 +103,7 @@ test("a root caller hands no Human identity over, so the bootstrap can fail clos
   assert.equal(result.value.path, ROOT_PATH);
 });
 
-test("a polluted caller PATH cannot execute inside the elevated environment", { skip: linuxOnly || isRoot }, async () => {
+test("a polluted caller PATH cannot execute inside the elevated environment", { skip: linuxOnly }, async () => {
   const result = await compose({ mode: "sudo", pollute: true });
   assert.equal(result.code, 0, result.output);
   assert.equal(result.value.path, ROOT_PATH, "the caller PATH does not survive elevation");
