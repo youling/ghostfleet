@@ -1,16 +1,19 @@
 # Chained acceptance runbook: Console launcher → published bootstrap → installer
 
-Status: **NOT_RUN_HERE**. This runbook is executable; it has not been executed in
-this workspace. Every command below is the exact command that produces the
-evidence, with the expected output and the failure criterion next to it.
+Status: **EXECUTED** by the `chain-acceptance-disposable` job in
+`.github/workflows/ci.yml` on a disposable GitHub-hosted Ubuntu VM. That job
+runs the chain below in one root ceremony and prints its REAL / STUB / NOT_RUN
+report at the end of the job log. This document stays the executable
+specification for repeating the same chain by hand; the failure criteria are the
+same either way.
 
-Why it is not run here: the chain needs a disposable root VM where a real
-non-root Human account can elevate with `sudo`, the published courier can run
-its package steps, and `loginctl`/user-systemd behaviour is real. The CI runner
-gives us root and the reviewed installer (the `bootstrap-capability-disposable`
-job), and the launcher suite gives us the elevation boundary, but the two were
-never joined in one run. Faking that join with stubs would be reported as PASS
-for something that never happened, so it is recorded as partial instead.
+Why it needs a disposable VM at all: the chain needs a real non-root Human
+account that can elevate with `sudo`, the published courier must run its package
+steps, and `loginctl`/user-systemd behaviour must be real. The two halves are now
+joined in one run instead of being reported separately. Only the Tailscale
+provider join is stubbed, because a tailnet auth key is an external credential;
+every other step, including every check the courier makes, runs against the real
+machine.
 
 ## What the chain must prove
 
@@ -58,7 +61,14 @@ with a JSON body whose `capability_selection` is the base64 selection reviewed
 for the ticket (see `packages/bootstrap/test/fixtures/` for the shape). Expected:
 the courier downloads the exact bytes whose SHA-256 you recorded.
 
-Failure criterion: the served bytes differ from `courier.sh`.
+The published courier only accepts an exact `https://` ticket URL, so the origin
+must be TLS even on loopback. The CI job mints a throwaway CA, installs it into
+the system trust store and serves the stub with a certificate for `127.0.0.1`;
+a plain `http://127.0.0.1:<port>` origin is rejected by the courier before any
+effect.
+
+Failure criterion: the served bytes differ from `courier.sh`, or the courier
+stops with `invalid one-time enrollment URL` (the origin is not trusted TLS).
 
 ## Step 3 — the real launcher text
 
@@ -69,12 +79,15 @@ import { createTicketDelivery } from "./src/control-plane/tickets.js";
 const d = createTicketDelivery({
   record: { ticket_id: "ticket-<id>" },
   short_code: "12345678",
-  public_origin: "http://127.0.0.1:<port>",
+  public_origin: "https://127.0.0.1:<port>",
 });
 if (d.command.includes("ticket-<id>")) throw new Error("ticket leaked into argv");
-writeFileSync("/root/gf/launcher.sh", "#!/bin/sh\n" + d.command + "\n");
+writeFileSync("/run/gf-chain/launcher.sh", "#!/bin/sh\n" + d.command + "\n", { mode: 0o755 });
 '
-grep -q 'TRUSTED_ID=/usr/bin/id' /root/gf/launcher.sh   # expect: match
+# The Human executes this file, so it lives in a root-owned, world-readable
+# directory: the Human cannot read anything under /root.
+install -d -m 0755 /run/gf-chain
+grep -q 'TRUSTED_ID=/usr/bin/id' /run/gf-chain/launcher.sh   # expect: match
 ```
 
 Failure criterion: the ticket id appears in the command text.
@@ -82,8 +95,8 @@ Failure criterion: the ticket id appears in the command text.
 ## Step 4 — run it as the Human, through real sudo
 
 ```sh
-printf '%s\n%s\n' 'http://127.0.0.1:<port>/v1/enrollment-tickets/ticket-<id>' '12345678' \
-  | su -s /bin/sh gfhuman -c "script -qec /root/gf/launcher.sh /dev/null"
+printf '%s\n%s\n' 'https://127.0.0.1:<port>/v1/enrollment-tickets/ticket-<id>' '12345678' \
+  | su -s /bin/sh gfhuman -c "script -qec /run/gf-chain/launcher.sh /dev/null"
 ```
 
 Expected: the courier prints `fleet-enroll: bootstrap complete for …`.
@@ -121,9 +134,45 @@ The join is the one stubbed step. Two acceptable ways:
 Either way the run must print, and the PR description must repeat:
 **provider join is stubbed; everything else in this chain is real.**
 
+## The CI job that runs this chain
+
+`chain-acceptance-disposable` in `.github/workflows/ci.yml` runs
+`scripts/test-chain-acceptance-disposable-linux.sh` as root on a one-use
+GitHub-hosted Ubuntu VM, with the same fork protection as the other privileged
+jobs. It prepares real host state before the ceremony, then runs the chain
+twice (first run installs, second run must be zero delta). The preparation is
+never a substitute for a courier check:
+
+- the official Tailscale package from its own APT source, so the courier's
+  package lane finds a compliant real system; the CLI is then hidden and the
+  daemon stopped, so the courier still sees a fresh host, and the shim appears
+  only when the courier itself starts `tailscaled`;
+- a non-root `gf-review-human` account with a NOPASSWD sudo grant;
+- a throwaway TLS CA and a server certificate for `127.0.0.1`, trusted by the
+  system store the courier's `curl` uses;
+- a local control-plane stub (`scripts/chain-acceptance-control-plane.mjs`)
+  that serves the published courier bytes, verifies the short code with
+  `src/control-plane/tickets.js`, and answers the claim with the reviewed
+  selection bound to the ticket's `template_digest`.
+
+The courier still probes the account, the packages, the daemon, the artifacts
+and their digests, the unit and Linger itself, and the installer still runs its
+own `--check`/`--apply` with real SHA-256 verification.
+
+```
+REAL: <each step that really ran>
+STUB: tailscale-join
+NOT_RUN: <each step that did not run, with the reason>
+```
+
 ## Recording the result
 
-Write to the PR:
+Quote the job's own three lines in the PR. The `NOT_RUN` section of the current
+job lists the real Tailscale provider join and tailnet reachability (no tailnet
+credential), a hosted GhostFleet control plane (the claim server is local), and
+OMV8 appliance SSH admission/OMV Linger (not an OMV appliance).
+
+For a manual run, the equivalent record is:
 
 ```
 CHAIN_REAL: launcher text, sudo elevation, env -i, published courier, claim, installer, unit, Linger, zero delta
