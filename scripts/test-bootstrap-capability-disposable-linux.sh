@@ -71,7 +71,7 @@ const selection = {
   helper_required: true,
   linger_required: true,
   user_service_required: true,
-  control_account: "ghostfleet-ops",
+  control_account: "ghostfleet-managed",
   installer: "managed-linux-privileged-operations.sh",
   privileged_key: "privileged-ops.pub",
   user_unit: { name: "ghostfleet-managed.service", artifact: "ghostfleet-managed.service" },
@@ -199,11 +199,11 @@ grep -q 'mode=NEW' "$work/new.log"
 [[ "$(sha256sum /usr/local/libexec/youling-fleet/fleet-privctl | awk '{print $1}')" == "$expected_helper_sha" ]]
 [[ "$(sha256sum /usr/local/libexec/youling-fleet/fleet-privileged-ssh-entry | awk '{print $1}')" == "$expected_entry_sha" ]]
 visudo -cf /etc/sudoers.d/90-youling-fleet-privileged-operations >/dev/null
-grep -q '^Linger=yes$' <<<"$(loginctl show-user ghostfleet-ops -p Linger)"
-home="$(getent passwd ghostfleet-ops | cut -d: -f6)"
+grep -q '^Linger=yes$' <<<"$(loginctl show-user ghostfleet-managed -p Linger)"
+home="$(getent passwd ghostfleet-managed | cut -d: -f6)"
 unit="$home/.config/systemd/user/ghostfleet-managed.service"
 [[ -f "$unit" && -L "$home/.config/systemd/user/default.target.wants/ghostfleet-managed.service" ]]
-[[ "$(stat -c '%U:%G:%a' "$unit")" == ghostfleet-ops:ghostfleet-ops:644 ]]
+[[ "$(stat -c '%U:%G:%a' "$unit")" == ghostfleet-managed:ghostfleet-managed:644 ]]
 grep -q '"mode":"NEW"' "$work/checkpoint-new/capability-state.json"
 before_unit="$(sha256sum "$unit")"
 before_helper_mtime="$(stat -c %Y /usr/local/libexec/youling-fleet/fleet-privctl)"
