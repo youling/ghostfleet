@@ -13,6 +13,17 @@
       "service": "ghostfleet-control-plane"
     }
   ],
+  // Optional advisory rate limiting. Uncomment in the private deployment with
+  // its own namespace IDs; the Worker fails open when either binding is absent.
+  // Both are advisory only: a limiter success is never authorization, and a
+  // limiter failure must never block a legitimate first enrollment.
+  //
+  // "unsafe": {
+  //   "bindings": [
+  //     { "type": "ratelimit", "name": "RATE_LIMITER_IP", "namespace_id": "<id>", "simple": { "limit": 20, "period": 60 } },
+  //     { "type": "ratelimit", "name": "RATE_LIMITER_TICKET", "namespace_id": "<id>", "simple": { "limit": 10, "period": 60 } }
+  //   ]
+  // },
   // Same bypass rule as the asset origin: the only public address is the
   // deployment's own zone. No workers.dev, no preview hostname.
   "workers_dev": false,

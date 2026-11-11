@@ -9,13 +9,40 @@
  * itself (short code + resume session) inside the control plane; this bridge
  * never authenticates, never mints, and never forwards a Console credential.
  * The control plane stays private behind the service binding.
+ *
+ * This file is the single implementation of that boundary. A deployment only
+ * supplies configuration (bindings, routes, body limits unchanged); it must not
+ * fork this code. See README.md for the configuration contract.
  */
-const CLAIM = /^\/v1\/enrollment-tickets\/ticket-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/claim$/;
+const CLAIM = /^\/v1\/enrollment-tickets\/(ticket-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/claim$/;
 const COMPLETE = "/v1/enroll/complete";
+
 // The bridge is public and unauthenticated, and the control plane is one global
 // serialized object. Buffer at most one short code or one bounded completion
 // report; anything larger is a 413 before the service binding is touched.
 export const BODY_LIMITS = Object.freeze({ claim: 1024, complete: 262144 });
+
+// Advisory only. A rate limiter is not an authorization decision, and its
+// absence or failure must never block a legitimate first enrollment.
+export const RATE_LIMIT_RETRY_SECONDS = 30;
+
+// Forward only what the control plane actually consumes. Everything else is
+// dropped, so a caller cannot smuggle a Console credential, an Access JWT, a
+// spoofed client address or an unexpected content type across the boundary.
+export const FORWARDED_HEADERS = Object.freeze([
+  "content-type",
+  "x-ghostfleet-preflight-digest",
+  "x-fleet-os-family",
+  "x-fleet-os-id",
+]);
+
+const problem = (status, error, extra = {}) => new Response(
+  JSON.stringify({ ok: false, error, ...extra }) + "\n",
+  { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } },
+);
+
+const tooLarge = () => problem(413, "REQUEST_BODY_TOO_LARGE");
+const rateLimited = () => problem(429, "ENROLLMENT_RATE_LIMITED", { retry_after_seconds: RATE_LIMIT_RETRY_SECONDS });
 
 async function boundedBody(request, limit) {
   const declared = Number(request.headers.get("content-length") ?? "");
@@ -38,38 +65,61 @@ async function boundedBody(request, limit) {
   return { text: text + decoder.decode() };
 }
 
-const tooLarge = () => new Response(JSON.stringify({ ok: false, error: "REQUEST_BODY_TOO_LARGE" }) + "\n", {
-  status: 413,
-  headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
-});
+// Keys are derived, never raw: the limiter receives a stable digest, and neither
+// the address nor the ticket id is written to a log by this Worker.
+async function derivedKey(prefix, value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  const hex = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return prefix + hex.slice(0, 32);
+}
 
-const refusal = (status, message, extra = {}) => new Response(message + "\n", {
-  status,
-  headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", ...extra },
-});
+/**
+ * Advisory rate limit. Returns true (allow) unless the binding explicitly
+ * answers success:false. A missing binding, a throw, or a malformed answer all
+ * fail open: the limiter may slow abuse, never gate a real first enrollment.
+ * A success here is also never authorization: the ticket still has to claim.
+ */
+async function advisoryAllow(binding, key) {
+  if (!binding || typeof binding.limit !== "function") return true;
+  try {
+    const outcome = await binding.limit({ key });
+    if (!outcome || typeof outcome !== "object") return true;
+    return outcome.success !== false;
+  } catch {
+    return true;
+  }
+}
 
 export default {
   async fetch(request, env) {
-    if (request.method !== "POST") return refusal(405, "method not allowed", { allow: "POST" });
+    if (request.method !== "POST") return problem(405, "METHOD_NOT_ALLOWED", { allow: "POST" });
     const url = new URL(request.url);
-    const route = CLAIM.test(url.pathname) || url.pathname === COMPLETE;
+    const claimMatch = CLAIM.exec(url.pathname);
+    const route = claimMatch || url.pathname === COMPLETE;
     // A query string would be an unreviewed handle; the ticket is in the path.
-    if (url.search || !route) return refusal(404, "not found");
+    if (url.search || !route) return problem(404, "NOT_FOUND");
     const control = env?.GHOSTFLEET_CONTROL_PLANE;
-    if (!control || typeof control.fetch !== "function") return refusal(503, "enrollment bridge unavailable");
+    if (!control || typeof control.fetch !== "function") return problem(503, "ENROLLMENT_BRIDGE_UNAVAILABLE");
+
+    // Per-IP and per-ticket limits are independent advisory dimensions: an
+    // address limit slows a single source, a ticket limit stops replay storms
+    // against one one-time handle. Either one denying is enough to answer 429.
+    const clientIp = request.headers.get("cf-connecting-ip");
+    if (clientIp && typeof env?.RATE_LIMITER_IP?.limit === "function") {
+      if (!(await advisoryAllow(env.RATE_LIMITER_IP, await derivedKey("ip:", clientIp)))) return rateLimited();
+    }
+    if (claimMatch && typeof env?.RATE_LIMITER_TICKET?.limit === "function") {
+      if (!(await advisoryAllow(env.RATE_LIMITER_TICKET, await derivedKey("ticket:", claimMatch[1])))) return rateLimited();
+    }
 
     const bounded = await boundedBody(request, url.pathname === COMPLETE ? BODY_LIMITS.complete : BODY_LIMITS.claim);
     if (bounded.tooLarge) return tooLarge();
 
-    const headers = new Headers(request.headers);
-    // The forwarded body is the bounded text, so a stale upstream length would
-    // be wrong; the runtime sets the correct one.
-    headers.delete("content-length");
-    // The bridge is unauthenticated, so it must never forward or inject Console
-    // credentials. The ticket path is the only identity that crosses.
-    headers.delete("authorization");
-    headers.delete("cookie");
-    headers.delete("x-forwarded-host");
+    const headers = new Headers();
+    for (const name of FORWARDED_HEADERS) {
+      const value = request.headers.get(name);
+      if (value !== null) headers.set(name, value);
+    }
 
     let upstream;
     try {
@@ -80,7 +130,7 @@ export default {
         duplex: "half",
       });
     } catch {
-      return refusal(503, "enrollment bridge unavailable");
+      return problem(503, "ENROLLMENT_BRIDGE_UNAVAILABLE");
     }
     return new Response(upstream.body, {
       status: upstream.status,
