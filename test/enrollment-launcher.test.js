@@ -107,24 +107,25 @@ test("interruption traps clean up and restore terminal echo", () => {
   assert.match(script, /trap cleanup EXIT/);
   assert.match(script, /trap 'stop 129' HUP/);
   assert.match(script, /trap 'stop 130' INT/);
+  assert.match(script, /trap 'stop 131' QUIT/);
   assert.match(script, /trap 'stop 143' TERM/);
-  assert.match(script, /trap '' HUP INT TERM/);
-  assert.match(script, /trap - EXIT HUP INT TERM/);
+  assert.match(script, /trap '' HUP INT QUIT TERM/);
+  assert.match(script, /trap - EXIT HUP INT QUIT TERM/);
   assert.match(script, /\/usr\/bin\/stty "\$TTY_STATE" < \/dev\/tty/);
   assert.match(script, /IFS= read -r GHOSTFLEET_ENROLLMENT_URL < \/dev\/tty/);
   // NEW-1: cleanup ignores signals before it touches the terminal, restores the
   // terminal, removes the workspace, and only then resets the trap set.
   const cleanup = script.slice(script.indexOf("cleanup() {"), script.indexOf("trap cleanup EXIT"));
-  const ignore = cleanup.indexOf("trap '' HUP INT TERM");
+  const ignore = cleanup.indexOf("trap '' HUP INT QUIT TERM");
   const restore = cleanup.indexOf('/usr/bin/stty "$TTY_STATE"');
   const remove = cleanup.indexOf('/bin/rm -rf "$WORK_DIR"');
-  const reset = cleanup.indexOf("trap - EXIT HUP INT TERM");
+  const reset = cleanup.indexOf("trap - EXIT HUP INT QUIT TERM");
   assert.ok(ignore >= 0 && ignore < restore, "signals must be ignored before the terminal restore");
   assert.ok(restore < remove, "terminal echo must be restored before the workspace removal");
   assert.ok(remove < reset, "the trap set may only be reset after the workspace is gone");
   // The signal path ignores further signals before it decides the exit code.
   const stop = script.slice(script.indexOf("stop() {"), script.indexOf("trap cleanup EXIT"));
-  assert.ok(stop.indexOf("trap '' HUP INT TERM") >= 0 && stop.indexOf("trap '' HUP INT TERM") < stop.indexOf('exit "$1"'));
+  assert.ok(stop.indexOf("trap '' HUP INT QUIT TERM") >= 0 && stop.indexOf("trap '' HUP INT QUIT TERM") < stop.indexOf('exit "$1"'));
 });
 
 test("portable root launcher is valid POSIX sh", { skip: process.platform === "win32" }, () => {
@@ -391,7 +392,7 @@ test("caller TMPDIR entry replacement during the hidden prompt cannot change roo
   }
 });
 
-for (const [signal, expected] of [["SIGTERM", 143], ["SIGINT", 130], ["SIGHUP", 129]]) {
+for (const [signal, expected] of [["SIGTERM", 143], ["SIGINT", 130], ["SIGQUIT", 131], ["SIGHUP", 129]]) {
   test("interrupted hidden input " + signal + " leaves no temporary file and restores echo", { skip: !hasPty }, async () => {
     const fx = sandbox({ elevation: "su" });
     try {
@@ -437,7 +438,10 @@ for (const [signal, expected] of [["SIGTERM", 143], ["SIGINT", 130]]) {
         }
       }
       const { code } = await run.closed;
-      assert.equal(code, expected, "the first signal decides the exit status: " + run.output());
+      // Only one signal number is ever delivered here, so 128+signal is exact.
+      // Mixed numbers are dispatched by signal number; the invariant that spans
+      // every burst is the cleanup below, which the next test covers.
+      assert.equal(code, expected, "only " + signal + " was delivered, so 128+" + (expected - 128) + " is exact: " + run.output());
       assert.equal(temporaryFileLeft(downloadPath), false, "temporary_file_left=false");
       assert.equal(echoRestored(fx.echoState), true, "echo_restored=true");
       assert.equal(existsSync(fx.receipt), false, "an interrupted delivery must not run the bootstrap");
@@ -447,14 +451,50 @@ for (const [signal, expected] of [["SIGTERM", 143], ["SIGINT", 130]]) {
   });
 }
 
+test("mixed TERM and INT burst during cleanup keeps the cleanup invariant", { skip: !hasPty }, async () => {
+  const fx = sandbox({ elevation: "su", slowStty: true });
+  try {
+    const run = runAsync(fx);
+    await run.waitFor(/from protected Console/);
+    const downloadPath = downloadedFile(fx);
+    const pid = privilegedShellPid(fx);
+    assert.ok(downloadPath, "download must exist before the interruption");
+    assert.ok(Number.isInteger(pid) && pid > 0, "fixture must see the privileged shell pid");
+    // Back-to-back signals of different numbers are dispatched by signal number
+    // (INT=2 before TERM=15), and the shell may coalesce them, so any delivered
+    // signal's 128+n is a correct status. What must hold is the cleanup: no
+    // leftover workspace, echo restored, bootstrap never executed.
+    process.kill(pid, "SIGTERM");
+    process.kill(pid, "SIGINT");
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      try {
+        process.kill(pid, attempt % 2 === 0 ? "SIGINT" : "SIGTERM");
+      } catch {
+        break;
+      }
+    }
+    const { code } = await run.closed;
+    assert.ok([130, 143].includes(code), "exit status must be 128+ a delivered signal (130 or 143), got " + code + ": " + run.output());
+    assert.equal(temporaryFileLeft(downloadPath), false, "temporary_file_left=false");
+    assert.equal(echoRestored(fx.echoState), true, "echo_restored=true");
+    assert.equal(existsSync(fx.receipt), false, "an interrupted delivery must not run the bootstrap");
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
 const setsid = ["/usr/bin/setsid", "/bin/setsid"].find((candidate) => existsSync(candidate));
 
 test("a session without a controlling terminal fails with an explicit remediation", { skip: !hasPty || !setsid }, () => {
   const fx = sandbox({ elevation: "su" });
   try {
-    const result = spawnSync(setsid, ["/bin/sh", fx.launcher], { env: fx.env, encoding: "utf8", timeout: 12000 });
+    // -w: setsid may fork when the caller is already a process group leader, so
+    // wait for the actual session child before reading its status.
+    const result = spawnSync(setsid, ["-w", "/bin/sh", fx.launcher], { env: fx.env, encoding: "utf8", timeout: 12000 });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /interactive terminal/);
+    assert.doesNotMatch(result.stderr, /cannot open \/dev\/tty/, "the shell redirect error must not leak before the remediation");
     const downloadPath = downloadedFile(fx);
     assert.ok(downloadPath, "the download happens before the terminal check");
     assert.equal(temporaryFileLeft(downloadPath), false, "temporary_file_left=false");
@@ -462,4 +502,3 @@ test("a session without a controlling terminal fails with an explicit remediatio
     rmSync(fx.dir, { recursive: true, force: true });
   }
 });
-

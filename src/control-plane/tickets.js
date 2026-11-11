@@ -102,11 +102,11 @@ export function validatePublicOrigin(value) {
 // - The download lives in a 0700 directory that root creates after elevation
 //   under /run. A caller-owned TMPDIR (or its directory entries) is never a root
 //   execution point, even while the Human is typing the hidden URL.
-// - HUP, INT, TERM and EXIT all remove that directory, restore the terminal echo
-//   state and exit with 128+signal (or the original status). Cleanup restores the
-//   terminal first and resets the traps last, and HUP/INT/TERM are ignored for
-//   the whole cleanup, so a second Ctrl-C (a normal Human action) cannot leave
-//   the terminal unechoed or the private workspace behind.
+// - HUP, INT, QUIT, TERM and EXIT all remove that directory, restore the terminal
+//   echo state and exit with 128+signal (or the original status). Cleanup restores
+//   the terminal first and resets the traps last, and HUP/INT/QUIT/TERM are
+//   ignored for the whole cleanup, so a second Ctrl-C or Ctrl-\ (normal Human
+//   actions) cannot leave the terminal unechoed or the private workspace behind.
 //
 // Known trade-offs, recorded for review:
 // - su --login runs root's login profile (/etc/profile and root-owned dotfiles)
@@ -117,6 +117,11 @@ export function validatePublicOrigin(value) {
 //   resolves through the caller PATH for portability and never crosses the root
 //   boundary. A caller whose PATH is already compromised can intercept its own
 //   password prompt; that is outside this launcher's boundary.
+// - Because cleanup ignores HUP/INT/QUIT/TERM while it runs, a workspace removal
+//   that stalls cannot be interrupted by a Human; the signals are discarded
+//   until cleanup finishes. The removal is one rm -rf of a directory this script
+//   created, and leaving the terminal unechoed or the workspace behind is the
+//   worse outcome, so the trade is accepted.
 const TRUSTED_ENV = "/usr/bin/env";
 const TRUSTED_SHELL = "/bin/sh";
 const TRUSTED_PATH = "/usr/sbin:/usr/bin:/sbin:/bin";
@@ -146,10 +151,11 @@ function portableBootstrapCommand(origin) {
     "WORK_DIR=",
     "cleanup() {",
     "  status=$?",
-    // Ignore signals for the whole cleanup. A second Ctrl-C is a normal Human
-    // action and must not kill the shell before the terminal echo is back and
-    // the private workspace is gone. The trap set is reset only at the end.
-    "  trap '' HUP INT TERM",
+    // Ignore signals for the whole cleanup. A second Ctrl-C or Ctrl-\ is a
+    // normal Human action and must not kill the shell before the terminal echo
+    // is back and the private workspace is gone. The trap set is reset only at
+    // the end.
+    "  trap '' HUP INT QUIT TERM",
     '  if [ -n "$TTY_STATE" ]; then',
     "    " + TRUSTED_STTY + ' "$TTY_STATE" < /dev/tty 2>/dev/null || :',
     "  fi",
@@ -158,18 +164,19 @@ function portableBootstrapCommand(origin) {
     "    " + TRUSTED_RM + ' -rf "$WORK_DIR" 2>/dev/null || :',
     "  fi",
     "  WORK_DIR=",
-    "  trap - EXIT HUP INT TERM",
+    "  trap - EXIT HUP INT QUIT TERM",
     '  exit "$status"',
     "}",
-    // The first statement of the signal path ignores HUP/INT/TERM, so a burst
-    // of signals cannot re-enter cleanup or abort it half way.
+    // The first statement of the signal path ignores HUP/INT/QUIT/TERM, so a
+    // burst of signals cannot re-enter cleanup or abort it half way.
     "stop() {",
-    "  trap '' HUP INT TERM",
+    "  trap '' HUP INT QUIT TERM",
     '  exit "$1"',
     "}",
     "trap cleanup EXIT",
     "trap 'stop 129' HUP",
     "trap 'stop 130' INT",
+    "trap 'stop 131' QUIT",
     "trap 'stop 143' TERM",
     "TMPROOT=/run/",
     'if [ ! -d "$TMPROOT" ]; then TMPROOT=/var/tmp/; fi',
@@ -187,7 +194,7 @@ function portableBootstrapCommand(origin) {
     "  printf '%s\\n' 'GhostFleet bootstrap download is empty' >&2",
     "  exit 1",
     "fi",
-    'if ! TTY_STATE="$(' + TRUSTED_STTY + ' -g < /dev/tty 2>/dev/null)"; then',
+    'if ! TTY_STATE="$(' + TRUSTED_STTY + ' -g 2>/dev/null < /dev/tty)"; then',
     "  printf '%s\\n' 'GhostFleet needs an interactive terminal: run the command in a terminal session and paste the one-time URL at the prompt' >&2",
     "  exit 1",
     "fi",
@@ -222,6 +229,7 @@ function portableBootstrapCommand(origin) {
     ")",
   ].join("\n");
 }
+
 export function createTicketDelivery({ record, short_code, public_origin }) {
   const origin = validatePublicOrigin(public_origin);
   const one_time_url = origin + "/v1/enrollment-tickets/" + encodeURIComponent(record.ticket_id);
