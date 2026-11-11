@@ -15,6 +15,7 @@ record() { printf '%s\n' "$*" >> "$state/calls.log"; }
 account_exists() { [ -f "$state/accounts/$1" ]; }
 account_home() { cut -d'|' -f1 "$state/accounts/$1"; }
 account_shell() { cut -d'|' -f2 "$state/accounts/$1"; }
+account_uid() { if [ -f "$state/uids/$1" ]; then cat "$state/uids/$1"; else printf '1234\n'; fi; }
 
 case "$name" in
   id)
@@ -22,7 +23,7 @@ case "$name" in
       -u)
         if [ -n "${2:-}" ]; then
           account_exists "$2" || exit 1
-          printf '1234\n'
+          account_uid "$2"
         else
           printf '0\n'
         fi
@@ -184,7 +185,7 @@ case "$name" in
     case "${1:-}" in
       passwd)
         if account_exists "${2:-}"; then
-          printf '%s:x:1234:1234::%s:%s\n' "$2" "$(account_home "$2")" "$(account_shell "$2")"
+          printf '%s:x:%s:%s::%s:%s\n' "$2" "$(account_uid "$2")" "$(account_uid "$2")" "$(account_home "$2")" "$(account_shell "$2")"
         else
           # Any other account (the operating Human) is resolved for real, so the
           # strict name/uid/shell validation sees a genuine account.
@@ -206,12 +207,14 @@ case "$name" in
         fi
         ;;
       group)
+        if [ -f "$state/no-group/${2:-}" ]; then
+          exit 1
+        fi
         if [ -f "$state/groups/${2:-}" ] || account_exists "${2:-}"; then
           printf '%s:x:1234:\n' "$2"
         else
-          for candidate in /usr/bin/getent /bin/getent; do
-            if [ -x "$candidate" ]; then exec "$candidate" "$@"; fi
-          done
+          # Groups are never resolved against the host: a group that exists on
+          # the machine running the tests must not decide the fixture outcome.
           exit 1
         fi
         ;;

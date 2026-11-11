@@ -404,9 +404,120 @@ case "$claim_digest" in
   *) fail_check "claim channel recorded no reviewed selection digest" ;;
 esac
 
+# 9. The reviewed installer runs as root: a drift that grants the run account a
+#    root-equivalent group while it runs must be caught AFTER it ran, before the
+#    unit is installed or completion is reported.
+drift_account=gf-run-drift
+drift_dir="$work/drift-arms"
+install -d -m 0755 "$drift_dir"
+cp "$privileged_root/managed-linux-privileged-operations.sh" "$drift_dir/installer-real.sh"
+cp "$privileged_root/fleet_privctl.py" "$privileged_root/fleet_privileged_ssh_entry.py" \
+  "$privileged_root/fleet_admin_command.py" "$drift_dir/"
+cat >"$drift_dir/managed-linux-privileged-operations.sh" <<'DRIFT'
+#!/usr/bin/env bash
+# Disposable drift arm: the reviewed installer plus one extra root effect that
+# hands the run account a root-equivalent group after it has been proved.
+set -euo pipefail
+here="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+bash "$here/installer-real.sh" "$1"
+if [ "$1" = --apply ]; then
+  getent group docker >/dev/null 2>&1 || groupadd --system docker
+  usermod -aG docker "$FLEET_DRIFT_RUN_ACCOUNT"
+fi
+DRIFT
+chmod 0750 "$drift_dir/managed-linux-privileged-operations.sh"
+cat >"$drift_dir/ghostfleet-managed.service" <<'UNIT'
+[Unit]
+Description=GhostFleet managed runtime (disposable drift)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+
+[Install]
+WantedBy=default.target
+UNIT
+CONTROL_ACCOUNT="$drift_account" PRIVILEGED_ACCOUNT="$privileged_account" \
+node --input-type=module -e '
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+const [work, dir] = process.argv.slice(1);
+const module = await import(pathToFileURL(join(process.env.GITHUB_WORKSPACE, "packages/bootstrap/src/index.js")).href);
+const read = (name) => readFileSync(join(dir, name), "utf8");
+const selection = {
+  source: "template",
+  template_digest: "sha256:" + "1".repeat(64),
+  version: "managed-linux-privileged-operations/disposable-drift-1",
+  helper_required: true,
+  linger_required: true,
+  user_service_required: true,
+  control_account: process.env.CONTROL_ACCOUNT,
+  privileged_account: process.env.PRIVILEGED_ACCOUNT,
+  installer: "managed-linux-privileged-operations.sh",
+  privileged_key: "privileged-ops.pub",
+  user_unit: { name: "ghostfleet-managed.service", artifact: "ghostfleet-managed.service" },
+  artifacts: [
+    { name: "managed-linux-privileged-operations.sh", mode: "0750", content: read("managed-linux-privileged-operations.sh") },
+    { name: "installer-real.sh", mode: "0750", content: read("installer-real.sh") },
+    { name: "fleet_privctl.py", mode: "0755", content: read("fleet_privctl.py") },
+    { name: "fleet_privileged_ssh_entry.py", mode: "0755", content: read("fleet_privileged_ssh_entry.py") },
+    { name: "fleet_admin_command.py", mode: "0755", content: read("fleet_admin_command.py") },
+    { name: "privileged-ops.pub", mode: "0644", content: readFileSync(join(work, "privileged-ops.pub"), "utf8") },
+    { name: "ghostfleet-managed.service", mode: "0644", content: read("ghostfleet-managed.service") },
+  ],
+};
+writeFileSync(join(work, "drift-data.sh"), module.renderCapabilityBlock(selection) + "\n");
+' "$work" "$drift_dir" || fail_check "the drift selection could not be rendered"
+# The reviewed installer must really run for the drift arm to exist, so the
+# helper it owns is removed first; the drift arm reinstalls it.
+rm -f /usr/local/libexec/youling-fleet/fleet-privctl
+mkdir -p "$work/checkpoint-drift"
+export FLEET_DRIFT_RUN_ACCOUNT="$drift_account"
+if run_capability "$work/checkpoint-drift" "$work/drift-data.sh" >"$work/drift.log" 2>&1; then
+  fail_check "a run account that gained a root-equivalent group during the installer was accepted"
+fi
+unset FLEET_DRIFT_RUN_ACCOUNT
+grep -q 'CAPABILITY_RUN_ACCOUNT_PRIVILEGED' "$work/drift.log" || {
+  cat "$work/drift.log" >&2
+  fail_check "the post-installer drift was refused for an unexpected reason"
+}
+grep -q 'root-equivalent group docker' "$work/drift.log" || fail_check "the refusal does not name the group"
+grep -q 'no completion is reported' "$work/drift.log" || fail_check "the drift refusal did not stop the run"
+! id "$drift_account" >/dev/null 2>&1 || fail_check "the drifted account this run created was not rolled back"
+[[ ! -e "/home/$drift_account" ]] || fail_check "the drifted run account home survived the rollback"
+[[ ! -e "/home/$drift_account/.config/systemd/user/ghostfleet-managed.service" ]] || fail_check "a unit was installed after the re-proof failed"
+[[ "$(loginctl show-user "$drift_account" -p Linger 2>/dev/null || true)" != "Linger=yes" ]] || fail_check "Linger was enabled after the re-proof failed"
+record_ok "post-installer drift caught: $(grep -o 'CAPABILITY_RUN_ACCOUNT_PRIVILEGED[^;]*' "$work/drift.log" | head -n1)"
+
+# 10. A unit left inside the privileged account by a v1 selection is refused
+#     before anything is installed beside it. Nothing recorded on this node
+#     claims that lane, so it is reported and left for its owner to decommission.
+privileged_home="$(getent passwd "$privileged_account" | cut -d: -f6)"
+stale_unit="$privileged_home/.config/systemd/user/ghostfleet-managed.service"
+stale_want="$privileged_home/.config/systemd/user/default.target.wants/ghostfleet-managed.service"
+install -d -m 0755 "$privileged_home/.config/systemd/user/default.target.wants"
+printf '[Service]\nExecStart=/bin/true\n' >"$stale_unit"
+printf 'stale\n' >"$stale_want"
+loginctl enable-linger "$privileged_account"
+mkdir -p "$work/checkpoint-stale"
+if run_capability "$work/checkpoint-stale" "$work/capability-data.sh" >"$work/stale.log" 2>&1; then
+  fail_check "a v1 lane inside the privileged account was accepted"
+fi
+grep -q 'CAPABILITY_STALE_PRIVILEGED_LANE' "$work/stale.log" || {
+  cat "$work/stale.log" >&2
+  fail_check "the stale lane was refused for an unexpected reason"
+}
+grep -q 'Decommission it first' "$work/stale.log" || fail_check "the refusal gives no decommission steps"
+[[ -e "$stale_unit" ]] || fail_check "a pre-existing lane was deleted by the courier"
+[[ -e "$stale_want" ]] || fail_check "a pre-existing enablement link was deleted by the courier"
+record_ok "stale privileged lane refused: $(grep -o 'CAPABILITY_STALE_PRIVILEGED_LANE[^;]*' "$work/stale.log" | head -n1 | tr -s ' ')"
+loginctl disable-linger "$privileged_account" 2>/dev/null || true
+rm -f "$stale_want" "$stale_unit"
+
 evidence "run_account=$run_account uid=$run_uid home=$run_home groups=$run_groups"
 evidence "privileged_account=$privileged_account sudo_rule=$(sudo -l -U "$privileged_account" 2>/dev/null | grep -o "$helper_path" | head -n1)"
 evidence "negative=$run_account cannot sudo -n $helper_path; positive=$privileged_account ran it: $(cat "$work/ops-sudo.log")"
 evidence "claim selection_digest=$claim_digest"
 
-echo "PASS published selected-capability lane created the dedicated run account (nologin, locked, no sudo, no root-equivalent group), kept the privileged account separate, installed the real reviewed helper under fixed-pin digests, put the unit and Linger under the run account, refused the account collision and the missing run account without any effect, rolled back only the account it created, adopted a pre-existing account without recreating it, and answered the claim channel through the published parser. Real OMV8 Linger/SSH admission and a real managed runtime NOT_RUN"
+echo "PASS published selected-capability lane created the dedicated run account (nologin, locked, no sudo, no root-equivalent group), kept the privileged account separate, installed the real reviewed helper under fixed-pin digests, put the unit and Linger under the run account, refused the account collision and the missing run account without any effect, caught a root-equivalent group granted by the installer after it ran, refused a v1 lane left inside the privileged account, rolled back only the account it created, adopted a pre-existing account without recreating it, and answered the claim channel through the published parser. Real OMV8 Linger/SSH admission and a real managed runtime NOT_RUN"

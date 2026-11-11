@@ -39,6 +39,33 @@ machine.
 The only allowed stub is the **Tailscale provider join** (a real tailnet auth key
 is an external credential). Everything else must be real.
 
+## v1 selections are not migrated
+
+A v1 selection (`ghostfleet-selected-capability/v1`) put the managed unit and Linger
+inside the privileged operations account. The courier refuses such a selection, and
+it refuses to install the v2 lane beside the residue:
+
+```sh
+getent passwd ghostfleet-ops | cut -d: -f6          # the privileged home
+ls -l  "<privileged home>/.config/systemd/user/ghostfleet-managed.service"
+ls -l  "<privileged home>/.config/systemd/user/default.target.wants/ghostfleet-managed.service"
+loginctl show-user ghostfleet-ops -p Linger          # expect Linger=no on a v1-free node
+```
+
+Decommission the old lane before rendering a v2 selection:
+
+```sh
+loginctl disable-linger ghostfleet-ops
+rm -f "<privileged home>/.config/systemd/user/default.target.wants/ghostfleet-managed.service"
+rm -f "<privileged home>/.config/systemd/user/ghostfleet-managed.service"
+```
+
+A node that still records the v1 selection in `/var/lib/fleet/capability-selection.txt`
+proves the product created that lane, and the courier deletes exactly those three
+paths itself before refusing the run; the record is then removed so the next
+authorized claim can deliver the v2 selection. Nothing else is ever deleted
+automatically.
+
 ## Step 1 — disposable VM and a Human account
 
 ```sh
