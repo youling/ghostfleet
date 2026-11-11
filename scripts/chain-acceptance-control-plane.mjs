@@ -226,7 +226,9 @@ server.listen(0, "127.0.0.1", () => {
   // The launcher text is the real createTicketDelivery output, unmodified.
   const delivery = createTicketDelivery({ record, short_code: shortCode, public_origin: origin });
   writeFileSync(join(work, "launcher.sh"), "#!/bin/sh\n" + delivery.command + "\n", { mode: 0o755 });
-  writeFileSync(join(work, "published-bootstrap.sh"), BOOTSTRAP_SH);
+  // The delivered selection text, decoded from the exact claim bytes, so the job
+  // can count the pinned artifact rows instead of trusting the module's summary.
+  writeFileSync(join(work, "claim-selection.txt"), Buffer.from(selectionBase64, "base64").toString("utf8"));
   const facts = {
     origin,
     ticket_id: ticketId,
@@ -238,7 +240,6 @@ server.listen(0, "127.0.0.1", () => {
     unit_sha256: artifactSha("ghostfleet-managed.service"),
     helper_sha256: artifactSha("fleet_privctl.py"),
     installer_sha256: artifactSha("managed-linux-privileged-operations.sh"),
-    bootstrap_sha256: createHash("sha256").update(BOOTSTRAP_SH).digest("hex"),
     artifact_count: shape.artifacts.length,
   };
   writeFileSync(join(work, "expected.json"), JSON.stringify(facts, null, 2) + "\n");

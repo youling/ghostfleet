@@ -160,7 +160,9 @@ never a substitute for a courier check:
 
 The courier still probes the account, the packages, the daemon, the artifacts
 and their digests, the unit and Linger itself, and the installer still runs its
-own `--check`/`--apply` with real SHA-256 verification.
+own `--check`/`--apply` with real SHA-256 verification. Before the first real
+claim the job also submits one wrong eight-digit short code and requires HTTP
+403 with no claim consumed, so both sides of `verifyTicketClaim` are exercised.
 
 The successful job does not just print the report: it first prints one
 `EVIDENCE` line per measured fact (launcher SHA-256 and its `env -i` line, the

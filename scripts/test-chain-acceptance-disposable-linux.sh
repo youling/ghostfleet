@@ -131,7 +131,8 @@ capture_elevation() {
       tr '\0' '\n' <"$candidate/environ" 2>/dev/null >"$work/caller-environ-$tag.txt" || true
       tr '\0' '\n' <"/proc/$child/environ" 2>/dev/null >"$work/elevated-environ-$tag.txt" || true
       tr '\0' '\n' <"/proc/$child/cmdline" 2>/dev/null >"$work/elevated-argv-$tag.txt" || true
-      printf 'sudo\n' >"$work/elevated-parent-$tag.txt"
+      cat "$candidate/comm" >"$work/elevated-parent-$tag.txt" 2>/dev/null || true
+      readlink -f "$candidate/exe" >"$work/elevated-parent-exe-$tag.txt" 2>/dev/null || true
       return 0
     done
     sleep 0.1
@@ -164,7 +165,7 @@ cleanup() {
 trap cleanup EXIT
 
 section "setup: disposable host provisioning (never substitutes for a courier check)"
-for tool in node openssl curl sha256sum su sudo script ssh-keygen visudo useradd loginctl getent install dpkg-query python3; do
+for tool in node openssl curl sha256sum su sudo script ssh-keygen visudo useradd loginctl getent install dpkg-query python3 readlink; do
   command -v "$tool" >/dev/null || { echo "missing $tool" >&2; exit 3; }
 done
 # Real host identity evidence for the courier's phase 0.
@@ -305,6 +306,23 @@ evidence "launcher_env_i=$env_i_line"
 evidence "launcher_sudo=$(grep -o -m1 'sudo /usr/bin/env -i PATH=[^ ]*' "$launcher")"
 evidence "human=$human human_uid=$human_uid"
 
+# The negative half of the claim protocol: the same ticket module must refuse a
+# wrong short code, and the refusal must not consume the one claim.
+section "negative: a wrong short code must be refused before the real claim"
+negative_digest="sha256:$(printf '%064d' 0)"
+negative_status="$(curl -sS -o "$work/negative-claim.json" -w '%{http_code}' \
+  --connect-timeout 10 --max-time 30 \
+  -H 'content-type: text/plain' \
+  -H 'x-fleet-os-family: debian-family' \
+  -H 'x-fleet-os-id: ubuntu' \
+  -H "x-ghostfleet-preflight-digest: $negative_digest" \
+  --data-binary '00000000' "$url/claim")"
+assert_eq "a wrong short code is refused with 403" 403 "$negative_status"
+assert_contains "the refusal comes from the ticket module" 'TICKET_SHORT_CODE_INVALID' "$work/negative-claim.json"
+negative_claims="$(cat "$work/claim-count")"
+assert_eq "a refused claim does not consume the claim" 0 "$negative_claims"
+evidence "negative_claim=http_$negative_status code=$(json_value "$work/negative-claim.json" code) claims_after=$negative_claims"
+
 run_launcher() {
   local log="$1" input="$2" rc=0
   set +e
@@ -354,12 +372,16 @@ claim_receipt="$work/claim-request.json"
 record_ok "claim request recorded: $claim_receipt"
 assert_eq "claim os family" debian-family "$(json_value "$claim_receipt" os_family)"
 assert_eq "claim os id" ubuntu "$(json_value "$claim_receipt" os_id)"
-assert_eq "claim verified by the ticket module" PASSED_BY_TICKETS_MODULE "$(json_value "$claim_receipt" ticket_verification)"
+ticket_verification="$(json_value "$claim_receipt" ticket_verification)"
+assert_eq "claim verified by the ticket module" PASSED_BY_TICKETS_MODULE "$ticket_verification"
 preflight_digest="$(json_value "$claim_receipt" preflight_digest)"
 [[ "$preflight_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || fail_check "the claim carried no real preflight digest"
 record_ok "claim carried the real phase-0 digest: $preflight_digest"
 claims_1="$(cat "$work/claim-count")"
 assert_eq "claim count after the first run" 1 "$claims_1"
+selection_artifact_rows="$(grep -c '^artifact=' "$work/claim-selection.txt")"
+assert_eq "pinned artifact rows in the delivered selection" 6 "$selection_artifact_rows"
+assert_eq "delivered artifact rows match the normalized selection" "$ARTIFACT_COUNT" "$selection_artifact_rows"
 
 completion="$work/completion-receipt.json"
 [[ -r "$completion" ]] || fail_check "the courier never reported completion"
@@ -404,13 +426,28 @@ assert_eq "installer bytes match the pinned artifact" "$INSTALLER_SHA256" "$inst
 
 # The elevation boundary, measured on the live process tree.
 elevated_parent="$(cat "$work/elevated-parent-1.txt" 2>/dev/null || true)"
-assert_eq "elevated parent is sudo (never the su fallback)" sudo "$elevated_parent"
+assert_eq "measured parent comm of the elevated shell" sudo "$elevated_parent"
+elevated_parent_exe="$(cat "$work/elevated-parent-exe-1.txt" 2>/dev/null || true)"
+case "$elevated_parent_exe" in
+  */sudo) record_ok "measured parent executable of the elevated shell: $elevated_parent_exe" ;;
+  *) fail_check "the elevated shell's parent is not sudo: $elevated_parent_exe" ;;
+esac
 handed_over="$(tail -n 1 "$work/elevated-argv-1.txt" 2>/dev/null || true)"
 assert_eq "root script received the Human as \$1" "$human" "$handed_over"
 elevated_env="$(grep -v '^$' "$work/elevated-environ-1.txt" | paste -sd ';' -)"
+elevated_env_count="$(grep -c '' "$work/elevated-environ-1.txt")"
+assert_eq "the post-env -i environment has exactly two variables" 2 "$elevated_env_count"
 assert_contains "elevated environment PATH" 'PATH=/usr/sbin:/usr/bin:/sbin:/bin' "$work/elevated-environ-1.txt"
 assert_contains "elevated environment HOME" 'HOME=/root' "$work/elevated-environ-1.txt"
-assert_contains "caller environment was really poisoned" 'GHOSTFLEET_POISON=caller-poison' "$work/caller-environ-1.txt"
+caller_env_poison="$(sed -n 's/^GHOSTFLEET_POISON=//p' "$work/caller-environ-1.txt" | head -n1)"
+caller_env_tmpdir="$(sed -n 's/^TMPDIR=//p' "$work/caller-environ-1.txt" | head -n1)"
+caller_env_path="$(sed -n 's/^PATH=//p' "$work/caller-environ-1.txt" | head -n1)"
+assert_eq "the caller really exported the poison variable" caller-poison "$caller_env_poison"
+assert_eq "the caller really exported TMPDIR" "$poison_tmp" "$caller_env_tmpdir"
+case "$caller_env_path" in
+  "$run_dir/poison":*) record_ok "the caller PATH really starts with the poison directory: $caller_env_path" ;;
+  *) fail_check "the caller PATH does not start with the poison directory: $caller_env_path" ;;
+esac
 assert_absent "caller poison variable crossed env -i" 'GHOSTFLEET_POISON' "$work/elevated-environ-1.txt"
 assert_absent "caller TMPDIR crossed env -i" 'TMPDIR=' "$work/elevated-environ-1.txt"
 assert_absent "caller SUDO_USER crossed env -i" 'SUDO_USER=' "$work/elevated-environ-1.txt"
@@ -424,12 +461,12 @@ assert_eq "served courier == fresh module import" "$published_sha" "$served_sha"
 assert_eq "downloaded courier == served courier" "$served_sha" "$downloaded_sha_1"
 
 evidence "launcher_sha256=$launcher_sha"
-evidence "elevated_parent=$elevated_parent handed_over_argv1=$handed_over human_uid=$human_uid"
-evidence "elevated_env=$elevated_env"
-evidence "caller_env_poison=GHOSTFLEET_POISON=caller-poison TMPDIR=$poison_tmp PATH=$run_dir/poison:..."
-evidence "claim_ticket=$TICKET_ID ticket_verification=PASSED_BY_TICKETS_MODULE preflight_digest=$preflight_digest"
-evidence "synthetic_template_digest=$TEMPLATE_DIGEST recorded_selection_digest=$recorded_selection_digest module_selection_digest=$SELECTION_DIGEST"
-evidence "installer_sha256=$installer_sha pinned_artifacts=$ARTIFACT_COUNT"
+evidence "elevated_parent_comm=$elevated_parent elevated_parent_exe=$elevated_parent_exe handed_over_argv1=$handed_over human_uid=$human_uid"
+evidence "elevated_env=$elevated_env elevated_env_vars=$elevated_env_count"
+evidence "caller_environ_measured=GHOSTFLEET_POISON=$caller_env_poison TMPDIR=$caller_env_tmpdir PATH=$caller_env_path"
+evidence "claim_ticket=$TICKET_ID ticket_verification=$ticket_verification preflight_digest=$preflight_digest"
+evidence "selection_digests recorded_by_courier=$recorded_selection_digest module_canonicalization=$SELECTION_DIGEST note=two_derivations_expected_different"
+evidence "installer_sha256=$installer_sha pinned_artifacts=$ARTIFACT_COUNT delivered_artifact_rows=$selection_artifact_rows"
 evidence "unit=$unit unit_stat=$unit_stat unit_sha256=$unit_sha"
 evidence "linger=$linger_out installer_ordinary_user=$ordinary_user"
 evidence "courier_downloaded_sha256=$downloaded_sha_1 courier_served_sha256=$served_sha courier_published_sha256=$published_sha"
@@ -479,7 +516,7 @@ evidence "zero_delta state=$state_before->$state_after unit=$unit_before->$unit_
 evidence "run2_courier_downloaded_sha256=$downloaded_sha_2 == published $published_sha"
 
 section "chained acceptance: PASS"
-REAL_TEXT="Console launcher text from createTicketDelivery (sha256=$launcher_sha, no ticket handle or short code in argv) run by the non-root Human $human (uid $human_uid) through the sudo branch (elevated parent=$elevated_parent, \$1=$handed_over) and the real env -i boundary (elevated environ {$elevated_env}; caller GHOSTFLEET_POISON/TMPDIR/SUDO_USER absent); published BOOTSTRAP_SH over TLS (downloaded sha256=$downloaded_sha_1 == served $served_sha == fresh-import $published_sha); claim verified by src/control-plane/tickets.js against the ticket short code for synthetic test template_digest=$TEMPLATE_DIGEST with recorded selection_digest=$recorded_selection_digest; real reviewed installer --apply (sha256=$installer_sha, $ARTIFACT_COUNT pinned artifacts) installed the synthetic canary unit $unit_name owned $unit_stat sha256=$unit_sha and $linger_out; FLEET_CONTROL_ORDINARY_USER=$ordinary_user recorded by the installer; run 1 claims=$claims_1 applies=$applies_1; run 2 claims=$claims_2 applies=$applies_2 with unchanged state/unit/helper/control.json sha256"
+REAL_TEXT="Console launcher text from createTicketDelivery (sha256=$launcher_sha, no ticket handle or short code in argv) run by the non-root Human $human (uid $human_uid) through the sudo branch (measured parent $elevated_parent at $elevated_parent_exe, \$1=$handed_over) and the real env -i boundary (elevated environ {$elevated_env} = $elevated_env_count variables; caller-measured GHOSTFLEET_POISON/TMPDIR/SUDO_USER absent); published BOOTSTRAP_SH over TLS (downloaded sha256=$downloaded_sha_1 == served $served_sha == fresh-import $published_sha); a wrong short code was refused with HTTP $negative_status and consumed no claim, then the real claim was verified by src/control-plane/tickets.js against the ticket short code ($ticket_verification) for synthetic test template_digest=$TEMPLATE_DIGEST with recorded selection_digest=$recorded_selection_digest; real reviewed installer --apply (sha256=$installer_sha, $selection_artifact_rows pinned artifacts) installed the synthetic canary unit $unit_name owned $unit_stat sha256=$unit_sha and $linger_out; FLEET_CONTROL_ORDINARY_USER=$ordinary_user recorded by the installer; run 1 claims=$claims_1 applies=$applies_1; run 2 claims=$claims_2 applies=$applies_2 with unchanged state/unit/helper/control.json sha256"
 NOT_RUN_TEXT="the real Tailscale provider join and tailnet reachability, because a tailnet auth key is an external credential this disposable VM does not have (the courier's join block is skipped by the shim reporting the pre-arranged identity); a hosted GhostFleet control plane, because this run answers the claim from the local control-plane stub (the courier's claim and completion clients are the published ones); the product managed unit, because the unit installed here is a synthetic one-shot canary pinned by the test selection; OMV 8 appliance SSH admission and OMV Linger, because the disposable VM is not an OpenMediaVault appliance"
 printf 'REAL: %s\n' "$REAL_TEXT"
 printf 'STUB: tailscale-join\n'
