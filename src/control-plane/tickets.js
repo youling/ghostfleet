@@ -86,15 +86,158 @@ export function validatePublicOrigin(value) {
   return url.origin;
 }
 
+// The delivered command carries no ticket URL, short code, or provider credential.
+// Root elevation happens before the downloaded bootstrap is executed. The Human
+// pastes the one-time URL into the protected root terminal, with terminal echo
+// disabled; the script then asks for the separate eight-digit short code.
+//
+// The elevated script is environment-proof (review F-62-1) and interruption-safe
+// (review F-62-2):
+// - su --login clears the inherited caller environment (util-linux: it "clears
+//   all the environment variables except TERM"; non-login su keeps the caller
+//   environment), and the elevated command line itself starts env -i with a
+//   fixed root-owned PATH. Caller PATH, TMPDIR, HOME, ENV, BASH_ENV and shell
+//   startup files cannot steer root execution.
+// - Every executable is addressed by an absolute root-owned path.
+// - The download lives in a 0700 directory that root creates after elevation
+//   under /run. A caller-owned TMPDIR (or its directory entries) is never a root
+//   execution point, even while the Human is typing the hidden URL.
+// - HUP, INT, QUIT, TERM and EXIT all remove that directory, restore the terminal
+//   echo state and exit with 128+signal (or the original status). Cleanup restores
+//   the terminal first and resets the traps last, and HUP/INT/QUIT/TERM are
+//   ignored for the whole cleanup, so a second Ctrl-C or Ctrl-\ (normal Human
+//   actions) cannot leave the terminal unechoed or the private workspace behind.
+//
+// Known trade-offs, recorded for review:
+// - su --login runs root's login profile (/etc/profile and root-owned dotfiles)
+//   before the elevated script starts. env -i is the actual execution boundary
+//   for the privileged script; login mode is what guarantees the caller
+//   environment is dropped before that profile runs.
+// - The elevation entry point itself (id, command -v sudo/su, sudo, su) still
+//   resolves through the caller PATH for portability and never crosses the root
+//   boundary. A caller whose PATH is already compromised can intercept its own
+//   password prompt; that is outside this launcher's boundary.
+// - Because cleanup ignores HUP/INT/QUIT/TERM while it runs, a workspace removal
+//   that stalls cannot be interrupted by a Human; the signals are discarded
+//   until cleanup finishes. The removal is one rm -rf of a directory this script
+//   created, and leaving the terminal unechoed or the workspace behind is the
+//   worse outcome, so the trade is accepted.
+const TRUSTED_ENV = "/usr/bin/env";
+const TRUSTED_SHELL = "/bin/sh";
+const TRUSTED_PATH = "/usr/sbin:/usr/bin:/sbin:/bin";
+const TRUSTED_STTY = "/usr/bin/stty";
+const TRUSTED_MKTEMP = "/usr/bin/mktemp";
+const TRUSTED_CURL = "/usr/bin/curl";
+const TRUSTED_WGET = "/usr/bin/wget";
+const TRUSTED_RM = "/bin/rm";
+
+function quoteShell(value) {
+  return "'" + String(value).replaceAll("'", "'\\''") + "'";
+}
+
+// env -i also drops ENV/BASH_ENV/LD_* and TMPDIR that the elevation tool may
+// have preserved (non-login su does), so the privileged script starts from an
+// environment that only this control plane chose.
+function cleanRootShell(script) {
+  return [TRUSTED_ENV, "-i", "PATH=" + TRUSTED_PATH, "HOME=/root", TRUSTED_SHELL, "-c", quoteShell(script)].join(" ");
+}
+
+function portableBootstrapCommand(origin) {
+  const downloadUrl = origin + "/v1/bootstrap.sh";
+  const rootScript = [
+    "set -eu",
+    "umask 077",
+    "TTY_STATE=",
+    "WORK_DIR=",
+    "cleanup() {",
+    "  status=$?",
+    // Ignore signals for the whole cleanup. A second Ctrl-C or Ctrl-\ is a
+    // normal Human action and must not kill the shell before the terminal echo
+    // is back and the private workspace is gone. The trap set is reset only at
+    // the end.
+    "  trap '' HUP INT QUIT TERM",
+    '  if [ -n "$TTY_STATE" ]; then',
+    "    " + TRUSTED_STTY + ' "$TTY_STATE" < /dev/tty 2>/dev/null || :',
+    "  fi",
+    "  TTY_STATE=",
+    '  if [ -n "$WORK_DIR" ]; then',
+    "    " + TRUSTED_RM + ' -rf "$WORK_DIR" 2>/dev/null || :',
+    "  fi",
+    "  WORK_DIR=",
+    "  trap - EXIT HUP INT QUIT TERM",
+    '  exit "$status"',
+    "}",
+    // The first statement of the signal path ignores HUP/INT/QUIT/TERM, so a
+    // burst of signals cannot re-enter cleanup or abort it half way.
+    "stop() {",
+    "  trap '' HUP INT QUIT TERM",
+    '  exit "$1"',
+    "}",
+    "trap cleanup EXIT",
+    "trap 'stop 129' HUP",
+    "trap 'stop 130' INT",
+    "trap 'stop 131' QUIT",
+    "trap 'stop 143' TERM",
+    "TMPROOT=/run/",
+    'if [ ! -d "$TMPROOT" ]; then TMPROOT=/var/tmp/; fi',
+    'WORK_DIR="$(' + TRUSTED_MKTEMP + ' -d "$TMPROOT"ghostfleet-enroll.XXXXXXXX)"',
+    'BOOTSTRAP="$WORK_DIR/bootstrap.sh"',
+    "if [ -x " + TRUSTED_CURL + " ]; then",
+    "  " + TRUSTED_CURL + " -fsSL " + quoteShell(downloadUrl) + ' -o "$BOOTSTRAP"',
+    "elif [ -x " + TRUSTED_WGET + " ]; then",
+    "  " + TRUSTED_WGET + " -qO " + quoteShell(downloadUrl) + ' "$BOOTSTRAP"',
+    "else",
+    "  printf '%s\\n' 'GhostFleet requires curl or wget' >&2",
+    "  exit 1",
+    "fi",
+    'if [ ! -s "$BOOTSTRAP" ]; then',
+    "  printf '%s\\n' 'GhostFleet bootstrap download is empty' >&2",
+    "  exit 1",
+    "fi",
+    'if ! TTY_STATE="$(' + TRUSTED_STTY + ' -g 2>/dev/null < /dev/tty)"; then',
+    "  printf '%s\\n' 'GhostFleet needs an interactive terminal: run the command in a terminal session and paste the one-time URL at the prompt' >&2",
+    "  exit 1",
+    "fi",
+    TRUSTED_STTY + " -echo < /dev/tty",
+    "printf 'One-time enrollment URL from protected Console: ' > /dev/tty",
+    "if ! IFS= read -r GHOSTFLEET_ENROLLMENT_URL < /dev/tty; then",
+    "  printf '\\n%s\\n' 'GhostFleet requires the one-time enrollment URL' >&2",
+    "  exit 1",
+    "fi",
+    TRUSTED_STTY + ' "$TTY_STATE" < /dev/tty',
+    "TTY_STATE=",
+    "printf '\\n' > /dev/tty",
+    'case "$GHOSTFLEET_ENROLLMENT_URL" in ' + quoteShell(origin) + "/v1/enrollment-tickets/ticket-*) ;;",
+    "  *) printf '%s\\n' 'Invalid enrollment URL for this control plane' >&2; exit 1 ;;",
+    "esac",
+    "export GHOSTFLEET_ENROLLMENT_URL",
+    TRUSTED_SHELL + ' "$BOOTSTRAP"',
+  ].join("\n");
+  const elevated = cleanRootShell(rootScript);
+  return [
+    "(",
+    'if [ "$(id -u)" -eq 0 ]; then',
+    "  " + elevated,
+    "elif command -v sudo >/dev/null 2>&1; then",
+    "  sudo " + elevated,
+    "elif command -v su >/dev/null 2>&1; then",
+    "  su --login root -c " + quoteShell(elevated),
+    "else",
+    "  printf '%s\\n' 'GhostFleet requires one root confirmation using sudo or su' >&2",
+    "  exit 1",
+    "fi",
+    ")",
+  ].join("\n");
+}
+
 export function createTicketDelivery({ record, short_code, public_origin }) {
   const origin = validatePublicOrigin(public_origin);
   const one_time_url = origin + "/v1/enrollment-tickets/" + encodeURIComponent(record.ticket_id);
-  const bootstrap_script_url = origin + "/v1/bootstrap.sh";
   return Object.freeze({
     one_time_url,
     short_code,
     expires_at: record.expires_at,
-    command: "curl -fsSL '" + bootstrap_script_url + "' | sudo env GHOSTFLEET_ENROLLMENT_URL='" + one_time_url + "' sh",
+    command: portableBootstrapCommand(origin),
     warning: "ONE_TIME_ENROLLMENT_MATERIAL_EXECUTE_PROMPTLY",
   });
 }

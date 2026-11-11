@@ -214,15 +214,18 @@ function renderCreateTemplateControls() {
 function clearBootstrapDelivery() {
   const command = $("#bootstrap-command");
   const code = $("#bootstrap-code");
+  const url = $("#bootstrap-url");
   const expiry = $("#bootstrap-expiry");
   if (command) command.value = "";
   if (code) code.value = "";
+  if (url) url.value = "";
   if (expiry) expiry.textContent = "";
 }
 function showBootstrapDelivery(delivery) {
-  if (!delivery?.command || !delivery?.short_code) throw new Error("TICKET_DELIVERY_INVALID");
+  if (!delivery?.command || !delivery?.short_code || !delivery?.one_time_url) throw new Error("TICKET_DELIVERY_INVALID");
   if ($("#detail-dialog").open) $("#detail-dialog").close();
   $("#bootstrap-command").value = delivery.command;
+  $("#bootstrap-url").value = delivery.one_time_url;
   $("#bootstrap-code").value = delivery.short_code;
   $("#bootstrap-expiry").textContent = delivery.expires_at ? date(delivery.expires_at, true) : "";
   $("#bootstrap-dialog").showModal();
