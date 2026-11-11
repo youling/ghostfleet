@@ -78,8 +78,15 @@ export function scanAssetBytes({ name, bytes, denyHosts = [] }) {
   return findings;
 }
 
+// Generated/VCS directories are not part of a reviewed source tree. The build
+// itself scans every explicit input and the written output, so skipping caches
+// here cannot hide a packaged byte.
+export const DEFAULT_IGNORED_DIRECTORIES = Object.freeze([
+  "__pycache__", ".git", "node_modules", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", "dist",
+]);
+
 /** Recursively scan a directory of files that are about to be published. */
-export async function scanAssetDirectory(root, { denyHosts = [] } = {}) {
+export async function scanAssetDirectory(root, { denyHosts = [], ignoreDirectories = DEFAULT_IGNORED_DIRECTORIES } = {}) {
   const findings = [];
   let scanned = 0;
   const walk = async (dir) => {
@@ -88,7 +95,11 @@ export async function scanAssetDirectory(root, { denyHosts = [] } = {}) {
       const name = relative(root, full);
       const info = await lstat(full);
       if (info.isSymbolicLink()) { findings.push({ path: name, rule: "symlink", line: 0 }); continue; }
-      if (info.isDirectory()) { await walk(full); continue; }
+      if (info.isDirectory()) {
+        if (ignoreDirectories.includes(entry.name)) continue;
+        await walk(full);
+        continue;
+      }
       if (!info.isFile()) { findings.push({ path: name, rule: "unsupported-entry", line: 0 }); continue; }
       scanned += 1;
       findings.push(...scanAssetBytes({ name, bytes: await readFile(full), denyHosts }));
