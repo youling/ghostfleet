@@ -64,7 +64,7 @@ ssh-keygen -q -t ed25519 -N '' -C 'synthetic-selected-capability' -f "$work/priv
 # block. Nothing here is re-implemented for the test.
 CONTROL_ACCOUNT="$run_account" PRIVILEGED_ACCOUNT="$privileged_account" \
 node --input-type=module -e '
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 const [work, privilegedRoot] = process.argv.slice(1);
@@ -146,6 +146,17 @@ writeFileSync(join(work, "selection.json"), JSON.stringify({
   privileged_account: shape.privileged_account,
   artifacts: shape.artifacts.map((item) => ({ name: item.name, sha256: item.sha256, mode: item.mode })),
 }, null, 2) + "\n");
+// Publish the reviewed bytes at their content addresses. The courier is handed
+// the origin only; every artifact must still survive its digest check.
+for (const tree of ["assets", "tampered-assets"]) {
+  mkdirSync(join(work, tree, "sha256"), { recursive: true });
+  for (const item of shape.artifacts) {
+    writeFileSync(join(work, tree, "sha256", item.sha256), item.content);
+  }
+}
+// The tampered origin lies: it answers the correct address with different bytes.
+const victim = shape.artifacts[0];
+writeFileSync(join(work, "tampered-assets", "sha256", victim.sha256), victim.content + "\n# tampered by the disposable test\n");
 ' "$work" "$privileged_root"
 [[ -s "$work/capability-data.sh" && -s "$work/capability-library.sh" ]] || exit 3
 
@@ -160,6 +171,8 @@ cat > "$work/harness.sh" <<'HARNESS'
 #!/bin/sh
 set -eu
 CHECKPOINT_DIR="${CAPABILITY_CHECKPOINT:?}"
+# The launcher exports the immutable origin; the capability lane reads it.
+ASSETS_ORIGIN="${GHOSTFLEET_ASSETS_ORIGIN:?}"
 fail() { printf '%s\n' "fleet-enroll: $*" >&2; exit 1; }
 . "${CAPABILITY_LIBRARY:?}"
 . "${CAPABILITY_DATA:?}"
@@ -169,7 +182,7 @@ HARNESS
 
 run_capability() {
   CAPABILITY_CHECKPOINT="$1" CAPABILITY_DATA="$2" CAPABILITY_LIBRARY="$work/capability-library.sh" \
-    GHOSTFLEET_OPERATING_USER="$ordinary" \
+    GHOSTFLEET_OPERATING_USER="$ordinary" GHOSTFLEET_ASSETS_ORIGIN="$3" \
     sh "$work/harness.sh"
 }
 
@@ -180,7 +193,7 @@ printf '#!/bin/sh\nexit 1\n' > "$work/failing-bin/loginctl"
 chmod 0755 "$work/failing-bin/loginctl"
 run_capability_with_failing_loginctl() {
   CAPABILITY_CHECKPOINT="$1" CAPABILITY_DATA="$2" CAPABILITY_LIBRARY="$work/capability-library.sh" \
-    GHOSTFLEET_OPERATING_USER="$ordinary" \
+    GHOSTFLEET_OPERATING_USER="$ordinary" GHOSTFLEET_ASSETS_ORIGIN="$3" \
     PATH="$work/failing-bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     sh "$work/harness.sh"
 }
@@ -189,6 +202,7 @@ cat > "$work/claim-harness.sh" <<'CLAIM_HARNESS'
 #!/bin/sh
 set -eu
 CHECKPOINT_DIR="$CAPABILITY_CHECKPOINT"
+ASSETS_ORIGIN="${GHOSTFLEET_ASSETS_ORIGIN:?}"
 fail() { printf '%s\n' "fleet-enroll: $*" >&2; exit 1; }
 . "$CAPABILITY_LIBRARY"
 . "$JSON_LIBRARY"
@@ -199,42 +213,56 @@ capability_ingest_claim
 capability_apply
 CLAIM_HARNESS
 
+# A real loopback content-addressed origin. The courier receives only the origin;
+# the bytes must still match the digest the selection pinned.
+asset_pids=()
+start_assets() {
+  local tree="$1" port deadline
+  port="$((41000 + RANDOM % 2000))"
+  python3 -m http.server "$port" --bind 127.0.0.1 --directory "$tree" >/dev/null 2>&1 &
+  asset_pids+=("$!")
+  deadline=$((SECONDS + 30))
+  while (( SECONDS < deadline )); do
+    if curl -fsS --max-time 2 "http://127.0.0.1:$port/" -o /dev/null 2>/dev/null; then
+      printf 'http://127.0.0.1:%s' "$port"
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+cleanup_assets() { local pid; for pid in "${asset_pids[@]:-}"; do kill "$pid" 2>/dev/null || true; done; }
+trap 'cleanup_assets; if [[ "${GHOSTFLEET_DISPOSABLE_KEEP_WORK:-0}" = 1 ]]; then echo "kept: $work" >&2; else rm -rf "$work"; fi' EXIT
+
 # The claim channel, with real root and the real reviewed installer.
 run_claim() {
   CAPABILITY_CHECKPOINT="$1" CAPABILITY_LIBRARY="$work/capability-library.sh" \
     JSON_LIBRARY="$work/json-library.sh" CLAIM_FILE="$work/claim.json" \
-    GHOSTFLEET_OPERATING_USER="$ordinary" \
+    GHOSTFLEET_OPERATING_USER="$ordinary" GHOSTFLEET_ASSETS_ORIGIN="$2" \
     sh "$work/claim-harness.sh"
 }
 expected_helper_sha="$(sha256sum "$privileged_root/fleet_privctl.py" | awk '{print $1}')"
 expected_entry_sha="$(sha256sum "$privileged_root/fleet_privileged_ssh_entry.py" | awk '{print $1}')"
 
+# 2. Pinned bytes that cannot be verified must fail before any effect: a lying
+# origin (correct address, different bytes), then an absent object.
+good_origin="$(start_assets "$work/assets")"
+tampered_origin="$(start_assets "$work/tampered-assets")"
+mkdir -p "$work/missing-assets/sha256"
+missing_origin="$(start_assets "$work/missing-assets")"
+[[ -n "$good_origin" && -n "$tampered_origin" && -n "$missing_origin" ]] || { echo "asset origin did not start" >&2; exit 1; }
+
 # 1. The template requested nothing: no privileged component may appear.
 mkdir -p "$work/checkpoint-empty"
-run_capability "$work/checkpoint-empty" "$work/empty-data.sh" >"$work/empty.log" 2>&1
+run_capability "$work/checkpoint-empty" "$work/empty-data.sh" "$good_origin" >"$work/empty.log" 2>&1
 grep -q 'requests no privileged capability' "$work/empty.log"
 [[ ! -e /etc/youling-fleet ]] || fail_check "unrequested capability created state"
 ! id "$privileged_account" >/dev/null 2>&1 || fail_check "unrequested capability created the privileged account"
 ! id "$run_account" >/dev/null 2>&1 || fail_check "unrequested capability created the run account"
 
-# 2. A pinned artifact that cannot be verified must fail before any effect.
-python3 - "$work/capability-data.sh" "$work/tampered-data.sh" <<'PY'
-import sys
-source, target = sys.argv[1], sys.argv[2]
-rows, touched = [], False
-for line in open(source, encoding="utf-8"):
-    if line.startswith("CAPABILITY_ARTIFACT_1=") and not touched:
-        prefix, rest = line.split("=", 1)
-        name, _digest, mode, blob = rest.strip()[1:-1].split("|", 3)
-        rows.append(prefix + "=" + "'" + name + "|" + "0" * 64 + "|" + mode + "|" + blob + "'\n")
-        touched = True
-    else:
-        rows.append(line)
-if not touched:
-    raise SystemExit("pinned artifact row not found")
-open(target, "w", encoding="utf-8").writelines(rows)
-PY
-if run_capability "$work/checkpoint-tampered" "$work/tampered-data.sh" >"$work/tampered.log" 2>&1; then
+# 2. A pinned artifact whose bytes do not match its digest must fail before any effect.
+mkdir -p "$work/checkpoint-tampered"
+if run_capability "$work/checkpoint-tampered" "$work/capability-data.sh" "$tampered_origin" >"$work/tampered.log" 2>&1; then
   fail_check "tampered artifact digest was accepted"
 fi
 grep -q 'failed digest verification' "$work/tampered.log" || {
@@ -245,10 +273,20 @@ grep -q 'failed digest verification' "$work/tampered.log" || {
 [[ ! -e /etc/youling-fleet ]] || fail_check "tampered capability created state"
 ! id "$privileged_account" >/dev/null 2>&1 || fail_check "tampered capability created the privileged account"
 
+mkdir -p "$work/checkpoint-missing"
+if run_capability "$work/checkpoint-missing" "$work/capability-data.sh" "$missing_origin" >"$work/missing.log" 2>&1; then
+  fail_check "a missing artifact was accepted"
+fi
+grep -q 'could not be fetched' "$work/missing.log" || {
+  echo "missing artifact was rejected for an unexpected reason" >&2
+  cat "$work/missing.log" >&2
+  exit 1
+}
+
 # 3. The run account may never be the privileged operations account. The
 #    refusal happens before any account, unit or helper effect.
 mkdir -p "$work/checkpoint-collision"
-if run_capability "$work/checkpoint-collision" "$work/collision-data.sh" >"$work/collision.log" 2>&1; then
+if run_capability "$work/checkpoint-collision" "$work/collision-data.sh" "$good_origin" >"$work/collision.log" 2>&1; then
   fail_check "a colliding run account was accepted"
 fi
 grep -q 'must not be the privileged operations account' "$work/collision.log" || {
@@ -263,7 +301,7 @@ record_ok "collision refused: $(grep -o 'must not be the privileged operations a
 
 # 4. Real installation through the real reviewed installer, inside one root run.
 mkdir -p "$work/checkpoint-new"
-if ! run_capability "$work/checkpoint-new" "$work/capability-data.sh" >"$work/new.log" 2>&1; then
+if ! run_capability "$work/checkpoint-new" "$work/capability-data.sh" "$good_origin" >"$work/new.log" 2>&1; then
   echo "real selected-capability install failed" >&2
   cat "$work/new.log" >&2
   exit 1
@@ -353,7 +391,7 @@ before_helper_mtime="$(stat -c %Y /usr/local/libexec/youling-fleet/fleet-privctl
 # 5. Repeating the converged ceremony is zero delta and reports ADOPT. It must
 #    not create a second account or re-run the installer.
 mkdir -p "$work/checkpoint-adopt"
-run_capability "$work/checkpoint-adopt" "$work/capability-data.sh" >"$work/adopt.log" 2>&1
+run_capability "$work/checkpoint-adopt" "$work/capability-data.sh" "$good_origin" >"$work/adopt.log" 2>&1
 grep -q 'already converged; zero delta' "$work/adopt.log"
 grep -q '"mode":"ADOPT"' "$work/checkpoint-adopt/capability-state.json"
 [[ "$(id -u "$run_account")" == "$run_uid" ]] || fail_check "the run account changed uid"
@@ -371,7 +409,7 @@ sed "s/^CAPABILITY_CONTROL_ACCOUNT=.*\$/CAPABILITY_CONTROL_ACCOUNT='$rollback_ac
 grep -qx "CAPABILITY_CONTROL_ACCOUNT='$rollback_account'" "$work/rollback-data.sh" ||
   fail_check "the rollback data block was not produced"
 mkdir -p "$work/checkpoint-rollback"
-if run_capability_with_failing_loginctl "$work/checkpoint-rollback" "$work/rollback-data.sh" >"$work/rollback.log" 2>&1; then
+if run_capability_with_failing_loginctl "$work/checkpoint-rollback" "$work/rollback-data.sh" "$good_origin" >"$work/rollback.log" 2>&1; then
   fail_check "a ceremony whose Linger step failed reported success"
 fi
 grep -q 'selected Linger could not be enabled' "$work/rollback.log" || {
@@ -392,7 +430,7 @@ sed "s/^CAPABILITY_CONTROL_ACCOUNT=.*\$/CAPABILITY_CONTROL_ACCOUNT='$preexisting
 useradd --create-home --user-group --shell /usr/sbin/nologin "$preexisting_account"
 pre_uid="$(id -u "$preexisting_account")"
 mkdir -p "$work/checkpoint-preexisting"
-if run_capability_with_failing_loginctl "$work/checkpoint-preexisting" "$work/preexisting-data.sh" >"$work/preexisting.log" 2>&1; then
+if run_capability_with_failing_loginctl "$work/checkpoint-preexisting" "$work/preexisting-data.sh" "$good_origin" >"$work/preexisting.log" 2>&1; then
   fail_check "a ceremony whose Linger step failed reported success"
 fi
 id "$preexisting_account" >/dev/null 2>&1 || fail_check "a pre-existing run account was deleted"
@@ -402,7 +440,7 @@ id "$preexisting_account" >/dev/null 2>&1 || fail_check "a pre-existing run acco
 record_ok "pre-existing run account survived the failed ceremony: $preexisting_account uid=$pre_uid"
 # The next authorized run adopts it and converges.
 mkdir -p "$work/checkpoint-adopted"
-run_capability "$work/checkpoint-adopted" "$work/preexisting-data.sh" >"$work/adopted.log" 2>&1
+run_capability "$work/checkpoint-adopted" "$work/preexisting-data.sh" "$good_origin" >"$work/adopted.log" 2>&1
 grep -q "run_account=EXISTING" "$work/adopted.log" || {
   cat "$work/adopted.log" >&2
   fail_check "the pre-existing account was not adopted"
@@ -415,7 +453,7 @@ record_ok "pre-existing run account adopted without recreation"
 # 8. The claim channel on the same host: the published parser consumes the
 # base64 selection, re-verifies against the real installer and reports ADOPT.
 mkdir -p "$work/checkpoint-claim"
-if ! run_claim "$work/checkpoint-claim" >"$work/claim.log" 2>&1; then
+if ! run_claim "$work/checkpoint-claim" "$good_origin" >"$work/claim.log" 2>&1; then
   echo "claim channel failed" >&2
   cat "$work/claim.log" >&2
   exit 1
@@ -498,7 +536,7 @@ writeFileSync(join(work, "drift-data.sh"), module.renderCapabilityBlock(selectio
 rm -f /usr/local/libexec/youling-fleet/fleet-privctl
 mkdir -p "$work/checkpoint-drift"
 export FLEET_DRIFT_RUN_ACCOUNT="$drift_account"
-if run_capability "$work/checkpoint-drift" "$work/drift-data.sh" >"$work/drift.log" 2>&1; then
+if run_capability "$work/checkpoint-drift" "$work/drift-data.sh" "$good_origin" >"$work/drift.log" 2>&1; then
   fail_check "a run account that gained a root-equivalent group during the installer was accepted"
 fi
 unset FLEET_DRIFT_RUN_ACCOUNT
@@ -525,7 +563,7 @@ printf '[Service]\nExecStart=/bin/true\n' >"$stale_unit"
 printf 'stale\n' >"$stale_want"
 loginctl enable-linger "$privileged_account"
 mkdir -p "$work/checkpoint-stale"
-if run_capability "$work/checkpoint-stale" "$work/capability-data.sh" >"$work/stale.log" 2>&1; then
+if run_capability "$work/checkpoint-stale" "$work/capability-data.sh" "$good_origin" >"$work/stale.log" 2>&1; then
   fail_check "a v1 lane inside the privileged account was accepted"
 fi
 grep -q 'CAPABILITY_STALE_PRIVILEGED_LANE' "$work/stale.log" || {
@@ -548,7 +586,7 @@ cp "$installer_state" "$work/control.json.orig"
 # A helper that reports COMPLIANT with no readable record must not converge.
 rm -f "$installer_state"
 mkdir -p "$work/checkpoint-unrecorded"
-if run_capability "$work/checkpoint-unrecorded" "$work/capability-data.sh" >"$work/unrecorded.log" 2>&1; then
+if run_capability "$work/checkpoint-unrecorded" "$work/capability-data.sh" "$good_origin" >"$work/unrecorded.log" 2>&1; then
   cp "$work/control.json.orig" "$installer_state"
   fail_check "a compliant helper with no recorded ops account reported convergence"
 fi
@@ -571,7 +609,7 @@ state["ops_user"] = "ghostfleet-ops-alt"
 path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
 mkdir -p "$work/checkpoint-mismatch"
-if run_capability "$work/checkpoint-mismatch" "$work/capability-data.sh" >"$work/mismatch.log" 2>&1; then
+if run_capability "$work/checkpoint-mismatch" "$work/capability-data.sh" "$good_origin" >"$work/mismatch.log" 2>&1; then
   cp "$work/control.json.orig" "$installer_state"
   fail_check "a privileged declaration the installer does not admit was accepted"
 fi
@@ -728,3 +766,4 @@ evidence "negative=$run_account cannot sudo -n $helper_path; positive=$privilege
 evidence "claim selection_digest=$claim_digest"
 
 echo "PASS published selected-capability lane created the dedicated run account (nologin, locked, no sudo, no root-equivalent group), kept the privileged account separate, installed the real reviewed helper under fixed-pin digests, put the unit and Linger under the run account, refused the account collision and the missing run account without any effect, caught a root-equivalent group granted by the installer after it ran, cross-checked the declared privileged account against the installer record (and refused a compliant helper whose record is missing), refused a v1 lane left inside the privileged account (and refused to delete one whose privileged process still ran or could not be proved gone), rolled back only the account it created, adopted a pre-existing account without recreating it, and answered the claim channel through the published parser. Real OMV8 Linger/SSH admission and a real managed runtime NOT_RUN"
+echo "PASS content-addressed published selected-capability lane installed the real reviewed helper, user unit and Linger on a disposable root VM; the claim channel consumed the base64 selection through the published parser and reported ADOPT with a recorded digest; a lying origin and a missing object made no effect; unrequested selections made no effect; repeat is ADOPT/zero delta; the dedicated run account was created once (nologin, locked, no sudo, no root-equivalent group), kept separate from the privileged account, refused on collision and when missing, re-proved after the installer ran, and cross-checked against the installer record (including a compliant helper with no readable record); a v1 lane inside the privileged account was refused, and deleted only after its stop was proved; rollback removed only the account this run created, and an adopted account was never recreated. Real NAS/OMV Linger, user-systemd activation and OMV8 SSH admission NOT_RUN"

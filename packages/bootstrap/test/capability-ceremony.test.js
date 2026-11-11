@@ -567,38 +567,42 @@ test("a missing or unverifiable capability dependency fails closed before any ef
 // The claim is authoritative only about WHAT to install. The bytes must come
 // from the immutable asset origin and survive the pinned digest. Anything else
 // stops before the identity join, the install, and the completion report.
-test("artifact bytes that cannot be fetched and verified stop before the join and the installer", { skip: linuxOnly }, async () => {
-  const host = await makeHost();
-  try {
-    const selection = await buildSelection();
-    const cases = [
-      {
-        name: "no asset origin was delivered",
-        env: { GHOSTFLEET_ASSETS_ORIGIN: "" },
-        expected: /no immutable asset origin was delivered/,
-      },
-      {
-        name: "asset origin is not an exact origin",
-        env: { GHOSTFLEET_ASSETS_ORIGIN: "https://assets.fixture.invalid/redirected" },
-        expected: /asset origin must be an exact origin/,
-      },
-      {
-        name: "asset origin answers with a redirect",
-        assetTamper: (h) => h.setAssetMode("redirect"),
-        expected: /could not be fetched from .*\/sha256\//,
-      },
-      {
-        name: "asset is absent from the origin",
-        assetTamper: (h, selection) => h.removeAsset(selection.artifacts[0].sha256),
-        expected: /could not be fetched from .*\/sha256\//,
-      },
-      {
-        name: "served bytes do not match the pinned digest",
-        assetTamper: (h, selection) => h.serveAsset(selection.artifacts[0].sha256, "tampered bytes\n"),
-        expected: /failed digest verification/,
-      },
-    ];
-    for (const item of cases) {
+//
+// One test per case: each case runs a real published courier, and the package
+// test timeout is per test, not per file.
+const artifactGovernanceCases = [
+  {
+    name: "no asset origin was delivered",
+    env: { GHOSTFLEET_ASSETS_ORIGIN: "" },
+    expected: /no immutable asset origin was delivered/,
+  },
+  {
+    name: "asset origin is not an exact origin",
+    env: { GHOSTFLEET_ASSETS_ORIGIN: "https://assets.fixture.invalid/redirected" },
+    expected: /asset origin must be an exact https origin/,
+  },
+  {
+    name: "asset origin answers with a redirect",
+    assetTamper: (h) => h.setAssetMode("redirect"),
+    expected: /could not be fetched from .*\/sha256\//,
+  },
+  {
+    name: "asset is absent from the origin",
+    assetTamper: (h, selection) => h.removeAsset(selection.artifacts[0].sha256),
+    expected: /could not be fetched from .*\/sha256\//,
+  },
+  {
+    name: "served bytes do not match the pinned digest",
+    assetTamper: (h, selection) => h.serveAsset(selection.artifacts[0].sha256, "tampered bytes\n"),
+    expected: /failed digest verification/,
+  },
+];
+
+for (const item of artifactGovernanceCases) {
+  test("artifact governance: " + item.name, { skip: linuxOnly }, async () => {
+    const host = await makeHost();
+    try {
+      const selection = await buildSelection();
       await resetProviderIdentity(host);
       await freshCheckpoint(host);
       const result = await runCourier(host, selection, { assetTamper: item.assetTamper, env: item.env });
@@ -612,9 +616,9 @@ test("artifact bytes that cannot be fetched and verified stop before the join an
       assert.equal(await exists(UNIT_PATH(host)), false, item.name);
       // Only the content address is ever requested: no selection-supplied URL.
       assert.ok(host.assetRequests().every((path) => /^\/sha256\/[0-9a-f]{64}$/.test(path)), item.name + ": only content addresses are requested");
-    }
-  } finally { await rm(host.root, { recursive: true, force: true }); }
-});
+    } finally { await rm(host.root, { recursive: true, force: true }); }
+  });
+}
 
 test("the pinned artifacts are fetched by digest from the asset origin, once each", { skip: linuxOnly }, async () => {
   const host = await makeHost();
