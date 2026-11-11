@@ -100,6 +100,16 @@ capability_selected() {
   [ "$CAPABILITY_HELPER_REQUIRED" = 1 ] || [ "$CAPABILITY_LINGER_REQUIRED" = 1 ] || [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]
 }
 
+# TWO identities, never interchangeable:
+#   * the DEDICATED MANAGED identity is CAPABILITY_CONTROL_ACCOUNT, chosen by the
+#     reviewed template (e.g. ghostfleet-ops). It owns the user unit and Linger,
+#     so the managed runtime inherits only that account's rights.
+#   * the ORDINARY HUMAN is this function's value: the person running the
+#     Console command. It is only the helper's admission user; it must never own
+#     a long-running service, because that would hand the managed runtime the
+#     Human's rights and defeat least privilege.
+# Neither may be root, and both are validated independently.
+#
 # The ordinary Human identity. It is the ONLY value the launcher may hand to
 # this script, and it is only ever used to name the Human owner of the user
 # unit/Linger lane and the installer's admission user. It is never a path, a
