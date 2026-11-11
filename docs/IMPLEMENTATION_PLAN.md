@@ -1,10 +1,18 @@
 # GhostFleet V0 Implementation Plan
 
-status: `IN_PROGRESS`
+status: `BASELINE_PLAN` — live work remains in the original Issues and PRs
 
 ## 中文版
 
 <!-- topic:reference -->
+
+### 阅读范围与阶段差异（2026-11-12）
+
+本页是产品阶段与验收条件的导航，不是实时任务账本。当前 owner、claim、HEAD、依赖和下一步以 [#3 架构治理入口](https://github.com/youling/ghostfleet/issues/3)及原工单为准。保留原 #11 首次纳管、#36 传输、#60 可选网络操作、#63 管理权限、#64 拓扑、#69 人工审批的独立验收，不把全部 OPEN 等同待认领。
+
+本轮核验的 `main` 为 `60f441f235b14e1334b672066d71e4200bd96a59`。相对上一轮文档收敛，bootstrap 实际安装链 [#55](https://github.com/youling/ghostfleet/pull/55)与提权入口修复 [#62](https://github.com/youling/ghostfleet/pull/62)已经合并；其源码证据继续有效。随后发现的运行账户与特权 Helper 共用身份问题，按 [#11 账户隔离纠偏](https://github.com/youling/ghostfleet/issues/11#issuecomment-6804877719)由 [#79](https://github.com/youling/ghostfleet/pull/79)承接，公开工件/启动交付由 [#80](https://github.com/youling/ghostfleet/pull/80)承接。该窗口内二者未合并；顺序仍为 #79 接受后 #80 对齐并复验。旧的账户共用许可不能用于新的完全纳管验收。
+
+版本化纳管 [#78](https://github.com/youling/ghostfleet/pull/78)、文件传输 [#67](https://github.com/youling/ghostfleet/pull/67)、来源拓扑 [#65](https://github.com/youling/ghostfleet/pull/65)和可选网络操作 [#61](https://github.com/youling/ghostfleet/pull/61)仍有各自候选/审查/实现边界；不能因下列 V0 阶段有文档就认为这些能力已交付。准确状态回读原 PR，证据层级见[架构图](ARCHITECTURE.md)。[同类项目研究](research/REUSE_RECONNAISSANCE_2026-11-12.md)补充复用依据，不新设实施门槛。
 
 
 
@@ -90,6 +98,14 @@ status: `IN_PROGRESS`
 ## English Version
 
 <!-- topic:reference -->
+
+### Scope and stage delta (2026-11-12)
+
+This page navigates product stages and acceptance criteria; it is not a live work ledger. Read the [architecture anchor #3](https://github.com/youling/ghostfleet/issues/3) and original work items for current owners, claims, heads, dependencies and next actions. Keep the separate acceptance of #11 onboarding, #36 transport, #60 optional network operations, #63 administrator authority, #64 topology and #69 Human approval. OPEN does not mean available for claim.
+
+The observed `main` was `60f441f235b14e1334b672066d71e4200bd96a59`. Since the previous documentation convergence, the actual bootstrap installation chain [#55](https://github.com/youling/ghostfleet/pull/55) and elevated launcher fixes [#62](https://github.com/youling/ghostfleet/pull/62) have merged, and their bounded source evidence remains valid. The later runtime/privileged-Helper account-sharing issue is addressed by [#79](https://github.com/youling/ghostfleet/pull/79) under the [#11 account-isolation correction](https://github.com/youling/ghostfleet/issues/11#issuecomment-6804877719); [#80](https://github.com/youling/ghostfleet/pull/80) owns public assets and verified launcher delivery. Both were unmerged in this window. The order remains acceptance of #79, then alignment and revalidation of #80. The superseded account-sharing allowance cannot support new fully-managed acceptance.
+
+Versioned enrollment [#78](https://github.com/youling/ghostfleet/pull/78), file transfer [#67](https://github.com/youling/ghostfleet/pull/67), origin topology [#65](https://github.com/youling/ghostfleet/pull/65) and optional network operation [#61](https://github.com/youling/ghostfleet/pull/61) retain their own candidate/review/implementation boundaries. Documenting the V0 stages below does not establish delivery of those capabilities. Re-read each PR for exact status and the [architecture diagram](ARCHITECTURE.md) for evidence levels. [Related-project research](research/REUSE_RECONNAISSANCE_2026-11-12.md) adds reuse evidence without introducing implementation gates.
 
 
 

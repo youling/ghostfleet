@@ -140,6 +140,25 @@ V0 MCP 提供节点、纳管尝试和能力目录的观察与检查工具。模�
 
 首台 Linux 消费者的真实特权远控闭环已在一个私有部署中验收；它不等于首次纳管或第二节点通过。跨层契约、预检矩阵、`UNKNOWN` 对账、第二节点与 NAS 首次使用的区别见[生产节点纳管与特权金丝雀 runbook](architecture/PRODUCTION_NODE_ONBOARDING_AND_ADMIN_CANARY_V1.md)。图中的 Worker/DO/Tunnel 是参考部署组件，不是核心强制依赖。ChatGPT 对话内人工审批的可选交互、OAuth 身份边界与 Web/Mobile 能力门见[对话内人工审批 v1](architecture/IN_CHAT_HUMAN_APPROVAL_V1.md)。 公网/边缘节点的 `MANAGED_ONLY` 来源拒绝由独立的 [#64 / PR #65](https://github.com/youling/ghostfleet/pull/65) typed-origin tranche 承担；该 PR 当前仍未合并/部署，私有拓扑策略和网络层无中继验收也未完成。
 
+### 工程证据与产品验收
+
+下图回答“一个方案何时能支持哪种结论”，是 `DERIVED` 导航。来源为[测试分层](TESTING.md)、[消费者验收](CONSUMER_ACCEPTANCE.md)与[当前架构治理入口 #3](https://github.com/youling/ghostfleet/issues/3)；核验窗口为 2026-11-12，源码基线 `60f441f235b14e1334b672066d71e4200bd96a59`。本图不保存实时 PR 状态，不创建新的审批层。
+
+~~~mermaid
+flowchart TD
+    Spec["候选契约"] -. "实现为可执行场景" .-> Cases["行为与反例测试"]
+    Source["精确版本源码"] --> Cases
+    Source --> Structure["结构与文档检查"]
+    Cases --> Review["同一版本的证据与审查"]
+    Structure --> Review
+    Review --> Accepted["已接受的源码"]
+    Accepted -. "实例接线与现场证明" .-> Consumer["独立消费者验收"]
+~~~
+
+测试与审查按变更范围适用；本图不要求仅修改文档时重跑无关的设备行为测试。结构检查只能证明结构约束；已执行的合成/隔离测试只能证明所测范围。源码接受后，实例仍须证明目录、鉴权、调用路由、允许/拒绝路径、身份回读和回滚。`NOT_RUN`、查询失败和结果不明不能压成 PASS 或零差异。公开源码更新也不自动改变部署版本或设备状态。
+
+例如，版本化纳管的 [PR #78](https://github.com/youling/ghostfleet/pull/78) 在上述窗口仍是候选合同，24 个 VE 场景未执行；文件传输 [PR #67](https://github.com/youling/ghostfleet/pull/67) 仍是计划层候选。它们的绿色结构/源码检查不证明升级或传输已经可用。当前分支与 gate 必须回读原 PR；阶段视图见[实施计划](IMPLEMENTATION_PLAN.md)，外部机制取舍见[同类项目勘察](research/REUSE_RECONNAISSANCE_2026-11-12.md)。
+
 ### 当前源码预览与可选模块
 
 公开 `main` 包含类型化控制、bootstrap、Python 平台运行时和显式可选的授权基础模块。[导出清单](export-manifest.json) 列出入口、组件和测试。默认 MCP 四个只读工具与 Console 的生命周期对象管理没有设备执行后端。生产 OAuth、Pages 托管和第二台独立硬件分别验收。核心、API、权限与标准 AI 客户端无关，无需 OpenAI/ChatGPT 配置；特定客户端的配置、重定向、身份和权限范围通过可选适配器精确绑定。详见 [操作](OPERATIONS.md)、[授权](AUTHORIZATION.md) 和 [迁移](MIGRATION.md)。
@@ -287,6 +306,25 @@ One-time provider material uses a two-phase private service binding. Ticket gene
 ### Production node onboarding and approved-admin execution
 
 The first Linux consumer's live approved-admin path has passed in one private deployment; this does not mean first-use enrollment or a second node has passed. Cross-layer contracts, preflight, `UNKNOWN` reconciliation and the distinction between second-node acceptance and NAS first use are documented in the [production node onboarding and admin canary runbook](architecture/PRODUCTION_NODE_ONBOARDING_AND_ADMIN_CANARY_V1.md). Worker/DO/Tunnel in its diagrams are reference-deployment components, not mandatory core dependencies. The optional in-chat Human approval interaction, OAuth principal boundary and Web/Mobile platform gates are documented in [In-chat Human approval v1](architecture/IN_CHAT_HUMAN_APPROVAL_V1.md). The `MANAGED_ONLY` origin denial for public/edge nodes is owned by the separate [#64 / PR #65](https://github.com/youling/ghostfleet/pull/65) typed-origin tranche; that PR remains unmerged/undeployed, and private topology policy plus network no-relay acceptance remain outstanding.
+
+### Engineering evidence and product acceptance
+
+This `DERIVED` view answers which evidence supports which conclusion. Its sources are [testing layers](TESTING.md), [consumer acceptance](CONSUMER_ACCEPTANCE.md) and the [current architecture anchor #3](https://github.com/youling/ghostfleet/issues/3); it was checked on 2026-11-12 against source baseline `60f441f235b14e1334b672066d71e4200bd96a59`. It stores no live PR state and adds no approval tier.
+
+~~~mermaid
+flowchart TD
+    Spec["Candidate contract"] -. "Implement executable scenarios" .-> Cases["Behavior and counterexample tests"]
+    Source["Exact source revision"] --> Cases
+    Source --> Structure["Structure and documentation checks"]
+    Cases --> Review["Evidence and review for that revision"]
+    Structure --> Review
+    Review --> Accepted["Accepted source"]
+    Accepted -. "Deployment wiring and field evidence" .-> Consumer["Independent consumer acceptance"]
+~~~
+
+Tests and review apply according to the change scope; this view does not require unrelated device-behavior tests for documentation-only changes. Structural checks establish structural constraints; executed synthetic/disposable tests establish only their tested scope. Accepted source still requires deployment evidence for catalog/authentication/call routes, permitted and denied operations, identity readback and rollback. `NOT_RUN`, failed queries and uncertain results must not collapse into PASS or zero delta. A public source update does not change deployed versions or device state automatically.
+
+For example, in this observation window versioned enrollment [PR #78](https://github.com/youling/ghostfleet/pull/78) remained a candidate contract with 24 unexecuted VE scenarios, while file transfer [PR #67](https://github.com/youling/ghostfleet/pull/67) remained a planning-layer candidate. Green structural/source checks do not establish usable updates or transfers. Re-read the original PR for current branches and gates. See the [implementation plan](IMPLEMENTATION_PLAN.md) for stage navigation and [related-project reconnaissance](research/REUSE_RECONNAISSANCE_2026-11-12.md) for external mechanisms and reuse decisions.
 
 ### Current source preview and optional modules
 

@@ -14,6 +14,7 @@
 | 插件和设备执行集成 | [插件开发](PLUGIN_DEVELOPMENT.md)、[类型化控制](CONTROL.md)、[平台](PLATFORMS.md)、[Linux 回执](LINUX_ADAPTER.md) |
 | 测试、恢复、发布 | [测试](TESTING.md)、[恢复](RECOVERY.md)、[发布清理](PUBLICATION.md)、[部署](DEPLOYMENT.md) |
 | 通用代码迁移与归属 | [ADR 001：公开包归属](adr/001-public-canonical-packages.md)、[ADR 002：消费者验收与控制路径持久性](adr/002-consumer-acceptance-control-path-durability.md)、[ADR 003：AI 原生权限代理](adr/003-ai-native-privilege-broker.md)、[迁移](MIGRATION.md)、[来源](PROVENANCE.md)、[导出清单](export-manifest.json) |
+| 同类项目与复用选择 | [2026-11-12 架构勘察](research/REUSE_RECONNAISSANCE_2026-11-12.md)：上游机制、许可/维护变化、现有接缝映射与候选反例；不等于产品验收 |
 | 参与开发和许可 | [贡献](../CONTRIBUTING.md)、[报告安全问题](../SECURITY.md)、[第三方说明](../THIRD_PARTY_NOTICES.md)、[LICENSE](../LICENSE) |
 
 文档同页先中文，后完整英文。主题与链接检查验证结构和链接，独立审阅核对语义等价。
@@ -39,6 +40,7 @@ Start with the [architecture and lifecycle diagrams](ARCHITECTURE.md) to locate 
 | Plugin/device execution integration | [Plugin development](PLUGIN_DEVELOPMENT.md), [Typed control](CONTROL.md), [Platforms](PLATFORMS.md), [Linux receipts](LINUX_ADAPTER.md) |
 | Testing, recovery and publication | [Testing](TESTING.md), [Recovery](RECOVERY.md), [Publication](PUBLICATION.md), [Deployment](DEPLOYMENT.md) |
 | Extraction and ownership | [ADR 001: public canonical packages](adr/001-public-canonical-packages.md), [ADR 002: consumer acceptance durability](adr/002-consumer-acceptance-control-path-durability.md), [ADR 003: AI-native privilege broker](adr/003-ai-native-privilege-broker.md), [Migration](MIGRATION.md), [Provenance](PROVENANCE.md), [Export manifest](export-manifest.json) |
+| Related projects and reuse | [2026-11-12 reconnaissance](research/REUSE_RECONNAISSANCE_2026-11-12.md): upstream mechanisms, license/maintenance changes, existing seams and candidate counterexamples; not product acceptance |
 | Contribution/licensing | [Contributing](../CONTRIBUTING.md), [Security reporting](../SECURITY.md), [Third-party notices](../THIRD_PARTY_NOTICES.md), [LICENSE](../LICENSE) |
 
 Each page contains Chinese followed by equivalent English. Topic/link checks validate structure and links; independent review checks semantic equivalence.
