@@ -25,11 +25,15 @@ if id ghostfleet-ops >/dev/null 2>&1 || [[ -e /etc/youling-fleet/privileged-oper
 fi
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+if [[ "${GHOSTFLEET_DISPOSABLE_KEEP_WORK:-0}" = 1 ]]; then
+  trap 'echo "kept: $work" >&2' EXIT
+else
+  trap 'rm -rf "$work"' EXIT
+fi
 chmod 0700 "$work"
 
 privileged_root="$GITHUB_WORKSPACE/packages/runtime-python/src/ghostfleet_runtime/resources/fleet/10_platforms/linux/common/operations/privileged"
-for file in managed-linux-privileged-operations.sh fleet_privctl.py fleet_privileged_ssh_entry.py; do
+for file in managed-linux-privileged-operations.sh fleet_privctl.py fleet_privileged_ssh_entry.py fleet_admin_command.py; do
   [[ -r "$privileged_root/$file" ]] || { echo "missing $file" >&2; exit 3; }
 done
 for tool in node ssh-keygen python3 sha256sum visudo useradd loginctl getent; do
@@ -75,6 +79,7 @@ const selection = {
     { name: "managed-linux-privileged-operations.sh", mode: "0750", content: read("managed-linux-privileged-operations.sh") },
     { name: "fleet_privctl.py", mode: "0755", content: read("fleet_privctl.py") },
     { name: "fleet_privileged_ssh_entry.py", mode: "0755", content: read("fleet_privileged_ssh_entry.py") },
+    { name: "fleet_admin_command.py", mode: "0755", content: read("fleet_admin_command.py") },
     { name: "privileged-ops.pub", mode: "0644", content: readFileSync(join(work, "privileged-ops.pub"), "utf8") },
     { name: "ghostfleet-managed.service", mode: "0644", content: unit },
   ],
@@ -100,8 +105,8 @@ cat > "$work/harness.sh" <<'HARNESS'
 set -eu
 CHECKPOINT_DIR="${CAPABILITY_CHECKPOINT:?}"
 fail() { printf '%s\n' "fleet-enroll: $*" >&2; exit 1; }
-. "${CAPABILITY_DATA:?}"
 . "${CAPABILITY_LIBRARY:?}"
+. "${CAPABILITY_DATA:?}"
 capability_validate_selection
 capability_apply
 HARNESS
@@ -139,15 +144,26 @@ if not touched:
 open(target, "w", encoding="utf-8").writelines(rows)
 PY
 if run_capability "$work/checkpoint-tampered" "$work/tampered-data.sh" >"$work/tampered.log" 2>&1; then
-  echo "tampered artifact digest was accepted" >&2; exit 1
+  echo "tampered artifact digest was accepted" >&2
+  cat "$work/tampered.log" >&2
+  exit 1
 fi
+grep -q 'failed digest verification' "$work/tampered.log" || {
+  echo "tampered artifact was rejected for an unexpected reason" >&2
+  cat "$work/tampered.log" >&2
+  exit 1
+}
 grep -q 'failed digest verification' "$work/tampered.log"
 [[ ! -e /etc/youling-fleet ]] || { echo "tampered capability created state" >&2; exit 1; }
 ! id ghostfleet-ops >/dev/null 2>&1 || { echo "tampered capability created an account" >&2; exit 1; }
 
 # 3. Real installation through the real reviewed installer, inside one root run.
 mkdir -p "$work/checkpoint-new"
-run_capability "$work/checkpoint-new" "$work/capability-data.sh" >"$work/new.log" 2>&1
+if ! run_capability "$work/checkpoint-new" "$work/capability-data.sh" >"$work/new.log" 2>&1; then
+  echo "real selected-capability install failed" >&2
+  cat "$work/new.log" >&2
+  exit 1
+fi
 grep -q 'mode=NEW' "$work/new.log"
 [[ "$(sha256sum /usr/local/libexec/youling-fleet/fleet-privctl | awk '{print $1}')" == "$expected_helper_sha" ]]
 [[ "$(sha256sum /usr/local/libexec/youling-fleet/fleet-privileged-ssh-entry | awk '{print $1}')" == "$expected_entry_sha" ]]
@@ -164,8 +180,7 @@ before_helper_mtime="$(stat -c %Y /usr/local/libexec/youling-fleet/fleet-privctl
 # 4. Repeating the converged ceremony is zero delta and reports ADOPT.
 mkdir -p "$work/checkpoint-adopt"
 run_capability "$work/checkpoint-adopt" "$work/capability-data.sh" >"$work/adopt.log" 2>&1
-grep -q 'mode=ADOPT' "$work/adopt.log"
-grep -q 'zero delta' "$work/adopt.log"
+grep -q 'already converged; zero delta' "$work/adopt.log"
 grep -q '"mode":"ADOPT"' "$work/checkpoint-adopt/capability-state.json"
 [[ "$(sha256sum "$unit")" == "$before_unit" ]]
 [[ "$(stat -c %Y /usr/local/libexec/youling-fleet/fleet-privctl)" == "$before_helper_mtime" ]] || {
