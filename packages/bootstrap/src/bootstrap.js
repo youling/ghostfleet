@@ -17,6 +17,362 @@ if [ -n "$ENROLLMENT_URL" ]; then
 fi
 CHECKPOINT_DIR="\${GHOSTFLEET_CHECKPOINT_DIR:-/var/lib/fleet}"
 CHECKPOINT_FILE="$CHECKPOINT_DIR/enrollment-checkpoint.json"
+# @@GHOSTFLEET_CAPABILITY_SECTION_BEGIN@@
+# ---------------------------------------------------------------------------
+# Selected-capability lane. Everything between the sentinels below is DATA ONLY:
+# the deployment renders it from the reviewed enrollment template, together with
+# the exact artifact version and SHA-256 digests. The default selects nothing, so
+# the published courier never installs a privileged component the template did
+# not request. Installation happens inside this same root ceremony; it never
+# asks for a second password and never mints a second identity.
+# @@GHOSTFLEET_SELECTED_CAPABILITY_BEGIN@@
+CAPABILITY_SCHEMA=''
+CAPABILITY_SOURCE=''
+CAPABILITY_VERSION=''
+CAPABILITY_TEMPLATE_DIGEST=''
+CAPABILITY_SELECTION_DIGEST=''
+CAPABILITY_HELPER_REQUIRED=0
+CAPABILITY_LINGER_REQUIRED=0
+CAPABILITY_USER_SERVICE_REQUIRED=0
+CAPABILITY_CONTROL_ACCOUNT=''
+CAPABILITY_INSTALLER=''
+CAPABILITY_PRIVILEGED_KEY=''
+CAPABILITY_USER_UNIT=''
+CAPABILITY_USER_UNIT_ARTIFACT=''
+CAPABILITY_ARTIFACT_COUNT=0
+capability_artifact_row() {
+  return 1
+}
+# @@GHOSTFLEET_SELECTED_CAPABILITY_END@@
+CAPABILITY_HELPER_STATE=UNKNOWN
+CAPABILITY_USER_SERVICE_STATE=UNKNOWN
+CAPABILITY_LINGER_STATE=UNKNOWN
+CAPABILITY_MODE=NOT_REQUESTED
+CAPABILITY_STAGE_DIR=
+CAPABILITY_CREATED_UNIT=
+CAPABILITY_CREATED_WANT=
+CAPABILITY_REQUIRED_MARKERS="HELPER=COMPLIANT ENTRY=COMPLIANT AUTHORIZED_KEY=CONFIGURED SUDOERS=CONFIGURED ORDINARY_USER_SUDO_GRANT=ABSENT OPS_ACCOUNT=COMPLIANT"
+
+capability_selected() {
+  [ "$CAPABILITY_HELPER_REQUIRED" = 1 ] || [ "$CAPABILITY_LINGER_REQUIRED" = 1 ] || [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]
+}
+
+capability_ordinary_user() {
+  if [ -n "\${GHOSTFLEET_CONTROL_ORDINARY_USER:-}" ]; then
+    printf '%s' "$GHOSTFLEET_CONTROL_ORDINARY_USER"
+  elif [ -n "\${SUDO_USER:-}" ]; then
+    printf '%s' "$SUDO_USER"
+  fi
+  return 0
+}
+
+capability_artifact_field() {
+  capability_artifact_row "$1" | cut -d '|' -f "$2"
+}
+
+capability_states_compliant() {
+  case "$CAPABILITY_HELPER_STATE" in NOT_REQUESTED|COMPLIANT) ;; *) return 1 ;; esac
+  case "$CAPABILITY_USER_SERVICE_STATE" in NOT_REQUESTED|COMPLIANT) ;; *) return 1 ;; esac
+  case "$CAPABILITY_LINGER_STATE" in NOT_REQUESTED|COMPLIANT) ;; *) return 1 ;; esac
+  return 0
+}
+
+# Read-only. Runs before package, provider, service or credential effects.
+capability_validate_selection() {
+  if ! capability_selected; then
+    [ "$CAPABILITY_ARTIFACT_COUNT" = 0 ] || fail 'refusing privileged capability artifacts that no template requested'
+    [ -z "$CAPABILITY_INSTALLER" ] || fail 'refusing a privileged capability installer that no template requested'
+    return 0
+  fi
+  [ "$CAPABILITY_SCHEMA" = 'ghostfleet-selected-capability/v1' ] || fail 'selected-capability schema is not supported'
+  printf '%s' "$CAPABILITY_VERSION" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._+/-]{0,63}$' || fail 'selected-capability version is missing or invalid'
+  printf '%s' "$CAPABILITY_TEMPLATE_DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$' || fail 'selected-capability template digest is invalid'
+  case "$CAPABILITY_ARTIFACT_COUNT" in ''|*[!0-9]*) fail 'selected-capability artifact count is invalid' ;; esac
+  [ "$CAPABILITY_ARTIFACT_COUNT" -ge 1 ] || fail 'selected capability pins no artifacts'
+  for capability_tool in base64 cut mktemp sha256sum; do
+    command -v "$capability_tool" >/dev/null 2>&1 || fail "preflight failed: $capability_tool is required by the selected capability"
+  done
+  CAPABILITY_INSTALLER_INDEX=
+  CAPABILITY_KEY_INDEX=
+  CAPABILITY_UNIT_INDEX=
+  capability_index=1
+  while [ "$capability_index" -le "$CAPABILITY_ARTIFACT_COUNT" ]; do
+    capability_row="$(capability_artifact_row "$capability_index")" || capability_row=
+    [ -n "$capability_row" ] || fail "selected-capability artifact $capability_index is missing"
+    capability_name="$(printf '%s' "$capability_row" | cut -d '|' -f 1)"
+    capability_digest="$(printf '%s' "$capability_row" | cut -d '|' -f 2)"
+    capability_mode="$(printf '%s' "$capability_row" | cut -d '|' -f 3)"
+    printf '%s' "$capability_name" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' || fail "selected-capability artifact $capability_index name is invalid"
+    printf '%s' "$capability_digest" | grep -Eq '^[0-9a-f]{64}$' || fail "selected-capability artifact $capability_name digest is invalid"
+    printf '%s' "$capability_mode" | grep -Eq '^0?[0-7]{3}$' || fail "selected-capability artifact $capability_name mode is invalid"
+    [ "$capability_name" != "$CAPABILITY_INSTALLER" ] || CAPABILITY_INSTALLER_INDEX="$capability_index"
+    [ "$capability_name" != "$CAPABILITY_PRIVILEGED_KEY" ] || CAPABILITY_KEY_INDEX="$capability_index"
+    [ "$capability_name" != "$CAPABILITY_USER_UNIT_ARTIFACT" ] || CAPABILITY_UNIT_INDEX="$capability_index"
+    capability_index=$((capability_index + 1))
+  done
+  if [ "$CAPABILITY_HELPER_REQUIRED" = 1 ]; then
+    [ -n "$CAPABILITY_INSTALLER_INDEX" ] || fail 'selected privileged helper does not pin its installer artifact'
+    [ -n "$CAPABILITY_KEY_INDEX" ] || fail 'selected privileged helper does not pin the admitted privileged SSH public key'
+    printf '%s' "$CAPABILITY_CONTROL_ACCOUNT" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || fail 'selected-capability control account is invalid'
+    [ "$CAPABILITY_CONTROL_ACCOUNT" != root ] || fail 'selected-capability control account must not be root'
+    for capability_tool in bash python3 useradd usermod passwd visudo sudo getent; do
+      command -v "$capability_tool" >/dev/null 2>&1 || fail "preflight failed: $capability_tool is required by the selected privileged helper"
+    done
+    capability_ordinary="$(capability_ordinary_user)"
+    [ -n "$capability_ordinary" ] || fail 'selected privileged helper needs the ordinary control user; run the courier from the Human administrator account'
+    printf '%s' "$capability_ordinary" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || fail 'ordinary control user is invalid'
+    [ "$capability_ordinary" != root ] || fail 'ordinary control user must not be root'
+    [ "$capability_ordinary" != "$CAPABILITY_CONTROL_ACCOUNT" ] || fail 'ordinary and dedicated control accounts must differ'
+  fi
+  if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
+    [ -n "$CAPABILITY_UNIT_INDEX" ] || fail 'selected user service does not pin its unit artifact'
+    printf '%s' "$CAPABILITY_USER_UNIT" | grep -Eq '^[a-z][a-z0-9_.-]{0,63}\\.service$' || fail 'selected user unit name is invalid'
+  fi
+  if [ "$CAPABILITY_LINGER_REQUIRED" = 1 ] || [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
+    command -v loginctl >/dev/null 2>&1 || fail 'preflight failed: loginctl is required by the selected capability'
+  fi
+  # The pinned bytes are a dependency, not a later step: prove every digest in a
+  # private staging directory before ANY package, provider, service or credential
+  # effect. A mismatching artifact is a missing dependency.
+  capability_stage
+  capability_stage_cleanup
+  return 0
+}
+
+capability_stage() {
+  CAPABILITY_STAGE_DIR="$(mktemp -d)"
+  [ -n "$CAPABILITY_STAGE_DIR" ] && [ -d "$CAPABILITY_STAGE_DIR" ] || fail 'selected-capability staging directory could not be created'
+  chmod 0700 "$CAPABILITY_STAGE_DIR"
+  capability_index=1
+  while [ "$capability_index" -le "$CAPABILITY_ARTIFACT_COUNT" ]; do
+    capability_name="$(capability_artifact_field "$capability_index" 1)"
+    capability_digest="$(capability_artifact_field "$capability_index" 2)"
+    capability_mode="$(capability_artifact_field "$capability_index" 3)"
+    capability_actual=
+    if capability_artifact_field "$capability_index" 4 | base64 -d > "$CAPABILITY_STAGE_DIR/$capability_name" 2>/dev/null; then
+      capability_actual="$(sha256sum "$CAPABILITY_STAGE_DIR/$capability_name" | cut -d ' ' -f 1)"
+    fi
+    if [ "$capability_actual" != "$capability_digest" ]; then
+      capability_stage_cleanup
+      fail "selected-capability artifact $capability_name failed digest verification"
+    fi
+    chmod "$capability_mode" "$CAPABILITY_STAGE_DIR/$capability_name"
+    capability_index=$((capability_index + 1))
+  done
+}
+
+capability_stage_cleanup() {
+  if [ -n "$CAPABILITY_STAGE_DIR" ] && [ -d "$CAPABILITY_STAGE_DIR" ]; then
+    rm -rf "$CAPABILITY_STAGE_DIR"
+  fi
+  CAPABILITY_STAGE_DIR=
+}
+
+capability_installer() {
+  capability_ordinary="$(capability_ordinary_user)"
+  FLEET_CONTROL_ORDINARY_USER="$capability_ordinary" \\
+    FLEET_CONTROL_PRIVILEGED_SSH_PUBLIC_KEY_FILE="$CAPABILITY_STAGE_DIR/$CAPABILITY_PRIVILEGED_KEY" \\
+    bash "$CAPABILITY_STAGE_DIR/$CAPABILITY_INSTALLER" "$1"
+}
+
+capability_markers_ok() {
+  for capability_marker in $CAPABILITY_REQUIRED_MARKERS; do
+    printf '%s\\n' "$1" | grep -qx "$capability_marker" || return 1
+  done
+  return 0
+}
+
+capability_helper_state() {
+  if [ "$CAPABILITY_HELPER_REQUIRED" != 1 ]; then printf '%s' NOT_REQUESTED; return 0; fi
+  capability_output="$(capability_installer --check 2>/dev/null)" || capability_output=
+  if capability_markers_ok "$capability_output"; then printf '%s' COMPLIANT; return 0; fi
+  case "$capability_output" in
+    *HELPER=ABSENT_OR_DRIFT*)
+      case "$capability_output" in
+        *OPS_ACCOUNT=ABSENT_OR_DRIFT*)
+          case "$capability_output" in
+            *AUTHORIZED_KEY=ABSENT_OR_DRIFT*) printf '%s' ABSENT; return 0 ;;
+          esac
+          ;;
+      esac
+      ;;
+  esac
+  printf '%s' DRIFT_REPAIRABLE
+  return 0
+}
+
+capability_control_home() {
+  getent passwd "$CAPABILITY_CONTROL_ACCOUNT" | cut -d ':' -f 6
+}
+
+capability_user_service_state() {
+  if [ "$CAPABILITY_USER_SERVICE_REQUIRED" != 1 ]; then printf '%s' NOT_REQUESTED; return 0; fi
+  capability_home="$(capability_control_home)"
+  [ -n "$capability_home" ] || { printf '%s' UNKNOWN; return 0; }
+  capability_unit_file="$capability_home/.config/systemd/user/$CAPABILITY_USER_UNIT"
+  capability_want_file="$capability_home/.config/systemd/user/default.target.wants/$CAPABILITY_USER_UNIT"
+  if [ -f "$capability_unit_file" ] && [ -L "$capability_want_file" ] &&
+     [ "$(sha256sum "$capability_unit_file" | cut -d ' ' -f 1)" = "$(capability_artifact_field "$CAPABILITY_UNIT_INDEX" 2)" ]; then
+    printf '%s' COMPLIANT
+  else
+    printf '%s' ABSENT
+  fi
+  return 0
+}
+
+capability_linger_state() {
+  if [ "$CAPABILITY_LINGER_REQUIRED" != 1 ]; then printf '%s' NOT_REQUESTED; return 0; fi
+  if ! id "$CAPABILITY_CONTROL_ACCOUNT" >/dev/null 2>&1; then printf '%s' ABSENT; return 0; fi
+  capability_linger="$(loginctl show-user "$CAPABILITY_CONTROL_ACCOUNT" -p Linger 2>/dev/null)" || capability_linger=
+  case "$capability_linger" in
+    *Linger=yes*) printf '%s' COMPLIANT ;;
+    *) printf '%s' ABSENT ;;
+  esac
+  return 0
+}
+
+capability_probe() {
+  CAPABILITY_HELPER_STATE="$(capability_helper_state)"
+  CAPABILITY_USER_SERVICE_STATE="$(capability_user_service_state)"
+  CAPABILITY_LINGER_STATE="$(capability_linger_state)"
+}
+
+capability_probe_all() {
+  if ! capability_selected; then
+    CAPABILITY_HELPER_STATE=NOT_REQUESTED
+    CAPABILITY_USER_SERVICE_STATE=NOT_REQUESTED
+    CAPABILITY_LINGER_STATE=NOT_REQUESTED
+    return 0
+  fi
+  capability_validate_selection
+  capability_stage
+  capability_probe
+  capability_result=0
+  capability_states_compliant || capability_result=1
+  capability_stage_cleanup
+  return "$capability_result"
+}
+
+capability_user_service_apply() {
+  capability_home="$(capability_control_home)"
+  [ -n "$capability_home" ] || { printf '%s\\n' 'fleet-enroll: selected control account has no home directory' >&2; return 1; }
+  [ -d "$capability_home" ] || { printf '%s\\n' 'fleet-enroll: selected control account home directory is missing' >&2; return 1; }
+  capability_userdir="$capability_home/.config/systemd/user"
+  capability_wantdir="$capability_userdir/default.target.wants"
+  install -d -m 0755 -o "$CAPABILITY_CONTROL_ACCOUNT" -g "$CAPABILITY_CONTROL_ACCOUNT" \\
+    "$capability_home/.config" "$capability_home/.config/systemd" "$capability_userdir" "$capability_wantdir" ||
+    { printf '%s\\n' 'fleet-enroll: selected user service directories could not be created' >&2; return 1; }
+  capability_unit_file="$capability_userdir/$CAPABILITY_USER_UNIT"
+  capability_want_file="$capability_wantdir/$CAPABILITY_USER_UNIT"
+  if [ ! -e "$capability_unit_file" ]; then CAPABILITY_CREATED_UNIT="$capability_unit_file"; fi
+  if [ ! -L "$capability_want_file" ]; then CAPABILITY_CREATED_WANT="$capability_want_file"; fi
+  install -m 0644 -o "$CAPABILITY_CONTROL_ACCOUNT" -g "$CAPABILITY_CONTROL_ACCOUNT" \\
+    "$CAPABILITY_STAGE_DIR/$CAPABILITY_USER_UNIT_ARTIFACT" "$capability_unit_file" ||
+    { printf '%s\\n' 'fleet-enroll: selected user service unit could not be installed' >&2; return 1; }
+  ln -sfn "../$CAPABILITY_USER_UNIT" "$capability_want_file" ||
+    { printf '%s\\n' 'fleet-enroll: selected user service could not be enabled' >&2; return 1; }
+  [ "$(sha256sum "$capability_unit_file" | cut -d ' ' -f 1)" = "$(capability_artifact_field "$CAPABILITY_UNIT_INDEX" 2)" ] ||
+    { printf '%s\\n' 'fleet-enroll: selected user service unit digest does not match the reviewed artifact' >&2; return 1; }
+  return 0
+}
+
+capability_linger_apply() {
+  if [ "$CAPABILITY_LINGER_STATE" = COMPLIANT ]; then return 0; fi
+  loginctl enable-linger "$CAPABILITY_CONTROL_ACCOUNT" ||
+    { printf '%s\\n' 'fleet-enroll: Linger could not be enabled for the dedicated control account' >&2; return 1; }
+  CAPABILITY_LINGER_STATE="$(capability_linger_state)"
+  [ "$CAPABILITY_LINGER_STATE" = COMPLIANT ] ||
+    { printf '%s\\n' 'fleet-enroll: Linger postcondition failed for the dedicated control account' >&2; return 1; }
+  return 0
+}
+
+capability_rollback_files() {
+  if [ -n "$CAPABILITY_CREATED_WANT" ]; then rm -f "$CAPABILITY_CREATED_WANT"; fi
+  if [ -n "$CAPABILITY_CREATED_UNIT" ]; then rm -f "$CAPABILITY_CREATED_UNIT"; fi
+  CAPABILITY_CREATED_WANT=
+  CAPABILITY_CREATED_UNIT=
+}
+
+capability_state_write() {
+  install -d -m 0700 -o root -g root "$CHECKPOINT_DIR"
+  capability_state_file="$CHECKPOINT_DIR/capability-state.json"
+  capability_state_body="{\\"schema\\":\\"ghostfleet-capability-state/v1\\",\\"version\\":\\"$CAPABILITY_VERSION\\",\\"selection_digest\\":\\"$CAPABILITY_SELECTION_DIGEST\\",\\"template_digest\\":\\"$CAPABILITY_TEMPLATE_DIGEST\\",\\"mode\\":\\"$CAPABILITY_MODE\\",\\"components\\":{\\"privileged_helper\\":\\"$CAPABILITY_HELPER_STATE\\",\\"user_service\\":\\"$CAPABILITY_USER_SERVICE_STATE\\",\\"linger\\":\\"$CAPABILITY_LINGER_STATE\\"}}"
+  if [ -r "$capability_state_file" ] && [ "$(cat "$capability_state_file")" = "$capability_state_body" ]; then return 0; fi
+  printf '%s\\n' "$capability_state_body" > "$capability_state_file.$$"
+  chmod 0600 "$capability_state_file.$$"
+  chown root:root "$capability_state_file.$$"
+  mv -f "$capability_state_file.$$" "$capability_state_file"
+}
+
+# Install exactly the capability the reviewed template selected, inside the
+# single authorized root ceremony. Partial application is reported as a failure
+# and never as completion.
+capability_apply() {
+  if ! capability_selected; then
+    CAPABILITY_HELPER_STATE=NOT_REQUESTED
+    CAPABILITY_USER_SERVICE_STATE=NOT_REQUESTED
+    CAPABILITY_LINGER_STATE=NOT_REQUESTED
+    CAPABILITY_MODE=NOT_REQUESTED
+    printf '%s\\n' 'fleet-enroll: the selected template requests no privileged capability; nothing was installed' >&2
+    return 0
+  fi
+  capability_validate_selection
+  capability_stage
+  capability_probe
+  if capability_states_compliant; then
+    CAPABILITY_MODE=ADOPT
+    capability_state_write
+    capability_stage_cleanup
+    printf '%s\\n' "fleet-enroll: selected capability $CAPABILITY_VERSION already converged; zero delta" >&2
+    return 0
+  fi
+  capability_drift=0
+  case "$CAPABILITY_HELPER_STATE" in DRIFT_REPAIRABLE|CONFLICT) capability_drift=1 ;; esac
+  case "$CAPABILITY_USER_SERVICE_STATE" in COMPLIANT) capability_drift=1 ;; esac
+  case "$CAPABILITY_LINGER_STATE" in COMPLIANT) capability_drift=1 ;; esac
+  if [ "$capability_drift" = 1 ]; then CAPABILITY_MODE=REPAIR; else CAPABILITY_MODE=NEW; fi
+  if [ "$CAPABILITY_HELPER_REQUIRED" = 1 ] && [ "$CAPABILITY_HELPER_STATE" != COMPLIANT ]; then
+    if ! capability_installer --apply; then
+      capability_stage_cleanup
+      fail 'selected privileged helper apply failed; no completion is reported'
+    fi
+    CAPABILITY_HELPER_STATE="$(capability_helper_state)"
+    if [ "$CAPABILITY_HELPER_STATE" != COMPLIANT ]; then
+      capability_stage_cleanup
+      fail 'selected privileged helper postcondition failed'
+    fi
+  fi
+  if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ] && [ "$CAPABILITY_USER_SERVICE_STATE" != COMPLIANT ]; then
+    if ! capability_user_service_apply; then
+      capability_rollback_files
+      capability_stage_cleanup
+      fail 'selected user service could not be installed; no completion is reported'
+    fi
+    CAPABILITY_USER_SERVICE_STATE="$(capability_user_service_state)"
+    if [ "$CAPABILITY_USER_SERVICE_STATE" != COMPLIANT ]; then
+      capability_rollback_files
+      capability_stage_cleanup
+      fail 'selected user service postcondition failed'
+    fi
+  fi
+  if [ "$CAPABILITY_LINGER_REQUIRED" = 1 ]; then
+    if ! capability_linger_apply; then
+      capability_rollback_files
+      capability_stage_cleanup
+      fail 'selected Linger could not be enabled; no completion is reported'
+    fi
+  fi
+  if ! capability_states_compliant; then
+    capability_rollback_files
+    capability_stage_cleanup
+    fail 'selected capability did not converge'
+  fi
+  capability_state_write
+  capability_stage_cleanup
+  printf '%s\\n' "fleet-enroll: selected capability $CAPABILITY_VERSION converged mode=$CAPABILITY_MODE helper=$CAPABILITY_HELPER_STATE user_service=$CAPABILITY_USER_SERVICE_STATE linger=$CAPABILITY_LINGER_STATE" >&2
+  return 0
+}
+# @@GHOSTFLEET_CAPABILITY_SECTION_END@@
 
 # V2 R1 Courier is a convergence engine. Checkpoint data is a resume hint only: every
 # component used by the zero-delta path is re-proved from the live machine.
@@ -123,14 +479,21 @@ checkpoint_is_compliant() {
   esac
   live_tailscale_ready "$CHECKPOINT_NODE_ID" || return 1
   package_installed curl && package_installed ca-certificates || return 1
+  # The selected capability is part of convergence: a converged-looking host
+  # whose privileged lane drifted is not a zero-delta host.
+  capability_probe_all || return 1
   return 0
 }
 
 checkpoint_write() {
   install -d -m 0700 -o root -g root "$CHECKPOINT_DIR"
   CHECKPOINT_TMP="$CHECKPOINT_FILE.$$"
+  CHECKPOINT_COMPONENTS='"packages":"'"$PACKAGES_STATE"'","tailscale":"'"$TAILSCALE_STATE"'"'
+  if capability_selected; then
+    CHECKPOINT_COMPONENTS="$CHECKPOINT_COMPONENTS"',"privileged_helper":"'"$CAPABILITY_HELPER_STATE"'","user_service":"'"$CAPABILITY_USER_SERVICE_STATE"'","linger":"'"$CAPABILITY_LINGER_STATE"'"'
+  fi
   cat > "$CHECKPOINT_TMP" <<EOF
-{"schema":"fleet-enroll-checkpoint/v1","phase":"$1","status":"$2","identity_kind":"\${IDENTITY_KIND:-canonical}","enrollment_id":"\${ENROLLMENT_ID:-}","node_id":"$NODE_ID","node_uid":"$NODE_UID","os_family":"$OS_FAMILY","os_id":"$OS_ID","os_version_id":"$OS_VERSION_ID","profile":"managed-linux","ssh_host_key_sha256":"$SSH_HOST_KEY_SHA","components":{"packages":"$PACKAGES_STATE","tailscale":"$TAILSCALE_STATE"}}
+{"schema":"fleet-enroll-checkpoint/v1","phase":"$1","status":"$2","identity_kind":"\${IDENTITY_KIND:-canonical}","enrollment_id":"\${ENROLLMENT_ID:-}","node_id":"$NODE_ID","node_uid":"$NODE_UID","os_family":"$OS_FAMILY","os_id":"$OS_ID","os_version_id":"$OS_VERSION_ID","profile":"managed-linux","ssh_host_key_sha256":"$SSH_HOST_KEY_SHA","components":{$CHECKPOINT_COMPONENTS}}
 EOF
   chmod 0600 "$CHECKPOINT_TMP"
   chown root:root "$CHECKPOINT_TMP"
@@ -141,7 +504,7 @@ refuse_unresolved_previous_enrollment() {
   # Durable attempt/checkpoint records and a leftover one-off credential are
   # never proof of a fresh host, even if Tailscale now reports NeedsLogin.
   # Symlink checks also catch dangling paths without following them.
-  for marker in "$CHECKPOINT_FILE" "$CHECKPOINT_DIR/enrollment-report.json" /run/fleet/ts-authkey; do
+  for marker in "$CHECKPOINT_FILE" "$CHECKPOINT_DIR/enrollment-report.json" "$CHECKPOINT_DIR/capability-state.json" /run/fleet/ts-authkey; do
     if [ -e "$marker" ] || [ -L "$marker" ]; then
       fail 'prior enrollment state unresolved; reconcile original node/attempt (ADOPT/REPAIR); no new one-off key'
     fi
@@ -241,6 +604,10 @@ bootstrap_phase0_preflight() {
   printf '%s\n' "fleet-enroll: preflight PASS os=$OS_ID/$OS_VERSION_ID arch=$(uname -m) appliance=$APPLIANCE_KIND docker_socket=$DOCKER_SOCKET_HINT nopasswd_hint=$NOPASSWD_HINT" >&2
 }
 bootstrap_phase0_preflight
+
+# A malformed or unrequested selected-capability selection stops here, before
+# any package, provider, service or credential effect.
+capability_validate_selection
 
 # The next steps can update APT source or start a daemon. Refuse an existing
 # foreign/unproven Tailscale session before ANY package or service mutation.
@@ -433,6 +800,11 @@ else
   unset TS_AUTHKEY
 fi
 
+# The template-selected privileged capability is installed INSIDE this same
+# authorized root ceremony: after the identity/join fence is satisfied and before
+# any completion is reported. A template that selected nothing installs nothing.
+capability_apply
+
 # SSH_HOST_KEY_PATH and SSH_HOST_KEY_SHA were verified during read-only Phase 0.
 
 IDENTITY_EVIDENCE_B64=
@@ -482,7 +854,9 @@ cat > "$REPORT_FILE" <<EOF
   "os_id": "$OS_ID",
   "os_version_id": "$OS_VERSION_ID",
   "ssh_host_key_sha256": "$SSH_HOST_KEY_SHA",
-  "bootstrap_version": "$BOOTSTRAP_VERSION"
+  "bootstrap_version": "$BOOTSTRAP_VERSION",
+  "capability_version": "$CAPABILITY_VERSION",
+  "capability_mode": "$CAPABILITY_MODE"
 }
 EOF
 chmod 0600 "$REPORT_FILE"
@@ -498,5 +872,8 @@ if [ "$IDENTITY_KIND" = provisional ]; then
   printf '%s\\n' "fleet-enroll: provisional bootstrap complete for $NODE_ID; durable identity finalization is pending"
 else
   printf '%s\\n' "fleet-enroll: bootstrap complete for $NODE_ID ($NODE_UID)"
+fi
+if capability_selected; then
+  printf '%s\\n' "fleet-enroll: selected capability mode=$CAPABILITY_MODE version=$CAPABILITY_VERSION helper=$CAPABILITY_HELPER_STATE user_service=$CAPABILITY_USER_SERVICE_STATE linger=$CAPABILITY_LINGER_STATE"
 fi
 `;
