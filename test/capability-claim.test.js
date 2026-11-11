@@ -37,7 +37,7 @@ async function bundleFor(template_digest, overrides = {}) {
     helper_required: true,
     linger_required: true,
     user_service_required: true,
-    control_account: "ghostfleet-managed",
+    control_account: "ghostfleet-ops",
     installer: "managed-linux-privileged-operations.sh",
     privileged_key: "privileged-ops.pub",
     user_unit: { name: "ghostfleet-managed.service", artifact: "ghostfleet-managed.service" },
