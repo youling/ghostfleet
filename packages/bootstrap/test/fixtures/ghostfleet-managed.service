@@ -1,0 +1,9 @@
+[Unit]
+Description=GhostFleet managed runtime (synthetic fixture)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+
+[Install]
+WantedBy=default.target

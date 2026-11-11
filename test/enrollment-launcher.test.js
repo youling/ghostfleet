@@ -35,6 +35,44 @@ function quoteShell(value) {
   return "'" + String(value).replaceAll("'", "'\\''") + "'";
 }
 
+test("only names the bootstrap would accept reach the elevation boundary", { skip: process.platform === "win32" }, () => {
+  const command = delivery().command;
+  const start = command.indexOf("OPERATING_USER=");
+  const end = command.indexOf('if [ "$CALLER_UID" -eq 0 ]');
+  assert.ok(start > 0 && end > start, "the capture block is present");
+  const dir = mkdtempSync(join(tmpdir(), "gf-capture-"));
+  writeFileSync(join(dir, "id"), "#!/bin/sh\ncase \"$1\" in\n  -u) printf '1000\\n' ;;\n  -un) printf '%s\\n' \"$NAME\" ;;\n  *) exit 2 ;;\nesac\n", { mode: 0o755 });
+  const block = command.slice(start, end).split("/usr/bin/id").join(join(dir, "id")) + "\nexit 0\n";
+  const run = (name) => spawnSync("/bin/sh", ["-c", block], { env: { ...process.env, NAME: name }, encoding: "utf8" });
+  for (const ok of ["gf-review-human", "alice", "_service", "a", "a".repeat(32)]) {
+    assert.equal(run(ok).status, 0, "accepted: " + ok);
+  }
+  for (const bad of ["Alice", "john.doe", "-alice", "12345", "a".repeat(40), "alice'", "a b", "alice;id", ""]) {
+    assert.notEqual(run(bad).status, 0, "rejected before elevation: " + bad);
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("the launcher hands over one validated Human name and nothing else", () => {
+  const command = delivery().command;
+  // Captured from the kernel before elevation, validated for shell safety.
+  // The trusted absolute tool, never a caller-PATH id.
+  assert.match(command, /TRUSTED_ID=\/usr\/bin\/id/);
+  assert.match(command, /OPERATING_USER="\$\("\$TRUSTED_ID" -un\)"/);
+  // Exactly the bootstrap rule: first character, character class, length.
+  assert.match(command, /\|\[!a-z_\]\*/);
+  assert.match(command, /\*\[!a-z0-9_-\]\*/);
+  assert.match(command, /-gt 32/);
+  assert.doesNotMatch(command, /\$\{?SUDO_USER\b/);
+  // It crosses as the shell's first positional parameter, for both paths.
+  assert.match(command, /ghostfleet-enroll "\$OPERATING_USER"/);
+  assert.match(command, /su --login root -c "\$ELEVATED '\$OPERATING_USER'"/);
+  // The clean environment keeps exactly the two values it already had.
+  assert.match(command, /\/usr\/bin\/env -i PATH=\/usr\/sbin:\/usr\/bin:\/sbin:\/bin HOME=\/root \/bin\/sh -c /);
+  // The bootstrap re-reads it from its positional parameter, not from argv soup.
+  assert.match(command, /GHOSTFLEET_OPERATING_USER="\$\{1-\}"/);
+});
+
 test("delivered launcher does not disclose one-time material in copied shell history", () => {
   const d = delivery();
   assert.equal(d.one_time_url, url);
@@ -188,11 +226,18 @@ function sandbox({ elevation = "su", pollutePath = false, slowStty = false } = {
   }
   for (const name of ["sh", "rm"]) symlinkSync(systemTool(name), join(dir, "bin", name));
 
-  writeScript(join(callerBin, "id"), [
+  // The launcher reads the Human identity from the trusted absolute path, so the
+  // sandbox materializes that tool inside its rewritten root as well. A caller
+  // PATH that shadows id must never be consulted.
+  writeScript(join(dir, "usr/bin/id"), [
     "#!/bin/sh",
-    '[ "$1" = -u ] || exit 2',
-    "printf '%s\\n' '" + (elevation === "root" ? "0" : "1000") + "'",
+    "case \"$1\" in",
+    "  -u) printf '%s\\n' '" + (elevation === "root" ? "0" : "1000") + "' ;;",
+    "  -un) printf '%s\\n' 'fixture-human' ;;",
+    "  *) exit 2 ;;",
+    "esac",
   ]);
+  writeScript(join(callerBin, "id"), callerStub(marker));
   if (elevation === "su") {
     // Deliberately leaky: a non-login su keeps the caller environment. The
     // launcher must still start root execution from a clean environment.

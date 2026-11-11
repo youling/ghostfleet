@@ -13,6 +13,7 @@ import { assertPublicSafe, publicClone } from "../core/security.js";
 import { InvalidTransitionError, transitionAttempt } from "../core/state-machine.js";
 import { InMemoryStore } from "./store.js";
 import { createEnrollmentTemplateCatalog } from "./enrollment-templates.js";
+import { selectionMissingComponents, templateRequiresCapability } from "./capability-selection.js";
 import {
   EnrollmentTicketError, completionDigest, createTicketDelivery, createTicketFactors,
   createTicketRecord, publicTicketMetadata, sha256Text, validateClaimMaterial, verifyTicketClaim,
@@ -27,6 +28,7 @@ export class GhostFleetController {
     enrollmentTemplates = createEnrollmentTemplateCatalog(),
     enrollmentClaimPreparer = null,
     enrollmentClaimMaterializer = null,
+    capabilitySelectionProvider = null,
     ticketCodeFactory = undefined,
   } = {}) {
     this.store = store;
@@ -34,6 +36,7 @@ export class GhostFleetController {
     this.enrollmentTemplates = enrollmentTemplates;
     this.enrollmentClaimPreparer = enrollmentClaimPreparer;
     this.enrollmentClaimMaterializer = enrollmentClaimMaterializer;
+    this.capabilitySelectionProvider = capabilitySelectionProvider;
     this.ticketCodeFactory = ticketCodeFactory;
   }
 
@@ -206,6 +209,30 @@ export class GhostFleetController {
       throw new EnrollmentTicketError("TICKET_CLAIM_RECONCILE_REQUIRED", 409);
     }
     if (material.outcome !== "READY") throw new EnrollmentTicketError("CLAIM_MATERIAL_INVALID", 502);
+    // Pinned privileged artifacts travel with the same authorized claim. They are
+    // derived from the ticket's template record only; a client cannot widen them.
+    const installationPlan = this.#capabilityPlan(record.template_id);
+    const capabilityRequired = templateRequiresCapability(installationPlan);
+    let capabilitySelection = null;
+    if (capabilityRequired && this.capabilitySelectionProvider) {
+      capabilitySelection = await this.capabilitySelectionProvider.select({
+        template_id: record.template_id,
+        template_generation: record.template_generation,
+        template_digest: record.template_digest,
+        ticket: publicTicketMetadata(record),
+      });
+      if (capabilitySelection && capabilitySelection.template_digest !== record.template_digest) {
+        throw new EnrollmentTicketError("CAPABILITY_SELECTION_BINDING_MISMATCH", 503);
+      }
+      if (capabilitySelection) {
+        // A selection that does not cover the reviewed plan would silently
+        // under-install; refuse before the ticket is consumed.
+        const missing = selectionMissingComponents(capabilitySelection.selection, installationPlan);
+        if (missing.length) {
+          throw new EnrollmentTicketError("CAPABILITY_SELECTION_INCOMPLETE", 503);
+        }
+      }
+    }
     attempt = this.claimEnrollmentAttempt(attempt.attempt_id);
     const delivery = material.delivery;
     this.store.putEnrollmentTicket({
@@ -218,6 +245,8 @@ export class GhostFleetController {
       protocol: "ghostfleet-enrollment-claim/v1", ticket_id: record.ticket_id, template_digest: record.template_digest,
       resume_session: delivery.resume_session, auth_key: delivery.auth_key, identity_kind: delivery.identity_kind,
       enrollment_id: delivery.enrollment_id ?? null, node_id: delivery.node_id, node_uid: delivery.node_uid ?? null,
+      capability_required: capabilityRequired,
+      capability_selection: capabilitySelection?.encoded ?? null,
     };
   }
 
@@ -251,6 +280,20 @@ export class GhostFleetController {
     });
     return { ticket: publicTicketMetadata(completed), attempt: this.getEnrollmentAttempt(record.attempt_id) };
   }
+  /**
+   * The reviewed template — never a client argument — decides whether a node
+   * needs pinned privileged artifacts. An unresolvable template is not a reason
+   * to install nothing: it fails the claim closed.
+   */
+  #capabilityPlan(template_id) {
+    if (typeof template_id !== "string" || !template_id) return null;
+    try {
+      return this.enrollmentTemplates.resolveSelection({ template_id }).installation_plan;
+    } catch {
+      throw new EnrollmentTicketError("TEMPLATE_RESOLUTION_FAILED", 503);
+    }
+  }
+
   #provisionalNode(attempt) {
     const node = attempt.node_uid && this.store.getNode(attempt.node_uid);
     if (!node) throw new Error("PROVISIONAL_IDENTITY_MISSING");

@@ -5,6 +5,7 @@ import { authorizeApi, getAccessLevel } from "./auth.js";
 import { handleMcpRequest } from "../../integrations/mcp-http.js";
 import { BOOTSTRAP_SH } from "../../../packages/bootstrap/src/bootstrap.js";
 import { createEnrollmentClaimMaterializer, createEnrollmentClaimPreparer } from "./enrollment-materializer.js";
+import { createCapabilitySelectionProvider } from "../../control-plane/capability-selection.js";
 import { createDeploymentEnrollmentTemplateCatalog } from "./deployment-templates.js";
 import { configureTailscaleProvider, providerSetupSnapshot } from "./provider-setup.js";
 
@@ -20,6 +21,12 @@ export class GhostFleetState {
         enrollmentTemplates: createDeploymentEnrollmentTemplateCatalog(this.env),
         enrollmentClaimPreparer: createEnrollmentClaimPreparer(this.env),
         enrollmentClaimMaterializer: createEnrollmentClaimMaterializer(this.env),
+        // Deployment-owned pinned artifacts. Absent configuration keeps every
+        // template claimable but the node refuses to install a privileged lane
+        // it cannot verify.
+        capabilitySelectionProvider: createCapabilitySelectionProvider({
+          bundle_base64: typeof this.env?.GHOSTFLEET_CAPABILITY_SELECTION_B64 === "string" ? this.env.GHOSTFLEET_CAPABILITY_SELECTION_B64 : "",
+        }),
       });
       if (new URL(request.url).pathname.replace(/\/+$/, "") === "/mcp") return handleMcpRequest(controller, request);
       const handler = createHttpHandler(controller);
