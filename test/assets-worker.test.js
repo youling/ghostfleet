@@ -35,6 +35,38 @@ test("serves exactly the content address with immutable, sandboxed headers", asy
   assert.deepEqual(env.ASSETS.requests, [{ url: origin + "/sha256/" + digest, method: "GET" }]);
 });
 
+test("ETag is the URL digest and a matching If-None-Match is a bodiless 304", async () => {
+  const env = { ASSETS: binding("reviewed bytes\n") };
+  const first = await call("/sha256/" + digest, {}, env);
+  assert.equal(first.status, 200);
+  assert.equal(first.headers.get("etag"), '"' + digest + '"');
+  assert.equal(first.headers.get("cache-control"), "public, max-age=31536000, immutable");
+
+  for (const header of ['"' + digest + '"', "W/\"" + digest + "\"", '"other", "' + digest + '"', "*"]) {
+    const cached = await worker.fetch(new Request(origin + "/sha256/" + digest, {
+      headers: { "if-none-match": header },
+    }), { ASSETS: binding("reviewed bytes\n") });
+    assert.equal(cached.status, 304, header);
+    assert.equal(cached.headers.get("etag"), '"' + digest + '"', header);
+    assert.equal(cached.headers.get("cache-control"), "public, max-age=31536000, immutable", header);
+    assert.equal(await cached.text(), "", header + ": a 304 has no body");
+  }
+  // A validator for different bytes is a fresh 200.
+  const mismatched = await worker.fetch(new Request(origin + "/sha256/" + digest, {
+    headers: { "if-none-match": '"' + "b".repeat(64) + '"' },
+  }), { ASSETS: binding("reviewed bytes\n") });
+  assert.equal(mismatched.status, 200);
+  assert.equal(await mismatched.text(), "reviewed bytes\n");
+});
+
+test("a validator never confirms an object that does not exist", async () => {
+  const env = { ASSETS: binding() };
+  const missing = await worker.fetch(new Request(origin + "/sha256/" + "b".repeat(64), {
+    headers: { "if-none-match": '"' + "b".repeat(64) + '"' },
+  }), env);
+  assert.equal(missing.status, 404, "a 304 must never be invented for a missing address");
+});
+
 test("HEAD returns the same address without a body", async () => {
   const env = { ASSETS: binding() };
   const response = await call("/sha256/" + digest, { method: "HEAD" }, env);

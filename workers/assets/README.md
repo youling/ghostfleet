@@ -25,7 +25,7 @@ node scripts/build-assets.mjs --inventory <inventory.json> --out dist/assets
 
 - **路由前缀**：仅 `GET/HEAD /sha256/<64 小写 hex>`；`workers_dev: false`、`preview_urls: false` 已写死。
 - **不提供**：目录列表、上传、重定向、动态内容；`manifest.json` **不对外**。
-- **响应契约**：200 带 `cache-control: public, max-age=31536000, immutable`、`application/octet-stream`、`nosniff` 与沙箱 CSP；非内容地址 404；非 GET/HEAD 405（`allow: GET, HEAD`）；binding 缺失 503。
+- **响应契约**：200 带 `cache-control: public, max-age=31536000, immutable`、`ETag: "<64hex>"`（与路径摘要同值）、稳定 `application/octet-stream`、`nosniff` 与沙箱 CSP；带匹配的 `If-None-Match`（含 `W/` 与 `*`）返回 **304 无 body** 并保留 `ETag`/`cache-control`；非内容地址 404（即使带了 validator 也不伪造 304）；非 GET/HEAD 405（`allow: GET, HEAD`）；binding 缺失 503。
 - **限流**：不需要。对象不可变且可被 CDN 全量缓存；如部署方另加滥用限流，它只能是辅助且 fail-open，绝不能成为访问/授权判定。
 - **vendor 规则**：`src/index.js` 与本仓逐字节一致；私有仓只允许 `wrangler` 覆盖（routes/bindings），不得改代码。
 
@@ -49,9 +49,12 @@ static-assets binding points at the `dist/assets` tree built by
 `scripts/build-assets.mjs`, and the deployment injects the route/custom domain.
 The only route is `GET/HEAD /sha256/<64 lowercase hex>`; there is no listing,
 upload, redirect or dynamic content, and `manifest.json` is never served.
-Responses are 200 with immutable caching, `application/octet-stream`, `nosniff`
-and a sandbox CSP; non-address paths are 404; non-GET/HEAD methods are 405 with
-`allow: GET, HEAD`; an unwired binding is 503. No rate limiter is required
+Responses are 200 with immutable caching, `ETag: "<64hex>"` equal to the path
+digest, a stable `application/octet-stream`, `nosniff` and a sandbox CSP. A
+matching `If-None-Match` (including `W/` forms and `*`) returns a bodiless **304**
+with `ETag` and `cache-control` preserved; a missing address is 404 even when a
+validator is presented, so a 304 can never confirm a phantom object; non-GET/HEAD
+methods are 405 with `allow: GET, HEAD`; an unwired binding is 503. No rate limiter is required
 (immutable objects cache at the CDN); any deployment-added abuse limiter must be
 advisory and fail-open, never an access or authorization decision. `src/index.js`
 is vendored byte for byte; a private repo may only overlay `wrangler`
