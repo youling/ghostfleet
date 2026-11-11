@@ -42,7 +42,7 @@ async function makeHost() {
     fixtureState: join(root, "fixture-state"),
     checkpoint: join(root, "checkpoint"),
     run: join(root, "run"),
-    accountHome: join(root, "home-ghostfleet-ops"),
+    accountHome: join(root, "home-ghostfleet-managed"),
     tty: join(root, "dev-tty"),
     ttyOut: join(root, "dev-tty-out"),
     osRelease: join(root, "os-release"),
@@ -123,7 +123,7 @@ async function buildSelection(overrides = {}) {
     helper_required: true,
     linger_required: true,
     user_service_required: true,
-    control_account: "ghostfleet-ops",
+    control_account: "ghostfleet-managed",
     installer: "managed-linux-privileged-operations.sh",
     privileged_key: "privileged-ops.pub",
     user_unit: { name: "ghostfleet-managed.service", artifact: "ghostfleet-managed.service" },
@@ -219,7 +219,7 @@ test("the template-selected privileged capability installs inside the same root 
     assert.equal((await stat(UNIT_PATH(host))).mode & 0o777, 0o644);
     assert.equal(await readFile(WANT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
     assert.ok(await exists(join(host.fixtureState, "linger")));
-    assert.ok(journal.includes("loginctl-enable-linger ghostfleet-ops"));
+    assert.ok(journal.includes("loginctl-enable-linger ghostfleet-managed"));
 
     const checkpoint = await readJson(join(host.checkpoint, "enrollment-checkpoint.json"));
     assert.deepEqual(checkpoint.components, {
@@ -579,7 +579,7 @@ test("the claim selection is verified after the claim and before the identity jo
     const journal = await calls(host);
     const claimAt = journal.indexOf("curl claim");
     const joinAt = journal.indexOf("tailscale-up");
-    const lingerAt = journal.indexOf("loginctl-enable-linger ghostfleet-ops");
+    const lingerAt = journal.indexOf("loginctl-enable-linger ghostfleet-managed");
     const completeAt = journal.indexOf("curl complete");
     // Honest ordering: transport prerequisites precede the claim; the capability
     // never installs before the claim, and never after the completion report.
@@ -671,7 +671,7 @@ test("a claim selection with a non-normalised mode or a root control account is 
         body: text
           .replace("helper_required=1", "helper_required=0")
           .replace("linger_required=1", "linger_required=0")
-          .replace("control_account=ghostfleet-ops", "control_account=root"),
+          .replace("control_account=ghostfleet-managed", "control_account=root"),
         expected: /control account must not be root/,
       },
     ];

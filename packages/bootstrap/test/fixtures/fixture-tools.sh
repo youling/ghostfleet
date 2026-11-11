@@ -15,7 +15,7 @@ case "$name" in
         ;;
       -nG) printf 'users\n' ;;
       *)
-        [ "${1:-}" = ghostfleet-ops ] && exit 0
+        [ "${1:-}" = ghostfleet-managed ] && exit 0
         exit 1
         ;;
     esac
@@ -123,8 +123,8 @@ case "$name" in
   getent)
     case "${1:-}" in
       passwd)
-        if [ "${2:-}" = ghostfleet-ops ]; then
-          printf 'ghostfleet-ops:x:1234:1234::%s:/bin/sh\n' "${FIXTURE_ACCOUNT_HOME:-/nonexistent}"
+        if [ "${2:-}" = ghostfleet-managed ]; then
+          printf 'ghostfleet-managed:x:1234:1234::%s:/bin/sh\n' "${FIXTURE_ACCOUNT_HOME:-/nonexistent}"
         else
           # The operating Human identity is resolved for real, so the strict
           # name/uid validation sees a genuine account.

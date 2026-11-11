@@ -38,8 +38,8 @@ function quoteShell(value) {
 test("the launcher hands over one validated Human name and nothing else", () => {
   const command = delivery().command;
   // Captured from the kernel before elevation, validated for shell safety.
-  assert.match(command, /OPERATING_USER="\$\(id -un\)"/);
-  assert.match(command, /case "\$OPERATING_USER" in/);
+  assert.match(command, /TRUSTED_ID=\/usr\/bin\/id/);
+  assert.match(command, /OPERATING_USER="\$\("\$TRUSTED_ID" -un\)"/);
   assert.match(command, /\*\[!a-z0-9_-\]\*/);
   assert.doesNotMatch(command, /\$\{?SUDO_USER\b/);
   // It crosses as the shell's first positional parameter, for both paths.

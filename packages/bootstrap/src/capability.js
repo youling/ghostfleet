@@ -11,6 +11,9 @@ import { createHash } from "node:crypto";
 // immutable default block, which selects nothing and installs nothing.
 
 export const SELECTED_CAPABILITY_SCHEMA = "ghostfleet-selected-capability/v1";
+// The privileged helper keeps a forced-command account. The template's managed
+// identity (which owns the user unit and Linger) must never be that account.
+export const MANAGED_HELPER_ACCOUNT = "ghostfleet-ops";
 export const CAPABILITY_BLOCK_BEGIN = "# @@GHOSTFLEET_SELECTED_CAPABILITY_BEGIN@@";
 export const CAPABILITY_BLOCK_END = "# @@GHOSTFLEET_SELECTED_CAPABILITY_END@@";
 // The whole capability lane, including the data block and its functions, is
@@ -130,6 +133,8 @@ export function normalizeSelectedCapability(selection) {
   if (helper_required || linger_required || user_service_required) {
     if (typeof control_account !== "string" || !ACCOUNT.test(control_account)) throw invalid("CAPABILITY_CONTROL_ACCOUNT_INVALID");
     if (control_account === "root") throw invalid("CAPABILITY_CONTROL_ACCOUNT_INVALID");
+    // Never let the managed identity be the helper's privileged account.
+    if (control_account === MANAGED_HELPER_ACCOUNT) throw invalid("CAPABILITY_CONTROL_ACCOUNT_INVALID");
   } else {
     control_account = null;
   }
