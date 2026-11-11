@@ -4,13 +4,20 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSync, existsSync, statSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
 import { createTicketDelivery } from "../src/control-plane/tickets.js";
 
-const origin = "https://ghostfleet.invalid";
+// Two public surfaces, never interchangeable: immutable content-addressed
+// material, and the narrow enrollment bridge that owns the one-time ticket URL.
+const assets_origin = "https://assets.example.invalid";
+const enroll_origin = "https://enroll.example.invalid";
 const ticketId = "ticket-12345678-1234-1234-1234-123456789abc";
-const url = origin + "/v1/enrollment-tickets/" + ticketId;
+const url = enroll_origin + "/v1/enrollment-tickets/" + ticketId;
 const shortCode = "12345678";
-const delivery = () => createTicketDelivery({ record: { ticket_id: ticketId }, short_code: shortCode, public_origin: origin });
+const delivery = (bootstrap_sha256 = "b".repeat(64)) => createTicketDelivery({
+  record: { ticket_id: ticketId }, short_code: shortCode,
+  assets_origin, enroll_origin, bootstrap_sha256,
+});
 const pty = existsSync("/usr/bin/script") ? "/usr/bin/script" : "/bin/script";
 const hasPty = process.platform !== "win32" && existsSync(pty);
 
@@ -109,14 +116,37 @@ test("elevated script keeps the download in a root-created workspace", () => {
   assert.match(command, /TMPROOT=\/run\//);
   assert.match(command, /TMPROOT=\/var\/tmp\//);
   assert.match(command, /\/usr\/bin\/mktemp -d "\$TMPROOT"ghostfleet-enroll\.XXXXXXXX/);
-  assert.match(command, /\/usr\/bin\/curl -fsSL /);
-  assert.match(command, /\/usr\/bin\/wget -qO /);
-  assert.match(command, /\/bin\/sh "\$BOOTSTRAP"/);
-  assert.match(command, /\/bin\/rm -rf "\$WORK_DIR"/);
+  // Content-addressed URL, no redirect following, digest verified before use.
+  // The script text is asserted after undoing the shell quoting of the
+  // elevated -c argument, so the flag sequence is the one root actually runs.
+  const script = unquoteShell(command);
+  assert.match(script, /\/usr\/bin\/curl --fail --silent --show-error --no-location --max-redirs 0 --proto '=https'/);
+  assert.match(script, /\/usr\/bin\/wget --quiet --max-redirect=0 /);
+  assert.match(command, /assets\.example\.invalid\/sha256\/b{64}/);
+  assert.match(script, /\/bin\/sh "\$BOOTSTRAP"/);
+  assert.match(script, /\/bin\/rm -rf "\$WORK_DIR"/);
+  const download = script.indexOf('--output "$BOOTSTRAP"');
+  const verify = script.indexOf('/usr/bin/sha256sum "$BOOTSTRAP"');
+  const execute = script.indexOf('/bin/sh "$BOOTSTRAP"');
+  assert.ok(download >= 0 && verify > download, "the download must precede the digest check");
+  assert.ok(execute > verify, "the digest check must precede execution");
+});
+
+test("delivered command carries both public coordinates and the pinned digest", () => {
+  const d = delivery();
+  assert.equal(d.assets_origin, assets_origin);
+  assert.equal(d.enroll_origin, enroll_origin, "the enrollment origin is readable for a byte-for-byte deployment check");
+  assert.equal(d.bootstrap_sha256, "b".repeat(64));
+  assert.equal(d.one_time_url, enroll_origin + "/v1/enrollment-tickets/" + ticketId);
+  const script = unquoteShell(d.command);
+  assert.ok(script.includes("'" + assets_origin + "'"), "the asset origin is a fixed assignment");
+  assert.ok(script.includes("'" + enroll_origin + "/v1/enrollment-tickets/'"));
+  // The immutable material origin is exported to the courier as a fixed value.
+  assert.ok(script.includes("GHOSTFLEET_ASSETS_ORIGIN='" + assets_origin + "'"));
 });
 
 test("delivered command is origin-only: claim-material fields cannot reach argv, URL or script", () => {
-  const plain = createTicketDelivery({ record: { ticket_id: ticketId }, short_code: shortCode, public_origin: origin });
+  const plain = createTicketDelivery({ record: { ticket_id: ticketId }, short_code: shortCode, assets_origin, enroll_origin, bootstrap_sha256: "b".repeat(64) });
   const enriched = createTicketDelivery({
     record: {
       ticket_id: ticketId,
@@ -131,7 +161,9 @@ test("delivered command is origin-only: claim-material fields cannot reach argv,
       },
     },
     short_code: shortCode,
-    public_origin: origin,
+    assets_origin,
+    enroll_origin,
+    bootstrap_sha256: "b".repeat(64),
   });
   assert.equal(enriched.command, plain.command);
   assert.equal(enriched.one_time_url, plain.one_time_url);
@@ -194,7 +226,10 @@ function callerStub(marker) {
   return ["#!/bin/sh", "printf 'caller-controlled\\n' >> " + quoteShell(marker), "exit 78"];
 }
 
-function sandbox({ elevation = "su", pollutePath = false, slowStty = false } = {}) {
+// A pinned, content-addressed payload: the fixture serves these exact bytes and
+// the delivered command pins their digest, so the digest check under test is the
+// real one and a mismatch is a genuine byte difference.
+function sandbox({ elevation = "su", pollutePath = false, slowStty = false, pinnedSha = null, servedPayload = null, httpCode = null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ghostfleet-launcher-"));
   const runRoot = join(dir, "run");
   const callerBin = join(dir, "caller-bin");
@@ -211,7 +246,11 @@ function sandbox({ elevation = "su", pollutePath = false, slowStty = false } = {
   mkdirSync(callerTmp, { mode: 0o700 });
 
   // System tools the fixture still runs for real inside the rewritten tree.
-  for (const name of ["env", "mktemp", "stat", "cat"]) symlinkSync(systemTool(name), join(dir, "usr/bin", name));
+  // sha256sum is the real verifier, never a stub: the digest check must be able
+  // to fail for real.
+  // grep/wc are the launcher's PATH-resolved validators; the fixture tree is the
+  // elevated PATH, so the real binaries must exist there for the same reason.
+  for (const name of ["env", "mktemp", "stat", "cat", "sha256sum", "grep", "wc"]) symlinkSync(systemTool(name), join(dir, "usr/bin", name));
   if (slowStty) {
     // Delay the terminal restore so a second signal is guaranteed to land inside
     // cleanup. The real stty still performs the restore; only the timing moves,
@@ -265,25 +304,38 @@ function sandbox({ elevation = "su", pollutePath = false, slowStty = false } = {
     }
   }
 
+  const payload = servedPayload ?? "#!/bin/sh\nprintf '%s' \"$GHOSTFLEET_ENROLLMENT_URL\" > " + quoteShell(receipt) + "\n";
+  const sha256 = pinnedSha ?? createHash("sha256").update(payload).digest("hex");
+  const payloadLines = payload.split("\n");
+  if (payloadLines.at(-1) === "") payloadLines.pop();
   writeScript(join(dir, "usr/bin/curl"), [
     "#!/bin/sh",
     "set -eu",
+    "arguments=\"$*\"",
     "printf 'curl\\n' >> " + quoteShell(trace),
     "printf 'pid=%s\\n' \"$PPID\" >> " + quoteShell(trace),
     "out=",
-    'while [ "$#" -gt 0 ]; do case "$1" in -o) shift; out="$1" ;; esac; shift; done',
+    "write_out=",
+    'while [ "$#" -gt 0 ]; do case "$1" in -o|--output) shift; out="$1" ;; --write-out) shift; write_out="$1" ;; esac; shift; done',
     '[ -n "$out" ] || exit 81',
+    // No redirect following: the delivered command must ask for it explicitly,
+    // and a delivery that did not would be visible in the pristine command text.
+    'case " $arguments " in *" --no-location "*) ;; *) exit 83 ;; esac',
+    'case " $arguments " in *" --max-redirs 0 "*) ;; *) exit 83 ;; esac',
+    // The status is baked into the fixture script: env -i drops inherited
+    // variables, so an environment-driven status could never reach root.
+    'case "' + (httpCode ?? "200") + '" in 2[0-9][0-9]) ;; *) printf "%s" "' + (httpCode ?? "200") + '"; exit 0 ;; esac',
     // curl creates the output itself, so the payload umask decides the mode.
     ': > "$out"',
     '[ "$(' + systemTool("stat") + ' -c %a "$out")" = 600 ] || exit 82',
     "printf 'file=%s\\n' \"$out\" >> " + quoteShell(trace),
     systemTool("cat") + ' > "$out" <<\'BOOTSTRAP\'',
-    "#!/bin/sh",
-    "printf '%s' \"$GHOSTFLEET_ENROLLMENT_URL\" > " + quoteShell(receipt),
+    ...payloadLines,
     "BOOTSTRAP",
+    '[ -z "$write_out" ] || printf "%s" "' + (httpCode ?? "200") + '"',
   ]);
 
-  writeFileSync(launcher, rewriteTrustedRoots(delivery().command, dir), { mode: 0o600 });
+  writeFileSync(launcher, rewriteTrustedRoots(delivery(sha256).command, dir), { mode: 0o600 });
   const sessionCommand = [
     "/bin/sh " + quoteShell(launcher),
     "status=$?",
@@ -292,7 +344,7 @@ function sandbox({ elevation = "su", pollutePath = false, slowStty = false } = {
   ].join("; ");
 
   return {
-    dir, runRoot, callerBin, callerTmp, trace, receipt, marker, echoState, launcher,
+    dir, runRoot, callerBin, callerTmp, trace, receipt, marker, echoState, launcher, sha256, payload,
     env: { ...process.env, PATH: callerBin, SHELL: "/bin/sh", TMPDIR: callerTmp, HOME: join(dir, "caller-home") },
     argv: ["-qefc", sessionCommand, "/dev/null"],
   };
@@ -381,10 +433,90 @@ test("foreign ticket origin is refused before running bootstrap", { skip: !hasPt
     const result = runSync(fx, { input: bad + "\n" });
     assert.notEqual(result.status, 0);
     assert.equal(existsSync(fx.receipt), false);
+    assert.match(result.stdout + result.stderr, /Invalid enrollment URL for this enrollment origin/);
     const downloadPath = downloadedFile(fx);
     assert.ok(downloadPath);
     assert.equal(temporaryFileLeft(downloadPath), false, "temporary_file_left=false after a rejected origin");
     assert.equal(echoRestored(fx.echoState), true, "echo_restored=true after a rejected origin");
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+// The immutable asset origin is a material host, never the enrollment bridge.
+// A ticket URL minted there must be refused even though the host is trusted.
+test("a ticket URL on the asset origin is refused", { skip: !hasPty }, () => {
+  const fx = sandbox({ elevation: "su" });
+  try {
+    const bad = assets_origin + "/v1/enrollment-tickets/" + ticketId;
+    const result = runSync(fx, { input: bad + "\n" });
+    assert.notEqual(result.status, 0);
+    assert.equal(existsSync(fx.receipt), false);
+    assert.match(result.stdout + result.stderr, /Invalid enrollment URL for this enrollment origin/);
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+test("a ticket URL that is more than one ticket id is refused", { skip: !hasPty }, () => {
+  const fx = sandbox({ elevation: "su" });
+  try {
+    const bad = url + "/../../v0/nodes";
+    const result = runSync(fx, { input: bad + "\n" });
+    assert.notEqual(result.status, 0);
+    assert.equal(existsSync(fx.receipt), false);
+    assert.match(result.stdout + result.stderr, /Invalid enrollment URL for this enrollment origin/);
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+test("a bootstrap whose bytes do not match the pinned digest is never executed", { skip: !hasPty }, () => {
+  // The fixture serves the real payload; only the pinned digest is wrong.
+  const fx = sandbox({ elevation: "su", pinnedSha: "f".repeat(64) });
+  try {
+    const result = runSync(fx, { input: url + "\n" });
+    assert.notEqual(result.status, 0, "a digest mismatch must exit non-zero");
+    assert.match(result.stdout + result.stderr, /integrity check failed: expected sha256 f{64}/);
+    assert.equal(existsSync(fx.receipt), false, "unknown bytes must never run");
+    const downloadPath = downloadedFile(fx);
+    assert.ok(downloadPath);
+    assert.equal(temporaryFileLeft(downloadPath), false, "temporary_file_left=false after a digest mismatch");
+    assert.equal(echoRestored(fx.echoState), true, "echo_restored=true after a digest mismatch");
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+test("a redirect from the content address is refused, never followed", { skip: !hasPty }, () => {
+  // The fixture answers 302 like a real static host would. curl without -L
+  // treats it as a final response, so the launcher must reject the status
+  // explicitly instead of trusting whatever body came with it.
+  const fx = sandbox({ elevation: "su", httpCode: "302" });
+  try {
+    const result = runSync(fx, { input: url + "\n" });
+    assert.notEqual(result.status, 0, "a redirect must exit non-zero");
+    assert.match(result.stdout + result.stderr, /download was refused: HTTP 302/);
+    assert.match(result.stdout + result.stderr, /redirects are not followed/);
+    assert.equal(existsSync(fx.receipt), false, "a redirect body must never execute");
+    const downloadPath = downloadedFile(fx);
+    if (downloadPath) assert.equal(temporaryFileLeft(downloadPath), false, "temporary_file_left=false after a redirect");
+    assert.equal(echoRestored(fx.echoState), true, "echo_restored=true after a redirect");
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+test("the happy path verifies the pinned digest before executing the payload", { skip: !hasPty }, () => {
+  const fx = sandbox({ elevation: "su" });
+  try {
+    const result = runSync(fx, { input: url + "\n" });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(readFileSync(fx.receipt, "utf8"), url);
+    // The fixture only serves bytes whose digest equals the pinned value, and
+    // the payload records the URL it received, so execution is a real effect.
+    const downloadPath = downloadedFile(fx);
+    assert.ok(downloadPath.startsWith(fx.runRoot + "/"));
   } finally {
     rmSync(fx.dir, { recursive: true, force: true });
   }

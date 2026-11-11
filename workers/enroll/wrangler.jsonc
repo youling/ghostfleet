@@ -1,0 +1,21 @@
+{
+  // The one-time enrollment bridge. It is deliberately NOT behind Cloudflare
+  // Access: a node that has never enrolled cannot log in. It exposes exactly two
+  // POST routes and forwards them to the private control plane through a
+  // service binding, so the control plane itself is never made public.
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "ghostfleet-enroll",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "services": [
+    {
+      "binding": "GHOSTFLEET_CONTROL_PLANE",
+      "service": "ghostfleet-control-plane"
+    }
+  ],
+  // Same bypass rule as the asset origin: the only public address is the
+  // deployment's own zone. No workers.dev, no preview hostname.
+  "workers_dev": false,
+  "preview_urls": false
+  // The custom domain/route belongs to the private deployment.
+}

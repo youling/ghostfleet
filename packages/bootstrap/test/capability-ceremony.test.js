@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, rm, stat, readdir, symlink, readlink } from "node:fs/promises";
+import { createServer } from "node:http";
+import { existsSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join, dirname } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
@@ -18,6 +20,9 @@ const OPERATING_USER = process.getuid?.() === 0
   : userInfo().username;
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtureDir = join(here, "fixtures");
+// The fixture hands pinned-artifact downloads to the real curl binary against a
+// real loopback content-addressed server. Everything else stays stubbed.
+const REAL_CURL = ["/usr/bin/curl", "/bin/curl", "/usr/local/bin/curl"].find((path) => existsSync(path));
 const NODE_ID = "fleet-node-fixture";
 const NODE_UID = "node-00000000-0000-4000-8000-000000000001";
 // The dedicated run identity the courier owns, and the privileged operations
@@ -82,13 +87,43 @@ async function makeHost() {
   for (const command of STUB_COMMANDS) {
     await writeFile(join(host.bin, command), dispatcher, { mode: 0o755 });
   }
+  // A real loopback content-addressed origin. Only the pinned artifacts are
+  // reachable, by digest, and a test can make it redirect or answer 404.
+  const assets = new Map();
+  const requests = [];
+  let assetMode = "ok";
+  const server = createServer((request, response) => {
+    const path = new URL(request.url, "http://loopback.invalid").pathname;
+    requests.push(path);
+    const match = /^\/sha256\/([0-9a-f]{64})$/.exec(path);
+    if (!match || !assets.has(match[1])) { response.writeHead(404); response.end(); return; }
+    if (assetMode === "redirect") { response.writeHead(302, { location: "/sha256/" + match[1] }); response.end(); return; }
+    response.writeHead(200, { "content-type": "application/octet-stream" });
+    response.end(assets.get(match[1]));
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  // A test may create several hosts; an unref'd listener never blocks exit.
+  server.unref();
+  host.assetsUrl = "http://127.0.0.1:" + server.address().port;
+  host.serveAsset = (digest, content) => { assets.set(digest, Buffer.from(content, "utf8")); };
+  host.removeAsset = (digest) => { assets.delete(digest); };
+  // The reviewed fixture selection is published up front: a claim delivers its
+  // digests, and the deployment publishes those exact bytes. Tests that tamper
+  // with the selection re-publish through runCourier.
+  for (const artifact of normalizeSelectedCapability(await buildSelection()).artifacts) {
+    host.serveAsset(artifact.sha256, artifact.content);
+  }
+  host.assetRequests = () => [...requests];
+  host.setAssetMode = (mode) => { assetMode = mode; };
   host.env = {
     FIXTURE_STATE: host.fixtureState,
     FIXTURE_BIN: host.bin,
     FIXTURE_NODE_ID: NODE_ID,
     FIXTURE_HOME_ROOT: host.homeRoot,
     FIXTURE_AUTHKEY: join(host.run, "ts-authkey"),
+    FIXTURE_REAL_CURL: REAL_CURL,
     GHOSTFLEET_OPERATING_USER: OPERATING_USER,
+    GHOSTFLEET_ASSETS_ORIGIN: host.assetsUrl,
   };
   return host;
 }
@@ -152,6 +187,14 @@ async function buildSelection(overrides = {}) {
 }
 
 async function runCourier(host, selection, options = {}) {
+  // The content-addressed origin serves exactly the reviewed bytes. A test can
+  // replace one object after it was published to prove the digest gate.
+  if (host.setAssetMode) host.setAssetMode("ok");
+  if (selection) {
+    const normalized = normalizeSelectedCapability(selection);
+    for (const artifact of normalized.artifacts) host.serveAsset(artifact.sha256, artifact.content);
+    if (options.assetTamper) options.assetTamper(host, normalized);
+  }
   let script = renderBootstrap({
     brokerOrigin: "https://broker.fixture.invalid",
     checkpointDir: host.checkpoint,
@@ -175,12 +218,24 @@ async function runCourier(host, selection, options = {}) {
   if (options.tamper) script = options.tamper(script);
   const file = join(host.root, "courier.sh");
   await writeFile(file, script);
-  return spawnSync("/bin/sh", [file], {
+  // The content-addressed origin is served by THIS process, so the courier must
+  // run asynchronously: a synchronous child would block the server that is
+  // supposed to answer its artifact fetches.
+  const child = spawn("/bin/sh", [file], {
     env: { ...process.env, ...host.env, ...(options.env ?? {}) },
-    encoding: "utf8",
-    timeout: 120000,
-    input: "",
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const timer = setTimeout(() => child.kill("SIGKILL"), 120000);
+  timer.unref?.();
+  const status = await new Promise((resolve) => child.on("close", (code) => resolve(code)));
+  clearTimeout(timer);
+  return { status, stdout, stderr };
 }
 
 async function calls(host) {
@@ -378,15 +433,18 @@ test("repeated execution is zero delta and never reinstalls the selected capabil
       UNIT_PATH(host),
     ];
     const before = await snapshot(watched);
-    const callsBefore = (await calls(host)).length;
+    // Artifact re-verification is NOT an effect: it re-fetches every pinned
+    // digest from the immutable origin. Claims, joins, service mutations and
+    // installs are the effects that must not repeat.
+    const effects = (journal) => journal.filter((line) => !line.startsWith("curl-"));
+    const effectsBefore = effects(await calls(host));
     const appliesBefore = (await installerLog(host)).filter((line) => line.includes("--apply")).length;
 
     const second = await runCourier(host, selection);
     assert.equal(second.status, 0, second.stderr);
     assert.match(second.stderr, /already converged/);
     assert.deepEqual(await snapshot(watched), before, "a converged host must not be rewritten");
-    const journalAfter = await calls(host);
-    assert.equal(journalAfter.length, callsBefore, "no claim, join or Linger call on the zero-delta path");
+    assert.deepEqual(effects(await calls(host)), effectsBefore, "no claim, join or Linger call on the zero-delta path");
     assert.equal(
       (await installerLog(host)).filter((line) => line.includes("--apply")).length,
       appliesBefore,
@@ -485,11 +543,6 @@ test("a missing or unverifiable capability dependency fails closed before any ef
         expected: /does not pin the admitted privileged SSH public key/,
       },
       {
-        name: "artifact digest mismatch",
-        tamper: (script) => script.replace(/(CAPABILITY_ARTIFACT_1='[^|]*\|)[0-9a-f]{64}/, (match, prefix) => prefix + "0".repeat(64)),
-        expected: /failed digest verification/,
-      },
-      {
         name: "unrequested artifacts injected into a template-less payload",
         capabilitySelection: null,
         tamper: (script) => script
@@ -508,6 +561,73 @@ test("a missing or unverifiable capability dependency fails closed before any ef
       assert.equal(await exists(join(host.checkpoint, "enrollment-checkpoint.json")), false, item.name);
       assert.equal(await exists(UNIT_PATH(host)), false, item.name);
     }
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+// The claim is authoritative only about WHAT to install. The bytes must come
+// from the immutable asset origin and survive the pinned digest. Anything else
+// stops before the identity join, the install, and the completion report.
+test("artifact bytes that cannot be fetched and verified stop before the join and the installer", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    const selection = await buildSelection();
+    const cases = [
+      {
+        name: "no asset origin was delivered",
+        env: { GHOSTFLEET_ASSETS_ORIGIN: "" },
+        expected: /no immutable asset origin was delivered/,
+      },
+      {
+        name: "asset origin is not an exact origin",
+        env: { GHOSTFLEET_ASSETS_ORIGIN: "https://assets.fixture.invalid/redirected" },
+        expected: /asset origin must be an exact origin/,
+      },
+      {
+        name: "asset origin answers with a redirect",
+        assetTamper: (h) => h.setAssetMode("redirect"),
+        expected: /could not be fetched from .*\/sha256\//,
+      },
+      {
+        name: "asset is absent from the origin",
+        assetTamper: (h, selection) => h.removeAsset(selection.artifacts[0].sha256),
+        expected: /could not be fetched from .*\/sha256\//,
+      },
+      {
+        name: "served bytes do not match the pinned digest",
+        assetTamper: (h, selection) => h.serveAsset(selection.artifacts[0].sha256, "tampered bytes\n"),
+        expected: /failed digest verification/,
+      },
+    ];
+    for (const item of cases) {
+      await resetProviderIdentity(host);
+      await freshCheckpoint(host);
+      const result = await runCourier(host, selection, { assetTamper: item.assetTamper, env: item.env });
+      assert.notEqual(result.status, 0, item.name + " must fail closed");
+      assert.match(result.stderr, item.expected, item.name);
+      const journal = await calls(host);
+      assert.equal(journal.includes("tailscale-up"), false, item.name + ": no identity join before verified artifacts");
+      assert.equal(journal.includes("curl complete"), false, item.name + ": no completion is reported");
+      assert.deepEqual(await installerLog(host), [], item.name + ": the installer never ran");
+      assert.equal(await exists(join(host.checkpoint, "capability-state.json")), false, item.name);
+      assert.equal(await exists(UNIT_PATH(host)), false, item.name);
+      // Only the content address is ever requested: no selection-supplied URL.
+      assert.ok(host.assetRequests().every((path) => /^\/sha256\/[0-9a-f]{64}$/.test(path)), item.name + ": only content addresses are requested");
+    }
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("the pinned artifacts are fetched by digest from the asset origin, once each", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    const normalized = normalizeSelectedCapability(selection);
+    const result = await runCourier(host, selection);
+    assert.equal(result.status, 0, result.stderr);
+    const expected = normalized.artifacts.map((artifact) => "/sha256/" + artifact.sha256).sort();
+    const requested = [...new Set(host.assetRequests())].sort();
+    assert.deepEqual(requested, expected, "every pinned artifact is fetched from its content address");
+    assert.ok((await installerLog(host)).some((line) => line.includes("--apply")));
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
 
@@ -560,7 +680,8 @@ test("a claim selection that is not decodable or not pinned is refused before th
   try {
     const cases = [
       { name: "undecodable", selection: Buffer.from("not-a-selection\n").toString("base64"), expected: /unknown field|requires the privileged capability/ },
-      { name: "unpinned artifact row", selection: Buffer.from("schema=ghostfleet-selected-capability/v1\nversion=v1\ntemplate_digest=sha256:" + "0".repeat(64) + "\nhelper_required=1\nartifact=evil\n").toString("base64"), expected: /artifact row is invalid/ },
+      { name: "unpinned artifact row", selection: Buffer.from("schema=ghostfleet-selected-capability/v1\nversion=v1\ntemplate_digest=sha256:" + "0".repeat(64) + "\nhelper_required=1\nartifact=evil\n").toString("base64"), expected: /artifact row must be name\|sha256\|mode/ },
+      { name: "inline artifact bytes", selection: Buffer.from("schema=ghostfleet-selected-capability/v1\nversion=v1\ntemplate_digest=sha256:" + "0".repeat(64) + "\nhelper_required=1\nlinger_required=1\nuser_service_required=1\ncontrol_account=ghostfleet-ops\ninstaller=a.sh\nprivileged_key=a.pub\nuser_unit=u.service\nuser_unit_artifact=u.service\nartifact=a.sh|" + "0".repeat(64) + "|0750|" + Buffer.from("#!/bin/sh").toString("base64") + "\n").toString("base64"), expected: /inline artifact content is refused/ },
     ];
     for (const item of cases) {
       await resetProviderIdentity(host);

@@ -1,0 +1,7 @@
+{
+  "schema": "ghostfleet-assets-inventory/v1",
+  "artifacts": [
+    { "name": "synthetic-installer.sh", "path": "files/synthetic-installer.sh", "mode": "0755" },
+    { "name": "synthetic-managed.service", "path": "files/synthetic-managed.service", "mode": "0644" }
+  ]
+}

@@ -27,6 +27,15 @@ export class GhostFleetState {
         capabilitySelectionProvider: createCapabilitySelectionProvider({
           bundle_base64: typeof this.env?.GHOSTFLEET_CAPABILITY_SELECTION_B64 === "string" ? this.env.GHOSTFLEET_CAPABILITY_SELECTION_B64 : "",
         }),
+        // Deployment-owned public coordinates. The asset origin serves the
+        // digest-addressed bootstrap; the enrollment bridge owns the ticket URL.
+        // Absent configuration keeps every ticket unclaimable rather than
+        // delivering a command whose bootstrap cannot be verified.
+        enrollmentDelivery: {
+          assets_origin: this.env?.GHOSTFLEET_ASSETS_ORIGIN,
+          bootstrap_sha256: this.env?.GHOSTFLEET_BOOTSTRAP_SHA256,
+          enroll_origin: this.env?.GHOSTFLEET_ENROLL_ORIGIN,
+        },
       });
       if (new URL(request.url).pathname.replace(/\/+$/, "") === "/mcp") return handleMcpRequest(controller, request);
       const handler = createHttpHandler(controller);

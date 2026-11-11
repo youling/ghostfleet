@@ -16,6 +16,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "../packages/bootstrap/test/fixtures");
 const preflight = "sha256:" + "a".repeat(64);
 const origin = "https://ghostfleet.invalid";
+// The material origin and the enrollment bridge are separate public surfaces.
+const enroll = "https://enroll.example.invalid";
+const enrollmentDelivery = { assets_origin: "https://assets.example.invalid", enroll_origin: enroll, bootstrap_sha256: "b".repeat(64) };
 // Synthetic UID assembled at runtime: the publication guard reserves literal
 // node identifiers for reviewed fixtures.
 const NODE_UID = ["node", "00000000", "0000", "4000", "8000", "000000000001"].join("-");
@@ -67,6 +70,7 @@ function controller(overrides = {}) {
   return new GhostFleetController({
     store: new InMemoryStore(),
     enrollmentClaimMaterializer: materializer(),
+    enrollmentDelivery,
     ticketCodeFactory: () => "12345678",
     ...overrides,
   });
@@ -77,7 +81,7 @@ async function attemptFor(c, template_id) {
 }
 
 async function issue(c, attempt_id) {
-  return c.issueEnrollmentTicket(attempt_id, { public_origin: origin });
+  return c.issueEnrollmentTicket(attempt_id, { enroll_origin: enroll });
 }
 
 async function claim(c, ticket_id) {
@@ -173,6 +177,7 @@ test("a managed template without deployment artifacts still reports the requirem
 test("claim material fields outside the explicit allowlist are dropped", async () => {
   const c = new GhostFleetController({
     store: new InMemoryStore(),
+    enrollmentDelivery,
     ticketCodeFactory: () => "12345678",
     enrollmentClaimMaterializer: async ({ ticket, preflight_digest }) => ({
       outcome: "READY",
@@ -207,13 +212,16 @@ test("an accepted bundle is re-encoded from the validated selection, so shell an
   const text = Buffer.from(base, "base64").toString("utf8");
   // A hand-made bundle written with three-digit modes must still be accepted
   // only in normalised form.
-  const loose = text.replace(/\|0(\d{3})\|/g, "|$1|");
+  // Modes are the last field of an address row: name|sha256|mode.
+  const loose = text.replace(/\|0(\d{3})(\n|$)/g, "|$1$2");
   assert.notEqual(loose, text);
   const provider = createCapabilitySelectionProvider({ bundle_base64: Buffer.from(loose).toString("base64") });
   const selected = await provider.select();
   const normalized = Buffer.from(selected.encoded, "base64").toString("utf8");
-  assert.doesNotMatch(normalized, /\|[0-7]{3}\|/);
-  assert.match(normalized, /\|0750\|/);
+  assert.doesNotMatch(normalized, /\|[0-7]{3}(\n|$)/);
+  assert.match(normalized, /\|0750(\n|$)/);
+  // A1: the wire form never carries artifact bytes.
+  assert.doesNotMatch(normalized, /\|[A-Za-z0-9+/]{16,}={0,2}$/m);
   assert.equal(capabilitySelectionDigest(decodeCapabilitySelection(normalized)),
     capabilitySelectionDigest(decodeCapabilitySelection(text)));
 });

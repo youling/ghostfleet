@@ -16,7 +16,8 @@ import { createEnrollmentTemplateCatalog } from "./enrollment-templates.js";
 import { selectionMissingComponents, templateRequiresCapability } from "./capability-selection.js";
 import {
   EnrollmentTicketError, completionDigest, createTicketDelivery, createTicketFactors,
-  createTicketRecord, publicTicketMetadata, sha256Text, validateClaimMaterial, verifyTicketClaim,
+  createTicketRecord, publicTicketMetadata, sha256Text, validateClaimMaterial,
+  validateDeliveryCoordinates, verifyTicketClaim,
 } from "./tickets.js";
 
 function required(value, message) { if (!value) throw new Error(message); return value; }
@@ -29,6 +30,11 @@ export class GhostFleetController {
     enrollmentClaimPreparer = null,
     enrollmentClaimMaterializer = null,
     capabilitySelectionProvider = null,
+    // Deployment coordinates for the delivered command: the public immutable
+    // material origin, its pinned bootstrap digest, and the enrollment bridge.
+    // Missing configuration fails ticket issuance closed instead of minting a
+    // delivery whose bootstrap has no verifiable content address.
+    enrollmentDelivery = null,
     ticketCodeFactory = undefined,
   } = {}) {
     this.store = store;
@@ -37,7 +43,25 @@ export class GhostFleetController {
     this.enrollmentClaimPreparer = enrollmentClaimPreparer;
     this.enrollmentClaimMaterializer = enrollmentClaimMaterializer;
     this.capabilitySelectionProvider = capabilitySelectionProvider;
+    this.enrollmentDelivery = enrollmentDelivery;
     this.ticketCodeFactory = ticketCodeFactory;
+  }
+
+  #deliveryCoordinates(request_origin) {
+    const configured = this.enrollmentDelivery && typeof this.enrollmentDelivery === "object" ? this.enrollmentDelivery : {};
+    const enroll_origin = configured.enroll_origin ?? request_origin ?? null;
+    if (!configured.assets_origin || !configured.bootstrap_sha256 || !enroll_origin) {
+      throw new EnrollmentTicketError("ENROLLMENT_DELIVERY_NOT_CONFIGURED", 503);
+    }
+    try {
+      return validateDeliveryCoordinates({
+        assets_origin: configured.assets_origin,
+        enroll_origin,
+        bootstrap_sha256: configured.bootstrap_sha256,
+      });
+    } catch (error) {
+      throw new EnrollmentTicketError(error?.code || "ENROLLMENT_DELIVERY_INVALID", 503);
+    }
   }
 
   now() { return isoNow(this.clock); }
@@ -132,8 +156,12 @@ export class GhostFleetController {
     return expiresAt;
   }
 
-  async issueEnrollmentTicket(id, { public_origin, ttl_seconds = 600, replace = false } = {}) {
+  async issueEnrollmentTicket(id, { enroll_origin = null, ttl_seconds = 600, replace = false } = {}) {
     if (!this.enrollmentClaimMaterializer) throw new EnrollmentTicketError("PROVIDER_CLAIM_MATERIAL_UNAVAILABLE", 503);
+    // Both public surfaces and the pinned bootstrap digest are part of the
+    // delivery, so an unconfigured or colliding deployment fails before any
+    // provider authority is prepared or a short code is minted.
+    const coordinates = this.#deliveryCoordinates(enroll_origin);
     let attempt = this.requireLiveAttempt(this.getEnrollmentAttempt(id));
     if (!attempt.template_binding?.template_digest) throw new EnrollmentTicketError("TEMPLATE_BINDING_REQUIRED", 409);
     if (![EnrollmentState.CREATED, EnrollmentState.PREPARING].includes(attempt.state)) throw new EnrollmentTicketError("TICKET_ATTEMPT_STATE_INVALID", 409);
@@ -162,9 +190,9 @@ export class GhostFleetController {
       ticket_id, attempt, short_code: factors.short_code,
       issued_at: this.now(), expires_at: new Date(ticketExpiry).toISOString(),
     });
-    // Validate the public delivery origin before persisting a ticket whose raw
+    // Build (and re-validate) the delivery before persisting a ticket whose raw
     // short code can never be recovered from durable state.
-    const delivery = createTicketDelivery({ record, short_code: factors.short_code, public_origin });
+    const delivery = createTicketDelivery({ record, short_code: factors.short_code, ...coordinates });
     this.store.putEnrollmentTicket(record);
     return { ticket: publicTicketMetadata(record), delivery };
   }

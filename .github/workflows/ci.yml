@@ -47,6 +47,13 @@ jobs:
       - run: npm run build:worker
         env:
           WRANGLER_SEND_METRICS: "false"
+      - run: node scripts/build-assets.mjs --inventory test/fixtures/assets/sample-assets.json --out dist/assets
+      - run: npm run build:assets-worker
+        env:
+          WRANGLER_SEND_METRICS: "false"
+      - run: npm run build:enroll-worker
+        env:
+          WRANGLER_SEND_METRICS: "false"
       - run: npm run verify:cloud
         if: runner.os == 'Linux'
       - run: npm run verify:ai-client-neutral

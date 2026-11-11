@@ -301,6 +301,13 @@ assert_contains "launcher sudo invocation" 'sudo /usr/bin/env -i PATH=' "$launch
 assert_contains "launcher env -i boundary" '/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root /bin/sh -c' "$launcher"
 assert_absent "launcher ticket leak" "$TICKET_ID" "$launcher"
 assert_absent "launcher short-code leak" "$short_code" "$launcher"
+# The launcher carries exactly three public coordinates: the immutable asset
+# origin, the pinned bootstrap digest, and the enrollment origin of the ticket.
+assert_contains "launcher pinned asset origin" "$ASSETS_ORIGIN/sha256/" "$launcher"
+assert_contains "launcher pinned bootstrap digest" "$BOOTSTRAP_SHA256" "$launcher"
+assert_contains "launcher pinned enrollment origin" "$ORIGIN/v1/enrollment-tickets/" "$launcher"
+assert_contains "launcher disables redirects" '--max-redirs 0' "$launcher"
+assert_contains "launcher verifies before execution" 'sha256sum "$BOOTSTRAP"' "$launcher"
 [[ -n "$env_i_line" ]] || fail_check "the env -i invocation line could not be read from the launcher"
 evidence "launcher_sha256=$launcher_sha"
 evidence "launcher_env_i=$env_i_line"
@@ -383,6 +390,13 @@ assert_eq "claim count after the first run" 1 "$claims_1"
 selection_artifact_rows="$(grep -c '^artifact=' "$work/claim-selection.txt")"
 assert_eq "pinned artifact rows in the delivered selection" 6 "$selection_artifact_rows"
 assert_eq "delivered artifact rows match the normalized selection" "$ARTIFACT_COUNT" "$selection_artifact_rows"
+# A1: the claim is a content address, never the bytes. name|sha256|mode is the
+# whole row, so a fourth field (the old inline payload) must never appear.
+inline_rows="$(grep -c '^artifact=[^|]*|[0-9a-f]*|[0-7]*|' "$work/claim-selection.txt" || true)"
+assert_eq "claim rows carry no inline artifact bytes" 0 "$inline_rows"
+asset_fetches="$(cat "$work/artifact-count")"
+[[ "$asset_fetches" -ge "$ARTIFACT_COUNT" ]] || fail_check "the courier did not fetch the pinned artifacts from the asset origin (fetches=$asset_fetches)"
+record_ok "pinned artifacts fetched from the asset origin: fetches=$asset_fetches"
 
 completion="$work/completion-receipt.json"
 [[ -r "$completion" ]] || fail_check "the courier never reported completion"
@@ -493,6 +507,7 @@ assert_absent "caller GHOSTFLEET_OPERATING_USER crossed env -i" 'GHOSTFLEET_OPER
 # The courier bytes: what curl wrote, what the server sent, what the module has.
 downloaded_sha_1="$(sha256sum "$work/downloaded-bootstrap-1.sh" | cut -d ' ' -f1)"
 served_sha="$(cat "$work/served-bootstrap.sha256")"
+assert_eq "downloaded courier == pinned bootstrap digest" "$BOOTSTRAP_SHA256" "$downloaded_sha_1"
 assert_eq "downloaded courier == fresh module import" "$published_sha" "$downloaded_sha_1"
 assert_eq "served courier == fresh module import" "$published_sha" "$served_sha"
 assert_eq "downloaded courier == served courier" "$served_sha" "$downloaded_sha_1"

@@ -22,12 +22,16 @@ machine.
 2. A real non-root Human runs it, elevates with real `sudo` (NOPASSWD), crosses
    `env -i` and reaches the published `BOOTSTRAP_SH` (not a recorder).
 3. The claim is real: a local control-plane stub returns a `capability_selection`
-   bound to the ticket's `template_digest`.
-4. The reviewed installer runs with real artifacts and real SHA-256 checks and
+   bound to the ticket's `template_digest`; the selection carries content
+   addresses (`name|sha256|mode`), not inline bytes.
+4. The bootstrap and every artifact come from a real content-addressed HTTP
+   origin (`/sha256/<digest>`), and the launcher refuses to execute anything
+   whose bytes do not match the pinned digest.
+5. The reviewed installer runs with real artifacts and real SHA-256 checks and
    installs the user unit plus Linger. The unit itself is a synthetic one-shot
    canary pinned by the test selection; what is real is the installation path,
    its ownership, its bytes matching the pinned artifact and its enablement.
-5. `FLEET_CONTROL_ORDINARY_USER` equals the Human; the unit and Linger belong to
+6. `FLEET_CONTROL_ORDINARY_USER` equals the Human; the unit and Linger belong to
    the template's `control_account`; neither is root; a second run is zero delta.
 6. The run account is created by the courier inside the same ceremony and is
    least privilege: `sudo -l -U <control_account>` reports no grant, its groups
@@ -106,16 +110,21 @@ writeFileSync("/root/gf/courier.sh", BOOTSTRAP_SH);
 sha256sum /root/gf/courier.sh                    # record it: this is the byte identity
 ```
 
-Serve `/root/gf/courier.sh` at `/v1/bootstrap.sh` and answer `<one-time URL>/claim`
-with a JSON body whose `capability_selection` is the base64 selection reviewed
-for the ticket (see `packages/bootstrap/test/fixtures/` for the shape). Expected:
-the courier downloads the exact bytes whose SHA-256 you recorded.
+Serve `/root/gf/courier.sh` at `/sha256/<digest>` (the digest you just recorded)
+and every pinned artifact at its own `/sha256/<artifact digest>`. Answer
+`<one-time URL>/claim` with a JSON body whose `capability_selection` is the
+base64 selection reviewed for the ticket (see `packages/bootstrap/test/fixtures/`
+for the shape); the selection carries `name|sha256|mode` rows only. Expected: the
+courier fetches the exact bytes whose SHA-256 the claim pinned and installs
+nothing whose digest differs.
 
-The published courier only accepts an exact `https://` ticket URL, so the origin
-must be TLS even on loopback. The CI job mints a throwaway CA, installs it into
-the system trust store and serves the stub with a certificate for `127.0.0.1`;
-a plain `http://127.0.0.1:<port>` origin is rejected by the courier before any
-effect.
+The stub needs two distinguishable origins. The CI job mints a throwaway CA,
+installs it into the system trust store and serves one HTTPS listener with a
+certificate for both `127.0.0.1` and `localhost`: the asset origin is
+`https://127.0.0.1:<port>` and the enrollment origin is
+`https://localhost:<port>`. The published courier only accepts an exact
+`https://` ticket URL, and `createTicketDelivery` refuses to collapse both
+surfaces onto one origin.
 
 Failure criterion: the served bytes differ from `courier.sh`, or the courier
 stops with `invalid one-time enrollment URL` (the origin is not trusted TLS).
@@ -127,9 +136,11 @@ node --input-type=module -e '
 import { writeFileSync } from "node:fs";
 import { createTicketDelivery } from "./src/control-plane/tickets.js";
 const d = createTicketDelivery({
-  record: { ticket_id: "ticket-<id>" },
+  ticket_id: "ticket-<id>",
   short_code: "12345678",
-  public_origin: "https://127.0.0.1:<port>",
+  assets_origin: "https://127.0.0.1:<port>",
+  enroll_origin: "https://localhost:<port>",
+  bootstrap_sha256: "<sha256sum of courier.sh>",
 });
 if (d.command.includes("ticket-<id>")) throw new Error("ticket leaked into argv");
 writeFileSync("/run/gf-chain/launcher.sh", "#!/bin/sh\n" + d.command + "\n", { mode: 0o755 });
@@ -138,6 +149,9 @@ writeFileSync("/run/gf-chain/launcher.sh", "#!/bin/sh\n" + d.command + "\n", { m
 # directory: the Human cannot read anything under /root.
 install -d -m 0755 /run/gf-chain
 grep -q 'TRUSTED_ID=/usr/bin/id' /run/gf-chain/launcher.sh   # expect: match
+grep -q -- '--max-redirs 0' /run/gf-chain/launcher.sh       # expect: match
+grep -q 'sha256sum "$BOOTSTRAP"' /run/gf-chain/launcher.sh  # expect: match
+grep -q '<assets origin>/sha256/<digest>' /run/gf-chain/launcher.sh  # expect: match
 ```
 
 Failure criterion: the ticket id appears in the command text.
@@ -145,7 +159,7 @@ Failure criterion: the ticket id appears in the command text.
 ## Step 4 — run it as the Human, through real sudo
 
 ```sh
-printf '%s\n%s\n' 'https://127.0.0.1:<port>/v1/enrollment-tickets/ticket-<id>' '12345678' \
+printf '%s\n%s\n' 'https://localhost:<port>/v1/enrollment-tickets/ticket-<id>' '12345678' \
   | su -s /bin/sh gfhuman -c "script -qec /run/gf-chain/launcher.sh /dev/null"
 ```
 

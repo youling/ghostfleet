@@ -68,32 +68,45 @@ export function selectedCapabilitiesFromPosture(posture, { userUnit = null } = {
   return Object.freeze({ helper_required, linger_required, user_service_required });
 }
 
+// Artifacts are pinned twice: by the content address that travels with the
+// claim, and by the bytes the immutable asset origin serves. A selection may
+// still carry the reviewed bytes (a deployment bundle computed them), but the
+// wire form never does - the courier re-fetches and re-verifies every byte.
 function normalizeArtifacts(artifacts) {
   if (!Array.isArray(artifacts)) throw invalid("CAPABILITY_ARTIFACTS_REQUIRED");
   const seen = new Set();
-  return artifacts.map((item, index) => {
+  return artifacts.map((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) throw invalid("CAPABILITY_ARTIFACT_INVALID");
     const name = item.name;
     if (typeof name !== "string" || !ARTIFACT_NAME.test(name)) throw invalid("CAPABILITY_ARTIFACT_NAME_INVALID");
     if (seen.has(name)) throw invalid("CAPABILITY_ARTIFACT_DUPLICATE");
     seen.add(name);
-    if (typeof item.content !== "string" || item.content.includes("\u0000")) throw invalid("CAPABILITY_ARTIFACT_CONTENT_INVALID");
-    if (!item.content.length) throw invalid("CAPABILITY_ARTIFACT_CONTENT_INVALID");
     const mode = String(item.mode ?? "0644");
     if (!FILE_MODE.test(mode)) throw invalid("CAPABILITY_ARTIFACT_MODE_INVALID");
-    const sha256 = "sha256:" + createHash("sha256").update(item.content, "utf8").digest("hex");
-    // A declared digest is an assertion about the reviewed bytes, not a second
-    // source of truth: a mismatch means the artifact changed after review.
-    if (item.sha256 !== undefined && String(item.sha256).replace(/^sha256:/, "") !== sha256.slice(7)) {
-      throw invalid("CAPABILITY_ARTIFACT_DIGEST_MISMATCH");
+    const hasContent = item.content !== undefined && item.content !== null;
+    let sha256;
+    if (hasContent) {
+      if (typeof item.content !== "string" || item.content.includes("\u0000")) throw invalid("CAPABILITY_ARTIFACT_CONTENT_INVALID");
+      if (!item.content.length) throw invalid("CAPABILITY_ARTIFACT_CONTENT_INVALID");
+      sha256 = "sha256:" + createHash("sha256").update(item.content, "utf8").digest("hex");
+      // A declared digest is an assertion about the reviewed bytes, not a
+      // second source of truth: a mismatch means the artifact changed after
+      // review, so the deployment must re-review rather than relabel.
+      if (item.sha256 !== undefined && String(item.sha256).replace(/^sha256:/, "") !== sha256.slice(7)) {
+        throw invalid("CAPABILITY_ARTIFACT_DIGEST_MISMATCH");
+      }
+    } else {
+      const declared = String(item.sha256 ?? "").replace(/^sha256:/, "");
+      if (!RAW_DIGEST.test(declared)) throw invalid("CAPABILITY_ARTIFACT_DIGEST_REQUIRED");
+      sha256 = "sha256:" + declared;
     }
-    return Object.freeze({
+    const normalized = {
       name,
       mode: "0" + mode.replace(/^0/, ""),
       sha256: sha256.slice("sha256:".length),
-      content: item.content,
-      base64: Buffer.from(item.content, "utf8").toString("base64"),
-    });
+    };
+    if (hasContent) normalized.content = item.content;
+    return Object.freeze(normalized);
   });
 }
 
@@ -221,7 +234,9 @@ export function renderCapabilityBlock(selection) {
     "CAPABILITY_ARTIFACT_COUNT=" + normalized.artifacts.length,
   );
   normalized.artifacts.forEach((item, index) => {
-    const row = [item.name, item.sha256, item.mode, item.base64].join("|");
+    // Address only. The courier resolves the bytes at the immutable asset
+    // origin and refuses anything whose digest is not this exact value.
+    const row = [item.name, item.sha256, item.mode].join("|");
     lines.push("CAPABILITY_ARTIFACT_" + (index + 1) + "=" + quote(row));
   });
   // Rows are data; the courier owns the fixed-width accessor so a claim-time
@@ -248,7 +263,9 @@ function selectionInput(selection) {
     artifacts: (selection.artifacts ?? []).map((item) => ({
       name: item.name,
       mode: item.mode,
-      content: item.content,
+      // A normalized selection from the claim has no bytes, only its digest.
+      sha256: item.sha256,
+      ...(item.content === undefined ? {} : { content: item.content }),
     })),
   };
 }
@@ -274,7 +291,8 @@ export function encodeCapabilitySelection(selection, { templateDigest = null } =
     "user_unit_artifact=" + (normalized.user_unit?.artifact ?? ""),
   ];
   for (const item of normalized.artifacts) {
-    lines.push("artifact=" + [item.name, item.sha256, item.mode, item.base64].join("|"));
+    // A1: the claim delivers the content address, never the artifact bytes.
+    lines.push("artifact=" + [item.name, item.sha256, item.mode].join("|"));
   }
   return Buffer.from(lines.join("\n") + "\n", "utf8").toString("base64");
 }
@@ -294,10 +312,13 @@ export function decodeCapabilitySelection(text, { templateDigest = null } = {}) 
     if (!SELECTION_TEXT_KEYS.has(key)) throw invalid("CAPABILITY_SELECTION_INVALID");
     if (key === "artifact") {
       const parts = value.split("|");
-      if (parts.length !== 4) throw invalid("CAPABILITY_SELECTION_INVALID");
-      const [name, sha256, mode, base64] = parts;
-      if (!name || !sha256 || !mode || !base64) throw invalid("CAPABILITY_SELECTION_INVALID");
-      artifacts.push({ name, sha256: "sha256:" + sha256, mode, content: Buffer.from(base64, "base64").toString("utf8") });
+      // v2-schema artifact rows are addresses: name|sha256|mode. Inline bytes
+      // are a legacy shape that let the delivery carry unreviewed content, so
+      // they are refused rather than silently preferenced over the asset origin.
+      if (parts.length !== 3) throw invalid("CAPABILITY_ARTIFACT_ROW_INVALID");
+      const [name, sha256, mode] = parts;
+      if (!name || !sha256 || !mode) throw invalid("CAPABILITY_ARTIFACT_ROW_INVALID");
+      artifacts.push({ name, sha256: "sha256:" + sha256, mode });
       continue;
     }
     if (fields.has(key)) throw invalid("CAPABILITY_SELECTION_INVALID");
