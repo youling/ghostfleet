@@ -97,6 +97,12 @@ test("the Console launcher hands the Human identity through sudo and su without 
   }
 });
 
+test("non-root composition evidence is NOT_RUN when this suite runs as root", { skip: linuxOnly || !isRoot }, (t) => {
+  // Visible in CI logs instead of silently skipping: the sudo/su/pollution
+  // cases need a real ordinary Human with NOPASSWD sudo.
+  t.diagnostic("NOT_RUN_NON_ROOT_COMPOSITION: run as an ordinary Human (e.g. su - gf-review-human) with NOPASSWD sudo to exercise the sudo/su/pollution cases");
+});
+
 test("a root caller hands no Human identity over, so the bootstrap can fail closed", { skip: linuxOnly }, async () => {
   const result = await compose({ mode: "root" });
   assert.equal(result.code, 0, result.output);
