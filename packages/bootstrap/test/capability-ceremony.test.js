@@ -6,7 +6,7 @@ import { join, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { renderBootstrap } from "../src/index.js";
+import { renderBootstrap, encodeCapabilitySelection } from "../src/index.js";
 
 const linuxOnly = process.platform !== "linux";
 const here = dirname(fileURLToPath(import.meta.url));
@@ -37,8 +37,11 @@ async function makeHost() {
     run: join(root, "run"),
     accountHome: join(root, "home-ghostfleet-ops"),
     tty: join(root, "dev-tty"),
+    ttyOut: join(root, "dev-tty-out"),
     osRelease: join(root, "os-release"),
     systemdDir: join(root, "systemd"),
+    keyrings: join(root, "usr-share-keyrings"),
+    aptSources: join(root, "etc-apt-sources"),
     sshDir: join(root, "etc-ssh"),
     tailscaleStateMarker: join(root, "tailscale.state.marker"),
     lock: join(root, "fresh-checkpoint"),
@@ -48,6 +51,8 @@ async function makeHost() {
   await mkdir(host.accountHome);
   await mkdir(host.systemdDir);
   await mkdir(host.sshDir);
+  await mkdir(host.keyrings);
+  await mkdir(host.aptSources);
   await writeFile(join(host.sshDir, "ssh_host_ed25519_key.pub"), "ssh-ed25519 AAAAfixturehostkey synthetic\n");
   await writeFile(host.osRelease, 'ID=debian\nID_LIKE=debian\nVERSION_ID="13"\nVERSION_CODENAME=bookworm\n');
   await writeFile(host.tty, "12345678\n");
@@ -77,6 +82,18 @@ async function makeHost() {
 async function resetProviderIdentity(host) {
   await rm(join(host.fixtureState, "tailscale.joined"), { force: true });
   await rm(join(host.bin, "tailscale"), { force: true });
+}
+
+// The claim is the server-authoritative channel for the selection.
+async function setClaim(host, overrides = {}) {
+  await writeFile(join(host.fixtureState, "claim.json"), JSON.stringify({
+    resume_session: "fixture-resume-session-0123456789abcdef",
+    auth_key: "fixture-one-off-auth-key",
+    identity_kind: "canonical",
+    node_id: NODE_ID,
+    node_uid: NODE_UID,
+    ...overrides,
+  }));
 }
 
 async function freshCheckpoint(host) {
@@ -126,8 +143,11 @@ async function runCourier(host, selection, options = {}) {
   script = script.replaceAll("[ -c /dev/tty ]", () => "[ -f " + host.tty + " ]");
   script = script.replaceAll("</dev/tty", () => "<" + host.tty);
   script = script.replaceAll("< /dev/tty", () => "< " + host.tty);
+  script = script.replaceAll("> /dev/tty", () => "> " + host.ttyOut);
   script = script.replaceAll("/run/fleet", () => host.run);
   script = script.replaceAll("/etc/ssh/", () => host.sshDir + "/");
+  script = script.replaceAll("/usr/share/keyrings", () => host.keyrings);
+  script = script.replaceAll("/etc/apt/sources.list.d", () => host.aptSources);
   script = script.replaceAll("/var/lib/tailscale/tailscaled.state", () => host.tailscaleStateMarker);
   if (options.tamper) script = options.tamper(script);
   const file = join(host.root, "courier.sh");
@@ -377,6 +397,64 @@ test("a missing or unverifiable capability dependency fails closed before any ef
       assert.deepEqual(await installerLog(host), [], item.name + ": the installer never ran");
       assert.equal(await exists(join(host.checkpoint, "enrollment-checkpoint.json")), false, item.name);
       assert.equal(await exists(UNIT_PATH(host)), false, item.name);
+    }
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a claim-delivered selection installs the capability without a rendered payload", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    await setClaim(host, {
+      capability_required: true,
+      capability_selection: encodeCapabilitySelection(selection),
+    });
+    const result = await runCourier(host, null);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok((await installerLog(host)).some((line) => line.startsWith("installer --apply")));
+    const checkpoint = await readJson(join(host.checkpoint, "enrollment-checkpoint.json"));
+    assert.equal(checkpoint.components.privileged_helper, "COMPLIANT");
+    assert.equal(checkpoint.components.linger, "COMPLIANT");
+    assert.equal((await readJson(join(host.checkpoint, "capability-state.json"))).mode, "NEW");
+    assert.equal(await readFile(UNIT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
+    assert.ok(await exists(join(host.fixtureState, "linger")));
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a required capability with no delivered artifacts stops before the identity join", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    await setClaim(host, { capability_required: true });
+    const result = await runCourier(host, null);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /requires the privileged capability but the claim delivered no pinned artifacts/);
+    const journal = await calls(host);
+    assert.equal(journal.includes("tailscale-up"), false, "no identity effect before the selection is known");
+    assert.equal(journal.includes("curl complete"), false);
+    assert.deepEqual(await installerLog(host), []);
+    assert.equal(await exists(join(host.checkpoint, "capability-state.json")), false);
+    assert.equal(await exists(UNIT_PATH(host)), false);
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a claim selection that is not decodable or not pinned is refused before the join", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    const cases = [
+      { name: "undecodable", selection: Buffer.from("not-a-selection\n").toString("base64"), expected: /unknown field|requires the privileged capability/ },
+      { name: "unpinned artifact row", selection: Buffer.from("schema=ghostfleet-selected-capability/v1\nversion=v1\ntemplate_digest=sha256:" + "0".repeat(64) + "\nhelper_required=1\nartifact=evil\n").toString("base64"), expected: /artifact row is invalid/ },
+    ];
+    for (const item of cases) {
+      await resetProviderIdentity(host);
+      await freshCheckpoint(host);
+      await setClaim(host, { capability_required: true, capability_selection: item.selection });
+      const result = await runCourier(host, null);
+      assert.notEqual(result.status, 0, item.name);
+      assert.match(result.stderr, item.expected, item.name);
+      assert.equal((await calls(host)).includes("tailscale-up"), false, item.name);
+      assert.deepEqual(await installerLog(host), [], item.name);
     }
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
