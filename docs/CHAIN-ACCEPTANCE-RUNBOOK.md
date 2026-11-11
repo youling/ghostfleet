@@ -24,7 +24,9 @@ machine.
 3. The claim is real: a local control-plane stub returns a `capability_selection`
    bound to the ticket's `template_digest`.
 4. The reviewed installer runs with real artifacts and real SHA-256 checks and
-   installs the real user unit plus Linger.
+   installs the user unit plus Linger. The unit itself is a synthetic one-shot
+   canary pinned by the test selection; what is real is the installation path,
+   its ownership, its bytes matching the pinned artifact and its enablement.
 5. `FLEET_CONTROL_ORDINARY_USER` equals the Human; the unit and Linger belong to
    the template's `control_account`; neither is root; a second run is zero delta.
 
@@ -153,11 +155,21 @@ never a substitute for a courier check:
 - a local control-plane stub (`scripts/chain-acceptance-control-plane.mjs`)
   that serves the published courier bytes, verifies the short code with
   `src/control-plane/tickets.js`, and answers the claim with the reviewed
-  selection bound to the ticket's `template_digest`.
+  selection bound to the ticket's `template_digest` (the digest is a synthetic
+  test value: no reviewed enrollment template carries it).
 
 The courier still probes the account, the packages, the daemon, the artifacts
 and their digests, the unit and Linger itself, and the installer still runs its
 own `--check`/`--apply` with real SHA-256 verification.
+
+The successful job does not just print the report: it first prints one
+`EVIDENCE` line per measured fact (launcher SHA-256 and its `env -i` line, the
+live `sudo` parent and the post-`env -i` environment of its child, the claim
+verdict and both digests, the installer/unit/helper SHA-256s, `stat` and
+`loginctl` output, the claim/apply counters and the before/after SHA-256s of the
+four durable files), and the `REAL` line is assembled from those values. The
+courier bytes are checked three ways: what the launcher's own `curl` wrote, what
+the stub sent, and a fresh module import in a new process.
 
 ```
 REAL: <each step that really ran>

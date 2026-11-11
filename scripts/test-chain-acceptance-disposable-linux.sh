@@ -15,6 +15,9 @@
 # provisioning below happens BEFORE the ceremony and never replaces a courier
 # check with a recorded result. GitHub-hosted ephemeral VM ONLY: no Fleet/NAS,
 # no production node, no credentials.
+#
+# The successful path prints an EVIDENCE block with the measured values behind
+# every assertion, then the REAL / STUB / NOT_RUN report built from them.
 set -Eeuo pipefail
 IFS=$'\n\t'
 
@@ -37,6 +40,7 @@ short_code=41832576
 node_id="gf-chain-$(openssl rand -hex 4)"
 installer_state=/etc/youling-fleet/privileged-operations/control.json
 capability_state=/var/lib/fleet/capability-state.json
+unit_name=ghostfleet-managed.service
 
 work="$(mktemp -d)"
 run_dir=/run/gf-chain
@@ -45,10 +49,21 @@ install -d -m 0700 -o root -g root "$work"
 install -d -m 0755 -o root -g root "$run_dir" "$run_dir/poison"
 
 section() { printf '\n=== %s ===\n' "$*"; }
-fail_check() { printf 'CHAIN ASSERTION FAILED: %s\n' "$*" >&2; exit 1; }
-assert_eq() { [[ "$2" = "$3" ]] || fail_check "$1: expected [$2], got [$3]"; }
-assert_contains() { grep -Fq -- "$2" "$3" || fail_check "$1: [$2] not found in $3"; }
-assert_absent() { ! grep -Fq -- "$2" "$3" || fail_check "$1: [$2] unexpectedly present in $3"; }
+fail_check() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
+record_ok() { printf 'OK   %s\n' "$*"; }
+evidence() { printf 'EVIDENCE %s\n' "$*"; }
+assert_eq() {
+  if [[ "$2" = "$3" ]]; then record_ok "$1 = $3"; else fail_check "$1: expected [$2], got [$3]"; fi
+}
+assert_contains() {
+  [[ -r "$3" ]] || fail_check "$1: evidence file $3 is missing"
+  if grep -Fq -- "$2" "$3"; then record_ok "$1: found [$2] in $3"; else fail_check "$1: [$2] not found in $3"; fi
+}
+assert_absent() {
+  [[ -r "$3" ]] || fail_check "$1: evidence file $3 is missing"
+  if grep -Fq -- "$2" "$3"; then fail_check "$1: [$2] unexpectedly present in $3"; fi
+  record_ok "$1: [$2] absent from $3"
+}
 json_value() {
   python3 - "$1" "$2" <<'PY'
 import json
@@ -58,6 +73,70 @@ for key in sys.argv[2].split("."):
     value = value[key]
 print(value)
 PY
+}
+
+# The launcher's private /run workspace is removed by its own cleanup; clear any
+# leftover from a failed attempt so each capture sees only this run's download.
+clear_launcher_workspace() { rm -rf /run/ghostfleet-enroll.* 2>/dev/null || true; }
+
+# Capture the exact bytes the launcher's own curl wrote. The file appears while
+# curl streams it; wait for a stable size, copy, and verify the copy is complete.
+capture_courier_download() {
+  local tag="$1" deadline=$((SECONDS + 90)) directory candidate size previous=0 target
+  target="$work/downloaded-bootstrap-$tag.sh"
+  while (( SECONDS < deadline )); do
+    candidate=
+    for directory in /run/ghostfleet-enroll.*; do
+      [[ -d "$directory" && -s "$directory/bootstrap.sh" ]] || continue
+      candidate="$directory/bootstrap.sh"
+      break
+    done
+    if [[ -n "$candidate" ]]; then
+      size="$(stat -c %s "$candidate" 2>/dev/null || printf '0')"
+      if [[ "$size" -gt 0 && "$size" = "$previous" ]]; then
+        if cp -- "$candidate" "$target" 2>/dev/null &&
+           [[ "$(stat -c %s "$target" 2>/dev/null || printf '0')" = "$size" ]]; then
+          return 0
+        fi
+      fi
+      previous="$size"
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+# Capture the live process tree of the elevation: the sudo process (its environ
+# is the caller's poisoned environment) and its child, the root /bin/sh started
+# by env -i (its environ is the post-env -i environment, its argv carries the
+# Human identity handed over as $1).
+capture_elevation() {
+  local tag="$1" deadline=$((SECONDS + 30)) candidate other pid child
+  while (( SECONDS < deadline )); do
+    for candidate in /proc/[0-9]*; do
+      pid="${candidate##*/}"
+      [[ -r "$candidate/comm" ]] || continue
+      [[ "$(cat "$candidate/comm" 2>/dev/null)" = sudo ]] || continue
+      grep -qa -- 'ghostfleet-enroll' "$candidate/cmdline" 2>/dev/null || continue
+      child=
+      for other in /proc/[0-9]*; do
+        [[ "$(awk '/^PPid:/{print $2}' "$other/status" 2>/dev/null)" = "$pid" ]] || continue
+        child="${other##*/}"
+        break
+      done
+      [[ -n "$child" ]] || continue
+      # Skip the momentary /usr/bin/env process: only the /bin/sh it execs has
+      # the post-env -i environment we want to record.
+      [[ "$(cat "/proc/$child/comm" 2>/dev/null)" = sh ]] || continue
+      tr '\0' '\n' <"$candidate/environ" 2>/dev/null >"$work/caller-environ-$tag.txt" || true
+      tr '\0' '\n' <"/proc/$child/environ" 2>/dev/null >"$work/elevated-environ-$tag.txt" || true
+      tr '\0' '\n' <"/proc/$child/cmdline" 2>/dev/null >"$work/elevated-argv-$tag.txt" || true
+      printf 'sudo\n' >"$work/elevated-parent-$tag.txt"
+      return 0
+    done
+    sleep 0.1
+  done
+  return 1
 }
 
 cleanup() {
@@ -92,7 +171,8 @@ done
 if ! compgen -G "/etc/ssh/ssh_host_*_key.pub" >/dev/null; then ssh-keygen -A; fi
 # A real non-root Human with a real NOPASSWD sudo grant.
 if ! id "$human" >/dev/null 2>&1; then useradd -m -s /bin/bash "$human"; fi
-[[ "$(id -u "$human")" -ne 0 && "$(id -u "$human")" -ge 1000 ]] || { echo "the Human account is not ordinary" >&2; exit 3; }
+human_uid="$(id -u "$human")"
+[[ "$human_uid" -ne 0 && "$human_uid" -ge 1000 ]] || { echo "the Human account is not ordinary" >&2; exit 3; }
 printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$human" >/etc/sudoers.d/90-gf-chain-human
 chmod 0440 /etc/sudoers.d/90-gf-chain-human
 visudo -cf /etc/sudoers.d/90-gf-chain-human >/dev/null
@@ -194,110 +274,214 @@ done
 # shellcheck disable=SC1091
 . "$work/facts.sh"
 install -m 0755 "$work/launcher.sh" "$run_dir/launcher.sh"
+launcher="$run_dir/launcher.sh"
 url="$ORIGIN/v1/enrollment-tickets/$TICKET_ID"
 printf '%s\n%s\n' "$url" "$short_code" >"$work/in-1"
 printf '%s\n' "$url" >"$work/in-2"
-[[ "$(sha256sum "$work/published-bootstrap.sh" | cut -d ' ' -f1)" = "$BOOTSTRAP_SHA256" ]] ||
-  { echo "the served courier is not the published BOOTSTRAP_SH" >&2; exit 1; }
+
+# The published bytes, hashed by a NEW node process (not the stub's memory).
+published_sha="$(cd "$workspace" && node --input-type=module -e '
+import { createHash } from "node:crypto";
+import { BOOTSTRAP_SH } from "./packages/bootstrap/src/index.js";
+process.stdout.write(createHash("sha256").update(BOOTSTRAP_SH).digest("hex"));
+')"
+launcher_sha="$(sha256sum "$launcher" | cut -d ' ' -f1)"
+env_i_line="$(grep -o -m1 '/usr/bin/env -i PATH=[^ ]* HOME=/root /bin/sh -c' "$launcher" || true)"
 printf 'control-plane origin: %s\n' "$ORIGIN"
-printf 'ticket: %s\ntemplate digest: %s\nmodule selection digest: %s\nnode: %s\n' "$TICKET_ID" "$TEMPLATE_DIGEST" "$SELECTION_DIGEST" "$NODE_ID"
+printf 'ticket: %s\nsynthetic test template digest: %s\nnode: %s\n' "$TICKET_ID" "$TEMPLATE_DIGEST" "$NODE_ID"
 
 # The launcher text is the Console output; it must not carry the ticket handle
-# or the short code (both are typed into the protected root terminal instead).
-assert_contains "launcher identity capture" 'TRUSTED_ID=/usr/bin/id' "$run_dir/launcher.sh"
-assert_absent "launcher ticket leak" "$TICKET_ID" "$run_dir/launcher.sh"
-assert_absent "launcher short-code leak" "$short_code" "$run_dir/launcher.sh"
+# or the short code, and it must keep the sudo branch and the env -i boundary.
+assert_contains "launcher identity capture" 'TRUSTED_ID=/usr/bin/id' "$launcher"
+assert_contains "launcher caller uid capture" 'if [ "$CALLER_UID" -eq 0 ]; then' "$launcher"
+assert_contains "launcher sudo branch" 'elif command -v sudo >/dev/null 2>&1; then' "$launcher"
+assert_contains "launcher sudo invocation" 'sudo /usr/bin/env -i PATH=' "$launcher"
+assert_contains "launcher env -i boundary" '/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root /bin/sh -c' "$launcher"
+assert_absent "launcher ticket leak" "$TICKET_ID" "$launcher"
+assert_absent "launcher short-code leak" "$short_code" "$launcher"
+[[ -n "$env_i_line" ]] || fail_check "the env -i invocation line could not be read from the launcher"
+evidence "launcher_sha256=$launcher_sha"
+evidence "launcher_env_i=$env_i_line"
+evidence "launcher_sudo=$(grep -o -m1 'sudo /usr/bin/env -i PATH=[^ ]*' "$launcher")"
+evidence "human=$human human_uid=$human_uid"
 
 run_launcher() {
   local log="$1" input="$2" rc=0
   set +e
-  su -s /bin/sh "$human" -c "export PATH='$run_dir/poison':\$PATH; export GHOSTFLEET_OPERATING_USER=root; export TMPDIR='$poison_tmp'; script -qec '$run_dir/launcher.sh' /dev/null" <"$input" >"$log" 2>&1
+  su -s /bin/sh "$human" -c "export PATH='$run_dir/poison':\$PATH; export GHOSTFLEET_POISON=caller-poison; export GHOSTFLEET_OPERATING_USER=root; export TMPDIR='$poison_tmp'; script -qec '$launcher' /dev/null" <"$input" >"$log" 2>&1
   rc=$?
   set -e
   return "$rc"
 }
 
 section "run 1: the real Console launcher, the real Human, real sudo, real env -i"
+clear_launcher_workspace
+capture_courier_download 1 &
+download_watch=$!
+capture_elevation 1 &
+elevation_watch=$!
 if ! run_launcher "$work/run-1.log" "$work/in-1"; then
   echo "the first chained run failed" >&2
   tail -n 80 "$work/run-1.log" >&2
   exit 1
 fi
-[[ -e "$work/poison-sh-ran" || -e "$work/poison-curl-ran" ]] && fail_check "a caller-controlled binary executed during elevation"
-[[ -z "$(ls -A "$poison_tmp")" ]] || fail_check "the caller TMPDIR was used by the elevated script"
+wait "$download_watch" || fail_check "the courier bytes the launcher downloaded were not captured"
+wait "$elevation_watch" || fail_check "the elevated sudo/env -i process was not observed"
+if [[ -e "$work/poison-sh-ran" || -e "$work/poison-curl-ran" ]]; then
+  fail_check "a caller-controlled binary executed during elevation"
+fi
+record_ok "no caller-controlled binary ran during elevation"
+if [[ -n "$(ls -A "$poison_tmp")" ]]; then fail_check "the caller TMPDIR was used by the elevated script"; fi
+record_ok "the caller TMPDIR stayed empty"
 
 section "assertions: the first run really installed the selected capability"
 [[ -r "$capability_state" ]] || fail_check "no capability state was written"
+record_ok "capability state file exists: $capability_state"
 assert_contains "capability mode" '"mode":"NEW"' "$capability_state"
 assert_contains "capability template binding" "\"template_digest\":\"$TEMPLATE_DIGEST\"" "$capability_state"
 recorded_selection_digest="$(json_value "$capability_state" selection_digest)"
 [[ "$recorded_selection_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || fail_check "the recorded selection digest is malformed"
+record_ok "recorded selection digest is a sha256: $recorded_selection_digest"
 assert_contains "preflight ran" 'fleet-enroll: preflight PASS' "$work/run-1.log"
 assert_contains "completion ran" "fleet-enroll: bootstrap complete for $NODE_ID" "$work/run-1.log"
 assert_contains "apply ran" "fleet-enroll: selected capability mode=NEW" "$work/run-1.log"
 assert_contains "installer apply" 'DEDICATED_PRIVILEGED_OPS_LANE_READY' "$work/run-1.log"
+applies_1="$(grep -c 'DEDICATED_PRIVILEGED_OPS_LANE_READY' "$work/run-1.log" || true)"
+assert_eq "installer apply count in run 1" 1 "$applies_1"
 
 claim_receipt="$work/claim-request.json"
 [[ -r "$claim_receipt" ]] || fail_check "the courier never claimed"
+record_ok "claim request recorded: $claim_receipt"
 assert_eq "claim os family" debian-family "$(json_value "$claim_receipt" os_family)"
 assert_eq "claim os id" ubuntu "$(json_value "$claim_receipt" os_id)"
-[[ "$(json_value "$claim_receipt" preflight_digest)" =~ ^sha256:[0-9a-f]{64}$ ]] || fail_check "the claim carried no real preflight digest"
-assert_eq "claim count after the first run" 1 "$(cat "$work/claim-count")"
+assert_eq "claim verified by the ticket module" PASSED_BY_TICKETS_MODULE "$(json_value "$claim_receipt" ticket_verification)"
+preflight_digest="$(json_value "$claim_receipt" preflight_digest)"
+[[ "$preflight_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || fail_check "the claim carried no real preflight digest"
+record_ok "claim carried the real phase-0 digest: $preflight_digest"
+claims_1="$(cat "$work/claim-count")"
+assert_eq "claim count after the first run" 1 "$claims_1"
 
 completion="$work/completion-receipt.json"
 [[ -r "$completion" ]] || fail_check "the courier never reported completion"
+record_ok "completion receipt recorded: $completion"
 assert_eq "completion node" "$NODE_ID" "$(json_value "$completion" report.node_id)"
 assert_eq "completion capability mode" NEW "$(json_value "$completion" report.capability_mode)"
 assert_eq "completion selection digest" "$recorded_selection_digest" "$(json_value "$completion" report.capability_selection_digest)"
-[[ -n "$(json_value "$completion" report.ssh_host_key_sha256)" ]] || fail_check "completion carried no host identity evidence"
+ssh_host_sha="$(json_value "$completion" report.ssh_host_key_sha256)"
+[[ -n "$ssh_host_sha" ]] || fail_check "completion carried no host identity evidence"
+record_ok "completion carried the real host key fingerprint: $ssh_host_sha"
 
 control_home="$(getent passwd "$control_account" | cut -d: -f6)"
-unit="$control_home/.config/systemd/user/ghostfleet-managed.service"
-want="$control_home/.config/systemd/user/default.target.wants/ghostfleet-managed.service"
+unit="$control_home/.config/systemd/user/$unit_name"
+want="$control_home/.config/systemd/user/default.target.wants/$unit_name"
 [[ -f "$unit" && -L "$want" ]] || fail_check "the selected user unit was not installed and enabled"
-assert_eq "unit owner" "$control_account:$control_account:644" "$(stat -c '%U:%G:%a' "$unit")"
-owner="$(stat -c '%U' "$unit")"
-[[ "$owner" != "$human" && "$owner" != root ]] || fail_check "the Human or root owns the managed unit"
-assert_eq "unit bytes" "$UNIT_SHA256" "$(sha256sum "$unit" | cut -d ' ' -f1)"
-assert_eq "Linger" "Linger=yes" "$(loginctl show-user "$control_account" -p Linger)"
-[[ "$(id -u "$control_account")" -ne 0 ]] || fail_check "the control account is root"
-[[ "$(id -u "$human")" -ne 0 ]] || fail_check "the Human is root"
+record_ok "user unit installed and enabled: $unit -> $want"
+unit_stat="$(stat -c '%U:%G:%a' "$unit")"
+assert_eq "unit owner:group:mode" "$control_account:$control_account:644" "$unit_stat"
+unit_owner="$(stat -c '%U' "$unit")"
+if [[ "$unit_owner" = "$human" || "$unit_owner" = root ]]; then fail_check "the Human or root owns the managed unit"; fi
+record_ok "the unit owner is neither the Human nor root: $unit_owner"
+unit_sha="$(sha256sum "$unit" | cut -d ' ' -f1)"
+assert_eq "unit bytes match the pinned artifact" "$UNIT_SHA256" "$unit_sha"
+linger_out="$(loginctl show-user "$control_account" -p Linger)"
+assert_eq "Linger" "Linger=yes" "$linger_out"
+control_uid="$(id -u "$control_account")"
+[[ "$control_uid" -ne 0 ]] || fail_check "the control account is root"
+record_ok "control account uid is not root: $control_account uid=$control_uid"
+[[ "$human_uid" -ne 0 ]] || fail_check "the Human is root"
+record_ok "Human uid is not root: $human uid=$human_uid"
 [[ -r "$installer_state" ]] || fail_check "the installer did not record its state"
-assert_eq "FLEET_CONTROL_ORDINARY_USER recorded" "$human" "$(json_value "$installer_state" ordinary_user)"
+record_ok "installer state recorded: $installer_state"
+ordinary_user="$(json_value "$installer_state" ordinary_user)"
+assert_eq "FLEET_CONTROL_ORDINARY_USER recorded" "$human" "$ordinary_user"
 assert_eq "recorded ops user" "$control_account" "$(json_value "$installer_state" ops_user)"
-assert_eq "helper bytes" "$HELPER_SHA256" "$(sha256sum /usr/local/libexec/youling-fleet/fleet-privctl | cut -d ' ' -f1)"
+helper_path=/usr/local/libexec/youling-fleet/fleet-privctl
+assert_eq "helper bytes match the pinned artifact" "$HELPER_SHA256" "$(sha256sum "$helper_path" | cut -d ' ' -f1)"
 visudo -cf /etc/sudoers.d/90-youling-fleet-privileged-operations >/dev/null || fail_check "the managed sudoers file is invalid"
+record_ok "the managed sudoers file parses"
+installer_sha="$(sha256sum "$workspace/packages/runtime-python/src/ghostfleet_runtime/resources/fleet/10_platforms/linux/common/operations/privileged/managed-linux-privileged-operations.sh" | cut -d ' ' -f1)"
+assert_eq "installer bytes match the pinned artifact" "$INSTALLER_SHA256" "$installer_sha"
+
+# The elevation boundary, measured on the live process tree.
+elevated_parent="$(cat "$work/elevated-parent-1.txt" 2>/dev/null || true)"
+assert_eq "elevated parent is sudo (never the su fallback)" sudo "$elevated_parent"
+handed_over="$(tail -n 1 "$work/elevated-argv-1.txt" 2>/dev/null || true)"
+assert_eq "root script received the Human as \$1" "$human" "$handed_over"
+elevated_env="$(grep -v '^$' "$work/elevated-environ-1.txt" | paste -sd ';' -)"
+assert_contains "elevated environment PATH" 'PATH=/usr/sbin:/usr/bin:/sbin:/bin' "$work/elevated-environ-1.txt"
+assert_contains "elevated environment HOME" 'HOME=/root' "$work/elevated-environ-1.txt"
+assert_contains "caller environment was really poisoned" 'GHOSTFLEET_POISON=caller-poison' "$work/caller-environ-1.txt"
+assert_absent "caller poison variable crossed env -i" 'GHOSTFLEET_POISON' "$work/elevated-environ-1.txt"
+assert_absent "caller TMPDIR crossed env -i" 'TMPDIR=' "$work/elevated-environ-1.txt"
+assert_absent "caller SUDO_USER crossed env -i" 'SUDO_USER=' "$work/elevated-environ-1.txt"
+assert_absent "caller GHOSTFLEET_OPERATING_USER crossed env -i" 'GHOSTFLEET_OPERATING_USER' "$work/elevated-environ-1.txt"
+
+# The courier bytes: what curl wrote, what the server sent, what the module has.
+downloaded_sha_1="$(sha256sum "$work/downloaded-bootstrap-1.sh" | cut -d ' ' -f1)"
+served_sha="$(cat "$work/served-bootstrap.sha256")"
+assert_eq "downloaded courier == fresh module import" "$published_sha" "$downloaded_sha_1"
+assert_eq "served courier == fresh module import" "$published_sha" "$served_sha"
+assert_eq "downloaded courier == served courier" "$served_sha" "$downloaded_sha_1"
+
+evidence "launcher_sha256=$launcher_sha"
+evidence "elevated_parent=$elevated_parent handed_over_argv1=$handed_over human_uid=$human_uid"
+evidence "elevated_env=$elevated_env"
+evidence "caller_env_poison=GHOSTFLEET_POISON=caller-poison TMPDIR=$poison_tmp PATH=$run_dir/poison:..."
+evidence "claim_ticket=$TICKET_ID ticket_verification=PASSED_BY_TICKETS_MODULE preflight_digest=$preflight_digest"
+evidence "synthetic_template_digest=$TEMPLATE_DIGEST recorded_selection_digest=$recorded_selection_digest module_selection_digest=$SELECTION_DIGEST"
+evidence "installer_sha256=$installer_sha pinned_artifacts=$ARTIFACT_COUNT"
+evidence "unit=$unit unit_stat=$unit_stat unit_sha256=$unit_sha"
+evidence "linger=$linger_out installer_ordinary_user=$ordinary_user"
+evidence "courier_downloaded_sha256=$downloaded_sha_1 courier_served_sha256=$served_sha courier_published_sha256=$published_sha"
 
 section "run 2: the same launcher again must be zero delta"
 state_before="$(sha256sum "$capability_state" | cut -d ' ' -f1)"
 unit_before="$(sha256sum "$unit" | cut -d ' ' -f1)"
 control_before="$(sha256sum "$installer_state" | cut -d ' ' -f1)"
-helper_before="$(sha256sum /usr/local/libexec/youling-fleet/fleet-privctl | cut -d ' ' -f1)"
-helper_mtime_before="$(stat -c %Y /usr/local/libexec/youling-fleet/fleet-privctl)"
+helper_before="$(sha256sum "$helper_path" | cut -d ' ' -f1)"
+helper_mtime_before="$(stat -c %Y "$helper_path")"
 unit_mtime_before="$(stat -c %Y "$unit")"
 control_mtime_before="$(stat -c %Y "$installer_state")"
+clear_launcher_workspace
+capture_courier_download 2 &
+download_watch_2=$!
 if ! run_launcher "$work/run-2.log" "$work/in-2"; then
   echo "the second chained run failed" >&2
   tail -n 80 "$work/run-2.log" >&2
   exit 1
 fi
+wait "$download_watch_2" || fail_check "the second run's courier bytes were not captured"
 assert_contains "converged path" 'fleet-enroll: already converged; no enrollment credentials requested' "$work/run-2.log"
 assert_absent "second-run credential prompt" 'Enrollment code' "$work/run-2.log"
 assert_absent "second-run installer apply" 'DEDICATED_PRIVILEGED_OPS_LANE_READY' "$work/run-2.log"
-assert_eq "claim count after the second run" 1 "$(cat "$work/claim-count")"
+applies_2="$(grep -c 'DEDICATED_PRIVILEGED_OPS_LANE_READY' "$work/run-2.log" || true)"
+assert_eq "installer apply count in run 2" 0 "$applies_2"
+claims_2="$(cat "$work/claim-count")"
+assert_eq "claim count after the second run" 1 "$claims_2"
 assert_eq "courier downloads" 2 "$(cat "$work/bootstrap-count")"
-assert_eq "capability state unchanged" "$state_before" "$(sha256sum "$capability_state" | cut -d ' ' -f1)"
-assert_eq "unit bytes unchanged" "$unit_before" "$(sha256sum "$unit" | cut -d ' ' -f1)"
-assert_eq "installer state unchanged" "$control_before" "$(sha256sum "$installer_state" | cut -d ' ' -f1)"
-assert_eq "helper bytes unchanged" "$helper_before" "$(sha256sum /usr/local/libexec/youling-fleet/fleet-privctl | cut -d ' ' -f1)"
-assert_eq "helper mtime unchanged" "$helper_mtime_before" "$(stat -c %Y /usr/local/libexec/youling-fleet/fleet-privctl)"
+downloaded_sha_2="$(sha256sum "$work/downloaded-bootstrap-2.sh" | cut -d ' ' -f1)"
+assert_eq "second-run downloaded courier == fresh module import" "$published_sha" "$downloaded_sha_2"
+state_after="$(sha256sum "$capability_state" | cut -d ' ' -f1)"
+unit_after="$(sha256sum "$unit" | cut -d ' ' -f1)"
+control_after="$(sha256sum "$installer_state" | cut -d ' ' -f1)"
+helper_after="$(sha256sum "$helper_path" | cut -d ' ' -f1)"
+assert_eq "capability state unchanged" "$state_before" "$state_after"
+assert_eq "unit bytes unchanged" "$unit_before" "$unit_after"
+assert_eq "installer state unchanged" "$control_before" "$control_after"
+assert_eq "helper bytes unchanged" "$helper_before" "$helper_after"
+assert_eq "helper mtime unchanged" "$helper_mtime_before" "$(stat -c %Y "$helper_path")"
 assert_eq "unit mtime unchanged" "$unit_mtime_before" "$(stat -c %Y "$unit")"
 assert_eq "installer state mtime unchanged" "$control_mtime_before" "$(stat -c %Y "$installer_state")"
 
+evidence "run1_claims=$claims_1 run1_applies=$applies_1"
+evidence "run2_claims=$claims_2 run2_applies=$applies_2"
+evidence "zero_delta state=$state_before->$state_after unit=$unit_before->$unit_after helper=$helper_before->$helper_after control=$control_before->$control_after"
+evidence "run2_courier_downloaded_sha256=$downloaded_sha_2 == published $published_sha"
+
 section "chained acceptance: PASS"
-cat <<'REPORT'
-REAL: Console launcher text from createTicketDelivery (no ticket handle or short code in argv); non-root Human gf-review-human answering on a real pty; real NOPASSWD sudo; real env -i root environment; published BOOTSTRAP_SH downloaded over TLS from the local control-plane origin; real claim POST verified against the ticket short code by src/control-plane/tickets.js and bound to the ticket template_digest; real reviewed privileged-operations installer --apply with real SHA-256 artifact verification; user unit owned by ghostfleet-ops with Linger=yes; FLEET_CONTROL_ORDINARY_USER=gf-review-human recorded by the installer; second run: zero delta (one claim, one installer apply, unchanged unit/helper/state)
-STUB: tailscale-join
-NOT_RUN: the real Tailscale provider join and tailnet reachability, because a tailnet auth key is an external credential this disposable VM does not have (the courier's join block is skipped by the shim reporting the pre-arranged identity); a hosted GhostFleet control plane, because this run answers the claim from the local control-plane stub (the courier's claim and completion clients are the published ones); OMV 8 appliance SSH admission and OMV Linger, because the disposable VM is not an OpenMediaVault appliance
-REPORT
+REAL_TEXT="Console launcher text from createTicketDelivery (sha256=$launcher_sha, no ticket handle or short code in argv) run by the non-root Human $human (uid $human_uid) through the sudo branch (elevated parent=$elevated_parent, \$1=$handed_over) and the real env -i boundary (elevated environ {$elevated_env}; caller GHOSTFLEET_POISON/TMPDIR/SUDO_USER absent); published BOOTSTRAP_SH over TLS (downloaded sha256=$downloaded_sha_1 == served $served_sha == fresh-import $published_sha); claim verified by src/control-plane/tickets.js against the ticket short code for synthetic test template_digest=$TEMPLATE_DIGEST with recorded selection_digest=$recorded_selection_digest; real reviewed installer --apply (sha256=$installer_sha, $ARTIFACT_COUNT pinned artifacts) installed the synthetic canary unit $unit_name owned $unit_stat sha256=$unit_sha and $linger_out; FLEET_CONTROL_ORDINARY_USER=$ordinary_user recorded by the installer; run 1 claims=$claims_1 applies=$applies_1; run 2 claims=$claims_2 applies=$applies_2 with unchanged state/unit/helper/control.json sha256"
+NOT_RUN_TEXT="the real Tailscale provider join and tailnet reachability, because a tailnet auth key is an external credential this disposable VM does not have (the courier's join block is skipped by the shim reporting the pre-arranged identity); a hosted GhostFleet control plane, because this run answers the claim from the local control-plane stub (the courier's claim and completion clients are the published ones); the product managed unit, because the unit installed here is a synthetic one-shot canary pinned by the test selection; OMV 8 appliance SSH admission and OMV Linger, because the disposable VM is not an OpenMediaVault appliance"
+printf 'REAL: %s\n' "$REAL_TEXT"
+printf 'STUB: tailscale-join\n'
+printf 'NOT_RUN: %s\n' "$NOT_RUN_TEXT"
 exit 0

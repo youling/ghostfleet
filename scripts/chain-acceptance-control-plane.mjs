@@ -60,8 +60,9 @@ const unitText = [
   "",
 ].join("\n");
 
-// The reviewed template digest is what the ticket binds. The claim selection
-// repeats it, so the recorded capability state proves the binding end to end.
+// Synthetic test template digest: no reviewed enrollment template carries this
+// value. The ticket binds it and the claim repeats it, so the recorded
+// capability state proves the binding end to end inside this run.
 const templateDigest = "sha256:" + createHash("sha256").update("ghostfleet-chain-acceptance-template/v1").digest("hex");
 const selection = {
   source: "template",
@@ -103,6 +104,7 @@ const record = createTicketRecord({
   expires_at: new Date(Date.now() + 3_600_000).toISOString(),
 });
 
+const courierBody = Buffer.from(BOOTSTRAP_SH, "utf8");
 const claimPath = "/v1/enrollment-tickets/" + encodeURIComponent(ticketId) + "/claim";
 const counters = { bootstrap: 0, claim: 0 };
 const counterFile = (name) => join(work, name + "-count");
@@ -138,7 +140,13 @@ const server = createServer(
     try {
       if (request.method === "GET" && url.pathname === "/v1/bootstrap.sh") {
         bump("bootstrap");
-        send(200, BOOTSTRAP_SH, "text/plain");
+        // Hash the exact buffer handed to the socket, not the source constant,
+        // so the job can compare what the server sent with what curl wrote.
+        writeFileSync(
+          join(work, "served-bootstrap.sha256"),
+          createHash("sha256").update(courierBody).digest("hex") + "\n",
+        );
+        send(200, courierBody, "text/plain");
         console.log("stub: served the published courier bytes");
         return;
       }
@@ -176,7 +184,7 @@ const server = createServer(
               os_family: String(request.headers["x-fleet-os-family"] || ""),
               os_id: String(request.headers["x-fleet-os-id"] || ""),
               preflight_digest: preflight,
-              short_code_digest_verified: true,
+              ticket_verification: verdict.ok ? "PASSED_BY_TICKETS_MODULE" : verdict.code,
             },
             null,
             2,
