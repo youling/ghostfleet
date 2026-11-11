@@ -67,7 +67,8 @@
       "mode": "explicit-opt-in-payload-generation",
       "components": [
         "linux-bootstrap",
-        "convergence-payload"
+        "convergence-payload",
+    "selected-capability-artifacts"
       ],
       "check": "npm run check:bootstrap",
       "test": "npm run test:bootstrap",
