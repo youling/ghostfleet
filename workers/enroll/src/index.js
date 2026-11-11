@@ -74,19 +74,24 @@ async function derivedKey(prefix, value) {
 }
 
 /**
- * Advisory rate limit. Returns true (allow) unless the binding explicitly
- * answers success:false. A missing binding, a throw, or a malformed answer all
- * fail open: the limiter may slow abuse, never gate a real first enrollment.
- * A success here is also never authorization: the ticket still has to claim.
+ * Advisory rate limit. Returns true (deny) only when the binding explicitly
+ * answers success:false. Everything else fails open: a missing binding, a
+ * throwing property getter, an unavailable WebCrypto, a throw from limit(), or
+ * a malformed answer. The limiter may slow abuse; it must never gate a real
+ * first enrollment, and a success here is never authorization.
+ *
+ * The binding is resolved inside the try on purpose: a Proxy/getter that throws
+ * or an environment without crypto must still be an "allow", not a 500.
  */
-async function advisoryAllow(binding, key) {
-  if (!binding || typeof binding.limit !== "function") return true;
+async function advisoryDenied(resolveBinding, prefix, value) {
   try {
-    const outcome = await binding.limit({ key });
-    if (!outcome || typeof outcome !== "object") return true;
-    return outcome.success !== false;
+    const binding = resolveBinding();
+    if (!binding || typeof binding.limit !== "function") return false;
+    const outcome = await binding.limit({ key: await derivedKey(prefix, value) });
+    if (!outcome || typeof outcome !== "object") return false;
+    return outcome.success === false;
   } catch {
-    return true;
+    return false;
   }
 }
 
@@ -105,12 +110,8 @@ export default {
     // address limit slows a single source, a ticket limit stops replay storms
     // against one one-time handle. Either one denying is enough to answer 429.
     const clientIp = request.headers.get("cf-connecting-ip");
-    if (clientIp && typeof env?.RATE_LIMITER_IP?.limit === "function") {
-      if (!(await advisoryAllow(env.RATE_LIMITER_IP, await derivedKey("ip:", clientIp)))) return rateLimited();
-    }
-    if (claimMatch && typeof env?.RATE_LIMITER_TICKET?.limit === "function") {
-      if (!(await advisoryAllow(env.RATE_LIMITER_TICKET, await derivedKey("ticket:", claimMatch[1])))) return rateLimited();
-    }
+    if (clientIp && (await advisoryDenied(() => env?.RATE_LIMITER_IP, "ip:", clientIp))) return rateLimited();
+    if (claimMatch && (await advisoryDenied(() => env?.RATE_LIMITER_TICKET, "ticket:", claimMatch[1]))) return rateLimited();
 
     const bounded = await boundedBody(request, url.pathname === COMPLETE ? BODY_LIMITS.complete : BODY_LIMITS.claim);
     if (bounded.tooLarge) return tooLarge();

@@ -2,7 +2,7 @@
 // Local control-plane stub for the disposable chained-acceptance CI job.
 //
 // It is the server half of one enrollment, and nothing else: it serves the
-// exact published courier bytes at /v1/bootstrap.sh, verifies the one-time
+// exact published courier bytes at /sha256/<digest>, verifies the one-time
 // short code with the real src/control-plane/tickets.js module, and answers
 // the claim with the reviewed capability selection bound to the ticket's
 // template_digest. The completion receipt is accepted and recorded.

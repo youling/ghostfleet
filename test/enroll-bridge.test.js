@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import bridge, { BODY_LIMITS, FORWARDED_HEADERS, RATE_LIMIT_RETRY_SECONDS } from "../workers/enroll/src/index.js";
 
 const origin = "https://enroll.example.invalid";
@@ -74,7 +75,10 @@ test("only the allowlisted headers cross, so Console credentials cannot", async 
   assert.equal(headers.get("cf-access-jwt-assertion"), null);
   assert.equal(headers.get("cf-connecting-ip"), null, "the edge address is not the control plane's business");
   assert.equal(headers.get("x-unreviewed"), null);
+  assert.equal(headers.get("content-type"), "application/json");
   assert.equal(headers.get("x-ghostfleet-preflight-digest"), "sha256:" + "a".repeat(64));
+  assert.equal(headers.get("x-fleet-os-family"), "debian-family");
+  assert.equal(headers.get("x-fleet-os-id"), "ubuntu");
 });
 
 test("only the two POST routes exist", async () => {
@@ -114,17 +118,38 @@ test("an oversized public body is refused before the control plane is touched", 
 });
 
 test("rate limiting is advisory: missing, failing or malformed bindings never block first use", async () => {
+  const throwingGetter = new Proxy({}, { get() { throw new Error("binding getter failed"); } });
   for (const env of [
     { GHOSTFLEET_CONTROL_PLANE: controlPlane() },
     { GHOSTFLEET_CONTROL_PLANE: controlPlane(), RATE_LIMITER_IP: limiter(new Error("limiter down")) },
     { GHOSTFLEET_CONTROL_PLANE: controlPlane(), RATE_LIMITER_IP: limiter(null), RATE_LIMITER_TICKET: limiter(undefined) },
     { GHOSTFLEET_CONTROL_PLANE: controlPlane(), RATE_LIMITER_IP: { limit: "not-a-function" } },
+    { GHOSTFLEET_CONTROL_PLANE: controlPlane(), RATE_LIMITER_IP: limiter({}) },
+    { GHOSTFLEET_CONTROL_PLANE: controlPlane(), RATE_LIMITER_IP: limiter([]) },
+    { GHOSTFLEET_CONTROL_PLANE: controlPlane(), RATE_LIMITER_IP: limiter("false") },
+    { GHOSTFLEET_CONTROL_PLANE: controlPlane(), RATE_LIMITER_IP: limiter({ success: 0 }) },
+    { GHOSTFLEET_CONTROL_PLANE: controlPlane(), RATE_LIMITER_IP: throwingGetter },
   ]) {
     const response = await bridge.fetch(new Request(origin + claimPath, post({
       body: "12345678", headers: { "cf-connecting-ip": "203.0.113.9" },
     })), env);
     assert.equal(response.status, 200, "a limiter problem must fail open");
     assert.equal(env.GHOSTFLEET_CONTROL_PLANE.calls.length, 1);
+  }
+});
+
+test("an environment without WebCrypto still allows the request through a limiter", async () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  Object.defineProperty(globalThis, "crypto", { value: undefined, configurable: true });
+  try {
+    const env = { GHOSTFLEET_CONTROL_PLANE: controlPlane(), RATE_LIMITER_IP: limiter({ success: false }) };
+    const response = await bridge.fetch(new Request(origin + claimPath, post({
+      body: "12345678", headers: { "cf-connecting-ip": "203.0.113.9" },
+    })), env);
+    assert.equal(response.status, 200, "an unavailable digester must fail open, never 500");
+    assert.equal(env.GHOSTFLEET_CONTROL_PLANE.calls.length, 1);
+  } finally {
+    if (original) Object.defineProperty(globalThis, "crypto", original);
   }
 });
 
@@ -149,13 +174,11 @@ test("per-ticket and per-IP limits are independent, and keys are derived rather 
   })), env);
   assert.equal(ipLimiter.keys.length, 1);
   assert.equal(ticketLimiter.keys.length, 1);
-  for (const key of [ipLimiter.keys[0], ticketLimiter.keys[0]]) {
-    assert.match(key, /^(?:ip|ticket):[0-9a-f]{32}$/);
-    assert.equal(key.includes("203.0.113.9"), false, "the address must not be used as a raw key");
-    assert.equal(key.includes(ticketId), false, "the ticket id must not be used as a raw key");
-  }
-  assert.match(ipLimiter.keys[0], /^ip:/);
-  assert.match(ticketLimiter.keys[0], /^ticket:/);
+  const digest32 = (value) => createHash("sha256").update(value).digest("hex").slice(0, 32);
+  assert.equal(ipLimiter.keys[0], "ip:" + digest32("203.0.113.9"), "the address key is the exact derived digest");
+  assert.equal(ticketLimiter.keys[0], "ticket:" + digest32(ticketId), "the ticket key is the exact derived digest");
+  assert.equal(ipLimiter.keys[0].includes("203.0.113.9"), false);
+  assert.equal(ticketLimiter.keys[0].includes(ticketId), false);
   // A ticket-key denial alone is enough to answer 429.
   const denied = await bridge.fetch(new Request(origin + claimPath, post({
     body: "12345678", headers: { "cf-connecting-ip": "203.0.113.9" },
