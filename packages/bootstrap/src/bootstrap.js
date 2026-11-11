@@ -225,7 +225,7 @@ capability_validate_selection() {
       # v1 never declared which account holds the privileged helper, so the
       # courier cannot prove the run account is separated from it. Refusing to
       # guess is the whole point: a default here would BE the boundary.
-      fail 'selected-capability schema v1 does not declare privileged_account, so the managed run account cannot be proved separate from the privileged operations account; re-render the reviewed enrollment template as ghostfleet-selected-capability/v2 with privileged_account=<the account the reviewed installer provisions>, then run the authorized Console command again (a recorded v1 selection is replaced by the next authorized claim)'
+      fail 'selected-capability schema v1 does not declare privileged_account, so the managed run account cannot be proved separate from the privileged operations account; re-render the reviewed enrollment template as ghostfleet-selected-capability/v2 with privileged_account=<the account the reviewed installer provisions>, then run the authorized Console command again; a node that already recorded a v1 selection must have that record removed first, because this courier never migrates a selection it cannot verify'
       ;;
     *) fail 'selected-capability schema is not supported' ;;
   esac
