@@ -1,0 +1,278 @@
+"""cli：凭据 fail closed、退出码合同、--once 端到端。"""
+from __future__ import annotations
+
+import json
+import threading
+
+import pytest
+
+from agent_test_support import FakeControlPlane, make_task
+from ghostfleet_agent import cli, protocol
+from ghostfleet_agent.cli import (
+    EXIT_AUTH_FATAL,
+    EXIT_CONFIG,
+    EXIT_CREDENTIAL,
+    EXIT_OK,
+    EXIT_RUNTIME,
+    MAX_TOKEN_CHARS,
+    CredentialError,
+    install_signal_handlers,
+    load_node_uid,
+    load_token,
+    main,
+)
+from ghostfleet_agent.logging import clear_secrets
+
+
+@pytest.fixture(autouse=True)
+def _clean_secrets():
+    clear_secrets()
+    yield
+    clear_secrets()
+
+
+@pytest.fixture()
+def sandbox(tmp_path):
+    from agent_test_support import AgentSandbox
+
+    return AgentSandbox(tmp_path / "agent")
+
+
+# -- token ------------------------------------------------------------------
+def test_load_token_strips_trailing_newline(sandbox):
+    assert load_token(str(sandbox.token_path)) == "test-token-0000000000000000000000000000"
+
+
+@pytest.mark.parametrize(
+    "content, code",
+    [
+        ("", "CREDENTIAL_TOKEN_MISSING"),
+        ("   \n\n", "CREDENTIAL_TOKEN_MISSING"),
+        ("two tokens", "CREDENTIAL_TOKEN_INVALID"),
+        ("bad\x00token", "CREDENTIAL_TOKEN_INVALID"),
+        ("x" * (MAX_TOKEN_CHARS + 1), "CREDENTIAL_TOKEN_INVALID"),
+    ],
+)
+def test_load_token_rejects_bad_content(sandbox, content, code):
+    sandbox.token_path.write_text(content, encoding="utf-8")
+    with pytest.raises(CredentialError) as excinfo:
+        load_token(str(sandbox.token_path))
+    assert excinfo.value.code == code
+    assert excinfo.value.field == "token_path"
+
+
+def test_load_token_rejects_missing_file(tmp_path):
+    with pytest.raises(CredentialError) as excinfo:
+        load_token(str(tmp_path / "absent-token"))
+    assert excinfo.value.code == "CREDENTIAL_TOKEN_MISSING"
+
+
+def test_load_token_rejects_non_regular_file(tmp_path):
+    directory = tmp_path / "a-directory"
+    directory.mkdir()
+    with pytest.raises(CredentialError) as excinfo:
+        load_token(str(directory))
+    assert excinfo.value.code == "CREDENTIAL_TOKEN_INVALID"
+
+
+def test_load_token_rejects_oversized_file(sandbox):
+    sandbox.token_path.write_bytes(b"a" * (cli.MAX_TOKEN_BYTES + 1))
+    with pytest.raises(CredentialError) as excinfo:
+        load_token(str(sandbox.token_path))
+    assert excinfo.value.code == "CREDENTIAL_TOKEN_INVALID"
+
+
+def test_load_token_rejects_invalid_utf8(sandbox):
+    sandbox.token_path.write_bytes(b"\xff\xfe\x00")
+    with pytest.raises(CredentialError) as excinfo:
+        load_token(str(sandbox.token_path))
+    assert excinfo.value.code == "CREDENTIAL_TOKEN_INVALID"
+
+
+# -- node meta --------------------------------------------------------------
+def test_load_node_uid_accepts_repository_shape(sandbox):
+    assert load_node_uid(str(sandbox.node_meta_path)) == sandbox.node_uid
+
+
+@pytest.mark.parametrize(
+    "content, code",
+    [
+        ("", "CREDENTIAL_NODE_META_MISSING"),
+        ("not json", "CREDENTIAL_NODE_META_INVALID"),
+        ("[]", "CREDENTIAL_NODE_META_INVALID"),
+        ('{"platform": "linux"}', "CREDENTIAL_NODE_META_INVALID"),
+        ('{"node_uid": "node-bad"}', "CREDENTIAL_NODE_META_INVALID"),
+        ('{"node_uid": 5}', "CREDENTIAL_NODE_META_INVALID"),
+    ],
+)
+def test_load_node_uid_rejects_bad_meta(sandbox, content, code):
+    sandbox.node_meta_path.write_text(content, encoding="utf-8")
+    with pytest.raises(CredentialError) as excinfo:
+        load_node_uid(str(sandbox.node_meta_path))
+    assert excinfo.value.code == code
+
+
+def test_load_node_uid_rejects_missing_file(tmp_path):
+    with pytest.raises(CredentialError) as excinfo:
+        load_node_uid(str(tmp_path / "absent-node.json"))
+    assert excinfo.value.code == "CREDENTIAL_NODE_META_MISSING"
+
+
+# -- 参数解析 ---------------------------------------------------------------
+def test_version_flag_prints_version(capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--version"])
+    assert excinfo.value.code == 0
+    assert "0.1.0.dev0" in capsys.readouterr().out
+
+
+def test_unknown_flag_exits_with_usage_error():
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--definitely-not-a-flag"])
+    assert excinfo.value.code == 2
+
+
+# -- main 退出码 ------------------------------------------------------------
+def test_missing_config_file_exits_credential(sandbox, tmp_path):
+    # 合同 C：配置/凭据缺失或不可读 = 环境未就绪 → 3，且绝不联网。
+    assert main(["--config", str(tmp_path / "absent.json")]) == EXIT_CREDENTIAL
+
+
+def test_invalid_config_exits_config(sandbox, control_plane):
+    sandbox.write_raw_config('{"unknown_field": true}')
+    assert main(["--config", str(sandbox.config_path), "--once"]) == EXIT_CONFIG
+
+
+def test_missing_token_exits_credential(sandbox, control_plane):
+    sandbox.write_config(control_plane.url, token_path=str(sandbox.root / "absent-token"))
+    assert main(["--config", str(sandbox.config_path), "--once"]) == EXIT_CREDENTIAL
+    assert control_plane.records == []
+
+
+def test_bad_node_meta_exits_credential(sandbox, control_plane):
+    sandbox.node_meta_path.write_text('{"node_uid": "not-a-node"}', encoding="utf-8")
+    sandbox.write_config(control_plane.url)
+    assert main(["--config", str(sandbox.config_path), "--once"]) == EXIT_CREDENTIAL
+    assert control_plane.records == []
+
+
+def test_corrupt_state_exits_runtime(sandbox, control_plane):
+    sandbox.write_config(control_plane.url)
+    sandbox.state_dir.mkdir(parents=True, exist_ok=True)
+    sandbox.state_paths()["state"].write_text("{not json", encoding="utf-8")
+    assert main(["--config", str(sandbox.config_path), "--once"]) == EXIT_RUNTIME
+
+
+def test_once_success_returns_zero(sandbox, control_plane):
+    sandbox.write_config(control_plane.url)
+    assert main(["--config", str(sandbox.config_path), "--once"]) == EXIT_OK
+    assert control_plane.requests_to("/heartbeat")
+    assert sandbox.state_paths()["state"].exists()
+
+
+def test_once_executes_single_task(sandbox, control_plane):
+    sandbox.write_config(control_plane.url)
+    control_plane.heartbeat_tasks = [make_task(node_uid=sandbox.node_uid)]
+    assert main(["--config", str(sandbox.config_path), "--once"]) == EXIT_OK
+    assert len(control_plane.results) == 1
+    result = control_plane.results[0]
+    assert result["task_id"] == "task-0001"
+    assert result["result"]["status"] == "SUCCEEDED"
+
+
+def test_once_auth_fatal_returns_four(sandbox, control_plane):
+    sandbox.write_config(control_plane.url)
+    control_plane.respond = lambda record: (401, {"code": "NODE_AUTH_INVALID"})
+    assert main(["--config", str(sandbox.config_path), "--once"]) == EXIT_AUTH_FATAL
+
+
+def test_once_retryable_failure_returns_five(sandbox, control_plane):
+    sandbox.write_config(control_plane.url)
+    control_plane.respond = lambda record: (500, {"code": "INTERNAL"})
+    assert main(["--config", str(sandbox.config_path), "--once"]) == EXIT_RUNTIME
+
+
+def test_scope_mismatch_is_fatal(sandbox, control_plane):
+    sandbox.write_config(control_plane.url)
+    # ADR §5.1-4/合同 3：403 属于 FATAL（停止上报等人类修复）。
+    control_plane.respond = lambda record: (403, {"code": "NODE_SCOPE_MISMATCH"})
+    assert main(["--config", str(sandbox.config_path), "--once"]) == EXIT_AUTH_FATAL
+
+
+def test_once_failure_is_recorded_in_state(sandbox, control_plane):
+    sandbox.write_config(control_plane.url)
+    control_plane.respond = lambda record: (503, {"code": "UNAVAILABLE"})
+    assert main(["--config", str(sandbox.config_path), "--once"]) == EXIT_RUNTIME
+    document = json.loads(sandbox.state_paths()["state"].read_text(encoding="utf-8"))
+    assert document["consecutive_failures"] >= 1
+    assert document["last_health"] == "FAILING"
+
+
+# -- 子命令：check-config / status（合同 B/E） ------------------------------
+def test_check_config_prints_json_and_never_calls_control_plane(sandbox, control_plane, capsys):
+    # 用 https origin：避免 loopback 例外告警行混进"纯 JSON 输出"断言。
+    sandbox.write_config("https://control.example.invalid")
+    assert main(["check-config", "--config", str(sandbox.config_path)]) == EXIT_OK
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(lines) == 1
+    document = json.loads(lines[0])
+    assert document["ok"] is True
+    assert document["command"] == "check-config"
+    assert document["node_uid"] == sandbox.node_uid
+    assert document["control_plane_host"] == "control.example.invalid"
+    assert control_plane.records == []
+
+
+def test_status_json_is_offline_single_line(sandbox, control_plane, capsys):
+    sandbox.write_config("https://control.example.invalid")
+    assert main(["status", "--json", "--config", str(sandbox.config_path)]) == EXIT_OK
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(lines) == 1
+    document = json.loads(lines[0])
+    assert document["ok"] is True
+    assert document["command"] == "status"
+    assert document["initialised"] is False
+    assert document["polls"] == 0
+    assert document["tasks_executed"] == 0
+    assert control_plane.records == []
+
+
+def test_status_reports_work_counters_after_once(sandbox, control_plane, capsys):
+    sandbox.write_config(control_plane.url)
+    assert main(["--config", str(sandbox.config_path), "--once"]) == EXIT_OK
+    capsys.readouterr()
+    before = len(control_plane.records)
+    assert main(["status", "--json", "--config", str(sandbox.config_path)]) == EXIT_OK
+    document = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert document["initialised"] is True
+    assert document["polls"] >= 1
+    assert len(control_plane.records) == before  # status 绝不联网
+
+
+# -- 信号处理 --------------------------------------------------------------
+def test_signal_handlers_are_main_thread_only():
+    event = threading.Event()
+    result = {}
+
+    def worker():
+        result["installed"] = install_signal_handlers(event, cli.get_logger())
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join(timeout=5)
+    assert result["installed"] is False
+
+
+def test_signal_handler_sets_the_stop_event():
+    import signal
+
+    event = threading.Event()
+    logger = cli.get_logger()
+    original = signal.getsignal(signal.SIGTERM)
+    try:
+        assert install_signal_handlers(event, logger) is True
+        handler = signal.getsignal(signal.SIGTERM)
+        handler(signal.SIGTERM, None)
+        assert event.is_set() is True
+    finally:
+        signal.signal(signal.SIGTERM, original)

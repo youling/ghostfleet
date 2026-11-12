@@ -1,0 +1,134 @@
+# ghostfleet-node-agent
+
+GhostFleet 节点侧常驻运行时（ADR: `docs/architecture/NODE_AGENT_V0.md`）。这是一个
+**只出站、只读、无 shell** 的最小 Agent：拉取任务、在本地白名单内执行、把结果回传。
+
+English summary:
+A minimal, outbound-only GhostFleet node runtime. It polls a control plane with a bearer
+token, executes a fixed allowlist of read-only operations, and reports results through a
+bounded, crash-safe outbox. No inbound port, no shell, no sudo, no privileged syscalls.
+The package is stdlib-only and ships as a deterministic zipapp for `python3 -I`.
+
+## 安全边界
+
+| 边界 | 说明 |
+| --- | --- |
+| 无入站端口 | Agent 只发起到控制面的 HTTPS 请求，不监听任何 socket（sd_notify 是 Unix 数据报客户端） |
+| 无 shell / 无任意命令 | 只按 operation 名分派到固定实现；参数里出现 `command`/`shell`/`args` 等 21 个禁用键直接拒绝 |
+| 无 sudo / 无特权通路 | 以普通用户运行；不写系统路径、不改 systemd unit、不读 secret 文件（token 归属当前用户） |
+| 只读词汇 | v0 只实现 `node.observe`、`service.status.read`、`capability.inspect`、`agent.self.test` |
+| 失败关闭 | 配置/凭据/状态任一不符合契约即拒绝启动或停止上报；未知输入一律拒绝，不猜 |
+| 凭据不落日志 | 日志与结构化事件只写固定字段，token/nonce/完整 params 绝不出现在 stdout |
+
+## 文件布局（与 ADR §4 一致）
+
+| 路径 | 权限 | 内容 |
+| --- | --- | --- |
+| `/usr/local/libexec/ghostfleet/node-agent.pyz` | root:root 0755 | 载荷（确定性 zipapp，见下） |
+| `/etc/ghostfleet/node-agent.json` | root:root 0644 | 非秘密配置：控制面 origin、心跳上下限、任务白名单 |
+| `~/.config/ghostfleet/node-token` | 0600 | 节点 bearer token 原文（单行） |
+| `~/.config/ghostfleet/node.json` | 0600 | `node_uid` / `platform` / `issued_at`（不含 origin） |
+| `~/.local/state/ghostfleet-agent/` | 0700 | `state.json` / `ledger.json` / `outbox.json`（均 0600） |
+
+控制面 origin 只能由 root-owned 配置给出，普通用户无法把 Agent 指向攻击者端点。
+
+## 配置字段
+
+`/etc/ghostfleet/node-agent.json`（严格 JSON，未知键即拒绝）：
+
+| 字段 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `control_plane_origin` | 是 | — | `https://host[:port]`；仅测试/验收允许 loopback 的明文 `http`（会告警） |
+| `heartbeat_interval_s` | 否 | 30 | 心跳/轮询周期，钳制到 [15,300] 秒 |
+| `heartbeat_interval_min_s` / `heartbeat_interval_max_s` | 否 | 15 / 300 | 进一步收窄服务端下发 interval 的接受区间 |
+| `jitter_ratio` | 否 | 0.1 | 抖动比例，钳制到 [0,0.5] |
+| `request_timeout_s` | 否 | 10 | 单请求超时，范围 (0,300] |
+| `allowed_units` | 否 | `[]` | `service.status.read` 白名单，最多 16 个，形如 `nginx.service` |
+| `token_path` | 否 | `~/.config/ghostfleet/node-token` | 必须是绝对路径 |
+| `node_meta_path` | 否 | `~/.config/ghostfleet/node.json` | 必须是绝对路径 |
+| `state_dir` | 否 | `~/.local/state/ghostfleet-agent` | 必须是绝对路径 |
+| `agent_version` | 否 | 包版本 | 上报到控制面的版本标识 |
+
+兼容别名：`control_plane_url` 与 `control_plane_origin` 二选一（同时出现即拒绝）；
+`interval_s` 是 `heartbeat_interval_s` 的旧别名。
+
+## 构建与运行
+
+```bash
+# 确定性构建（固定条目顺序/时间戳/权限，字节可复现）
+python3 packages/node-agent/tools/build_pyz.py --out packages/node-agent/dist/node-agent.pyz
+
+# 校验配置与凭据（不联网、不写盘）
+python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz check-config
+
+# 常驻运行（systemd Type=notify 下由 unit 调用；前台运行也可直接调试）
+python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz run
+
+# 读取本地状态的机器可读摘要（不联网）
+python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz status --json
+```
+
+`run` 是默认子命令，也兼容 `--config PATH`、`--once`、`--version` 旧参数。
+`-I` 隔离模式不读 `PYTHON*` 环境变量、不把 cwd 加入 `sys.path`，因此不得依赖 cwd
+或环境变量来定位包内模块；zipapp 承载 `ghostfleet_agent` 包并直接执行 `run`。
+
+`status --json` 示例（只读本地状态，单行 JSON）：
+
+```json
+{"ok":true,"command":"status","agent_version":"0.1.0.dev0","node_uid":"node-...","state_dir":"/home/u/.local/state/ghostfleet-agent","initialised":true,"boot_id":"...","seq":42,"last_start":"...","last_stop":null,"last_heartbeat_at":"...","last_health":"OK","stopping":false,"consecutive_failures":0,"polls":42,"tasks_executed":3,"outbox_overflow":0,"outbox_depth":0,"ledger_entries":3}
+```
+
+## 退出码
+
+| 退出码 | 含义 |
+| --- | --- |
+| 0 | 成功（`--once` 一轮成功；SIGTERM/SIGINT 干净退出） |
+| 2 | 配置非法（JSON/字段/URL/白名单等不符合契约） |
+| 3 | 凭据或配置不可用（文件缺失、不可读、token/node_uid 非法）；此时绝不联网 |
+| 4 | 认证/授权 FATAL（401/403），停止上报等待人类修复 |
+| 5 | 可重试的运行期失败（5xx/网络/状态损坏等）；按退避重试 |
+
+## 协议要点
+
+请求头：`Authorization: Bearer <token>`、`x-ghostfleet-node-uid`、
+`x-ghostfleet-agent-version`。请求体信封：
+`schema` / `node_uid` / `nonce`（每请求新生成，base64url ≥16 字节）/ `sent_at`（RFC3339 Z）/
+`boot_id`（每次进程启动新 UUID，随启动轮换）/ `seq`（同一 boot_id 内严格递增，重启归零）。
+
+端点：`POST /v0/nodes/{node_uid}/heartbeat`、`POST /v0/nodes/{node_uid}/tasks/poll`、
+`POST /v0/nodes/{node_uid}/tasks/{task_id}/result`。
+
+错误分派：401/403 → FATAL；409 按码处理（nonce 重放/seq 回退换新 nonce 与 seq 重试一次，
+boot 重放换新 boot_id 重试一次，结果冲突视为永久拒绝）；429 读取并遵守 `Retry-After`；
+5xx 与网络错误只退避重试，绝不当成功。
+
+任务词汇：`node.observe`（want ⊆ identity/os/uptime/disk/services/capability）、
+`service.status.read`（≤8 个 unit，必须在 `allowed_units` 白名单内）、
+`capability.inspect`（只回 sha256 摘要与组件状态，不回原始 JSON）、
+`agent.self.test`（回显 nonce 与版本）。未知 operation 返回 `TASK_OPERATION_UNKNOWN`。
+
+## 崩溃安全与幂等
+
+- 执行前先把 `ledger[task_id] = MAY_HAVE_EXECUTED` 落盘（tmp+fsync+rename），然后才调用实现。
+- 进程重启后只对栅栏任务上报 `UNKNOWN`，绝不重跑；已有 outbox 结果则按已有结果补账。
+- outbox 上限 64 条，溢出时丢最旧并把丢弃记成 `RESULT_DROPPED` 与 `outbox_overflow` 计数；
+  未发出的结果下次启动优先重发，同 task_id 同 `result_digest` 幂等。
+- 所有状态文件写入均为原子替换；损坏时 fail-closed 而非静默重置。
+
+## 结构化事件
+
+常驻运行在 stdout 每轮输出单行 JSON，固定字段
+`{"ts":ISO8601,"event":"poll|task_start|task_result|backoff|fatal","seq":N,"detail":...}`。
+`detail` 只允许 operation 名、task_id、状态/错误码等白名单字段；token、nonce、完整 params
+永不进入日志。
+
+## 测试
+
+```bash
+cd packages/node-agent
+python3 -m pytest -q
+```
+
+测试全部确定性：不访问外网（本地 `http.server` 假控制面绑 127.0.0.1）、无长睡眠、时间可控；
+包含 zipapp 冒烟（临时 pyz + `python3 -I` 跑 `check-config`/`status --json`）与
+"重新构建字节等于 `dist/node-agent.pyz`"的确定性断言。
