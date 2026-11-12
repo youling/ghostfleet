@@ -7,7 +7,10 @@ import { DEFAULT_EVENTS_LIMIT, InMemoryStore } from "../../src/control-plane/sto
 import { CORE_OWNED_EVIDENCE, DEFAULT_ACCEPTANCE_EVIDENCE, NodeLifecycle } from "../../src/core/model.js";
 import { makeId } from "../../src/core/ids.js";
 import {
-  AGENT_SCHEMA, MAX_TASKS_PER_POLL, NODE_BODY_LIMITS, NODE_RATE_LIMIT, TASK_LEASE_SECONDS,
+  AGENT_SCHEMA, CREDENTIAL_HANDOFF_CIPHER, CREDENTIAL_HANDOFF_INFO, CREDENTIAL_HANDOFF_IV_BYTES,
+  CREDENTIAL_HANDOFF_KEY_BYTES, CREDENTIAL_HANDOFF_MAX_DELIVERIES, CREDENTIAL_HANDOFF_SALT,
+  CREDENTIAL_HANDOFF_STATES, CREDENTIAL_HANDOFF_TAG_BYTES, CREDENTIAL_HANDOFF_TTL_SECONDS,
+  MAX_TASKS_PER_POLL, NODE_BODY_LIMITS, NODE_RATE_LIMIT, TASK_LEASE_SECONDS,
   TASK_OPERATIONS, TASK_SCHEMA, TASK_STATUS, defaultAgentState, mintNodeCredential, projectAgent, sha256Hex,
 } from "../../src/control-plane/node-agent.js";
 import worker, { GhostFleetState } from "../../src/adapters/cloudflare/worker.js";
@@ -220,10 +223,27 @@ test("enrollment completion mints exactly one node credential, redelivered by th
   assert.match(token, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(flow.completed.credential_handoff, "AVAILABLE");
   assert.equal(typeof flow.handoff_id, "string");
+  // The handoff contract is pinned, not inferred: a silent KDF/cipher change
+  // would leave old sealed tokens unopenable and must show up as a test diff.
+  assert.equal(CREDENTIAL_HANDOFF_SALT, "");
+  assert.equal(CREDENTIAL_HANDOFF_INFO, "ghostfleet/node-credential-handoff/v1");
+  assert.equal(CREDENTIAL_HANDOFF_CIPHER, "aes-256-gcm");
+  assert.equal(CREDENTIAL_HANDOFF_KEY_BYTES, 32);
+  assert.equal(CREDENTIAL_HANDOFF_IV_BYTES, 12);
+  assert.equal(CREDENTIAL_HANDOFF_TAG_BYTES, 16);
+  assert.equal(CREDENTIAL_HANDOFF_TTL_SECONDS, 86400);
+  assert.equal(CREDENTIAL_HANDOFF_MAX_DELIVERIES, 20);
+  assert.deepEqual(CREDENTIAL_HANDOFF_STATES, ["SEALED", "CONSUMED", "EXPIRED"]);
   const record = parts.store.getNode(flow.node_uid);
   assert.equal(record.lifecycle, NodeLifecycle.PROVISIONAL);
   assert.equal(record.agent.credential_digest, sha256Hex(token));
   assert.equal(record.agent.credential_minted_at, new Date(parts.clock.now()).toISOString());
+  assert.equal(record.agent.credential_handoff_state, "SEALED");
+  assert.equal(record.agent.credential_handoff.deliveries, 1);
+  // Envelope shape: 12-byte IV, ciphertext = sealed bytes + 16-byte GCM tag.
+  const sealedBytes = Buffer.from(record.agent.credential_handoff.ciphertext, "base64url");
+  assert.equal(Buffer.from(record.agent.credential_handoff.iv, "base64url").length, CREDENTIAL_HANDOFF_IV_BYTES);
+  assert.equal(sealedBytes.length, Buffer.byteLength(token, "utf8") + CREDENTIAL_HANDOFF_TAG_BYTES);
   // The plaintext token is never durable; only the digest and the sealed copy.
   const durable = JSON.stringify(parts.store.snapshot());
   assert.equal(durable.includes(token), false);
@@ -235,6 +255,9 @@ test("enrollment completion mints exactly one node credential, redelivered by th
   assert.equal(replay.node_credential.token, token, "a retried completion returns the same token");
   assert.equal(replay.node_credential.handoff_id, flow.handoff_id);
   assert.equal(replay.node_credential.node_uid, flow.node_uid);
+  assert.equal(replay.node_credential.token, flow.completed.node_credential.token, "byte-identical token");
+  assert.equal(parts.store.getNode(flow.node_uid).agent.credential_handoff.deliveries, 2);
+  assert.equal(parts.store.getNode(flow.node_uid).agent.credential_handoff_state, "SEALED");
   assert.equal(parts.store.getNode(flow.node_uid).agent.credential_digest, record.agent.credential_digest);
   assert.throws(
     () => parts.controller.completeEnrollmentTicket({ resume_session: flow.claim.resume_session, report: { ...flow.report, node_id: "different-node" } }),
@@ -268,7 +291,8 @@ test("the recoverable handoff survives a durable snapshot and dies on first auth
   assert.equal(parts.store.getNode(flow.node_uid).agent.credential_handoff, null);
   const afterUse = parts.controller.completeEnrollmentTicket({ resume_session: flow.claim.resume_session, report: flow.report });
   assert.equal(afterUse.node_credential, null);
-  assert.equal(afterUse.credential_handoff, "EXPIRED");
+  assert.equal(afterUse.credential_handoff, "CONSUMED", "the node already took the token");
+  assert.equal(parts.store.getNode(flow.node_uid).agent.credential_handoff_state, "CONSUMED");
   assert.equal(JSON.stringify(afterUse).includes(token), false);
 });
 
@@ -282,6 +306,7 @@ test("the handoff expires and refuses tampered ciphertext without leaking a toke
   assert.equal(expired.node_credential, null);
   assert.equal(expired.credential_handoff, "EXPIRED");
   assert.equal(expiredParts.store.getNode(expiredFlow.node_uid).agent.credential_handoff, null);
+  assert.equal(expiredParts.store.getNode(expiredFlow.node_uid).agent.credential_handoff_state, "EXPIRED");
 
   // A tampered sealed blob is an integrity failure: 500, never a wrong token.
   const tamperedParts = makeController();
@@ -324,6 +349,8 @@ test("node credential material never reaches public responses, events or project
   assert.equal(nodesText.includes(sealed.ciphertext), false, "the sealed handoff must not be public");
   assert.equal(nodesText.includes(sealed.iv), false);
   assert.equal(nodesText.includes("credential_digest"), false);
+  assert.equal(nodesText.includes("credential_handoff"), false);
+  assert.equal(nodesText.includes("credential_handoff_state"), false);
   assert.equal(nodesText.includes("nonces"), false);
 
   const events = await parts.handler(new Request("https://ghostfleet.invalid/v0/events"));
@@ -676,9 +703,12 @@ test("store caps events and keeps the durable agent record separate from public 
   assert.equal(Object.hasOwn(projected, "nonces"), false);
   assert.equal(Object.hasOwn(projected, "rate"), false);
   assert.equal(Object.hasOwn(projected, "tasks"), false);
+  assert.equal(Object.hasOwn(projected, "credential_handoff"), false);
+  assert.equal(Object.hasOwn(projected, "credential_handoff_state"), false);
 
   const listed = store.listNodes().find((item) => item.node_uid === node.node_uid);
   assert.equal(JSON.stringify(listed).includes("credential_digest"), false);
+  assert.equal(JSON.stringify(listed).includes("credential_handoff"), false);
   assert.equal(store.snapshot().nodes[node.node_uid].agent.credential_digest, null);
   assert.deepEqual(new InMemoryStore(store.snapshot()).snapshot(), store.snapshot());
 });
@@ -806,6 +836,7 @@ test("rotation replaces the node credential and clears replay state", async () =
   assert.equal(JSON.stringify(parts.store.snapshot()).includes(rotated.json.node_credential), false);
   assert.equal(parts.store.getNode(node_uid).agent.credential_digest, sha256Hex(rotated.json.node_credential));
   assert.equal(parts.store.getNode(node_uid).agent.credential_handoff, null, "rotation kills any pending handoff");
+  assert.equal(parts.store.getNode(node_uid).agent.credential_handoff_state, null);
 
   // The old token is dead immediately: the digest was replaced.
   await expectRejection(parts, () => heartbeat(parts.handler, parts.clock, node_uid, old.token), 401, "NODE_AUTH_INVALID");

@@ -328,12 +328,17 @@ export class GhostFleetController {
       type: "BOOTSTRAP_COMPLETION", source: "ghostfleet-bootstrap",
       data: { status: "PASS", preflight_digest: record.preflight_digest, completion_digest: digest },
     });
-    const node_credential = this.#mintNodeAgentCredential(attempt.node_uid, record.ticket_id);
+    // A mint is a no-op when this node already has a digest (the completion
+    // wrote the ticket first), so fall back to the sealed copy instead of
+    // reporting an expiry that never happened.
+    const minted = this.#mintNodeAgentCredential(attempt.node_uid, record.ticket_id);
+    const credential = minted
+      ? { node_credential: minted, credential_handoff: "AVAILABLE" }
+      : this.#recoverNodeCredential(record.attempt_id, record.ticket_id);
     return {
       ticket: publicTicketMetadata(completed),
       attempt: this.getEnrollmentAttempt(record.attempt_id),
-      node_credential,
-      credential_handoff: node_credential ? "AVAILABLE" : "EXPIRED",
+      ...credential,
     };
   }
 
@@ -361,6 +366,7 @@ export class GhostFleetController {
       credential_digest: minted.digestHex,
       credential_minted_at: this.now(),
       credential_handoff: handoff,
+      credential_handoff_state: "SEALED",
     });
     return { token: minted.token, node_uid, handoff_id };
   }
@@ -385,8 +391,15 @@ export class GhostFleetController {
     }
     const handoff = node.agent?.credential_handoff ?? null;
     if (!credentialHandoffUsable(handoff, this.clock.now())) {
-      if (handoff) this.store.putNodeAgent(node_uid, { ...node.agent, credential_handoff: null });
-      return { node_credential: null, credential_handoff: "EXPIRED" };
+      // A consumed handoff is not an expiry: an operator must be able to tell
+      // "the node already took it" from "nobody can have it any more".
+      const consumed = node.agent?.credential_handoff_state === "CONSUMED";
+      if (handoff) {
+        this.store.putNodeAgent(node_uid, {
+          ...node.agent, credential_handoff: null, credential_handoff_state: "EXPIRED",
+        });
+      }
+      return { node_credential: null, credential_handoff: consumed ? "CONSUMED" : "EXPIRED" };
     }
     const token = openCredentialHandoff({
       operatorSecret: this.credentialHandoffSecret, handoff, node_uid, ticket_id,
@@ -604,8 +617,10 @@ export class GhostFleetController {
       last_boot_id: verification.commit.last_boot_id,
       last_seq: verification.commit.last_seq,
       retired_boot_ids: verification.commit.retired_boot_ids,
-      // §5.1: the recoverable handoff dies on the first authenticated request.
+      // §5.1: the recoverable handoff dies on the first authenticated request,
+      // and the state says why the token can no longer be re-fetched.
       credential_handoff: null,
+      credential_handoff_state: "CONSUMED",
     });
   }
 
@@ -687,6 +702,7 @@ export class GhostFleetController {
       credential_digest: minted.digestHex,
       credential_minted_at: this.now(),
       credential_handoff: null,
+      credential_handoff_state: null,
       nonces: [],
       last_boot_id: null,
       last_seq: null,

@@ -83,7 +83,25 @@ export const NODE_AGENT_LIFECYCLES = Object.freeze(["PROVISIONAL", "ACTIVE"]);
  */
 export const CREDENTIAL_HANDOFF_TTL_SECONDS = 86400;
 export const CREDENTIAL_HANDOFF_MAX_DELIVERIES = 20;
-const CREDENTIAL_HANDOFF_INFO = "ghostfleet/node-credential-handoff/v1";
+
+// Pinned constants: §5.1 names the info string and no salt (an absent HKDF salt
+// is the empty salt), a 32-byte key, AES-256-GCM, a 12-byte IV, and the 16-byte
+// tag appended to the ciphertext — both parts base64url on the record. Exported
+// so tests and reviewers diff this contract instead of inferring it. Verified on
+// a real workerd runtime (wrangler 4.147 dev --local, compatibility_flags
+// ["nodejs_compat"]): createCipheriv/createDecipheriv/hkdfSync/timingSafeEqual
+// from node:crypto behave normally, so this module keeps exactly one
+// implementation and never grows a WebCrypto fallback — a second code path for
+// the same secret would be its own vulnerability.
+export const CREDENTIAL_HANDOFF_SALT = "";
+export const CREDENTIAL_HANDOFF_INFO = "ghostfleet/node-credential-handoff/v1";
+export const CREDENTIAL_HANDOFF_CIPHER = "aes-256-gcm";
+export const CREDENTIAL_HANDOFF_KEY_BYTES = 32;
+export const CREDENTIAL_HANDOFF_IV_BYTES = 12;
+export const CREDENTIAL_HANDOFF_TAG_BYTES = 16;
+// SEALED until the first authenticated request proves delivery; CONSUMED once
+// the node has used the token; EXPIRED once the TTL/budget is gone.
+export const CREDENTIAL_HANDOFF_STATES = Object.freeze(["SEALED", "CONSUMED", "EXPIRED"]);
 
 export const TASK_FORBIDDEN_PARAM_KEYS = Object.freeze([
   "command",
@@ -292,9 +310,9 @@ export function deriveCredentialHandoffKey(operatorSecret) {
   const key = hkdfSync(
     "sha256",
     Buffer.from(operatorSecret, "utf8"),
-    Buffer.alloc(0),
+    Buffer.from(CREDENTIAL_HANDOFF_SALT, "utf8"),
     Buffer.from(CREDENTIAL_HANDOFF_INFO, "utf8"),
-    32,
+    CREDENTIAL_HANDOFF_KEY_BYTES,
   );
   return Buffer.from(key);
 }
@@ -312,8 +330,8 @@ export function sealCredentialHandoff({ operatorSecret, token, node_uid, ticket_
   const key = deriveCredentialHandoffKey(operatorSecret);
   if (!key) return null;
   if (typeof token !== "string" || token.length === 0) throw new NodeAgentError("NODE_CREDENTIAL_HANDOFF_INVALID", 500);
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const iv = randomBytes(CREDENTIAL_HANDOFF_IV_BYTES);
+  const cipher = createCipheriv(CREDENTIAL_HANDOFF_CIPHER, key, iv);
   cipher.setAAD(handoffAad({ node_uid, ticket_id, handoff_id }));
   const sealed = Buffer.concat([cipher.update(token, "utf8"), cipher.final(), cipher.getAuthTag()]);
   return {
@@ -338,11 +356,13 @@ export function openCredentialHandoff({ operatorSecret, handoff, node_uid, ticke
   if (!handoff || typeof handoff !== "object") throw new NodeAgentError("NODE_CREDENTIAL_HANDOFF_INVALID", 500);
   const sealed = Buffer.from(String(handoff.ciphertext ?? ""), "base64url");
   const iv = Buffer.from(String(handoff.iv ?? ""), "base64url");
-  if (sealed.length <= 16 || iv.length !== 12) throw new NodeAgentError("NODE_CREDENTIAL_HANDOFF_INVALID", 500);
-  const tag = sealed.subarray(sealed.length - 16);
-  const body = sealed.subarray(0, sealed.length - 16);
+  if (sealed.length <= CREDENTIAL_HANDOFF_TAG_BYTES || iv.length !== CREDENTIAL_HANDOFF_IV_BYTES) {
+    throw new NodeAgentError("NODE_CREDENTIAL_HANDOFF_INVALID", 500);
+  }
+  const tag = sealed.subarray(sealed.length - CREDENTIAL_HANDOFF_TAG_BYTES);
+  const body = sealed.subarray(0, sealed.length - CREDENTIAL_HANDOFF_TAG_BYTES);
   try {
-    const decipher = createDecipheriv("aes-256-gcm", key, iv);
+    const decipher = createDecipheriv(CREDENTIAL_HANDOFF_CIPHER, key, iv);
     decipher.setAAD(handoffAad({ node_uid, ticket_id, handoff_id: handoff.handoff_id }));
     decipher.setAuthTag(tag);
     return Buffer.concat([decipher.update(body), decipher.final()]).toString("utf8");
@@ -364,6 +384,7 @@ export function defaultAgentState() {
   return {
     credential_digest: null,
     credential_handoff: null,
+    credential_handoff_state: null,
     nonces: [],
     rate: { tokens: NODE_RATE_LIMIT.capacity, updated_at_ms: null },
     tasks: {},
@@ -399,6 +420,9 @@ export function normalizeAgentState(agent) {
       agent.credential_handoff && typeof agent.credential_handoff === "object" && !Array.isArray(agent.credential_handoff)
         ? agent.credential_handoff
         : null,
+    credential_handoff_state: CREDENTIAL_HANDOFF_STATES.includes(agent.credential_handoff_state)
+      ? agent.credential_handoff_state
+      : null,
     last_boot_id: typeof agent.last_boot_id === "string" ? agent.last_boot_id : null,
     last_seq: Number.isInteger(agent.last_seq) ? agent.last_seq : null,
     retired_boot_ids: Array.isArray(agent.retired_boot_ids)
