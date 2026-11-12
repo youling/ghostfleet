@@ -29,6 +29,16 @@ import {
 
 function required(value, message) { if (!value) throw new Error(message); return value; }
 
+// A conflict with the stored attempt state is a 409, never a malformed-request 400.
+// The status has to be explicit now: the HTTP edge stopped guessing from the code
+// text (it used to map any "*_INVALID"/"*_MISSING" to 409, which also turned real
+// input errors into conflicts and made malformed JSON look retryable).
+function stateConflict(code) {
+  const error = new Error(code);
+  error.status = 409;
+  return error;
+}
+
 export class GhostFleetController {
   constructor({
     store = new InMemoryStore(),
@@ -434,16 +444,16 @@ export class GhostFleetController {
 
   #provisionalNode(attempt) {
     const node = attempt.node_uid && this.store.getNode(attempt.node_uid);
-    if (!node) throw new Error("PROVISIONAL_IDENTITY_MISSING");
+    if (!node) throw stateConflict("PROVISIONAL_IDENTITY_MISSING");
     if (node.node_uid !== attempt.node_uid || node.enrollment_attempt_id !== attempt.attempt_id || node.lifecycle !== NodeLifecycle.PROVISIONAL) {
-      throw new Error("PROVISIONAL_IDENTITY_MISMATCH");
+      throw stateConflict("PROVISIONAL_IDENTITY_MISMATCH");
     }
     return node;
   }
 
   #assertIdentityInput(node, { node_id, platform }) {
     if ((node_id !== undefined && node_id !== null && node_id !== node.node_id) ||
-        (platform !== undefined && platform !== node.platform)) throw new Error("NODE_IDENTITY_MISMATCH");
+        (platform !== undefined && platform !== node.platform)) throw stateConflict("NODE_IDENTITY_MISMATCH");
   }
 
   startMaterialization(id, input = {}) {
@@ -463,7 +473,7 @@ export class GhostFleetController {
       // A lost response must not remint an identity or append duplicate evidence/events.
       if (attempt.state === EnrollmentState.MATERIALIZING) return publicClone(attempt);
     } else {
-      if (attempt.state === EnrollmentState.MATERIALIZING) throw new Error("PROVISIONAL_IDENTITY_MISSING");
+      if (attempt.state === EnrollmentState.MATERIALIZING) throw stateConflict("PROVISIONAL_IDENTITY_MISSING");
       const node_uid = makeId("node");
       node = {
         node_uid, node_id: node_id || node_uid, platform,
@@ -578,11 +588,11 @@ export class GhostFleetController {
     this.#assertIdentityInput(provisional, input);
     for (const type of CORE_OWNED_EVIDENCE) {
       const proof = attempt.evidence.findLast((item) => item.type === type);
-      if (proof?.source !== "ghostfleet-core" || proof?.data.node_uid !== provisional.node_uid) throw new Error("CORE_EVIDENCE_INVALID");
+      if (proof?.source !== "ghostfleet-core" || proof?.data.node_uid !== provisional.node_uid) throw stateConflict("CORE_EVIDENCE_INVALID");
     }
     const missing = missingAcceptanceEvidence(attempt.evidence);
     if (missing.length) {
-      const error = new Error("ACCEPTANCE_EVIDENCE_MISSING");
+      const error = stateConflict("ACCEPTANCE_EVIDENCE_MISSING");
       error.missing = missing;
       throw error;
     }

@@ -79,6 +79,7 @@ test("operator HTTP cannot forge Linux admission evidence or bootstrap completio
     method: "POST", headers: { "content-type": "application/json" }, body: "{}",
   }));
   const outcome = await admission.json();
+  assert.equal(admission.status, 409, "incomplete acceptance evidence is a state conflict, not a malformed request");
   assert.equal(outcome.ok, false);
   assert.equal(outcome.error, "ACCEPTANCE_EVIDENCE_MISSING");
   assert.deepEqual(new Set(outcome.missing), new Set(required));
