@@ -132,6 +132,8 @@ systemd --user (control account, Linger=yes)
 
 这条循环满足"Agent 真正承担持续管理工作"：它持续采集、比对漂移、上报健康并执行控制面下发的有界管理工作；心跳只是循环的一个阶段，不是全部。
 
+**看门狗喂狗不依赖主线程推进（实测教训，2026-11-12）**：首版只在成功路径与分块睡眠的块间发 `WATCHDOG=1`。控制面不可达时，每轮都走失败分支并进入 1→2→4→8→16→32 s 退避（每段都短于 30 s 分块上限），`remaining` 归零，于是一次都不喂——真实 systemd 上表现为每约 60 s `Watchdog timeout (limit 1min)` → `SIGABRT` → 重启，`NRestarts` 无限增长（离线时最需要它保持运行，恰恰最先被自己杀掉）。因此喂狗由**独立常驻线程**负责：`sd_notify(READY=1)` 之后启动一个 daemon 线程，按 `WatchdogSec/3`（≈20 s）周期发送 `WATCHDOG=1`，用 `Event.wait(timeout)` 以便 `shutdown()` 能立即唤醒退出（`shutdown()` 先 set + `join(≤2 s)` 再发 `STOPPING=1`）；线程内异常只记 warning 不杀进程；`--once` 单次运行不启动该线程。成功路径上的喂狗点保留作冗余。`NotifyAccess=main` 保持不变：systemd 用 `SCM_CREDENTIALS` 判 PID，而其中携带的是 **TGID**，主进程创建的线程发送 `sd_notify` 会被识别为主进程（实测 tgid=411 / tid=412，收方看到 pid=411），不需要放宽成 `all`。
+
 ## 7. 耐用状态与崩溃语义
 
 任务执行前：`ledger[task_id] = {state: MAY_HAVE_EXECUTED, operation, started_at}` → `fsync` 目录项 → 才调用实现函数。完成后写 `{state: SUCCEEDED|REFUSED|FAILED, finished_at, result_digest}`（`REFUSED` = 校验拒绝且**副作用为零**，`FAILED` = 尝试过但失败，`UNKNOWN` = 无法判定是否已执行；结果信封复用任务信封的 `schema` 并附加 `{task_id, operation, result, result_digest}`）。三者不可混用：**实现函数调用期间抛出的异常绝不报 `REFUSED`**——那等于向控制面承诺「可以安全重投」。规则由每个 operation 的显式声明决定：声明 `effect: none`（v0 的四个 operation 全部是只读观测/回显）→ 抛异常报 `FAILED` + 具体错误码；声明 `effect: may_mutate`（v0 不存在，预留给后续写操作）→ 抛异常一律报 `UNKNOWN`，宁可让控制面按未知副作用处理，也不猜。启动时扫描 ledger：任何 `MAY_HAVE_EXECUTED` 且无终态的任务，先补写一条 `UNKNOWN` 结果进 outbox（只报事实，不重跑），再标 `RECONCILED`。
@@ -164,6 +166,7 @@ PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=read-only
 StateDirectory=ghostfleet-agent
+StateDirectoryMode=0700
 ConfigurationDirectory=ghostfleet
 ConfigurationDirectoryMode=0700
 ProtectKernelTunables=yes
@@ -187,7 +190,7 @@ WantedBy=default.target
 ```
 
 - **开机恢复**：`loginctl enable-linger <control_account>`（已在 #79 账户隔离里实现）+ `WantedBy=default.target` → 无人类登录也自动拉起。
-- **故障恢复**：`Restart=on-failure` + `RestartSec=5`（正常 `SIGTERM` 退出 0 不重启，异常退出/信号/看门狗超时才重启，语义边界明确）；`WatchdogSec=60` 由 Agent 每次循环 `sd_notify(WATCHDOG=1)` 喂狗，卡死则被杀重启。
+- **故障恢复**：`Restart=on-failure` + `RestartSec=5`（正常 `SIGTERM` 退出 0 不重启，异常退出/信号/看门狗超时才重启，语义边界明确）；`WatchdogSec=60` 由 Agent 的**常驻 watchdog 线程**每 `WatchdogSec/3`（≈20 s）发 `sd_notify(WATCHDOG=1)` 喂狗（不依赖主线程推进，见 §6），主线程卡死超过 60 s 才被杀重启。
 - **配置有效性必测**：unit 必须通过 `systemd-analyze --user verify`；`ProtectHome=read-only` 是合法取值（`read-write` 不是，旧稿已修），真实读写目录只经 `ReadWritePaths` 精确开放。
 - **目录必须先存在**（实测教训）：`ReadWritePaths` 指向不存在的目录会让服务在挂载命名空间阶段直接失败（`status=226/NAMESPACE`，且 `Restart=on-failure` 会无限重试）。因此 unit 用 `StateDirectory=ghostfleet-agent` + `ConfigurationDirectory=ghostfleet` 让 systemd 创建这两个目录（`verify` 与启动均通过），courier 安装时也要创建并把 `~/.config/ghostfleet` 收紧到 `0700`——两条路径互为自愈。
 - **user manager 的硬化会隐式启用 `PrivateUsers=`（实测，2026-11-12）**：`man systemd.exec` 明确写着，mount 类保护项（`PrivateTmp`/`PrivateDevices`/`ProtectSystem`/`ProtectHome` 等）在 per-user manager 里只有隐式开启 `PrivateUsers=` 才可用。实际效果：服务进程处在只映射自身 UID 的 user namespace（`/proc/self/uid_map` = `1002 1002 1`），**host root 拥有的文件在沙箱内一律显示为 overflow uid**（`/proc/sys/kernel/overflowuid`，默认 65534），同时 `/` 被以 `ro` 挂载。实测（Ubuntu 24.04 / systemd 255）：沙箱内 `stat /etc/ghostfleet/node-agent.json` 得到 `65534:65534 0644`、`/` 挂载选项 `ro,relatime`。因此在 unit 里用「`st_uid == 0`」判 host root 归属**必然失败**——首轮真机启动就是这么挂的：`AGENT_CONFIG_UNTRUSTED` / `CONFIG_OWNER_NOT_ROOT`，退出 3，`Restart=on-failure` 无限重启。
@@ -195,7 +198,9 @@ WantedBy=default.target
   - **必须反查被观测的 uid，不能只看「uid 0 是否被映射」**：在 `0 1002 1` 这类嵌套命名空间里，host uid 1002 拥有的文件会以 uid `0` 出现在进程视野中；「只要映射里出现 0 就要求 `st_uid == 0`」会把托管账户自己的文件误判成 host root 拥有。反查映射（`outside + (st_uid - inside) == 0`）在两种命名空间形态下都成立。
   - (b) 不是放宽：在只映射自身 UID 的命名空间里「host root 拥有」与「host 65534 拥有」在 uid 上无法区分，唯一的内核级等价不变量是只读挂载；`RestrictNamespaces=yes` 又阻止服务自己再建 mount namespace 造可写视图。门禁真正要保证的是「托管账户改不了这个文件」，`ro` 挂载由内核强制，等价成立。
   - 负向臂必须证明：可写挂载上的 overflow uid 文件仍被拒；`W_OK` 为真被拒；mode 不是 0644 被拒；反查映射结果不是 0 被拒（含 `0 1002 1` + `st_uid == 0` 与 `1002 1002 1` + `st_uid == 1002` 两臂）；`uid_map` 畸形时只读证明之外的组合被拒。
-- **`ConfigurationDirectoryMode=0700`**：courier 为放 `node-token` 把 `~/.config/ghostfleet` 建成 `0700`，而 `ConfigurationDirectory=ghostfleet` 默认要求 `0755`，systemd 每次启动都告警 `ConfigurationDirectory 'ghostfleet' already exists but the mode is different (File system: 700 ConfigurationDirectoryMode: 755)`；若目录尚未存在，systemd 会按 0755 创建。unit 必须显式 `ConfigurationDirectoryMode=0700` 与 courier 口径对齐；`StateDirectoryMode` 保持默认（状态目录不放秘密）。
+- **`ConfigurationDirectoryMode=0700`**：courier 为放 `node-token` 把 `~/.config/ghostfleet` 建成 `0700`，而 `ConfigurationDirectory=ghostfleet` 默认要求 `0755`，systemd 每次启动都告警 `ConfigurationDirectory 'ghostfleet' already exists but the mode is different (File system: 700 ConfigurationDirectoryMode: 755)`；若目录尚未存在，systemd 会按 0755 创建。unit 必须显式 `ConfigurationDirectoryMode=0700` 与 courier 口径对齐。
+- **`StateDirectoryMode=0700`**：`StateDirectory=ghostfleet-agent` 默认按 `0755` 创建，而 agent 自己的启动自检要求状态目录只有属主可写，于是每轮启动都会打出一条 `state_dir_permissions_loose mode 0o755` 的 warning（首轮真机一次启动出现 4–5 条），日志被自己的告警噪声淹没。unit 显式 `StateDirectoryMode=0700`，agent 侧对同一 path/mode 的 warning **每进程只打一次**（去重，不降级为静默）。
+- **子进程必须剥掉 notify 环境（实测教训，2026-11-12）**：`NOTIFY_SOCKET` 会随环境继承给每一个被调起的子进程；实测 `systemctl`、`loginctl`、`systemd-analyze` 这类 libsystemd CLI 在**退出时**会向 `NOTIFY_SOCKET` 发一条 `EXIT_STATUS=0`。`NotifyAccess=main` 下这些消息不被接受，journal 每轮刷 `Got notification message from PID <child>, but reception only permitted for main PID <main>`；一旦放宽成 `NotifyAccess=all`，这些伪 `EXIT_STATUS=0` 就会被当成主进程的退出状态，污染服务结果。因此 `CommandRunner.run()` 必须显式传 `env=`，在 `dict(os.environ)` 基础上删除 `NOTIFY_SOCKET`、`LISTEN_FDS`、`LISTEN_PID`、`WATCHDOG_USEC`、`WATCHDOG_PID`（保留 `PATH`/`HOME`/`LANG`/`XDG_RUNTIME_DIR`），并由单测断言 spawn 环境的键集合、以及 observe 输出不因剥离而改变。
 - **安全停止**：`SIGTERM` → 停止取新任务、flush outbox（有界超时 10 s）、写 `last_stop` 事实、退出 0。
 - **健康可见性**：`systemctl --user show` 的 `ActiveState`/`NRestarts`/`ExecMainStatus` 外加 Agent 自报的 `health`，构成独立消费者可观察的外部证据。
 
@@ -239,8 +244,10 @@ WantedBy=default.target
 | 生命周期 | disposable Linux 上 `systemctl --user is-active` 持续 `active`，`NRestarts` 稳定，超过一个心跳周期仍有新观测 | 真实 systemd |
 | 开机恢复 | `loginctl terminate-user` / 重启 user manager 后服务自动回来，无需人类登录 | 真实 systemd |
 | 故障恢复 | `kill -9` 主进程 → `Restart=on-failure` 拉回，`NRestarts` +1，心跳恢复；`SIGTERM` 干净退出 0 且**不**重启 | 真实 systemd |
+| 离线稳定 | 控制面置为不可达（`https://127.0.0.1:1` 或保留域名）持续 ≥180 s：全程 `ActiveState=active`、`NRestarts` 不增、journal 无 `Watchdog timeout`/`Failed with result 'watchdog'`/`SIGABRT`；恢复可达后心跳与任务处理自动继续。EVIDENCE 记录首尾 `NRestarts`、`ActiveEnterTimestamp`、`WatchdogTimestamp` | 真实 systemd |
+| 通知卫生 | 全量跑完后 journal `Got notification message from PID ..., but reception only permitted for main PID` 计数为 0（子进程未继承 `NOTIFY_SOCKET`）；且负向单测证明 CLI 的伪 `EXIT_STATUS=0` 不会进入服务结果 | 真实 systemd + 单元测试 |
 | 配置有效 | `systemd-analyze --user verify` 通过；保护项与实际读写路径一致（写入被拒的路径确实被拒） | 真实 systemd |
-| 沙箱信任判据 | 真实 systemd 下 unit `active` + `READY`（同时证明 `PrivateUsers` 里 `sd_notify` 可用）；EVIDENCE 记录沙箱内 `uid_map`、`overflowuid`、`/` 的 `ro` 挂载、配置文件的沙箱内 uid/mode；负向臂「rw 挂载 + overflow uid 文件」被拒 | 真实 systemd + 单元测试 |
+| 沙箱信任判据 | 真实 systemd 下 unit `active` + `READY`（同时证明 `PrivateUsers` 里 `sd_notify` 可用）；EVIDENCE 记录沙箱内 `uid_map`、`overflowuid`、`/` 的 `ro` 挂载、配置文件的沙箱内 uid/mode；负向臂「rw 挂载 + overflow uid 文件」被拒、反查映射结果非 0 被拒。沙箱内视图**必须**用 `nsenter -t <MainPID> -U -m --preserve-credentials --` 采集：直接 `stat /proc/<pid>/root/...` 得到的是宿主 UID 视图（stat 的 u/g 由读者命名空间解释），不能作为沙箱证据 | 真实 systemd + 单元测试 |
 | 持续工作 | 控制面下发 `node.observe`/`service.status.read`，节点返回真实观测，且两次结果随时间变化 | 端到端 |
 | 身份安全 | 三账户隔离（Human / ops / managed）；managed 无 sudo、无 ops 组 | 真实 systemd + 断言 |
 | 权限安全 | managed 直接调用 Helper → 被 `dedicated_caller_identity` 拒；`sudo -n` 被拒 | 负向证明 |
@@ -266,3 +273,5 @@ WantedBy=default.target
 - 日志目前只进 journald，不集中上传；跨节点日志聚合留给后续版本。
 - `AGENT_LEDGER_EXHAUSTED` 是有意选择的 fail-closed 停摆：控制面长期 5xx 导致对账永不成功时，节点会停止取新任务并持续 `DEGRADED`。这是**接受的**取舍（不重复执行优先于持续取任务），但代价是可用性面——控制面必须能看见 `health=DEGRADED`/`health_reason`，并由 operator 介入（修控制面或 `rotate` 后重启）。v1 再考虑「超时后允许丢弃最旧 `UNKNOWN`」的显式阈值。
 - `capability.inspect` 新鲜度由安装器契约保证（rollback 删投影），agent 只校验文件属主与权限、不判 `applied_at` 陈旧；真出现陈旧投影，上报的是「安装器说的事实」，责任在安装器而非 agent。
+- 常驻 watchdog 线程引入了进程内并发：它只做一件事（定时 `sd_notify(WATCHDOG=1)`），不读状态、不写文件、不加锁，异常自吞并记 warning，`shutdown()` 用 `Event` 立即唤醒并 `join(≤2 s)`；因此不会掩盖主线程卡死（不共享进度加锁是关键）。若未来需要把喂狗与「主线程确有推进」绑定，必须另加进度计数器，而不是把喂狗搬回主线程——首版这样就正是离线自杀的成因。
+- 子进程环境剥离 `NOTIFY_SOCKET`/`LISTEN_*`/`WATCHDOG_*` 只作用于 agent 调起的子进程；agent 自身仍从 systemd 收到的环境里读这些变量，二者不冲突（剥离只发生在 `CommandRunner.run()` 的 spawn 环境副本上）。
