@@ -74,7 +74,7 @@ systemd --user (control account, Linger=yes)
 
 ### 5.1 认证
 
-- 节点 token 在 `completeEnrollmentTicket` 成功时铸造（32 字节 CSPRNG → base64url），`node_credential: {token, node_uid, handoff_id}` **可从同一 resume capability 重取，直到节点首次认证成功**：控制面同时保存 `sha256(token)`（认证用）与 `AEAD(token)`（重投递用）。密钥由 `HKDF-SHA256(ikm=GHOSTFLEET_OPERATOR_TOKEN, info="ghostfleet/node-credential-handoff/v1")` 派生，AAD 绑定 `{node_uid, ticket_id, handoff_id}`；加密副本在**节点首次通过认证的请求**到达后立即销毁（不依赖 courier 回执），并另有 24 h / 20 次重投递上限。过期后 `complete` 返回 `credential_handoff: "EXPIRED"` 且不含 token——补救是退役节点重新签票，不放宽窗口。courier 用 `tmp`+`fsync`+`rename` 原子写入 control account 的 `~/.config/ghostfleet/node-token`（`0600`，目录 `0700`），token 不进日志/argv/状态行。
+- 节点 token 在 `completeEnrollmentTicket` 成功时铸造（32 字节 CSPRNG → base64url），`node_credential: {token, node_uid, handoff_id}` **可从同一 resume capability 重取，直到节点首次认证成功**：控制面同时保存 `sha256(token)`（认证用）与 `AEAD(token)`（重投递用）。密钥由 `HKDF-SHA256(ikm=GHOSTFLEET_OPERATOR_TOKEN, salt=空, info="ghostfleet/node-credential-handoff/v1", len=32)` 派生（不新增 secret；operator secret 轮换会使历史密文不可解，节点须重新签票，这是有意的 fail-closed），`AES-256-GCM`（12 字节随机 IV、16 字节认证标签，IV 与密文均以 base64url 存放），AAD 绑定 `{node_uid, ticket_id, handoff_id}`；加密副本在**节点首次通过认证的请求**到达后立即销毁（不依赖 courier 回执），并另有 24 h / 20 次重投递上限。过期后 `complete` 返回 `credential_handoff: "EXPIRED"` 且不含 token——补救是退役节点重新签票，不放宽窗口。courier 用 `tmp`+`fsync`+`rename` 原子写入 control account 的 `~/.config/ghostfleet/node-token`（`0600`，目录 `0700`），token 不进日志/argv/状态行。
 - 每个 agent 请求带：`Authorization: Bearer <token>`、`x-ghostfleet-node-uid: <node_uid>`、`x-ghostfleet-agent-version: <semver>`。
 - 请求体（canonical JSON）：`schema`、`node_uid`、`nonce`（≥16 字节 base64url）、`sent_at`（RFC 3339 Z）、`boot_id`、`seq`（本次启动内单调递增）。
 
