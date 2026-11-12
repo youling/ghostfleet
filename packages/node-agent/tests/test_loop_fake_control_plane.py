@@ -17,9 +17,17 @@ import pytest
 from agent_test_support import TEST_AGENT_VERSION, TEST_TOKEN, AgentSandbox, make_task
 from ghostfleet_agent import protocol
 from ghostfleet_agent.cli import build_loop, load_node_uid, load_token
-from ghostfleet_agent.config import load_config
+from ghostfleet_agent.config import DEFAULT_REQUEST_TIMEOUT_S, load_config
 from ghostfleet_agent.ledger import MAX_LEDGER_ENTRIES
-from ghostfleet_agent.loop import WATCHDOG_INTERVAL_S, WatchdogThread
+from ghostfleet_agent.loop import (
+    MAX_SLEEP_CHUNK_S,
+    SHUTDOWN_FLUSH_BUDGET_S,
+    SHUTDOWN_RESERVE_S,
+    STOP_SLICE_S,
+    TIMEOUT_STOP_SEC,
+    WATCHDOG_INTERVAL_S,
+    WatchdogThread,
+)
 from ghostfleet_agent.logging import Logger, clear_secrets
 from ghostfleet_agent.outbox import Outbox
 from ghostfleet_agent.protocol import (
@@ -767,6 +775,25 @@ def test_run_once_never_starts_the_watchdog_thread(sandbox, control_plane):
     assert loop.run_once() == 0
     assert loop._watchdog is None
     assert "watchdog" not in notifier.calls
+
+
+def test_stop_budget_arithmetic_fits_timeout_stop_sec():
+    """停机上界的静态断言：任何一段被改大，这条测试立刻红。
+
+    三段来源（都从模块常量导入，绝不硬抄）：
+      STOP_SLICE_S（1 s，睡眠打断粒度）
+      + DEFAULT_REQUEST_TIMEOUT_S（10 s，在途 HTTP 不可中途 abort，ADR §6 的请求超时）
+      + SHUTDOWN_FLUSH_BUDGET_S（8 s，有界 result flush）
+      + SHUTDOWN_RESERVE_S（2 s，STOPPING 通知 / last_stop 落盘 / 进程退出）
+    """
+    worst = STOP_SLICE_S + DEFAULT_REQUEST_TIMEOUT_S + SHUTDOWN_FLUSH_BUDGET_S + SHUTDOWN_RESERVE_S
+    assert worst <= TIMEOUT_STOP_SEC, f"stop budget {worst}s exceeds TimeoutStopSec={TIMEOUT_STOP_SEC}s"
+    assert worst == 21.0  # 1 + 10 + 8 + 2；余量 9 s
+    assert STOP_SLICE_S + DEFAULT_REQUEST_TIMEOUT_S + SHUTDOWN_FLUSH_BUDGET_S == 19.0
+    # flush 单独也必须留在 TimeoutStopSec 的 1/3 之内（lead 合同）。
+    assert SHUTDOWN_FLUSH_BUDGET_S <= TIMEOUT_STOP_SEC / 3
+    # 睡眠块必须小于两个喂狗周期，否则主线程块间喂狗也救不了 WatchdogSec=60。
+    assert MAX_SLEEP_CHUNK_S < 2 * WATCHDOG_INTERVAL_S
 
 
 # -- P1：SIGTERM 必须打断睡眠（任意时刻 ≤5 s 退出，退出码 0） -----------------

@@ -175,8 +175,22 @@ boot 重放换新 boot_id 重试一次，`NODE_BOOT_ID_CAPACITY_REACHED` 无法�
   `UNKNOWN` 与任何 `may_mutate` 终态**永不驱逐**；被驱逐的 task_id 写入独立有界墓碑文件（上限 4096），
   `begin()` 命中墓碑按 `DONE` 处理，绝不因驱逐而重跑。墓碑满或账本达上限且无可驱逐条目时 `begin()` 拒绝、
   停止 poll（heartbeat 继续，health=`DEGRADED`、`health_reason=AGENT_LEDGER_EXHAUSTED`），对账腾出空间后自动恢复取任务。
-- `SIGTERM` 收尾的 flush 预算固定 8 秒（unit 的 `TimeoutStopSec=30`，总停机预算取其 1/3 以内；留 2 秒给
-  打断睡眠、`STOPPING` 与 last_stop 落盘），超时不再阻塞退出。
+- `SIGTERM` 收尾的 flush 预算固定 8 秒并计入下面的停机上界，超时不再阻塞退出。
+
+### 停机预算（`TimeoutStopSec=30` 内，三段相加）
+
+| 段 | 常量 | 上界 | 来源 |
+| --- | --- | --- | --- |
+| 睡眠打断粒度 | `loop.STOP_SLICE_S` | 1 s | 每 ≤1 s 检查一次 `stop_event` |
+| 在途 HTTP 请求 | `config.DEFAULT_REQUEST_TIMEOUT_S` | 10 s | ADR §6 的请求超时；**单个阻塞 HTTP 请求不可中途 abort，只能靠它封顶**（这是从 ADR §6 推导出的既有边界，不是本次放宽） |
+| 有界 result flush | `loop.SHUTDOWN_FLUSH_BUDGET_S` | 8 s | ADR §8，`TimeoutStopSec` 的 ≤1/3 |
+| 余量 | `loop.SHUTDOWN_RESERVE_S` | 2 s | `STOPPING=1`、last_stop 落盘、进程退出 |
+| **合计** | — | **21 s** | **21 ≤ 30，余量 9 s** |
+
+不含余量的「信号 → 退出」上界是 1 + 10 + 8 = **19 s**。该算术由
+`tests/test_loop_fake_control_plane.py::test_stop_budget_arithmetic_fits_timeout_stop_sec` 静态断言，
+常量全部从模块导入：任何人改大其中一项、或 `TimeoutStopSec` 变小，测试立刻红。
+注意：生产默认值满足上表；若运维显式把 `request_timeout_s` 调大，必须自行保持三段之和 + 2 s ≤ 30 s。
 
 ## 运行行为（真机取证）
 
@@ -198,7 +212,7 @@ boot 重放换新 boot_id 重试一次，`NODE_BOOT_ID_CAPACITY_REACHED` 无法�
 - **SIGTERM 能打断睡眠，退出不撞 `TimeoutStopSec`**：主循环所有睡眠（poll 间隔、指数退避、Retry-After）都按
   ≤1 s 的片等待 `stop_event`，因此信号到达后 ≤1 s 脱离睡眠；随后停止取新任务（同一批里尚未开始的 task 不进 ledger，
   控制面可安全重投）、停喂狗线程、发 `STOPPING=1`、执行 ≤8 s 有界 flush、写 last_stop、以 0 退出。
-  睡眠中的 `SIGTERM` 总时延 ≤1 s（+flush ≤9 s，仍 < `TimeoutStopSec=30`）。
+  睡眠中的 `SIGTERM` 总时延 ≤1 s（+flush ≤9 s）；计入在途 HTTP 与余量的最坏上界见上一节「停机预算」= 21 s < 30 s。
   **不可中断的边界**（诚实声明）：阻塞中的 HTTP 请求由 `request_timeout_s`（默认 10 s）封顶；正在执行的只读任务在
   操作之间协作取消——剩余 unit 不再读取，结果报 `FAILED` + `AGENT_EXECUTION_INTERRUPTED`（只读、无副作用、可重投），
   单个已在跑的子命令由 `SYSTEMCTL_TIMEOUT_S=5 s` 封顶。

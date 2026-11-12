@@ -45,8 +45,12 @@ from . import protocol as protocol_mod
 BACKOFF_BASE_S = 1.0
 BACKOFF_CAP_S = 300.0
 RETRY_AFTER_CAP_S = 3600.0
-# ADR §8：SIGTERM 后 flush 有界。TimeoutStopSec=30，总停机预算按 ≤1/3 取 8 s，
-# 给"打断睡眠 + STOPPING + last_stop 落盘"留出余量。
+# unit 的 TimeoutStopSec（ADR §8）；停机预算的三段之和必须留在它里面：
+#   1 s（睡眠打断片）+ request_timeout_s 默认 10 s（在途 HTTP 不可中途 abort）+ 8 s（flush）
+#   + 2 s 余量（STOPPING 通知、last_stop 落盘、进程退出）= 21 s ≤ 30 s。
+TIMEOUT_STOP_SEC = 30.0
+SHUTDOWN_RESERVE_S = 2.0
+# ADR §8：SIGTERM 后 flush 有界。总停机预算按 TimeoutStopSec 的 ≤1/3 取 8 s。
 SHUTDOWN_FLUSH_BUDGET_S = 8.0
 SHUTDOWN_FLUSH_ATTEMPTS = 30
 # SIGTERM 睡眠可打断性：每片 ≤1 s 检查一次 stop_event，保证任意睡眠点被唤醒。
