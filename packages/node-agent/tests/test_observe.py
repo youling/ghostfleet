@@ -499,7 +499,7 @@ def test_child_environment_strips_systemd_notification_keys():
     environment = child_environment(
         {
             "PATH": "/usr/bin:/bin",
-            "HOME": "/home/managed",
+            "HOME": "/srv/managed",
             "LANG": "C.UTF-8",
             "XDG_RUNTIME_DIR": "/run/user/1002",
             "NOTIFY_SOCKET": "/run/user/1002/systemd/notify",
@@ -513,7 +513,7 @@ def test_child_environment_strips_systemd_notification_keys():
         assert key not in environment
     # 不做 env -i：命令行工具仍需正常 PATH / locale / HOME / runtime dir。
     assert environment["PATH"] == "/usr/bin:/bin"
-    assert environment["HOME"] == "/home/managed"
+    assert environment["HOME"] == "/srv/managed"
     assert environment["XDG_RUNTIME_DIR"] == "/run/user/1002"
 
 

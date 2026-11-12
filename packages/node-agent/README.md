@@ -73,7 +73,7 @@ mountinfo 读取上限 1 MiB（真实机器挂载项可能很多），超限按�
 
 | 字段 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `control_plane_origin` | 是 | — | `https://host[:port]`；loopback 明文 `http` 生产默认拒绝（`CONFIG_LOOPBACK_HTTP_FORBIDDEN`），仅 harness 环境变量 `GHOSTFLEET_AGENT_TEST_LOOPBACK_HTTP=1`（或显式 `allow_loopback_http=True`）放行并告警 |
+| `control_plane_origin` | 是 | — | `https://` + `host[:port]`；loopback 明文 `http` 生产默认拒绝（`CONFIG_LOOPBACK_HTTP_FORBIDDEN`），仅 harness 环境变量 `GHOSTFLEET_AGENT_TEST_LOOPBACK_HTTP=1`（或显式 `allow_loopback_http=True`）放行并告警 |
 | `heartbeat_interval_s` | 否 | 30 | 心跳/轮询周期，配置值钳制到 [15,300] 秒；客户端实际周期下限 30 秒（服务端下发更小值按 30 采用并记 warning，不 fatal） |
 | `heartbeat_interval_min_s` / `heartbeat_interval_max_s` | 否 | 15 / 300 | 进一步收窄服务端下发 interval 的接受区间 |
 | `jitter_ratio` | 否 | 0.1 | 抖动比例，钳制到 [0,0.5] |
