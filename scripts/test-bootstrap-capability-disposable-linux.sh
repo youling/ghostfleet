@@ -502,7 +502,8 @@ WantedBy=default.target
 UNIT
 CONTROL_ACCOUNT="$drift_account" PRIVILEGED_ACCOUNT="$privileged_account" \
 node --input-type=module -e '
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 const [work, dir] = process.argv.slice(1);
@@ -530,6 +531,13 @@ const selection = {
     { name: "ghostfleet-managed.service", mode: "0644", content: read("ghostfleet-managed.service") },
   ],
 };
+// A1: the drift arm installs bytes this node has never seen, so publish them
+// at their content addresses before the courier is asked to fetch them.
+const assetsDir = join(work, "assets", "sha256");
+mkdirSync(assetsDir, { recursive: true });
+for (const artifact of selection.artifacts) {
+  writeFileSync(join(assetsDir, createHash("sha256").update(artifact.content).digest("hex")), artifact.content);
+}
 writeFileSync(join(work, "drift-data.sh"), module.renderCapabilityBlock(selection) + "\n");
 ' "$work" "$drift_dir" || fail_check "the drift selection could not be rendered"
 # The reviewed installer must really run for the drift arm to exist, so the
