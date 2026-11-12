@@ -29,15 +29,12 @@ import {
 
 function required(value, message) { if (!value) throw new Error(message); return value; }
 
-// A conflict with the stored attempt state is a 409, never a malformed-request 400.
-// The status has to be explicit now: the HTTP edge stopped guessing from the code
-// text (it used to map any "*_INVALID"/"*_MISSING" to 409, which also turned real
-// input errors into conflicts and made malformed JSON look retryable).
-function stateConflict(code) {
-  const error = new Error(code);
-  error.status = 409;
-  return error;
-}
+// A refused state transition is a 409, not a malformed request: the body was well formed,
+// the stored attempt simply is not in a position to be accepted. The status must be
+// explicit now that the HTTP edge stopped guessing from the code text (it used to map any
+// "*_INVALID"/"*_MISSING" to 409, which also turned real input errors into conflicts and
+// made malformed JSON look retryable). The code stays the stable machine token.
+function stateConflict(code) { const error = new Error(code); error.status = 409; return error; }
 
 export class GhostFleetController {
   constructor({
@@ -582,7 +579,8 @@ export class GhostFleetController {
 
   acceptEnrollment(id, input = {}) {
     const attempt = this.requireLiveAttempt(this.getEnrollmentAttempt(id));
-    if (attempt.state !== EnrollmentState.MATERIALIZING) throw new Error("ACCEPT_STATE_INVALID");
+    // Replaying accept on a settled attempt is a state conflict, not a bad request.
+    if (attempt.state !== EnrollmentState.MATERIALIZING) throw stateConflict("ACCEPT_STATE_INVALID");
     if (Object.keys(input).some((key) => !["node_id", "platform"].includes(key))) throw new Error("ACCEPT_INPUT_INVALID");
     const provisional = this.#provisionalNode(attempt);
     this.#assertIdentityInput(provisional, input);
