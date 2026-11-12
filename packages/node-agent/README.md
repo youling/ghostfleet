@@ -140,6 +140,10 @@ boot 重放换新 boot_id 重试一次，`NODE_BOOT_ID_CAPACITY_REACHED` 无法�
 （上限 3600s，超出按 3600 钳制，不被本地 300s 退避封顶截断、也不乘抖动），无该头才用本地指数退避；
 5xx 与网络错误只退避重试，绝不当成功。结果回传（outbox flush）的 429 与心跳/轮询同规则：保留 outbox 条目并遵守 Retry-After。
 
+任务信封按 ADR §5.2 接受 `schema` / `task_id` / `node_uid` / `operation` / `params` / `issued_at` / `expires_at` /
+`attempt` / `lease_expires_at`：`lease_expires_at`（服务端 300 s 租约）可选，存在时必须是 RFC3339 UTC 字符串，
+但 Agent 不拿它做本地过期判断（过期只看 `expires_at`），缺失也照常接受。
+
 任务词汇：`node.observe`（want ⊆ identity/os/uptime/disk/services/capability）、
 `service.status.read`（≤8 个 unit，必须在 `allowed_units` 白名单内）、
 `capability.inspect`（只回公开投影：整体 sha256、selection 摘要、artifact/user_unit 名+sha256、payload sha256、账户/release pin；不回文件原文，也不读 `/var/lib/fleet/capability-state.json`；投影文件须通过上面的 host-root 判据）、

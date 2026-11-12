@@ -108,6 +108,48 @@ def test_non_object_envelope_is_refused(envelope):
     assert excinfo.value.code == TASK_ENVELOPE_INVALID
 
 
+def test_lease_expires_at_from_control_plane_is_accepted_and_executed():
+    # ADR §5.2：控制面任务信封含 lease_expires_at（300 s 租约），必须接受并照常执行。
+    envelope = make_task(node_uid=NODE_UID)
+    envelope["lease_expires_at"] = "2026-11-12T12:05:00Z"
+    task = validate_envelope(envelope, node_uid=NODE_UID)
+    assert task.task_id == "task-0001"
+    result = executor().handle(envelope)
+    assert result["status"] == RESULT_SUCCEEDED
+
+
+def test_missing_lease_expires_at_is_still_accepted():
+    # 兼容旧控制面与本地测试：字段可缺失。
+    envelope = make_task(node_uid=NODE_UID)
+    assert "lease_expires_at" not in envelope
+    assert validate_envelope(envelope, node_uid=NODE_UID).task_id == "task-0001"
+
+
+@pytest.mark.parametrize(
+    "lease",
+    ["2026-11-12T12:05:00+00:00", "2026-11-12 12:05:00Z", "not-a-time", "", 300, None],
+)
+def test_malformed_lease_expires_at_is_refused(lease):
+    envelope = make_task(node_uid=NODE_UID)
+    envelope["lease_expires_at"] = lease
+    with pytest.raises(TaskRefused) as excinfo:
+        validate_envelope(envelope, node_uid=NODE_UID)
+    assert excinfo.value.code == TASK_ENVELOPE_INVALID
+
+
+def test_lease_expires_at_does_not_change_expiry_semantics():
+    # 过期只看 expires_at：租约字段存在也不影响 TASK_EXPIRED 的判定顺序。
+    envelope = make_task(
+        node_uid=NODE_UID,
+        issued_at=protocol.format_timestamp(NOW - timedelta(seconds=400)),
+        expires_at=protocol.format_timestamp(NOW - timedelta(seconds=1)),
+    )
+    envelope["lease_expires_at"] = "2026-11-12T12:10:00Z"
+    with pytest.raises(TaskRefused) as excinfo:
+        validate_envelope(envelope, node_uid=NODE_UID, now=NOW)
+    assert excinfo.value.code == TASK_EXPIRED
+
+
 @pytest.mark.parametrize("task_id", ["", "has space", "../escape", "-leading", "x" * 97, "bad/slash"])
 def test_unsafe_task_id_is_refused(task_id):
     envelope = make_task(node_uid=NODE_UID)

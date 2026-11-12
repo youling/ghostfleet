@@ -184,6 +184,35 @@ def test_directory_fsync_failure_is_propagated(tmp_path, monkeypatch):
         atomic_write_json(target, {"a": 2})
 
 
+def test_state_file_with_loose_mode_is_rejected(tmp_path):
+    store = _store(tmp_path)
+    store.load()
+    target = tmp_path / "state" / "state.json"
+    os.chmod(target, 0o644)
+    with pytest.raises(StateCorruptError):
+        _store(tmp_path).load()
+
+
+def test_state_file_with_foreign_owner_is_rejected(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    store.load()
+    target = str(tmp_path / "state" / "state.json")
+    real_lstat = os.lstat
+
+    def _lstat(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        if os.fspath(path) == target:
+            return os.stat_result(
+                (info.st_mode, info.st_ino, info.st_dev, info.st_nlink, os.geteuid() + 1, info.st_gid,
+                 info.st_size, info.st_atime, info.st_mtime, info.st_ctime)
+            )
+        return info
+
+    monkeypatch.setattr(state_module.os, "lstat", _lstat)
+    with pytest.raises(StateCorruptError):
+        _store(tmp_path).load()
+
+
 def test_state_dir_is_created_private_and_symlink_rejected(tmp_path):
     directory = tmp_path / "state"
     ensure_state_dir(str(directory))

@@ -385,6 +385,34 @@ def test_pending_outbox_is_flushed_before_new_work(sandbox, control_plane):
     assert any(path.endswith("/heartbeat") for path in paths)
 
 
+def test_startup_replays_persisted_outbox_drops_as_result_dropped(sandbox, control_plane):
+    loop, _ = build_agent(sandbox, control_plane)
+    for index in range(66):
+        result = protocol.make_result(
+            task_id=f"task-{index:04d}",
+            node_uid=sandbox.node_uid,
+            operation="node.observe",
+            status=RESULT_SUCCEEDED,
+            data={"status": "OK"},
+        )
+        loop.outbox.add(
+            {
+                "task_id": f"task-{index:04d}",
+                "operation": "node.observe",
+                "result": result,
+                "result_digest": digest_of(result),
+            }
+        )
+    # 崩溃后重启：丢弃事实必须从 outbox.json 重放成 ledger 的 RESULT_DROPPED。
+    assert loop.outbox.pending_dropped() == ["task-0000", "task-0001"]
+    assert loop.run_once() == 0
+    assert loop.outbox.pending_dropped() == []
+    for task_id in ("task-0000", "task-0001"):
+        assert loop.ledger.get(task_id)["result_state"] == "RESULT_DROPPED"
+    document = json.loads(sandbox.state_paths()["state"].read_text(encoding="utf-8"))
+    assert document["outbox_overflow"] == 2
+
+
 def test_outbox_overflow_is_counted_and_dropped_oldest(sandbox, control_plane):
     loop, _ = build_agent(sandbox, control_plane)
     for index in range(64):

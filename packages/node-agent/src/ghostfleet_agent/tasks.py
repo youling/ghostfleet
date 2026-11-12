@@ -138,8 +138,12 @@ def validate_envelope(
     """
     if not isinstance(envelope, dict):
         raise TaskRefused(TASK_ENVELOPE_INVALID, "task envelope must be an object")
+    # lease_expires_at 是 ADR §5.2 明列的服务端租约事实（服务端按 300 s 租约计算，
+    # 就在 attempt 前面）。Agent 不用它做任何本地决策（过期只看 expires_at），但必须
+    # 接受该字段，否则控制面的每个任务都会被判成 TASK_ENVELOPE_INVALID。
     extra = sorted(key for key in envelope if key not in {
         "schema", "task_id", "node_uid", "operation", "params", "issued_at", "expires_at", "attempt",
+        "lease_expires_at",
     })
     if extra:
         raise TaskRefused(TASK_ENVELOPE_INVALID, f"unexpected envelope field {extra[0]}")
@@ -167,6 +171,13 @@ def validate_envelope(
     try:
         issued_at = parse_timestamp(envelope.get("issued_at"), code=TASK_ENVELOPE_INVALID)
         expires_at = parse_timestamp(envelope.get("expires_at"), code=TASK_ENVELOPE_INVALID)
+        # 租约字段可选（兼容旧控制面/本地测试）；存在时只校验 RFC3339 UTC 形态，
+        # 不参与过期判断——过期语义只由 expires_at 决定，避免本地时钟与租约口径打架。
+        if "lease_expires_at" in envelope:
+            lease_expires_at = envelope["lease_expires_at"]
+            if not isinstance(lease_expires_at, str):
+                raise ProtocolError(TASK_ENVELOPE_INVALID, "lease_expires_at must be an RFC3339 UTC string")
+            parse_timestamp(lease_expires_at, code=TASK_ENVELOPE_INVALID)
     except ProtocolError as error:
         raise TaskRefused(error.code, error.detail) from None
     moment = now if now is not None else now_utc()
