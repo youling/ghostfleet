@@ -639,7 +639,7 @@
     },
     {
       "path": "packages/node-agent/dist/node-agent.pyz",
-      "sha256": "20ef4f8adb4bfbbd3d9c8f7a9f7d57eecda5ec445ffb4eecf0355c6aa6a49e94",
+      "sha256": "8dd4d9437cc452e5b4677d5449fd29c6355fe154c832ca83e6e326fddde3abda",
       "purpose": "Deterministically built GhostFleet node agent zipapp payload (sources under packages/node-agent/src, builder packages/node-agent/tools/build_pyz.py). Contains no credentials, endpoints or host-specific data; CI rebuilds it and asserts byte equality.",
       "review": "Reviewed by the coordinating Foreman for the node agent M4 round together with the source it is built from."
     }
