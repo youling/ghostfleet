@@ -2086,6 +2086,33 @@ record_ok "agent.self.test ${TASK_SELF_ID} echoed the caller-supplied nonce, so 
 evidence "task.self_test_id=${TASK_SELF_ID}"
 evidence "task.self_test_nonce_bytes=${#SELF_TEST_NONCE}"
 
+# A mismatch between the state the agent reported and the state systemctl
+# reports to the operator has two possible owners: the unit's sandbox (the agent
+# cannot reach the user bus) or the product (it answers without asking). A single
+# wrong answer cannot tell them apart, so a mismatch records the agent process's
+# own inherited environment, the bus socket and the agent journal before failing.
+# These lines are evidence, not a retry: the check still fails below.
+diagnose_service_status_mismatch() {
+  local observed="$1" measured="$2" result_json="$3" agent_pid env_lines line
+  evidence "service_status.mismatch_observed=${observed}"
+  evidence "service_status.mismatch_measured=${measured}"
+  evidence "service_status.result=$(printf '%s' "${result_json}" | head -c 900)"
+  agent_pid="$(unit_show MainPID || true)"
+  evidence "service_status.agent_main_pid=${agent_pid}"
+  if [[ "${agent_pid}" =~ ^[0-9]+$ ]] && ((agent_pid > 0)) && [[ -r "/proc/${agent_pid}/environ" ]]; then
+    env_lines="$(tr '\0' '\n' < "/proc/${agent_pid}/environ" || true)"
+    evidence "service_status.agent_env_xdg=$(printf '%s\n' "${env_lines}" | grep '^XDG_RUNTIME_DIR=' || true)"
+    evidence "service_status.agent_env_dbus=$(printf '%s\n' "${env_lines}" | grep '^DBUS_SESSION_BUS_ADDRESS=' || true)"
+    evidence "service_status.agent_env_home=$(printf '%s\n' "${env_lines}" | grep '^HOME=' || true)"
+    evidence "service_status.agent_env_path=$(printf '%s\n' "${env_lines}" | grep '^PATH=' | cut -c1-140 || true)"
+  fi
+  evidence "service_status.bus_socket=$(ls -l "/run/user/$(account_uid)/bus" 2>&1 | head -1 || true)"
+  evidence "service_status.agent_journal_hits=$(account_journal_tail 400 | grep -cE 'Failed to connect|probe_command_failed|systemctl' || true)"
+  account_journal_tail 400 | grep -E 'Failed to connect|probe_command_failed|systemctl|unit_state' | tail -12 | while IFS= read -r line; do
+    evidence "service_status.agent_journal=${line}"
+  done || true
+}
+
 SVC_PARAMS='{"units":["ghostfleet-managed.service"]}'
 TASK3_JSON="$(create_task service.status.read "${SVC_PARAMS}")"
 TASK3_ID="$(printf '%s' "${TASK3_JSON}" | json_value task_id)"
@@ -2131,7 +2158,10 @@ PY
 SVC_OBSERVED_STATE="$(printf '%s\n' "${SVC_VIEW}" | sed -n '1p')"
 SVC_CONFIGURED_UNITS="$(printf '%s\n' "${SVC_VIEW}" | sed -n '2p')"
 SVC_MEASURED_STATE="$(unit_show ActiveState)"
-assert_eq "${SVC_OBSERVED_STATE}" "${SVC_MEASURED_STATE}" "the agent-observed unit state must equal the operator-measured ActiveState"
+if [[ "${SVC_OBSERVED_STATE}" != "${SVC_MEASURED_STATE}" ]]; then
+  diagnose_service_status_mismatch "${SVC_OBSERVED_STATE}" "${SVC_MEASURED_STATE}" "${SVC_RESULT_JSON}"
+  fail_check "the agent-observed unit state must equal the operator-measured ActiveState: expected [${SVC_MEASURED_STATE}] got [${SVC_OBSERVED_STATE}]"
+fi
 [[ -n "${SVC_OBSERVED_STATE}" ]] || fail_check "the service.status.read result carried no state for ghostfleet-managed.service"
 
 [[ "${SVC_CONFIGURED_UNITS}" =~ ^[0-9]+$ ]] || fail_check "service.status.read result must report configured_units as an integer (got '${SVC_CONFIGURED_UNITS}')"
