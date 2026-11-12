@@ -133,6 +133,8 @@ systemd --user (control account, Linger=yes)
 1. **observe**：采集有界事实（CPU 负载、内存、磁盘使用率、uptime、允许的 user unit 状态、capability state 摘要、agent 版本）。
 2. **converge-report**：与上次成功上报的观测比对，产 `drift` 列表（例如 unit 从 active→failed、capability 摘要变化、磁盘越线）。**只报告，不擅自修改**：v0 的收敛动作就是把事实与差异讲清楚，变更仍由授权路径驱动。
 3. **heartbeat**：上报 `health`（`OK`/`DEGRADED`/`FAILING`）、`drift`、`agent_version`、`capability_digest`、`queue_depth`；读取 `interval_s`。
+   - **显式 `null` 是合法上报**：`capability_digest` 在节点还没有（或尚未重新投影）`/etc/ghostfleet/capability-status.json` 时就是 `null`，表示「能力投影未知」。控制面必须接受 `null` 并把记录写成 `null`（未知不可伪造成新鲜），只有「非 `null` 且非字符串」或「字符串不匹配 `sha256:<64hex>`」才算非法载荷。`health` 同理允许 `null`。**任何「未知态」字段都不许用 400 把节点锁在门外**——那会让 PROVISIONAL 节点永远进不了 poll/result 阶段。
+   - 这条契约必须由**真机抓到的字节**回归：控制面测试里放一份真实 agent 发出的 heartbeat 请求体 fixture（未投影态，`capability_digest: null`），断言穿过完整校验链返回 200 且落库为 `null`。分侧自造 fixture 会同时骗过两侧（本仓已经因此漏过一次：plane 单测、agent 单测都绿，真机首跳即 400）。
 4. **poll + execute**：逐个任务走 §7 的栅栏与 allowlist 分派，结果入 outbox。
 5. **flush**：按 `task_id` 幂等回传 outbox；失败按指数退避（1 s → 2 s → 4 s … 封顶 300 s，带抖动）重试。`429` 遵守 `Retry-After`（服务端对自己的限流节奏有最终权威：带 `Retry-After` 时按它睡眠、上限 3600 s，不受本地 300 s 退避封顶约束；只有本地指数退避封顶 300 s），`401/403` 停止上报并进入 FATAL 等待人类修复，`409` 按码分派（`NODE_NONCE_REPLAY`/`NODE_SEQ_REGRESSION` 立即换新 `seq`/`nonce` 重试一次，`NODE_BOOT_REPLAY` 换新 `boot_id`），5xx 与网络错误只重试不当成功。控制面不可达时保持循环、不退出、不丢已执行事实。
 
