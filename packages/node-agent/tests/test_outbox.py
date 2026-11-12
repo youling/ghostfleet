@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -138,6 +139,66 @@ def test_flush_auth_fatal_marks_fatal(tmp_path):
     assert report.fatal is True
     assert report.stop_code == "NODE_AUTH_INVALID"
     assert box.depth() == 1
+
+
+# -- 停机预算：逐条检查 stop/deadline，单请求超时钳到剩余预算 -----------------
+def test_flush_stops_before_any_send_when_stop_event_is_set(tmp_path):
+    box = _outbox(tmp_path)
+    box.add(_body("task-0001"))
+    box.add(_body("task-0002"))
+    stop_event = threading.Event()
+    stop_event.set()
+    calls = []
+
+    def send(item, timeout_s=None):
+        calls.append(item["task_id"])
+        return SimpleNamespace(kind=OUTCOME_OK, code=None)
+
+    report = box.flush(send, stop_event=stop_event)
+    assert calls == []  # 一条都不许发
+    assert report.stopped is True
+    assert report.deadline_hit is False
+    assert report.remaining == 2
+
+
+def test_flush_checks_stop_event_before_every_send(tmp_path):
+    box = _outbox(tmp_path)
+    box.add(_body("task-0001"))
+    box.add(_body("task-0002"))
+    stop_event = threading.Event()
+    seen = []
+
+    def send(item, timeout_s=None):
+        seen.append(item["task_id"])
+        stop_event.set()  # 第一条在途时收到 SIGTERM
+        return SimpleNamespace(kind=OUTCOME_OK, code=None)
+
+    report = box.flush(send, stop_event=stop_event)
+    assert seen == ["task-0001"]
+    assert report.sent == ["task-0001"]
+    assert report.stopped is True
+    assert report.remaining == 1
+    assert box.has("task-0002")
+
+
+def test_flush_honours_deadline_and_passes_remaining_budget_as_timeout(tmp_path):
+    box = _outbox(tmp_path)
+    for index in range(4):
+        box.add(_body(f"task-{index:04d}"))
+    clock = {"now": 100.0}
+    budgets = []
+
+    def send(item, timeout_s=None):
+        budgets.append(timeout_s)
+        clock["now"] += 0.2
+        return SimpleNamespace(kind=OUTCOME_OK, code=None)
+
+    report = box.flush(send, deadline=100.5, clock=lambda: clock["now"])
+    # 起始剩余 0.5 s 能发第一条；发完只剩 0.3 s（< MIN_SEND_WINDOW_S）立刻停。
+    assert budgets == [pytest.approx(0.5)]
+    assert budgets[0] <= outbox_module.MIN_SEND_WINDOW_S + 1e-9
+    assert report.deadline_hit is True
+    assert report.remaining == 3
 
 
 def test_remove(tmp_path):

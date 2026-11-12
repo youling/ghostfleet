@@ -18,7 +18,7 @@ from agent_test_support import TEST_AGENT_VERSION, TEST_TOKEN, AgentSandbox, mak
 from ghostfleet_agent import protocol
 from ghostfleet_agent.cli import build_loop, load_node_uid, load_token
 from ghostfleet_agent.config import DEFAULT_REQUEST_TIMEOUT_S, load_config
-from ghostfleet_agent.ledger import MAX_LEDGER_ENTRIES
+from ghostfleet_agent.ledger import MAX_LEDGER_ENTRIES, RESULT_DROPPED, LedgerWriteError
 from ghostfleet_agent.loop import (
     MAX_SLEEP_CHUNK_S,
     SHUTDOWN_FLUSH_BUDGET_S,
@@ -37,6 +37,7 @@ from ghostfleet_agent.protocol import (
     NODE_BOOT_ID_CAPACITY_REACHED,
     NODE_RATE_LIMITED,
     OUTCOME_NETWORK_ERROR,
+    OUTCOME_OK,
     AGENT_LEDGER_EXHAUSTED,
     TASK_OPERATION_MISMATCH,
     TASK_RESULT_SCHEMA_UNSUPPORTED,
@@ -777,23 +778,134 @@ def test_run_once_never_starts_the_watchdog_thread(sandbox, control_plane):
     assert "watchdog" not in notifier.calls
 
 
-def test_stop_budget_arithmetic_fits_timeout_stop_sec():
-    """停机上界的静态断言：任何一段被改大，这条测试立刻红。
+def test_stop_budget_is_a_runtime_deadline_not_a_constant_sum(sandbox, control_plane):
+    """停机预算是运行时逐条检查的 deadline，不是"常量相加"。
 
-    三段来源（都从模块常量导入，绝不硬抄）：
-      STOP_SLICE_S（1 s，睡眠打断粒度）
-      + DEFAULT_REQUEST_TIMEOUT_S（10 s，在途 HTTP 不可中途 abort，ADR §6 的请求超时）
-      + SHUTDOWN_FLUSH_BUDGET_S（8 s，有界 result flush）
-      + SHUTDOWN_RESERVE_S（2 s，STOPPING 通知 / last_stop 落盘 / 进程退出）
+    旧版这条测试只做算术（1+10+8+2<=30）就"证明"了停机 ≤30 s，但真机上
+    flush 可以连打 64 条、每条最多 10 s（PROBE2 实测 12.84 s > 8 s 预算）。
+    这里用假单调时钟 + 每条 send 0.2 s 驱动真实的 shutdown() 路径，断言：
+      · 整个收尾耗时被 8 s 预算（+一次 send 的粒度）截住；
+      · 每条 send 拿到的 timeout_s 是"剩余预算"且单调递减；
+      · 没来得及发出的条目仍然可见（pending > 0）。
     """
-    worst = STOP_SLICE_S + DEFAULT_REQUEST_TIMEOUT_S + SHUTDOWN_FLUSH_BUDGET_S + SHUTDOWN_RESERVE_S
-    assert worst <= TIMEOUT_STOP_SEC, f"stop budget {worst}s exceeds TimeoutStopSec={TIMEOUT_STOP_SEC}s"
-    assert worst == 21.0  # 1 + 10 + 8 + 2；余量 9 s
-    assert STOP_SLICE_S + DEFAULT_REQUEST_TIMEOUT_S + SHUTDOWN_FLUSH_BUDGET_S == 19.0
-    # flush 单独也必须留在 TimeoutStopSec 的 1/3 之内（lead 合同）。
-    assert SHUTDOWN_FLUSH_BUDGET_S <= TIMEOUT_STOP_SEC / 3
-    # 睡眠块必须小于两个喂狗周期，否则主线程块间喂狗也救不了 WatchdogSec=60。
+    loop, _ = build_agent(sandbox, control_plane)
+    for index in range(64):
+        _enqueue_pending_result(loop, sandbox, task_id=f"task-slow-{index:04d}")
+
+    clock = {"now": 1000.0}
+    loop._monotonic = lambda: clock["now"]
+    timeouts = []
+
+    def slow_send(item, timeout_s=None):
+        timeouts.append(timeout_s)
+        clock["now"] += 0.2  # 每条 result POST 0.2 s
+        return SimpleNamespace(kind=OUTCOME_OK, code=None)
+
+    loop._send_outbox_item = slow_send
+    stats = loop.shutdown(reason="test")
+
+    # 64 × 0.2 = 12.8 s 的无预算行为被截断到 8 s 量级。
+    assert stats["elapsed_s"] <= SHUTDOWN_FLUSH_BUDGET_S + 0.2
+    assert stats["elapsed_s"] >= SHUTDOWN_FLUSH_BUDGET_S - 1.0
+    assert len(timeouts) == stats["sent"]
+    assert 25 <= stats["sent"] <= 40
+    assert stats["pending"] == 64 - stats["sent"]
+    assert stats["pending"] > 0  # 未发条数可见
+    # 单请求超时被钳到剩余预算，且严格递减（绝不出现 10 s > 剩余预算）。
+    assert all(value is not None and value <= SHUTDOWN_FLUSH_BUDGET_S for value in timeouts)
+    assert all(later <= earlier + 1e-9 for earlier, later in zip(timeouts, timeouts[1:]))
+    # 睡眠块必须小于两个喂狗周期，否则主循环块间喂狗也救不了 WatchdogSec=60。
     assert MAX_SLEEP_CHUNK_S < 2 * WATCHDOG_INTERVAL_S
+    # 静态上界仍然成立（哨兵：任何常量被改大立刻红）。
+    worst = STOP_SLICE_S + DEFAULT_REQUEST_TIMEOUT_S + SHUTDOWN_FLUSH_BUDGET_S + SHUTDOWN_RESERVE_S
+    assert worst <= TIMEOUT_STOP_SEC
+
+
+# -- P1：停止后不得再发起任何新请求（真机 PROBE1 的 loop 级复现） -------------
+def test_stop_during_heartbeat_never_starts_a_poll(sandbox, control_plane):
+    """心跳在途时收到 SIGTERM：绝不再发 poll（真机上曾多打一条 poll）。"""
+    loop, _ = build_agent(sandbox, control_plane)
+    stop_event = threading.Event()
+    loop.bind_stop_event(stop_event)
+
+    def responder(record):
+        if record["path"].endswith("/heartbeat"):
+            stop_event.set()  # 模拟 signal 恰好落在心跳在途期间
+            return 200, {"interval_s": 15.0, "tasks": []}
+        return 200, {"tasks": []}
+
+    control_plane.respond = responder
+    assert loop.iteration() == "stopped"
+    assert len(control_plane.requests_to("/heartbeat")) == 1
+    assert control_plane.requests_to("/tasks/poll") == []
+
+
+def test_stopped_iteration_makes_no_request_at_all(sandbox, control_plane):
+    loop, _ = build_agent(sandbox, control_plane)
+    stop_event = threading.Event()
+    stop_event.set()
+    loop.bind_stop_event(stop_event)
+    for index in range(3):
+        _enqueue_pending_result(loop, sandbox, task_id=f"task-pending-{index}")
+
+    assert loop.iteration() == "stopped"
+    # 含 startup flush 的 result send：signal 之后一条都不能发。
+    assert control_plane.records == []
+    assert loop.outbox.depth() == 3
+
+
+def test_stop_during_result_send_stops_further_delivery(sandbox, control_plane):
+    """结果回传在途时收到 SIGTERM：已发出的那条允许完成，后续绝不再发。"""
+    loop, _ = build_agent(sandbox, control_plane)
+    stop_event = threading.Event()
+    loop.bind_stop_event(stop_event)
+    _enqueue_pending_result(loop, sandbox, task_id="task-first")
+    _enqueue_pending_result(loop, sandbox, task_id="task-second")
+
+    def responder(record):
+        if record["path"].endswith("/result"):
+            stop_event.set()
+            return 200, {"status": "accepted"}
+        return 200, {"interval_s": 15.0, "tasks": []}
+
+    control_plane.respond = responder
+    assert loop.iteration() == "stopped"
+    assert [record["path"].rsplit("/", 2)[-2] for record in control_plane.requests_to("/result")] == ["task-first"]
+    assert loop.outbox.depth() == 1
+    assert loop.outbox.has("task-second")
+
+
+# -- P2a：丢弃事实必须"先记账后清空"，崩溃不留窗口 --------------------------
+def test_outbox_drops_are_marked_before_being_drained(sandbox, control_plane):
+    loop, _ = build_agent(sandbox, control_plane)
+    overflowed = []
+    for index in range(66):  # 64 上限 + 2 个被挤掉
+        result = _enqueue_pending_result(loop, sandbox, task_id=f"task-drop-{index:04d}")
+        overflowed.extend(loop.outbox.pending_dropped())
+    assert loop.outbox.pending_dropped() == ["task-drop-0000", "task-drop-0001"]
+
+    def crash_before_drain():
+        raise RuntimeError("simulated crash between mark and drain")
+
+    loop.outbox.drain_dropped = crash_before_drain
+    with pytest.raises(RuntimeError):
+        loop._apply_outbox_drops()
+    # 崩溃前 mark 已经落盘：账本知道这两个结果被丢弃。
+    for task_id in ("task-drop-0000", "task-drop-0001"):
+        entry = loop.ledger.get(task_id) or {}
+        assert entry.get("result_state") == RESULT_DROPPED
+    # drain 未执行 → 事实仍在 outbox 文件里，重启后可以重放（不会丢）。
+    reloaded = Outbox(str(sandbox.state_paths()["outbox"]))
+    reloaded.load()
+    assert reloaded.pending_dropped() == ["task-drop-0000", "task-drop-0001"]
+
+    del loop.outbox.drain_dropped
+    assert loop._replay_outbox_dropped() == 2
+    reloaded = Outbox(str(sandbox.state_paths()["outbox"]))
+    reloaded.load()
+    assert reloaded.pending_dropped() == []
+    # 幂等：再次重放不再产生新事实、也不再记录溢出计数。
+    assert loop._replay_outbox_dropped() == 0
 
 
 # -- P1：SIGTERM 必须打断睡眠（任意时刻 ≤5 s 退出，退出码 0） -----------------
@@ -912,4 +1024,53 @@ def test_sleep_with_jitter_returns_immediately_when_stop_event_is_set(sandbox, c
     started = time.monotonic()
     assert loop._sleep_with_jitter(300.0, stop_event=stop_event) is True
     assert time.monotonic() - started < 0.5
+
+
+# -- P2c：批处理中途账本写失败不得把进程打成 exit 5 --------------------------
+def test_ledger_write_error_during_batch_degrades_instead_of_crashing(sandbox, control_plane):
+    control_plane.respond = idle_responder(control_plane)
+    control_plane.poll_tasks = [
+        make_task(node_uid=sandbox.node_uid, task_id=f"task-mid-{index}") for index in range(4)
+    ]
+    loop, stream = build_agent(sandbox, control_plane)
+    real_begin = loop.ledger.begin
+    calls = {"count": 0}
+
+    def begin_then_exhaust(task_id, operation, attempt=1):
+        calls["count"] += 1
+        if calls["count"] > 1:
+            raise LedgerWriteError("ledger capacity exhausted (AGENT_LEDGER_EXHAUSTED)", path=loop.ledger.path)
+        return real_begin(task_id, operation, attempt)
+
+    loop.ledger.begin = begin_then_exhaust
+    # 旧实现会让 LedgerWriteError 一路抛到 CLI（exit 5，没有 STOPPING/last_stop）。
+    assert loop.iteration() == "retry"
+    assert loop.state.last_health == "DEGRADED"
+    backoff = [record for record in _events(stream) if record["event"] == "backoff"]
+    assert backoff and backoff[-1]["detail"]["code"] == AGENT_LEDGER_EXHAUSTED
+    # 本批剩余任务一个都没有被 fence：控制面可以安全重投。
+    for index in range(1, 4):
+        assert loop.ledger.get(f"task-mid-{index}") is None
+    # 迭代没有崩：下一轮照常心跳（账本恢复后即恢复 poll）。
+    before = len(control_plane.requests_to("/heartbeat"))
+    loop.ledger.begin = real_begin
+    loop.iteration()
+    assert len(control_plane.requests_to("/heartbeat")) == before + 1
+
+
+# -- P2d：未知 operation 必须在 fence 之前拒绝（否则永久耗尽账本） -------------
+def test_unknown_operations_do_not_exhaust_the_ledger(sandbox, control_plane):
+    control_plane.respond = idle_responder(control_plane)
+    loop, _ = build_agent(sandbox, control_plane)
+    loop.ledger.save = lambda: None
+    for index in range(MAX_LEDGER_ENTRIES + 8):
+        loop._process_task(
+            make_task(node_uid=sandbox.node_uid, task_id=f"task-unknown-{index:04d}", operation="fleet.do.everything")
+        )
+
+    # 旧实现先写 MAY_HAVE_EXECUTED 栅栏再校验 → 每条都是 MAY_MUTATE 等级、不可驱逐，
+    # 512 条未知 operation 就能让 is_exhausted() 永久为真、poll 永远停摆。
+    assert loop.ledger.is_exhausted() is False
+    assert len(loop.ledger.entries) <= MAX_LEDGER_ENTRIES
+    assert loop.ledger.begin("task-after-unknown", "node.observe") == "NEW"
 

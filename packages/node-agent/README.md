@@ -171,11 +171,13 @@ boot 重放换新 boot_id 重试一次，`NODE_BOOT_ID_CAPACITY_REACHED` 无法�
 - outbox 上限 64 条，溢出时丢最旧并把丢弃记成 `RESULT_DROPPED` 与 `outbox_overflow` 计数；丢弃清单与 items
   **同一次原子写**持久化，重启 load 时重放为 `RESULT_DROPPED`；未发出的结果下次启动优先重发，同 task_id 同 `result_digest` 幂等。
 - 所有状态文件写入均为原子替换（文件 fsync → rename → 目录 fsync），损坏或目录 fsync 失败都 fail-closed 而非静默重置。
-- ledger 上限 512：只驱逐「已对账且 read_only」的终态（`RESULT_DROPPED` 最先），`MAY_HAVE_EXECUTED`、待对账条目、
-  `UNKNOWN` 与任何 `may_mutate` 终态**永不驱逐**；被驱逐的 task_id 写入独立有界墓碑文件（上限 4096），
+- ledger 上限 512：只驱逐已收敛的条目——`RESULT_DROPPED` 记录（含 task_id 根本不在账本里的丢弃事件，否则 512 个
+  不存在的 task 就能永久耗尽账本）最先，其次是「已对账且 read_only」的终态、以及 dispatch 前就产生的 `REFUSED`
+  （实现从未被调用，副作用可证明为零）。`MAY_HAVE_EXECUTED`、待对账条目、`UNKNOWN` 与任何 `may_mutate` 终态
+  **永不驱逐**；被驱逐的 task_id 写入独立有界墓碑文件（上限 4096），
   `begin()` 命中墓碑按 `DONE` 处理，绝不因驱逐而重跑。墓碑满或账本达上限且无可驱逐条目时 `begin()` 拒绝、
   停止 poll（heartbeat 继续，health=`DEGRADED`、`health_reason=AGENT_LEDGER_EXHAUSTED`），对账腾出空间后自动恢复取任务。
-- `SIGTERM` 收尾的 flush 预算固定 8 秒并计入下面的停机上界，超时不再阻塞退出。
+- `SIGTERM` 收尾的 flush 预算固定 8 秒并计入下面的停机上界；该预算**逐条检查**（每条 result POST 之前算一次剩余预算、单请求超时钳到剩余预算），耗尽即停，未发出的条目留在 outbox 下次启动优先重发。
 
 ### 停机预算（`TimeoutStopSec=30` 内，三段相加）
 
@@ -187,9 +189,16 @@ boot 重放换新 boot_id 重试一次，`NODE_BOOT_ID_CAPACITY_REACHED` 无法�
 | 余量 | `loop.SHUTDOWN_RESERVE_S` | 2 s | `STOPPING=1`、last_stop 落盘、进程退出 |
 | **合计** | — | **21 s** | **21 ≤ 30，余量 9 s** |
 
-不含余量的「信号 → 退出」上界是 1 + 10 + 8 = **19 s**。该算术由
-`tests/test_loop_fake_control_plane.py::test_stop_budget_arithmetic_fits_timeout_stop_sec` 静态断言，
-常量全部从模块导入：任何人改大其中一项、或 `TimeoutStopSec` 变小，测试立刻红。
+不含余量的「信号 → 退出」上界是 1 + 10 + 8 = **19 s**。
+
+这个上界是**运行时逐请求检查**的结果，不是常量相加的自我声明：`stop_event` 在心跳之前、poll 之前、以及
+`outbox.flush()` 的**每一条 send 之前**检查；停机路径只带 deadline（不带 `stop_event`，保证已完成的 result
+仍尝试发出），每条 send 的单请求超时被钳到「剩余预算」，`remaining < MIN_SEND_WINDOW_S` 立即停止并保留 pending。
+测试：`test_stop_budget_is_a_runtime_deadline_not_a_constant_sum`
+（64 条 pending + 假时钟、每条 send 0.2 s，断言 elapsed ≤8 s + 一次 send 颗粒、逐条拿到递减的剩余预算、
+pending 可见）；`tests/test_outbox.py` 的 `test_flush_stops_before_any_send_when_stop_event_is_set`、
+`test_flush_checks_stop_event_before_every_send`、`test_flush_honours_deadline_and_passes_remaining_budget_as_timeout`。
+静态哨兵仍保留：常量全部从模块导入，任何人改大其中一项、或 `TimeoutStopSec` 变小，测试立刻红。
 注意：生产默认值满足上表；若运维显式把 `request_timeout_s` 调大，必须自行保持三段之和 + 2 s ≤ 30 s。
 
 ## 运行行为（真机取证）
@@ -210,8 +219,10 @@ boot 重放换新 boot_id 重试一次，`NODE_BOOT_ID_CAPACITY_REACHED` 无法�
   测试：`tests/test_observe.py` 的 `test_child_environment_strips_systemd_notification_keys`、
   `test_command_runner_child_cannot_see_notify_socket`、`test_command_runner_output_is_unchanged_by_environment_stripping`。
 - **SIGTERM 能打断睡眠，退出不撞 `TimeoutStopSec`**：主循环所有睡眠（poll 间隔、指数退避、Retry-After）都按
-  ≤1 s 的片等待 `stop_event`，因此信号到达后 ≤1 s 脱离睡眠；随后停止取新任务（同一批里尚未开始的 task 不进 ledger，
-  控制面可安全重投）、停喂狗线程、发 `STOPPING=1`、执行 ≤8 s 有界 flush、写 last_stop、以 0 退出。
+  ≤1 s 的片等待 `stop_event`，因此信号到达后 ≤1 s 脱离睡眠；随后**不再发起任何新请求**（心跳之前、poll 之前、
+  每条 result send 之前都查 stop：真机上曾出现 signal 之后又打一条 poll 的缺陷，已由 loop 级测试锁定）、停止取新任务
+  （同一批里尚未开始的 task 不进 ledger，控制面可安全重投）、停喂狗线程、发 `STOPPING=1`、执行 ≤8 s 有界 flush、
+  写 last_stop、以 0 退出。
   睡眠中的 `SIGTERM` 总时延 ≤1 s（+flush ≤9 s）；计入在途 HTTP 与余量的最坏上界见上一节「停机预算」= 21 s < 30 s。
   **不可中断的边界**（诚实声明）：阻塞中的 HTTP 请求由 `request_timeout_s`（默认 10 s）封顶；正在执行的只读任务在
   操作之间协作取消——剩余 unit 不再读取，结果报 `FAILED` + `AGENT_EXECUTION_INTERRUPTED`（只读、无副作用、可重投），
