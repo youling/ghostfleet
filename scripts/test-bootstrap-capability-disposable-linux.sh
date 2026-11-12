@@ -24,6 +24,10 @@ ordinary="${GHOSTFLEET_TEST_ORDINARY_USER:-}"
 run_account=ghostfleet-managed
 privileged_account=ghostfleet-ops
 helper_path=/usr/local/libexec/youling-fleet/fleet-privctl
+# The Console delivery command exports three distinct origins; the node-plane
+# origin is the host the managed agent talks to, never the Access-protected
+# enrollment origin.
+node_plane_origin=https://node-plane.disposable.invalid
 [[ "$ordinary" =~ ^[a-z_][a-z0-9_-]{0,31}$ && "$ordinary" != root &&
    "$ordinary" != "$run_account" && "$ordinary" != "$privileged_account" ]] || exit 3
 id "$ordinary" >/dev/null
@@ -50,6 +54,32 @@ fail_check() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
 record_ok() { printf 'OK   %s\n' "$*"; }
 evidence() { printf 'EVIDENCE %s\n' "$*"; }
 
+# A rolled-back lane can leave logind holding a user object for the account it just
+# deleted: the account's user manager passes through "closing" for a while. The next
+# lane creates a new managed account that reuses the freed uid, and from then on
+# loginctl answers every query from the stale object -- show-user of the new account
+# reports the OLD name and Linger=no even though the linger marker was written, so the
+# Linger postcondition can never converge. A fresh node never has this state; it is an
+# artefact of running several lanes in a row on one disposable worker, so release the
+# uid here between lanes instead of weakening the courier.
+release_managed_user_managers() {
+  local unit uid tries=0
+  for unit in $(systemctl list-units 'user@*.service' --no-legend --plain 2>/dev/null | awk '{print $1}'); do
+    uid="${unit#user@}"
+    uid="${uid%.service}"
+    [[ "$uid" = 0 ]] && continue
+    systemctl stop "$unit" >/dev/null 2>&1 || true
+  done
+  while [[ "$tries" -lt 80 ]]; do
+    if [[ -z "$(loginctl list-users --no-legend 2>/dev/null | awk 'NF && $2 != "root"')" ]]; then
+      return 0
+    fi
+    sleep 0.25
+    tries=$((tries + 1))
+  done
+  return 0
+}
+
 privileged_root="$GITHUB_WORKSPACE/packages/runtime-python/src/ghostfleet_runtime/resources/fleet/10_platforms/linux/common/operations/privileged"
 for file in managed-linux-privileged-operations.sh fleet_privctl.py fleet_privileged_ssh_entry.py fleet_admin_command.py; do
   [[ -r "$privileged_root/$file" ]] || { echo "missing $file" >&2; exit 3; }
@@ -73,14 +103,52 @@ const module = await import(pathToFileURL(join(workspace, "packages/bootstrap/sr
 const read = (name) => readFileSync(join(privilegedRoot, name), "utf8");
 const unit = [
   "[Unit]",
-  "Description=GhostFleet managed runtime (disposable canary)",
+  "Description=GhostFleet Node Agent (disposable canary)",
+  "After=network-online.target",
   "",
   "[Service]",
-  "Type=oneshot",
-  "ExecStart=/bin/true",
+  "Type=notify",
+  "NotifyAccess=main",
+  "ExecStart=/usr/bin/python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz run",
+  "Restart=on-failure",
+  "RestartSec=5",
+  "WatchdogSec=60",
+  "TimeoutStopSec=30",
+  "NoNewPrivileges=yes",
+  "PrivateTmp=yes",
+  "PrivateDevices=yes",
+  "ProtectSystem=strict",
+  "ProtectHome=read-only",
+  "StateDirectory=ghostfleet-agent",
+  "StateDirectoryMode=0700",
+  "ConfigurationDirectory=ghostfleet",
+  "ConfigurationDirectoryMode=0700",
+  "ProtectKernelTunables=yes",
+  "ProtectKernelModules=yes",
+  "ProtectControlGroups=yes",
+  "ProtectClock=yes",
+  "ProtectHostname=yes",
+  "LockPersonality=yes",
+  "MemoryDenyWriteExecute=yes",
+  "RestrictSUIDSGID=yes",
+  "RestrictRealtime=yes",
+  "RestrictNamespaces=yes",
+  "SystemCallArchitectures=native",
+  "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+  "ReadWritePaths=%h/.config/ghostfleet %h/.local/state/ghostfleet-agent",
+  "MemoryMax=256M",
+  "TasksMax=64",
   "",
   "[Install]",
   "WantedBy=default.target",
+  "",
+].join("\n");
+// Synthetic payload bytes. This disposable job pins, fetches, installs and
+// verifies them, but it never claims they are the product agent artifact.
+const payload = [
+  "#!/usr/bin/env python3",
+  "# Synthetic node-agent payload for the disposable selected-capability job.",
+  "raise SystemExit(0)",
   "",
 ].join("\n");
 const selection = {
@@ -94,7 +162,13 @@ const selection = {
   privileged_account: process.env.PRIVILEGED_ACCOUNT,
   installer: "managed-linux-privileged-operations.sh",
   privileged_key: "privileged-ops.pub",
-  user_unit: { name: "ghostfleet-managed.service", artifact: "ghostfleet-managed.service" },
+  user_unit: {
+    name: "ghostfleet-managed.service",
+    artifact: "ghostfleet-managed.service",
+    payload_artifact: "node-agent.pyz",
+    payload_path: "/usr/local/libexec/ghostfleet/node-agent.pyz",
+    payload_mode: "0755",
+  },
   artifacts: [
     { name: "managed-linux-privileged-operations.sh", mode: "0750", content: read("managed-linux-privileged-operations.sh") },
     { name: "fleet_privctl.py", mode: "0755", content: read("fleet_privctl.py") },
@@ -102,8 +176,12 @@ const selection = {
     { name: "fleet_admin_command.py", mode: "0755", content: read("fleet_admin_command.py") },
     { name: "privileged-ops.pub", mode: "0644", content: readFileSync(join(work, "privileged-ops.pub"), "utf8") },
     { name: "ghostfleet-managed.service", mode: "0644", content: unit },
+    { name: "node-agent.pyz", mode: "0755", content: payload },
   ],
 };
+// The same synthetic payload bytes are kept on disk so the shell can compare
+// the installed file digest against what the selection actually pinned.
+writeFileSync(join(work, "canary-payload.pyz"), payload, { mode: 0o755 });
 writeFileSync(join(work, "capability-data.sh"), module.renderCapabilityBlock(selection) + "\n");
 writeFileSync(join(work, "empty-data.sh"), module.renderCapabilityBlock(null) + "\n");
 // A second block whose unit is a real long-running service, so the decommission
@@ -114,15 +192,29 @@ const longRunningUnit = [
   "",
   "[Service]",
   "Type=simple",
-  "ExecStart=/bin/sleep 300",
+  "ExecStart=/usr/bin/python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz run",
+  "Restart=no",
   "",
   "[Install]",
   "WantedBy=default.target",
   "",
 ].join("\n");
-const longRunning = { ...selection, user_unit: { name: "ghostfleet-managed.service", artifact: "ghostfleet-managed.service" } };
-longRunning.artifacts = selection.artifacts.map((item) =>
-  item.name === "ghostfleet-managed.service" ? { ...item, content: longRunningUnit } : item);
+// The stale lane must really run so the decommission stop proof has a live
+// process to prove gone. The payload sleeps; the unit still launches the pinned
+// payload path through the managed launcher.
+const longRunningPayload = [
+  "#!/usr/bin/env python3",
+  "# Synthetic long-running payload for the disposable decommission proof.",
+  "import time",
+  "time.sleep(300)",
+  "",
+].join("\n");
+const longRunning = { ...selection, user_unit: { ...selection.user_unit } };
+longRunning.artifacts = selection.artifacts.map((item) => {
+  if (item.name === "ghostfleet-managed.service") return { ...item, content: longRunningUnit };
+  if (item.name === "node-agent.pyz") return { ...item, content: longRunningPayload };
+  return item;
+});
 writeFileSync(join(work, "stale-data.sh"), module.renderCapabilityBlock(longRunning) + "\n");
 // The decommission harness stages through the same content-addressed origin, so
 // the long-running unit bytes must be published at their digest too.
@@ -183,13 +275,29 @@ ASSETS_ORIGIN="${GHOSTFLEET_ASSETS_ORIGIN:?}"
 fail() { printf '%s\n' "fleet-enroll: $*" >&2; exit 1; }
 . "${CAPABILITY_LIBRARY:?}"
 . "${CAPABILITY_DATA:?}"
+# The delivery command exports all three origins; the enrollment origin is the
+# Access-protected bridge and the node-plane origin is the separate host the
+# managed agent actually talks to.
+NODE_PLANE_ORIGIN="${GHOSTFLEET_NODE_PLANE_ORIGIN:?}"
+BROKER_ORIGIN=https://broker.disposable.invalid
 capability_validate_selection
 capability_apply
+# The courier finishes the managed service lane only after the completion
+# response delivers the node credential, so this harness plays the control
+# plane's half: the deferred lane is finished with one synthetic credential.
+if [ "${CAPABILITY_SERVICE_PENDING:-0}" = 1 ]; then
+  NODE_UID=node-00000000-0000-4000-8000-000000000001
+  BROKER_ORIGIN=https://broker.disposable.invalid
+  CAPABILITY_COMPLETE_RESPONSE='{"outcome":"COMPLETE","node_credential":{"token":"fixture-node-token-000000000000000000000000","node_uid":"node-00000000-0000-4000-8000-000000000001","handoff_id":"disposable-handoff-0001"}}'
+  capability_node_credential_parse
+  capability_service_finish
+fi
 HARNESS
 
 run_capability() {
   CAPABILITY_CHECKPOINT="$1" CAPABILITY_DATA="$2" CAPABILITY_LIBRARY="$work/capability-library.sh" \
     GHOSTFLEET_OPERATING_USER="$ordinary" GHOSTFLEET_ASSETS_ORIGIN="$3" \
+    GHOSTFLEET_NODE_PLANE_ORIGIN="$node_plane_origin" \
     sh "$work/harness.sh"
 }
 
@@ -201,6 +309,7 @@ chmod 0755 "$work/failing-bin/loginctl"
 run_capability_with_failing_loginctl() {
   CAPABILITY_CHECKPOINT="$1" CAPABILITY_DATA="$2" CAPABILITY_LIBRARY="$work/capability-library.sh" \
     GHOSTFLEET_OPERATING_USER="$ordinary" GHOSTFLEET_ASSETS_ORIGIN="$3" \
+    GHOSTFLEET_NODE_PLANE_ORIGIN="$node_plane_origin" \
     PATH="$work/failing-bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     sh "$work/harness.sh"
 }
@@ -213,11 +322,22 @@ ASSETS_ORIGIN="${GHOSTFLEET_ASSETS_ORIGIN:?}"
 fail() { printf '%s\n' "fleet-enroll: $*" >&2; exit 1; }
 . "$CAPABILITY_LIBRARY"
 . "$JSON_LIBRARY"
+NODE_PLANE_ORIGIN="${GHOSTFLEET_NODE_PLANE_ORIGIN:?}"
+BROKER_ORIGIN=https://broker.disposable.invalid
 CLAIM_JSON="$(cat "$CLAIM_FILE")"
 CAPABILITY_REQUIRED="$(json_flag "$CLAIM_JSON" capability_required)"
 CAPABILITY_CLAIM_SELECTION_B64="$(json_get "$CLAIM_JSON" capability_selection)"
 capability_ingest_claim
 capability_apply
+# Same completion handoff as harness.sh: the claim path also defers the managed
+# service lane until the credential from the completion response exists.
+if [ "${CAPABILITY_SERVICE_PENDING:-0}" = 1 ]; then
+  NODE_UID=node-00000000-0000-4000-8000-000000000001
+  BROKER_ORIGIN=https://broker.disposable.invalid
+  CAPABILITY_COMPLETE_RESPONSE='{"outcome":"COMPLETE","node_credential":{"token":"fixture-node-token-000000000000000000000000","node_uid":"node-00000000-0000-4000-8000-000000000001","handoff_id":"disposable-handoff-0001"}}'
+  capability_node_credential_parse
+  capability_service_finish
+fi
 CLAIM_HARNESS
 
 # A real loopback content-addressed origin. The courier receives only the origin;
@@ -247,6 +367,7 @@ run_claim() {
   CAPABILITY_CHECKPOINT="$1" CAPABILITY_LIBRARY="$work/capability-library.sh" \
     JSON_LIBRARY="$work/json-library.sh" CLAIM_FILE="$work/claim.json" \
     GHOSTFLEET_OPERATING_USER="$ordinary" GHOSTFLEET_ASSETS_ORIGIN="$2" \
+    GHOSTFLEET_NODE_PLANE_ORIGIN="$node_plane_origin" \
     sh "$work/claim-harness.sh"
 }
 expected_helper_sha="$(sha256sum "$privileged_root/fleet_privctl.py" | awk '{print $1}')"
@@ -306,6 +427,64 @@ record_ok "collision refused: $(grep -o 'must not be the privileged operations a
 [[ ! -e /etc/youling-fleet ]] || fail_check "the collision created helper state"
 ! id "$privileged_account" >/dev/null 2>&1 || fail_check "the collision created the privileged account"
 ! id "$run_account" >/dev/null 2>&1 || fail_check "the collision created the run account"
+
+# 3b. The public capability projection is the last effect of the deferred lane.
+#     If it cannot be replaced atomically the whole lane must fail and roll back
+#     the payload, the unit, the credential, the agent configuration and Linger
+#     it just installed, and it must leave the previous projection untouched:
+#     a half-installed node that still advertises an installed capability is the
+#     exact state this check exists to forbid. The projection file is made
+#     immutable (chattr +i) so only the final rename can fail, after every other
+#     effect has already succeeded and been observed.
+projection_sentinel="$work/projection-sentinel.json"
+projection_arm_account=ghostfleet-proj
+projection_arm_unit="/home/$projection_arm_account/.config/systemd/user/ghostfleet-managed.service"
+# A previous failed run on a reused worker can leave the immutable sentinel behind:
+# the chattr +i below is only lifted on the success path. Clear it first so this arm
+# fails on the projection rename it is about, not on an install into a locked file.
+if [[ -e /etc/ghostfleet/capability-status.json ]]; then
+  chattr -i /etc/ghostfleet/capability-status.json >/dev/null 2>&1 || true
+  rm -f /etc/ghostfleet/capability-status.json
+fi
+printf '{"schema":"ghostfleet-capability-status/v1","sentinel":"written-before-the-failing-arm"}\n' >"$projection_sentinel"
+install -d -m 0755 -o root -g root /etc/ghostfleet
+install -m 0644 -o root -g root "$projection_sentinel" /etc/ghostfleet/capability-status.json
+chattr +i /etc/ghostfleet/capability-status.json || fail_check "chattr +i is not available on this disposable filesystem"
+sed "s/^CAPABILITY_CONTROL_ACCOUNT=.*\$/CAPABILITY_CONTROL_ACCOUNT='$projection_arm_account'/" \
+  "$work/capability-data.sh" >"$work/projection-data.sh"
+grep -qx "CAPABILITY_CONTROL_ACCOUNT='$projection_arm_account'" "$work/projection-data.sh" ||
+  fail_check "the projection-failure data block was not produced"
+mkdir -p "$work/checkpoint-projection"
+if run_capability "$work/checkpoint-projection" "$work/projection-data.sh" "$good_origin" >"$work/projection.log" 2>&1; then
+  fail_check "the lane succeeded although the public capability projection could not be replaced"
+fi
+grep -q 'CAPABILITY_STATUS_PROJECTION_FAILED' "$work/projection.log" || {
+  echo "the projection failure was not the reported cause" >&2
+  cat "$work/projection.log" >&2
+  exit 1
+}
+cmp -s "$projection_sentinel" /etc/ghostfleet/capability-status.json ||
+  fail_check "the previous capability projection was rewritten or removed by the failed lane"
+[[ ! -e /usr/local/libexec/ghostfleet/node-agent.pyz ]] || fail_check "the failed lane left its payload installed"
+! id "$projection_arm_account" >/dev/null 2>&1 || fail_check "the failed lane left the run account it created"
+[[ ! -e "$projection_arm_unit" ]] || fail_check "the failed lane left the user unit installed"
+[[ ! -e "/var/lib/systemd/linger/$projection_arm_account" ]] || fail_check "the failed lane left Linger enabled"
+[[ ! -e /etc/ghostfleet/node-agent.json ]] || fail_check "the failed lane left the agent configuration behind"
+ls -a /etc/ghostfleet | grep -q 'capability-status\.json\.' && fail_check "the failed lane left a partial projection file"
+record_ok "projection failure rolled back the whole deferred lane and kept the previous projection byte-identical"
+# The arm's own root-privileged helper is host state, not courier rollback state:
+# reset it so section 4 installs through the reviewed installer from a clean host.
+chattr -i /etc/ghostfleet/capability-status.json
+rm -rf /etc/ghostfleet /etc/youling-fleet /usr/local/libexec/youling-fleet /var/lib/youling-fleet
+rm -f /etc/sudoers.d/90-youling-fleet-privileged-operations
+pkill -9 -u "$privileged_account" >/dev/null 2>&1 || true
+userdel -f -r "$privileged_account" >/dev/null 2>&1 || true
+rm -rf "/home/$privileged_account" "/var/lib/$privileged_account"
+systemctl daemon-reload
+
+# The projection arm above created and then rolled back a managed account. Release
+# its uid before the next lane creates the account it expects to own.
+release_managed_user_managers
 
 # 4. Real installation through the real reviewed installer, inside one root run.
 mkdir -p "$work/checkpoint-new"
@@ -393,6 +572,128 @@ assert state["control_account_state"] == "CREATED", state
 assert state["control_account_created_by_courier"] is True, state
 print("state:", json.dumps({k: state[k] for k in ("mode", "control_account", "privileged_account", "control_account_state", "control_account_created_by_courier")}))
 PY
+# The managed service lane is what the completion response unlocked: pinned
+# payload, the unit that launches exactly it, the control account credential and
+# the public projection must all exist, and none of them may carry the token.
+expected_payload_sha="$(sha256sum "$work/canary-payload.pyz" | awk '{print $1}')"
+payload_path=/usr/local/libexec/ghostfleet/node-agent.pyz
+[[ "$(stat -c '%U:%G:%a' "$payload_path")" == "root:root:755" ]] ||
+  fail_check "payload ownership/mode is $(stat -c '%U:%G:%a' "$payload_path")"
+[[ "$(sha256sum "$payload_path" | awk '{print $1}')" == "$expected_payload_sha" ]] ||
+  fail_check "the installed payload does not hash to the pinned artifact digest"
+record_ok "payload installed: $payload_path root:root:755 sha256=$expected_payload_sha"
+run_uid_verify="$(id -u "$run_account")"
+su -s /bin/sh - "$run_account" -c "XDG_RUNTIME_DIR=/run/user/$run_uid_verify systemd-analyze --user verify '$unit'" >"$work/unit-verify.log" 2>&1 || {
+  cat "$work/unit-verify.log" >&2
+  fail_check "the installed user unit does not pass systemd-analyze --user verify"
+}
+record_ok "systemd-analyze --user verify: exit 0"
+token_dir="$run_home/.config/ghostfleet"
+token_file="$token_dir/node-token"
+node_json="$token_dir/node.json"
+[[ -d "$token_dir" && ! -L "$token_dir" ]] || fail_check "the control account has no credential directory"
+[[ "$(stat -c '%U:%G:%a' "$token_dir")" == "$run_account:$run_account:700" ]] ||
+  fail_check "the credential directory is $(stat -c '%U:%G:%a' "$token_dir")"
+[[ "$(stat -c '%U:%G:%a' "$token_file")" == "$run_account:$run_account:600" ]] ||
+  fail_check "the node token is $(stat -c '%U:%G:%a' "$token_file")"
+[[ "$(wc -c <"$token_file")" -eq 43 ]] || fail_check "the node token is not 32 bytes of base64url"
+grep -Eqx '[A-Za-z0-9_-]{43}' "$token_file" || fail_check "the node token is not base64url"
+[[ "$(stat -c '%U:%G:%a' "$node_json")" == "$run_account:$run_account:600" ]] ||
+  fail_check "node.json is $(stat -c '%U:%G:%a' "$node_json")"
+[[ "$(stat -c '%U:%G:%a' /etc/ghostfleet)" == "root:root:755" ]] ||
+  fail_check "/etc/ghostfleet is $(stat -c '%U:%G:%a' /etc/ghostfleet)"
+[[ "$(stat -c '%U:%G:%a' /etc/ghostfleet/node-agent.json)" == "root:root:644" ]] ||
+  fail_check "/etc/ghostfleet/node-agent.json is $(stat -c '%U:%G:%a' /etc/ghostfleet/node-agent.json)"
+[[ "$(stat -c '%U:%G:%a' /etc/ghostfleet/capability-status.json)" == "root:root:644" ]] ||
+  fail_check "the projection is $(stat -c '%U:%G:%a' /etc/ghostfleet/capability-status.json)"
+if grep -q 'fixture-node-token-' "$work/new.log"; then
+  fail_check "the node token reached the courier log"
+fi
+if grep -qi 'token' /etc/ghostfleet/capability-status.json; then
+  fail_check "the public projection carries a token field"
+fi
+template_digest="$(sed -n "s/^CAPABILITY_TEMPLATE_DIGEST='\(.*\)'$/\1/p" "$work/capability-data.sh")"
+[[ -n "$template_digest" ]] || fail_check "the rendered data block carries no template digest"
+release_pin="${template_digest#sha256:}"
+release_pin="${release_pin:0:40}"
+python3 - /etc/ghostfleet/capability-status.json /etc/ghostfleet/node-agent.json \
+  "$node_json" "$expected_payload_sha" "$run_account" "$release_pin" "$(sha256sum "$unit" | awk '{print $1}')" \
+  "$node_plane_origin" <<'PY'
+import json, sys
+status_path, config_path, node_path, payload_sha, account, pin, unit_sha, node_plane = sys.argv[1:9]
+st = json.load(open(status_path, encoding="utf-8"))
+assert st["schema"] == "ghostfleet-capability-status/v1", st
+assert st["selection_schema"] == "ghostfleet-selected-capability/v2", st
+assert st["release_pin"] == pin and len(pin) == 40, st
+assert st["control_account"] == account, st
+assert "token" not in json.dumps(st), st
+by_name = {a["name"]: a for a in st["artifacts"]}
+assert by_name["node-agent.pyz"]["kind"] == "payload", by_name
+assert by_name["ghostfleet-managed.service"]["kind"] == "unit", by_name
+assert by_name["managed-linux-privileged-operations.sh"]["kind"] == "installer", by_name
+assert by_name["privileged-ops.pub"]["kind"] == "key", by_name
+uu = st["user_unit"]
+assert uu["name"] == "ghostfleet-managed.service", uu
+assert uu["sha256"] == unit_sha, uu
+assert uu["payload_sha256"] == payload_sha, uu
+assert uu["payload_path"].endswith("/libexec/ghostfleet/node-agent.pyz"), uu
+cfg = json.load(open(config_path, encoding="utf-8"))
+# Exactly the production key set the agent parser admits: no schema, no node_uid,
+# numeric intervals, and the node-plane origin rather than the enrollment origin.
+assert cfg == {
+    "control_plane_origin": node_plane,
+    "heartbeat_interval_s": 30,
+    "heartbeat_interval_min_s": 30,
+    "heartbeat_interval_max_s": 300,
+    "allowed_units": [uu["name"]],
+}, cfg
+nd = json.load(open(node_path, encoding="utf-8"))
+assert nd["node_uid"].startswith("node-"), nd
+assert nd["platform"].startswith("linux-"), nd
+assert nd["issued_at"].endswith("Z"), nd
+print("projection:", json.dumps({"release_pin": st["release_pin"], "kinds": sorted(a["kind"] for a in st["artifacts"])}))
+PY
+for line in capability_agent_payload_state=INSTALLED capability_user_unit_state=INSTALLED \
+  capability_service_state=INSTALLED capability_node_credential_received=yes \
+  capability_node_token_type=regular; do
+  grep -qx "$line" "$work/new.log" || { grep -q "^${line%%=*}=" "$work/new.log" || cat "$work/new.log" >&2; fail_check "evidence line missing: $line"; }
+done
+grep -qx "capability_node_token_owner=$run_account" "$work/new.log" || fail_check "evidence does not report the measured token owner"
+record_ok "credential handoff: node-token 0600, node.json 0600, projection root:root:644"
+# The installed unit must coexist with the credential directory the courier
+# created: systemd has to accept the existing ~/.config/ghostfleet mode instead
+# of warning that it differs from ConfigurationDirectoryMode, and starting the
+# unit must not change the 0700 directory or the 0600 token.
+if [[ ! -d "/run/user/$run_uid" ]]; then
+  systemctl start "user@$run_uid.service" >/dev/null 2>&1 || true
+  for _ in $(seq 1 80); do [[ -d "/run/user/$run_uid" ]] && break; sleep 0.25; done
+fi
+[[ -d "/run/user/$run_uid" ]] || fail_check "the run account has no user manager runtime directory, so the installed unit cannot be started"
+unit_start_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+su -s /bin/sh - "$run_account" -c "XDG_RUNTIME_DIR=/run/user/$run_uid systemctl --user start --no-block ghostfleet-managed.service" >"$work/unit-start.log" 2>&1 || {
+  cat "$work/unit-start.log" >&2
+  fail_check "the installed user unit could not be started as $run_account"
+}
+sleep 2
+su -s /bin/sh - "$run_account" -c "XDG_RUNTIME_DIR=/run/user/$run_uid journalctl --user-unit ghostfleet-managed.service --since '$unit_start_since' --no-pager" >"$work/unit-journal.log" 2>&1 || true
+[[ -s "$work/unit-journal.log" ]] || fail_check "the user unit produced no journal entries, so it never started"
+if grep -q "ConfigurationDirectory 'ghostfleet' already exists but the mode is different" "$work/unit-journal.log"; then
+  cat "$work/unit-journal.log" >&2
+  fail_check "systemd warned that the existing ~/.config/ghostfleet mode differs from ConfigurationDirectoryMode"
+fi
+state_dir="$run_home/.local/state/ghostfleet-agent"
+[[ -d "$state_dir" ]] || fail_check "the agent state directory $state_dir was never created"
+if grep -q "state_dir_permissions_loose" "$work/unit-journal.log"; then
+  cat "$work/unit-journal.log" >&2
+  fail_check "the agent reported a state directory whose mode is not private, so systemd did not honor StateDirectoryMode"
+fi
+[[ "$(stat -c '%U:%G:%a' "$state_dir")" == "$run_account:$run_account:700" ]] || fail_check "the agent state directory is $(stat -c '%U:%G:%a' "$state_dir"), not $run_account:$run_account:700"
+[[ "$(stat -c '%U:%G:%a' "$token_dir")" == "$run_account:$run_account:700" ]] || fail_check "starting the unit changed the credential directory to $(stat -c '%U:%G:%a' "$token_dir")"
+[[ "$(stat -c '%U:%G:%a' "$token_file")" == "$run_account:$run_account:600" ]] || fail_check "starting the unit changed the node token to $(stat -c '%U:%G:%a' "$token_file")"
+evidence "user_unit_start_journal_mode_warning=absent state_dir_permissions_loose=absent credential_dir=$(stat -c '%U:%G:%a' "$token_dir") state_dir=$(stat -c '%U:%G:%a' "$state_dir") node_token=$(stat -c '%U:%G:%a' "$token_file")"
+record_ok "the installed unit starts without a ConfigurationDirectoryMode warning, honors StateDirectoryMode, and leaves 0700/0600 credential state intact"
+su -s /bin/sh - "$run_account" -c "XDG_RUNTIME_DIR=/run/user/$run_uid systemctl --user stop ghostfleet-managed.service" >/dev/null 2>&1 || true
+su -s /bin/sh - "$run_account" -c "XDG_RUNTIME_DIR=/run/user/$run_uid systemctl --user reset-failed ghostfleet-managed.service" >/dev/null 2>&1 || true
 before_unit="$(sha256sum "$unit")"
 before_helper_mtime="$(stat -c %Y /usr/local/libexec/youling-fleet/fleet-privctl)"
 
@@ -498,15 +799,33 @@ DRIFT
 chmod 0750 "$drift_dir/managed-linux-privileged-operations.sh"
 cat >"$drift_dir/ghostfleet-managed.service" <<'UNIT'
 [Unit]
-Description=GhostFleet managed runtime (disposable drift)
+Description=GhostFleet Node Agent (disposable drift)
+After=network-online.target
 
 [Service]
-Type=oneshot
-ExecStart=/bin/true
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz run
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+StateDirectory=ghostfleet-agent
+StateDirectoryMode=0700
+ConfigurationDirectory=ghostfleet
+ConfigurationDirectoryMode=0700
+ReadWritePaths=%h/.config/ghostfleet %h/.local/state/ghostfleet-agent
 
 [Install]
 WantedBy=default.target
 UNIT
+cat >"$drift_dir/node-agent.pyz" <<'PAYLOAD'
+#!/usr/bin/env python3
+# Synthetic payload for the disposable drift arm.
+if __name__ == '__main__':
+    raise SystemExit(0)
+PAYLOAD
+chmod 0755 "$drift_dir/node-agent.pyz"
 CONTROL_ACCOUNT="$drift_account" PRIVILEGED_ACCOUNT="$privileged_account" \
 node --input-type=module -e '
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -527,7 +846,13 @@ const selection = {
   privileged_account: process.env.PRIVILEGED_ACCOUNT,
   installer: "managed-linux-privileged-operations.sh",
   privileged_key: "privileged-ops.pub",
-  user_unit: { name: "ghostfleet-managed.service", artifact: "ghostfleet-managed.service" },
+  user_unit: {
+    name: "ghostfleet-managed.service",
+    artifact: "ghostfleet-managed.service",
+    payload_artifact: "node-agent.pyz",
+    payload_path: "/usr/local/libexec/ghostfleet/node-agent.pyz",
+    payload_mode: "0755",
+  },
   artifacts: [
     { name: "managed-linux-privileged-operations.sh", mode: "0750", content: read("managed-linux-privileged-operations.sh") },
     { name: "installer-real.sh", mode: "0750", content: read("installer-real.sh") },
@@ -536,6 +861,7 @@ const selection = {
     { name: "fleet_admin_command.py", mode: "0755", content: read("fleet_admin_command.py") },
     { name: "privileged-ops.pub", mode: "0644", content: readFileSync(join(work, "privileged-ops.pub"), "utf8") },
     { name: "ghostfleet-managed.service", mode: "0644", content: read("ghostfleet-managed.service") },
+    { name: "node-agent.pyz", mode: "0755", content: read("node-agent.pyz") },
   ],
 };
 // A1: the drift arm installs bytes this node has never seen, so publish them
@@ -661,8 +987,19 @@ CAPABILITY_STALE_ACCOUNT="$STALE_ACCOUNT"
 capability_stage
 cp "$CAPABILITY_STAGE_DIR/$CAPABILITY_USER_UNIT_ARTIFACT" "$STALE_UNIT"
 chmod 0644 "$STALE_UNIT"
+# The v1 unit launches the pinned payload path, so the payload must exist before
+# the unit can start; the courier installs the same bytes from the same staging
+# directory a real run would.
+install -d -m 0755 "$(dirname "$CAPABILITY_AGENT_PAYLOAD_PATH")"
+install -m 0755 "$CAPABILITY_STAGE_DIR/$CAPABILITY_USER_UNIT_PAYLOAD_ARTIFACT" "$CAPABILITY_AGENT_PAYLOAD_PATH"
 sudo -iu "$STALE_ACCOUNT" systemctl --user daemon-reload >/dev/null 2>&1 || true
 if [ "$STALE_START" = 1 ]; then
+  # The unit's ReadWritePaths point at two account directories this host has
+  # never created: systemd's StateDirectory=/ConfigurationDirectory= must create
+  # them before the sandbox is set up, or the start fails with 226/NAMESPACE.
+  # Removing them here makes that property the thing under test.
+  stale_home="$(getent passwd "$STALE_ACCOUNT" | cut -d: -f6)"
+  rm -rf "$stale_home/.config/ghostfleet" "$stale_home/.local/state/ghostfleet-agent"
   sudo -iu "$STALE_ACCOUNT" systemctl --user start "$CAPABILITY_USER_UNIT" || fail "could not start the v1 unit"
   sleep 1
 fi
@@ -712,16 +1049,18 @@ assert_lane_unchanged() {
 # (a) The unit is inactive but a process of its ExecStart binary still runs as
 #     the privileged account: the lane cannot be proved stopped, so nothing is
 #     deleted and the run refuses.
-sudo -iu "$privileged_account" /bin/sh -c 'nohup /bin/sleep 300 >/dev/null 2>&1 &' || {
+# The stray process runs the unit's own ExecStart binary, because that is the
+# process set the courier attributes to the unit.
+sudo -iu "$privileged_account" /bin/sh -c 'nohup /usr/bin/python3 -c "import time; time.sleep(300)" >/dev/null 2>&1 &' || {
   fail_check "could not start the stray privileged process"
 }
 sleep 1
-pgrep -u "$privileged_account" -f '/bin/sleep' >/dev/null || fail_check "the stray privileged process is not running"
+pgrep -u "$privileged_account" -f '/usr/bin/python3' >/dev/null || fail_check "the stray privileged process is not running"
 run_decommission "unit enablement-link linger" 0 >"$work/decommission-arming.log" 2>&1 || true
 assert_lane_present "live process"
 lane_before="$(lane_state)"
 if run_decommission "unit enablement-link linger" 0 >"$work/decommission-live.log" 2>&1; then
-  pkill -9 -u "$privileged_account" -f '/bin/sleep' 2>/dev/null || true
+  pkill -9 -u "$privileged_account" -f '/usr/bin/python3' 2>/dev/null || true
   fail_check "a v1 lane whose process still runs was removed"
 fi
 grep -q 'still run as' "$work/decommission-live.log" || {
@@ -730,12 +1069,12 @@ grep -q 'still run as' "$work/decommission-live.log" || {
 }
 assert_lane_unchanged "live process" "$lane_before"
 record_ok "running privileged process blocks deletion: $(grep -o 'processes of [^;]*' "$work/decommission-live.log" | head -n1)"
-pkill -9 -u "$privileged_account" -f '/bin/sleep' 2>/dev/null || true
+pkill -9 -u "$privileged_account" -f '/usr/bin/python3' 2>/dev/null || true
 sleep 1
 
 # (b) A real user unit is started, then stopped and proved stopped by the
 #     courier before anything is deleted.
-pgrep -u "$privileged_account" -f '/bin/sleep' >/dev/null 2>&1 && fail_check "the stray process survived"
+pgrep -u "$privileged_account" -f '/usr/bin/python3' >/dev/null 2>&1 && fail_check "the stray process survived"
 if ! run_decommission "unit enablement-link linger" 1 >"$work/decommission-stopped.log" 2>&1; then
   cat "$work/decommission-stopped.log" >&2
   fail_check "a stopped v1 lane could not be decommissioned"
@@ -743,7 +1082,7 @@ fi
 [[ ! -e "$stale_unit" ]] || fail_check "the stopped unit was not removed"
 [[ ! -L "$stale_want" ]] || fail_check "the stopped enablement link was not removed"
 [[ "$(loginctl show-user "$privileged_account" -p Linger)" == "Linger=no" ]] || fail_check "Linger was not disabled for the privileged account"
-pgrep -u "$privileged_account" -f '/bin/sleep' >/dev/null 2>&1 && fail_check "a privileged process survived the decommission"
+pgrep -u "$privileged_account" -f '/usr/bin/python3' >/dev/null 2>&1 && fail_check "a privileged process survived the decommission"
 record_ok "stopped v1 lane decommissioned: unit, enablement link and Linger removed"
 
 # (c) Without pgrep the absence of a process cannot be proved, so the lane is

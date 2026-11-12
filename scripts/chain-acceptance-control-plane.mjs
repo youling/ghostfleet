@@ -5,12 +5,18 @@
 // exact published courier bytes at /sha256/<digest>, verifies the one-time
 // short code with the real src/control-plane/tickets.js module, and answers
 // the claim with the reviewed capability selection bound to the ticket's
-// template_digest. The completion receipt is accepted and recorded.
+// template_digest. The completion receipt is accepted, recorded, and answered
+// with the recoverable node credential the courier's deferred service lane needs
+// (the credential is what gates the payload, the unit and Linger).
+//
+// --omit-node-credential 1 drops that credential on purpose: the disposable job
+// uses it as the negative arm proving the courier fails closed instead of
+// installing a service it can never authenticate.
 //
 // It runs only on the disposable GitHub-hosted VM, listens on loopback and
 // never contacts another service. The client half of every request is the
 // real published code under test.
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:https";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -38,6 +44,13 @@ const nodeId = required("--node-id");
 const shortCode = required("--short-code");
 if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(nodeId)) throw new Error("--node-id is not a safe host name");
 if (!/^[0-9]{8}$/.test(shortCode)) throw new Error("--short-code must be eight digits");
+// The negative arm: a completion response without node_credential must leave the
+// node without payload, unit or Linger. The courier must not paper over it.
+const omitNodeCredential = args.get("--omit-node-credential") === "1";
+// The node identity the claim delivers and the credential repeats. The courier
+// requires the node_uid shape and the claim binding, so both must be the same
+// value and look like a real enrollment identity.
+const nodeUid = "node-" + randomUUID().replaceAll("-", "").slice(0, 32);
 
 const privilegedRoot = join(
   repoRoot,
@@ -49,14 +62,36 @@ const readArtifact = (name) => readFileSync(join(privilegedRoot, name), "utf8");
 // proves installation, ownership, enablement and Linger, not a managed runtime.
 const unitText = [
   "[Unit]",
-  "Description=GhostFleet managed runtime (disposable chained acceptance)",
+  "Description=GhostFleet Node Agent (disposable chained acceptance)",
+  "After=network-online.target",
   "",
   "[Service]",
-  "Type=oneshot",
-  "ExecStart=/bin/true",
+  "Type=notify",
+  "NotifyAccess=main",
+  "ExecStart=/usr/bin/python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz run",
+  "Restart=on-failure",
+  "NoNewPrivileges=yes",
+  "ProtectSystem=strict",
+  "ProtectHome=read-only",
+  "StateDirectory=ghostfleet-agent",
+  "StateDirectoryMode=0700",
+  "ConfigurationDirectory=ghostfleet",
+  "ConfigurationDirectoryMode=0700",
+  "ReadWritePaths=%h/.config/ghostfleet %h/.local/state/ghostfleet-agent",
   "",
   "[Install]",
   "WantedBy=default.target",
+  "",
+].join("\n");
+
+// The pinned payload bytes are synthetic in this fixture job; only the digest,
+// the mode and the ExecStart binding matter to the chained acceptance.
+const payloadText = [
+  "#!/usr/bin/env python3",
+  "# Synthetic node-agent payload for the disposable chained acceptance job.",
+  "",
+  "if __name__ == '__main__':",
+  "    raise SystemExit(0)",
   "",
 ].join("\n");
 
@@ -77,7 +112,13 @@ const selection = {
   privileged_account: "ghostfleet-ops",
   installer: "managed-linux-privileged-operations.sh",
   privileged_key: "privileged-ops.pub",
-  user_unit: { name: "ghostfleet-managed.service", artifact: "ghostfleet-managed.service" },
+  user_unit: {
+    name: "ghostfleet-managed.service",
+    artifact: "ghostfleet-managed.service",
+    payload_artifact: "node-agent.pyz",
+    payload_path: "/usr/local/libexec/ghostfleet/node-agent.pyz",
+    payload_mode: "0755",
+  },
   artifacts: [
     { name: "managed-linux-privileged-operations.sh", mode: "0750", content: readArtifact("managed-linux-privileged-operations.sh") },
     { name: "fleet_privctl.py", mode: "0755", content: readArtifact("fleet_privctl.py") },
@@ -85,6 +126,7 @@ const selection = {
     { name: "fleet_admin_command.py", mode: "0755", content: readArtifact("fleet_admin_command.py") },
     { name: "privileged-ops.pub", mode: "0644", content: readFileSync(privilegedKeyFile, "utf8") },
     { name: "ghostfleet-managed.service", mode: "0644", content: unitText },
+    { name: "node-agent.pyz", mode: "0755", content: payloadText },
   ],
 };
 const shape = normalizeSelectedCapability(selection);
@@ -197,7 +239,7 @@ const server = createServer(
           auth_key: "tskey-auth-" + randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", "").slice(0, 8),
           identity_kind: "canonical",
           node_id: nodeId,
-          node_uid: "uid-" + randomUUID().replaceAll("-", ""),
+          node_uid: nodeUid,
         };
         validateClaimMaterial({ outcome: "READY", delivery });
         bump("claim");
@@ -227,8 +269,24 @@ const server = createServer(
           return;
         }
         writeFileSync(join(work, "completion-receipt.json"), JSON.stringify(receipt, null, 2) + "\n");
-        send(200, JSON.stringify({ accepted: true }));
-        console.log("stub: completion receipt accepted");
+        if (omitNodeCredential) {
+          send(200, JSON.stringify({ accepted: true }));
+          console.log("stub: completion receipt accepted WITHOUT a node credential (negative arm)");
+          return;
+        }
+        // Synthetic but shape-correct: 32 CSPRNG bytes as base64url, the same
+        // node_uid the claim delivered, and an opaque handoff id. The courier
+        // parses exactly these fields, so the positive arm exercises the real
+        // credential handoff, not a shortcut.
+        send(200, JSON.stringify({
+          accepted: true,
+          node_credential: {
+            token: randomBytes(32).toString("base64url"),
+            node_uid: nodeUid,
+            handoff_id: "handoff-" + randomUUID(),
+          },
+        }));
+        console.log("stub: completion receipt accepted; node credential delivered");
         return;
       }
       send(404, JSON.stringify({ code: "NOT_FOUND" }));
@@ -270,15 +328,19 @@ server.listen(0, "127.0.0.1", () => {
   const facts = {
     origin: enrollOrigin,
     assets_origin: assetsOrigin,
+    node_plane_origin: nodePlaneOrigin,
     bootstrap_sha256: bootstrapDigest,
     ticket_id: ticketId,
     short_code: shortCode,
     template_digest: templateDigest,
     selection_digest: shape.selection_digest,
     node_id: nodeId,
+    node_uid: nodeUid,
     control_account: shape.control_account,
     privileged_account: shape.privileged_account,
     unit_sha256: artifactSha("ghostfleet-managed.service"),
+    payload_sha256: artifactSha("node-agent.pyz"),
+    node_credential_delivered: !omitNodeCredential,
     helper_sha256: artifactSha("fleet_privctl.py"),
     installer_sha256: artifactSha("managed-linux-privileged-operations.sh"),
     artifact_count: shape.artifacts.length,

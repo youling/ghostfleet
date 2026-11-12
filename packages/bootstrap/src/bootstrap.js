@@ -7,6 +7,10 @@ export PATH
 BROKER_ORIGIN="\${GHOSTFLEET_BROKER_ORIGIN:-}"
 ENROLLMENT_URL="\${GHOSTFLEET_ENROLLMENT_URL:-}"
 ASSETS_ORIGIN="\${GHOSTFLEET_ASSETS_ORIGIN:-}"
+# The managed agent's control plane is the node-plane bridge, a different host
+# from the Access-protected enrollment origin. The delivery command exports it;
+# this script never derives it from the ticket, the claim or the broker origin.
+NODE_PLANE_ORIGIN="\${GHOSTFLEET_NODE_PLANE_ORIGIN:-}"
 if [ -n "$ENROLLMENT_URL" ]; then
   printf '%s' "$ENROLLMENT_URL" | grep -Eq '^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?/v1/enrollment-tickets/[A-Za-z0-9._~%-]+$' || {
     printf '%s\\n' 'fleet-enroll: invalid one-time enrollment URL; an exact HTTPS ticket URL is required' >&2
@@ -62,8 +66,47 @@ CAPABILITY_INSTALLER=''
 CAPABILITY_PRIVILEGED_KEY=''
 CAPABILITY_USER_UNIT=''
 CAPABILITY_USER_UNIT_ARTIFACT=''
+CAPABILITY_USER_UNIT_PAYLOAD_ARTIFACT=''
+CAPABILITY_USER_UNIT_PAYLOAD_PATH=''
+CAPABILITY_USER_UNIT_PAYLOAD_MODE=''
 CAPABILITY_ARTIFACT_COUNT=0
 # @@GHOSTFLEET_SELECTED_CAPABILITY_END@@
+# The node agent runtime is pinned twice: the payload (a single Python zipapp)
+# installed root-owned under /usr/local/libexec, and the user unit that starts it.
+# Both digests come from the reviewed selection. CAPABILITY_AGENT_PAYLOAD_PATH is
+# the only location this courier ever trusts or installs the payload to.
+CAPABILITY_AGENT_PAYLOAD_PATH='/usr/local/libexec/ghostfleet/node-agent.pyz'
+CAPABILITY_AGENT_PAYLOAD_MODE='0755'
+CAPABILITY_AGENT_CONFIG_PATH='/etc/ghostfleet/node-agent.json'
+CAPABILITY_AGENT_CONFIG_DIR='/etc/ghostfleet'
+CAPABILITY_AGENT_STATE_DIR_NAME='ghostfleet-agent'
+CAPABILITY_AGENT_CONFIGURED_AT=''
+CAPABILITY_AGENT_PAYLOAD_SHA256=''
+CAPABILITY_AGENT_PAYLOAD_PINNED_MODE=''
+CAPABILITY_AGENT_PAYLOAD_STATE=NOT_REQUESTED
+CAPABILITY_USER_UNIT_STATE=NOT_REQUESTED
+CAPABILITY_USER_UNIT_EXEC=''
+CAPABILITY_SERVICE_STATE=NOT_REQUESTED
+CAPABILITY_SERVICE_PENDING=0
+CAPABILITY_PAYLOAD_INDEX=
+CAPABILITY_CREATED_PAYLOAD=
+CAPABILITY_CREATED_PAYLOAD_DIR=
+CAPABILITY_CREATED_STATE_DIR=
+CAPABILITY_EVIDENCE_PAYLOAD_STATE=NOT_REQUESTED
+CAPABILITY_EVIDENCE_UNIT_STATE=NOT_REQUESTED
+CAPABILITY_NODE_TOKEN_STATE=NOT_REQUESTED
+CAPABILITY_NODE_TOKEN=
+CAPABILITY_CREATED_NODE_TOKEN=
+CAPABILITY_CREATED_NODE_JSON=
+CAPABILITY_CREATED_AGENT_CONFIG=
+CAPABILITY_CREATED_STATUS_PROJECTION=
+CAPABILITY_STATUS_BACKUP=''
+CAPABILITY_NODE_CREDENTIAL_RECEIVED=no
+CAPABILITY_NODE_TOKEN_MODE=''
+CAPABILITY_CREDENTIAL_HANDOFF=''
+CAPABILITY_STATUS_APPLIED_AT=''
+CAPABILITY_COMPLETE_RESPONSE=
+# @@GHOSTFLEET_CAPABILITY_STATUS_FRAGMENT_ARTIFACT_ROW_BEGIN@@
 capability_artifact_row() {
   case "$1" in
     1) printf '%s' "$CAPABILITY_ARTIFACT_1" ;;
@@ -85,6 +128,7 @@ capability_artifact_row() {
     *) return 1 ;;
   esac
 }
+# @@GHOSTFLEET_CAPABILITY_STATUS_FRAGMENT_ARTIFACT_ROW_END@@
 CAPABILITY_HELPER_STATE=UNKNOWN
 CAPABILITY_USER_SERVICE_STATE=UNKNOWN
 CAPABILITY_LINGER_STATE=UNKNOWN
@@ -158,6 +202,9 @@ capability_states_compliant() {
   case "$CAPABILITY_HELPER_STATE" in NOT_REQUESTED|COMPLIANT) ;; *) return 1 ;; esac
   case "$CAPABILITY_USER_SERVICE_STATE" in NOT_REQUESTED|COMPLIANT) ;; *) return 1 ;; esac
   case "$CAPABILITY_LINGER_STATE" in NOT_REQUESTED|COMPLIANT) ;; *) return 1 ;; esac
+  case "$CAPABILITY_AGENT_PAYLOAD_STATE" in NOT_REQUESTED|COMPLIANT) ;; *) return 1 ;; esac
+  case "$CAPABILITY_USER_UNIT_STATE" in NOT_REQUESTED|COMPLIANT) ;; *) return 1 ;; esac
+  case "$CAPABILITY_NODE_TOKEN_STATE" in NOT_REQUESTED|COMPLIANT) ;; *) return 1 ;; esac
   return 0
 }
 
@@ -171,7 +218,10 @@ capability_selection_digest() {
       "$CAPABILITY_HELPER_REQUIRED$CAPABILITY_LINGER_REQUIRED$CAPABILITY_USER_SERVICE_REQUIRED" \\
       "$CAPABILITY_CONTROL_ACCOUNT" "$CAPABILITY_PRIVILEGED_ACCOUNT" \\
       "$CAPABILITY_INSTALLER" "$CAPABILITY_PRIVILEGED_KEY" \\
-      "$CAPABILITY_USER_UNIT" "$CAPABILITY_USER_UNIT_ARTIFACT"
+      "$CAPABILITY_USER_UNIT" "$CAPABILITY_USER_UNIT_ARTIFACT" \\
+      "$CAPABILITY_USER_UNIT_PAYLOAD_ARTIFACT" \\
+      "$CAPABILITY_USER_UNIT_PAYLOAD_PATH" \\
+      "$CAPABILITY_USER_UNIT_PAYLOAD_MODE"
     capability_index=1
     while [ "$capability_index" -le "$CAPABILITY_ARTIFACT_COUNT" ]; do
       printf '%s|%s|%s\\n' \\
@@ -191,7 +241,10 @@ capability_selection_text() {
     "control_account=$CAPABILITY_CONTROL_ACCOUNT" \\
     "privileged_account=$CAPABILITY_PRIVILEGED_ACCOUNT" "installer=$CAPABILITY_INSTALLER" \\
     "privileged_key=$CAPABILITY_PRIVILEGED_KEY" "user_unit=$CAPABILITY_USER_UNIT" \\
-    "user_unit_artifact=$CAPABILITY_USER_UNIT_ARTIFACT"
+    "user_unit_artifact=$CAPABILITY_USER_UNIT_ARTIFACT" \\
+    "user_unit_payload_artifact=$CAPABILITY_USER_UNIT_PAYLOAD_ARTIFACT" \\
+    "user_unit_payload_path=$CAPABILITY_USER_UNIT_PAYLOAD_PATH" \\
+    "user_unit_payload_mode=$CAPABILITY_USER_UNIT_PAYLOAD_MODE"
   capability_index=1
   while [ "$capability_index" -le "$CAPABILITY_ARTIFACT_COUNT" ]; do
     printf 'artifact=%s\\n' "$(capability_artifact_row "$capability_index")"
@@ -245,6 +298,9 @@ capability_validate_selection() {
   CAPABILITY_INSTALLER_INDEX=
   CAPABILITY_KEY_INDEX=
   CAPABILITY_UNIT_INDEX=
+  CAPABILITY_PAYLOAD_INDEX=
+  CAPABILITY_AGENT_PAYLOAD_SHA256=
+  CAPABILITY_AGENT_PAYLOAD_PINNED_MODE=
   capability_index=1
   while [ "$capability_index" -le "$CAPABILITY_ARTIFACT_COUNT" ]; do
     capability_row="$(capability_artifact_row "$capability_index")" || capability_row=
@@ -258,6 +314,11 @@ capability_validate_selection() {
     [ "$capability_name" != "$CAPABILITY_INSTALLER" ] || CAPABILITY_INSTALLER_INDEX="$capability_index"
     [ "$capability_name" != "$CAPABILITY_PRIVILEGED_KEY" ] || CAPABILITY_KEY_INDEX="$capability_index"
     [ "$capability_name" != "$CAPABILITY_USER_UNIT_ARTIFACT" ] || CAPABILITY_UNIT_INDEX="$capability_index"
+    if [ -n "$CAPABILITY_USER_UNIT_PAYLOAD_ARTIFACT" ] && [ "$capability_name" = "$CAPABILITY_USER_UNIT_PAYLOAD_ARTIFACT" ]; then
+      CAPABILITY_PAYLOAD_INDEX="$capability_index"
+      CAPABILITY_AGENT_PAYLOAD_SHA256="$capability_digest"
+      CAPABILITY_AGENT_PAYLOAD_PINNED_MODE="$capability_mode"
+    fi
     capability_index=$((capability_index + 1))
   done
   printf '%s' "$CAPABILITY_CONTROL_ACCOUNT" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || fail 'selected-capability control account is invalid'
@@ -288,8 +349,40 @@ capability_validate_selection() {
     [ -n "$CAPABILITY_UNIT_INDEX" ] || fail 'selected user service does not pin its unit artifact'
     printf '%s' "$CAPABILITY_USER_UNIT" | grep -Eq '^[a-z][a-z0-9_.-]{0,63}\\.service$' || fail 'selected user unit name is invalid'
   fi
+  if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
+    # A managed node agent is TWO pinned artifacts: the unit that launches it and
+    # the payload it launches. Pinning only the launcher would let a later
+    # template point the unit at whatever bytes happen to be on the host.
+    [ -n "$CAPABILITY_USER_UNIT_PAYLOAD_ARTIFACT" ] || fail '[CAPABILITY_MANAGED_ARTIFACTS_INCOMPLETE] selected user service pins no agent payload artifact; the managed node agent is the pinned user unit plus the pinned payload it launches, so re-render the reviewed template with user_unit.payload_artifact=<the node-agent.pyz artifact name> and pin that artifact digest in artifacts; nothing was installed'
+    [ -n "$CAPABILITY_PAYLOAD_INDEX" ] || fail "[CAPABILITY_MANAGED_ARTIFACTS_INCOMPLETE] selected user service payload artifact $CAPABILITY_USER_UNIT_PAYLOAD_ARTIFACT is not pinned in the artifacts list; nothing was installed"
+    [ "$CAPABILITY_USER_UNIT_PAYLOAD_ARTIFACT" != "$CAPABILITY_USER_UNIT_ARTIFACT" ] || fail '[CAPABILITY_USER_UNIT_PAYLOAD_INVALID] the selected user service uses one artifact for both the unit and the agent payload; a unit is service metadata and the payload is executable code, so they are pinned as two distinct artifacts; nothing was installed'
+    [ "$CAPABILITY_USER_UNIT_PAYLOAD_PATH" = "$CAPABILITY_AGENT_PAYLOAD_PATH" ] || fail "[CAPABILITY_USER_UNIT_PAYLOAD_INVALID] the selected agent payload path $CAPABILITY_USER_UNIT_PAYLOAD_PATH is not $CAPABILITY_AGENT_PAYLOAD_PATH; this courier installs the payload at exactly that root-owned path and re-asserts the installed unit against it; nothing was installed"
+    [ "$CAPABILITY_USER_UNIT_PAYLOAD_MODE" = 0755 ] || fail "[CAPABILITY_USER_UNIT_PAYLOAD_INVALID] the selected agent payload mode $CAPABILITY_USER_UNIT_PAYLOAD_MODE is not 0755; the payload is an executable entry point, so a different mode would be either unstartable or wider than the reviewed contract; nothing was installed"
+    case "$CAPABILITY_AGENT_PAYLOAD_PINNED_MODE" in
+      755|0755) ;;
+      *) fail "[CAPABILITY_USER_UNIT_PAYLOAD_INVALID] the pinned agent payload artifact $CAPABILITY_USER_UNIT_PAYLOAD_ARTIFACT carries mode $CAPABILITY_AGENT_PAYLOAD_PINNED_MODE; it must be pinned 0755 like the installed file; nothing was installed" ;;
+    esac
+  else
+    [ -z "$CAPABILITY_USER_UNIT_PAYLOAD_ARTIFACT" ] || fail 'refusing a pinned agent payload that no selected user service launches'
+  fi
   if [ "$CAPABILITY_LINGER_REQUIRED" = 1 ] || [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
     command -v loginctl >/dev/null 2>&1 || fail 'preflight failed: loginctl is required by the selected capability'
+  fi
+  if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
+    # The managed agent talks to the node-plane bridge, never to the
+    # Access-protected enrollment origin: the broker answers a node request with
+    # a login wall, which the agent treats as fatal. The origin is delivered by
+    # the Console command and is never derived, joined or rewritten here.
+    [ -n "$NODE_PLANE_ORIGIN" ] || fail '[CAPABILITY_NODE_PLANE_ORIGIN_REQUIRED] the selected managed user service needs the node-plane origin, but GHOSTFLEET_NODE_PLANE_ORIGIN was not delivered; export the node-plane origin from the Console delivery command and re-run; nothing was installed'
+    printf '%s' "$NODE_PLANE_ORIGIN" | grep -Eq '^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$' ||
+      fail '[CAPABILITY_NODE_PLANE_ORIGIN_INVALID] GHOSTFLEET_NODE_PLANE_ORIGIN must be an exact HTTPS origin (scheme, host and optional port only; no path, query, userinfo or trailing slash); nothing was installed'
+    [ -n "$BROKER_ORIGIN" ] || fail '[CAPABILITY_NODE_PLANE_ORIGIN_NOT_SEPARATED] the enrollment origin is unknown, so the node-plane origin cannot be proved separate from it; nothing was installed'
+    capability_node_plane_host="\${NODE_PLANE_ORIGIN#https://}"
+    capability_node_plane_host="\${capability_node_plane_host%%:*}"
+    capability_enrollment_host="\${BROKER_ORIGIN#https://}"
+    capability_enrollment_host="\${capability_enrollment_host%%:*}"
+    [ "$capability_node_plane_host" != "$capability_enrollment_host" ] ||
+      fail '[CAPABILITY_NODE_PLANE_ORIGIN_NOT_SEPARATED] the node-plane origin must not be the Access-protected enrollment origin: the managed agent would receive a login wall instead of the node-plane bridge; deliver a distinct node-plane host; nothing was installed'
   fi
   # The pinned bytes are a dependency, not a later step. On the rendered channel
   # this runs before any effect; on the claim channel the authorized claim has
@@ -297,6 +390,13 @@ capability_validate_selection() {
   # written or used until every digest matched in a private staging directory.
   # A mismatching artifact is a missing dependency.
   capability_stage
+  # The staged launcher is proved before any effect: exactly one ExecStart, it
+  # names the payload this courier installs, and it declares the XDG
+  # directories its ReadWritePaths needs. A helper-only selection installs no
+  # unit at all, so there is nothing to precheck.
+  if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
+    capability_user_unit_precheck "$CAPABILITY_STAGE_DIR"
+  fi
   capability_stage_cleanup
   CAPABILITY_SELECTION_DIGEST="$(capability_selection_digest)"
   return 0
@@ -409,7 +509,14 @@ capability_user_service_state() {
   capability_want_file="$capability_home/.config/systemd/user/default.target.wants/$CAPABILITY_USER_UNIT"
   if [ -f "$capability_unit_file" ] && [ -L "$capability_want_file" ] &&
      [ "$(sha256sum "$capability_unit_file" | cut -d ' ' -f 1)" = "$(capability_artifact_field "$CAPABILITY_UNIT_INDEX" 2)" ]; then
-    printf '%s' COMPLIANT
+    # A pinned unit is only compliant while it launches the payload this courier
+    # installs. A unit whose bytes match but whose ExecStart names another file
+    # is drift: enabling it would start the wrong program under the managed name.
+    if [ "$(capability_unit_exec_payload "$capability_unit_file")" = "$CAPABILITY_AGENT_PAYLOAD_PATH" ]; then
+      printf '%s' COMPLIANT
+    else
+      printf '%s' DRIFT
+    fi
   else
     printf '%s' ABSENT
   fi
@@ -431,6 +538,12 @@ capability_probe() {
   CAPABILITY_HELPER_STATE="$(capability_helper_state)"
   CAPABILITY_USER_SERVICE_STATE="$(capability_user_service_state)"
   CAPABILITY_LINGER_STATE="$(capability_linger_state)"
+  CAPABILITY_AGENT_PAYLOAD_STATE="$(capability_agent_payload_state)"
+  CAPABILITY_USER_UNIT_STATE="$(capability_user_service_state)"
+  CAPABILITY_NODE_TOKEN_STATE="$(capability_node_token_state)"
+  if [ "$CAPABILITY_USER_UNIT_STATE" = COMPLIANT ]; then
+    CAPABILITY_USER_UNIT_EXEC="$CAPABILITY_AGENT_PAYLOAD_PATH"
+  fi
 }
 
 capability_probe_all() {
@@ -438,6 +551,9 @@ capability_probe_all() {
     CAPABILITY_HELPER_STATE=NOT_REQUESTED
     CAPABILITY_USER_SERVICE_STATE=NOT_REQUESTED
     CAPABILITY_LINGER_STATE=NOT_REQUESTED
+    CAPABILITY_AGENT_PAYLOAD_STATE=NOT_REQUESTED
+    CAPABILITY_USER_UNIT_STATE=NOT_REQUESTED
+    CAPABILITY_NODE_TOKEN_STATE=NOT_REQUESTED
     return 0
   fi
   capability_validate_selection
@@ -493,9 +609,633 @@ capability_linger_apply() {
   loginctl enable-linger "$CAPABILITY_CONTROL_ACCOUNT" ||
     { printf '%s\\n' 'fleet-enroll: Linger could not be enabled for the dedicated control account' >&2; return 1; }
   CAPABILITY_ENABLED_LINGER=1
-  CAPABILITY_LINGER_STATE="$(capability_linger_state)"
-  [ "$CAPABILITY_LINGER_STATE" = COMPLIANT ] ||
-    { printf '%s\\n' 'fleet-enroll: Linger postcondition failed for the dedicated control account' >&2; return 1; }
+  # logind can answer this query from a user record it cached before the marker was
+  # written, for example when an account was deleted and recreated with the same uid
+  # while its old manager was still closing. The marker is the durable state, so
+  # re-read it a bounded number of times and fail closed when it never converges.
+  capability_linger_try=0
+  while [ "$capability_linger_try" -lt 10 ]; do
+    CAPABILITY_LINGER_STATE="$(capability_linger_state)"
+    if [ "$CAPABILITY_LINGER_STATE" = COMPLIANT ]; then return 0; fi
+    capability_linger_try=$((capability_linger_try + 1))
+    sleep 0.2
+  done
+  printf '%s\\n' 'fleet-enroll: Linger postcondition failed for the dedicated control account' >&2
+  return 1
+}
+
+# The group the control account uses for the files this courier installs into
+# its home. A file is only ever chowned to the account's own primary group.
+capability_control_group() {
+  capability_gid="$(getent passwd "$CAPABILITY_CONTROL_ACCOUNT" | cut -d ':' -f 4)"
+  [ -n "$capability_gid" ] || return 1
+  capability_group="$(getent group "$capability_gid" 2>/dev/null | cut -d ':' -f 1)"
+  [ -n "$capability_group" ] || capability_group="$CAPABILITY_CONTROL_ACCOUNT"
+  printf '%s' "$capability_group"
+}
+
+# The installed payload is proved from the disk on every run: a node may only
+# report the payload it actually has, owned by root and carrying the pinned
+# digest. Anything else is drift, not convergence.
+capability_agent_payload_state() {
+  if [ "$CAPABILITY_USER_SERVICE_REQUIRED" != 1 ]; then printf '%s' NOT_REQUESTED; return 0; fi
+  if [ ! -e "$CAPABILITY_AGENT_PAYLOAD_PATH" ]; then
+    if [ -L "$CAPABILITY_AGENT_PAYLOAD_PATH" ]; then printf '%s' OWNER_UNSAFE; return 0; fi
+    printf '%s' ABSENT
+    return 0
+  fi
+  if [ -L "$CAPABILITY_AGENT_PAYLOAD_PATH" ] || [ ! -f "$CAPABILITY_AGENT_PAYLOAD_PATH" ]; then
+    printf '%s' OWNER_UNSAFE
+    return 0
+  fi
+  if [ "$(stat -c '%U:%G' "$CAPABILITY_AGENT_PAYLOAD_PATH" 2>/dev/null)" != 'root:root' ]; then
+    printf '%s' OWNER_UNSAFE
+    return 0
+  fi
+  if [ "$(stat -c '%a' "$CAPABILITY_AGENT_PAYLOAD_PATH" 2>/dev/null)" != 755 ]; then
+    printf '%s' MODE_UNSAFE
+    return 0
+  fi
+  if [ "$(sha256sum "$CAPABILITY_AGENT_PAYLOAD_PATH" 2>/dev/null | cut -d ' ' -f 1)" = "$CAPABILITY_AGENT_PAYLOAD_SHA256" ]; then
+    printf '%s' COMPLIANT
+  else
+    printf '%s' DRIFT
+  fi
+  return 0
+}
+
+# The node token is a bearer secret for exactly one node. Its presence, owner,
+# mode and shape are proved without ever printing or logging its content.
+capability_node_token_state() {
+  if [ "$CAPABILITY_USER_SERVICE_REQUIRED" != 1 ]; then printf '%s' NOT_REQUESTED; return 0; fi
+  capability_home="$(capability_control_home)"
+  [ -n "$capability_home" ] || { printf '%s' UNKNOWN; return 0; }
+  capability_token_dir="$capability_home/.config/ghostfleet"
+  capability_token_file="$capability_token_dir/node-token"
+  if [ ! -e "$capability_token_file" ] && [ ! -L "$capability_token_file" ]; then printf '%s' ABSENT; return 0; fi
+  if [ -L "$capability_token_file" ] || [ ! -f "$capability_token_file" ]; then printf '%s' OWNER_UNSAFE; return 0; fi
+  if [ "$(stat -c '%U' "$capability_token_file" 2>/dev/null)" != "$CAPABILITY_CONTROL_ACCOUNT" ]; then
+    printf '%s' OWNER_UNSAFE
+    return 0
+  fi
+  if [ "$(stat -c '%a' "$capability_token_file" 2>/dev/null)" != 600 ]; then printf '%s' MODE_UNSAFE; return 0; fi
+  if [ ! -d "$capability_token_dir" ] || [ -L "$capability_token_dir" ]; then printf '%s' MODE_UNSAFE; return 0; fi
+  if [ "$(stat -c '%U' "$capability_token_dir" 2>/dev/null)" != "$CAPABILITY_CONTROL_ACCOUNT" ]; then
+    printf '%s' OWNER_UNSAFE
+    return 0
+  fi
+  if [ "$(stat -c '%a' "$capability_token_dir" 2>/dev/null)" != 700 ]; then printf '%s' MODE_UNSAFE; return 0; fi
+  # 32 CSPRNG bytes, base64url, one line and nothing else.
+  if ! grep -Eqx '[A-Za-z0-9_-]{43}' "$capability_token_file" 2>/dev/null; then printf '%s' INVALID; return 0; fi
+  printf '%s' COMPLIANT
+  return 0
+}
+
+# The token in an ExecStart line that names the managed payload. Used to prove
+# the installed unit launches exactly the file the courier installed.
+capability_unit_exec_payload() {
+  capability_exec_line="$(sed -n 's/^[[:space:]]*ExecStart[[:space:]]*=[[:space:]]*//p' "$1" 2>/dev/null | head -n 1)"
+  for capability_token in $capability_exec_line; do
+    case "$capability_token" in
+      "$CAPABILITY_AGENT_PAYLOAD_PATH") printf '%s' "$capability_token"; return 0 ;;
+    esac
+  done
+  printf '%s' "$capability_exec_line" | awk '{print $1}'
+}
+
+# Re-read the INSTALLED unit and prove it launches the payload path this courier
+# installed. A unit that is a byte-for-byte copy of the pinned artifact can still
+# be read again after install; when it does not name the payload, nothing is
+# started and the run fails closed.
+capability_user_unit_exec_assert() {
+  [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ] || return 0
+  capability_home="$(capability_control_home)"
+  [ -n "$capability_home" ] || fail '[CAPABILITY_USER_UNIT_EXEC_MISMATCH] the selected control account has no home directory, so the installed unit cannot be re-read; no service was started'
+  capability_unit_file="$capability_home/.config/systemd/user/$CAPABILITY_USER_UNIT"
+  [ -f "$capability_unit_file" ] || fail "[CAPABILITY_USER_UNIT_EXEC_MISMATCH] the installed unit $CAPABILITY_USER_UNIT could not be re-read; no service was started"
+  capability_exec_token="$(capability_unit_exec_payload "$capability_unit_file")"
+  [ "$capability_exec_token" = "$CAPABILITY_AGENT_PAYLOAD_PATH" ] ||
+    fail "[CAPABILITY_USER_UNIT_EXEC_MISMATCH] the installed unit $CAPABILITY_USER_UNIT does not start $CAPABILITY_AGENT_PAYLOAD_PATH (ExecStart names $capability_exec_token); the payload is installed at exactly that path and nothing is started until the unit launches it; no service was started"
+  capability_installed_exec="$(sed -n 's/^[[:space:]]*ExecStart[[:space:]]*=[[:space:]]*//p' "$capability_unit_file" 2>/dev/null | head -n 1)"
+  capability_exec_expected="/usr/bin/python3 -I $CAPABILITY_AGENT_PAYLOAD_PATH run"
+  if [ "$capability_installed_exec" != "$capability_exec_expected" ]; then
+    fail "[CAPABILITY_USER_UNIT_EXEC_MISMATCH] the installed unit $CAPABILITY_USER_UNIT launches '$capability_installed_exec' but the managed launcher must be exactly '$capability_exec_expected'; no service was started"
+  fi
+  CAPABILITY_USER_UNIT_EXEC="$capability_exec_token"
+  return 0
+}
+
+# A pinned launcher starts the pinned payload and nothing else. Every rule here
+# is proved on the staged bytes, before the unit is installed or enabled:
+#   - exactly one ExecStart and no other Exec directive;
+#   - ExecStart names the payload path this courier installs;
+#   - no shell interpreter, no remote fetch, no /bin/sh;
+#   - ReadWritePaths stay inside the run account home and each one has the
+#     StateDirectory/ConfigurationDirectory directive systemd needs to create it
+#     (without it the unit dies with status=226/NAMESPACE on a fresh host).
+capability_user_unit_precheck() {
+  capability_unit_source="$1/$CAPABILITY_USER_UNIT_ARTIFACT"
+  [ -f "$capability_unit_source" ] ||
+    fail "[CAPABILITY_MANAGED_ARTIFACTS_INCOMPLETE] the pinned user unit artifact $CAPABILITY_USER_UNIT_ARTIFACT was not staged; no user unit was installed"
+  capability_exec_total="$(grep -Ec '^[[:space:]]*Exec[A-Za-z]*[[:space:]]*=' "$capability_unit_source" 2>/dev/null)"
+  capability_exec_start_count="$(grep -Ec '^[[:space:]]*ExecStart[[:space:]]*=' "$capability_unit_source" 2>/dev/null)"
+  if [ "$capability_exec_total" != 1 ] || [ "$capability_exec_start_count" != 1 ]; then
+    fail "[CAPABILITY_USER_UNIT_UNSAFE] the pinned user unit $CAPABILITY_USER_UNIT must carry exactly one ExecStart and no other Exec directive; a managed launcher starts one program and nothing else; no user unit was installed"
+  fi
+  capability_exec_start="$(sed -n 's/^[[:space:]]*ExecStart[[:space:]]*=[[:space:]]*//p' "$capability_unit_source" 2>/dev/null | head -n 1)"
+  [ -n "$capability_exec_start" ] ||
+    fail "[CAPABILITY_USER_UNIT_UNSAFE] the pinned user unit $CAPABILITY_USER_UNIT has an empty ExecStart; no user unit was installed"
+  capability_exec_names_payload=0
+  for capability_token in $capability_exec_start; do
+    case "$capability_token" in
+      "$CAPABILITY_AGENT_PAYLOAD_PATH") capability_exec_names_payload=1 ;;
+    esac
+  done
+  [ "$capability_exec_names_payload" = 1 ] ||
+    fail "[CAPABILITY_USER_UNIT_EXEC_MISMATCH] the pinned user unit $CAPABILITY_USER_UNIT does not start $CAPABILITY_AGENT_PAYLOAD_PATH; the payload is installed at exactly that path and nothing is started until the unit launches it; no user unit was installed"
+  if grep -Eq '(^|[[:space:]])--(config|token|url|endpoint|host|auth|credential)([[:space:]=]|$)' "$capability_unit_source" 2>/dev/null; then
+    fail "[CAPABILITY_USER_UNIT_UNSAFE] the pinned user unit $CAPABILITY_USER_UNIT passes a --config, --token or --url style argument; the production agent reads the root-owned /etc/ghostfleet/node-agent.json and the unit carries no endpoint, credential or override; no user unit was installed"
+  fi
+  capability_exec_expected="/usr/bin/python3 -I $CAPABILITY_AGENT_PAYLOAD_PATH run"
+  if [ "$capability_exec_start" != "$capability_exec_expected" ]; then
+    fail "[CAPABILITY_USER_UNIT_UNSAFE] the pinned user unit $CAPABILITY_USER_UNIT must start the payload with exactly '$capability_exec_expected' but carries '$capability_exec_start'; a managed launcher starts the pinned payload and nothing else; no user unit was installed"
+  fi
+  if grep -Eq '(^|[^A-Za-z0-9_.-])(sh|bash|dash|zsh)[[:space:]]+-c' "$capability_unit_source" 2>/dev/null ||
+     grep -Eq '(^|[^A-Za-z0-9_.-])(curl|wget)([^A-Za-z0-9_.-]|$)' "$capability_unit_source" 2>/dev/null ||
+     grep -Eq '/bin/sh' "$capability_unit_source" 2>/dev/null; then
+    fail "[CAPABILITY_USER_UNIT_UNSAFE] the pinned user unit $CAPABILITY_USER_UNIT invokes a shell interpreter or fetches remote code; a managed launcher starts the pinned payload and nothing else; no user unit was installed"
+  fi
+  if grep -Eq '^[[:space:]]*ProtectHome[[:space:]]*=[[:space:]]*(read-write|rw)([[:space:]]|$)' "$capability_unit_source" 2>/dev/null; then
+    fail "[CAPABILITY_USER_UNIT_UNSAFE] the pinned user unit $CAPABILITY_USER_UNIT asks for ProtectHome=read-write, which is not a legal systemd value; use read-only with ReadWritePaths for the paths the agent owns; no user unit was installed"
+  fi
+  capability_rd_paths="$(sed -n 's/^[[:space:]]*ReadWritePaths[[:space:]]*=[[:space:]]*//p' "$capability_unit_source" 2>/dev/null)"
+  capability_state_dirs="$(sed -n 's/^[[:space:]]*StateDirectory[[:space:]]*=[[:space:]]*//p' "$capability_unit_source" 2>/dev/null | head -n 1)"
+  capability_config_dirs="$(sed -n 's/^[[:space:]]*ConfigurationDirectory[[:space:]]*=[[:space:]]*//p' "$capability_unit_source" 2>/dev/null | head -n 1)"
+  for capability_path in $capability_rd_paths; do
+    case "$capability_path" in
+      %h/*) ;;
+      *) fail "[CAPABILITY_USER_UNIT_UNSAFE] the pinned user unit $CAPABILITY_USER_UNIT opens $capability_path for writing; a managed launcher may only write inside the run account home; no user unit was installed" ;;
+    esac
+    case "$capability_path" in
+      *..*) fail "[CAPABILITY_USER_UNIT_UNSAFE] the pinned user unit $CAPABILITY_USER_UNIT opens $capability_path for writing, which resolves outside the run account home; no user unit was installed" ;;
+    esac
+    case "$capability_path" in
+      %h/.config/*)
+        capability_needed="$(printf '%s' "$capability_path" | cut -c 12- | cut -d '/' -f 1)"
+        [ "$capability_needed" = "$capability_config_dirs" ] ||
+          fail "[CAPABILITY_USER_UNIT_UNSAFE] the pinned user unit $CAPABILITY_USER_UNIT opens $capability_path for writing but does not declare ConfigurationDirectory=$capability_needed; systemd cannot create that directory for a --user unit and the service dies with status=226/NAMESPACE on a fresh host; no user unit was installed"
+        ;;
+      %h/.local/state/*)
+        capability_needed="$(printf '%s' "$capability_path" | cut -c 17- | cut -d '/' -f 1)"
+        [ "$capability_needed" = "$capability_state_dirs" ] ||
+          fail "[CAPABILITY_USER_UNIT_UNSAFE] the pinned user unit $CAPABILITY_USER_UNIT opens $capability_path for writing but does not declare StateDirectory=$capability_needed; systemd cannot create that directory for a --user unit and the service dies with status=226/NAMESPACE on a fresh host; no user unit was installed"
+        ;;
+    esac
+  done
+  return 0
+}
+
+# Install the pinned payload at the root-owned path the unit starts. The bytes
+# are copied next to the destination, verified and synced, then renamed over it,
+# so a crash never leaves a partial payload and a same-digest run is a no-op.
+# A target that this courier does not own is refused, never chowned.
+capability_agent_payload_apply() {
+  [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ] || return 0
+  capability_payload_dir="\${CAPABILITY_AGENT_PAYLOAD_PATH%/*}"
+  capability_payload_name="\${CAPABILITY_AGENT_PAYLOAD_PATH##*/}"
+  if [ -e "$capability_payload_dir" ] || [ -L "$capability_payload_dir" ]; then
+    if [ -L "$capability_payload_dir" ] || [ ! -d "$capability_payload_dir" ]; then
+      fail "[CAPABILITY_AGENT_PAYLOAD_OWNER_UNSAFE] $capability_payload_dir is not a real directory; refusing to install the agent payload through a link or a regular file"
+    fi
+    [ "$(stat -c '%U:%G' "$capability_payload_dir" 2>/dev/null)" = 'root:root' ] ||
+      fail "[CAPABILITY_AGENT_PAYLOAD_OWNER_UNSAFE] $capability_payload_dir is not owned by root:root; refusing to install the agent payload into a directory this courier does not own"
+  else
+    install -d -m 0755 -o root -g root "$capability_payload_dir" ||
+      fail 'the agent payload directory could not be created'
+    CAPABILITY_CREATED_PAYLOAD_DIR=1
+  fi
+  capability_payload_existed=0
+  if [ -e "$CAPABILITY_AGENT_PAYLOAD_PATH" ] || [ -L "$CAPABILITY_AGENT_PAYLOAD_PATH" ]; then
+    capability_payload_existed=1
+    if [ -L "$CAPABILITY_AGENT_PAYLOAD_PATH" ] || [ ! -f "$CAPABILITY_AGENT_PAYLOAD_PATH" ]; then
+      fail "[CAPABILITY_AGENT_PAYLOAD_OWNER_UNSAFE] $CAPABILITY_AGENT_PAYLOAD_PATH is not a regular file; refusing to replace a payload this courier did not install"
+    fi
+    [ "$(stat -c '%U:%G' "$CAPABILITY_AGENT_PAYLOAD_PATH" 2>/dev/null)" = 'root:root' ] ||
+      fail "[CAPABILITY_AGENT_PAYLOAD_OWNER_UNSAFE] the installed agent payload $CAPABILITY_AGENT_PAYLOAD_PATH is not owned by root:root; this courier replaces only its own root-owned artifact and never chowns a file it did not install"
+    if [ "$(sha256sum "$CAPABILITY_AGENT_PAYLOAD_PATH" 2>/dev/null | cut -d ' ' -f 1)" = "$CAPABILITY_AGENT_PAYLOAD_SHA256" ] &&
+       [ "$(stat -c '%a' "$CAPABILITY_AGENT_PAYLOAD_PATH" 2>/dev/null)" = 755 ]; then
+      CAPABILITY_AGENT_PAYLOAD_STATE=COMPLIANT
+      CAPABILITY_EVIDENCE_PAYLOAD_STATE=COMPLIANT
+      return 0
+    fi
+  fi
+  capability_payload_tmp="$capability_payload_dir/.$capability_payload_name.tmp.$$"
+  rm -f "$capability_payload_tmp"
+  install -m 0755 -o root -g root "$CAPABILITY_STAGE_DIR/$CAPABILITY_USER_UNIT_PAYLOAD_ARTIFACT" "$capability_payload_tmp" ||
+    fail 'the verified agent payload could not be staged next to its destination'
+  if [ "$(sha256sum "$capability_payload_tmp" 2>/dev/null | cut -d ' ' -f 1)" != "$CAPABILITY_AGENT_PAYLOAD_SHA256" ]; then
+    rm -f "$capability_payload_tmp"
+    fail "the staged agent payload does not match the pinned digest $CAPABILITY_AGENT_PAYLOAD_SHA256; no payload was installed"
+  fi
+  chmod 0755 "$capability_payload_tmp" || { rm -f "$capability_payload_tmp"; fail 'the staged agent payload mode could not be set'; }
+  sync
+  mv -f "$capability_payload_tmp" "$CAPABILITY_AGENT_PAYLOAD_PATH" ||
+    fail "the verified agent payload could not be moved to $CAPABILITY_AGENT_PAYLOAD_PATH"
+  sync
+  if [ "$(sha256sum "$CAPABILITY_AGENT_PAYLOAD_PATH" 2>/dev/null | cut -d ' ' -f 1)" != "$CAPABILITY_AGENT_PAYLOAD_SHA256" ] ||
+     [ "$(stat -c '%U:%G' "$CAPABILITY_AGENT_PAYLOAD_PATH" 2>/dev/null)" != 'root:root' ] ||
+     [ "$(stat -c '%a' "$CAPABILITY_AGENT_PAYLOAD_PATH" 2>/dev/null)" != 755 ]; then
+    capability_rollback_files
+    fail "the installed agent payload $CAPABILITY_AGENT_PAYLOAD_PATH failed its postcondition (digest, owner or mode); no service was started"
+  fi
+  CAPABILITY_AGENT_PAYLOAD_STATE=COMPLIANT
+  CAPABILITY_EVIDENCE_PAYLOAD_STATE=INSTALLED
+  if [ "$capability_payload_existed" = 0 ]; then CAPABILITY_CREATED_PAYLOAD=1; fi
+  return 0
+}
+
+# ReadWritePaths needs these XDG directories to exist before the unit starts. The
+# unit's StateDirectory/ConfigurationDirectory create them too; creating them
+# here as well makes the two paths self-healing and keeps the install honest
+# instead of relying on systemd to paper over a missing step.
+capability_agent_state_dirs() {
+  [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ] || return 0
+  capability_home="$(capability_control_home)"
+  [ -n "$capability_home" ] || fail 'the selected control account has no home directory; no user service could be installed'
+  [ -d "$capability_home" ] || fail 'the selected control account home directory is missing; no user service could be installed'
+  capability_created_any=0
+  for capability_dir in \\
+    "$capability_home/.config/ghostfleet" \\
+    "$capability_home/.local" \\
+    "$capability_home/.local/state/ghostfleet-agent"; do
+    if [ ! -d "$capability_dir" ]; then capability_created_any=1; fi
+    install -d -m 0700 -o "$CAPABILITY_CONTROL_ACCOUNT" -g "$(capability_control_group)" "$capability_dir" ||
+      fail "the agent state directory $capability_dir could not be created for $CAPABILITY_CONTROL_ACCOUNT"
+  done
+  if [ "$capability_created_any" = 1 ]; then CAPABILITY_CREATED_STATE_DIR=1; fi
+  return 0
+}
+
+# Non-secret agent configuration, root-owned so the managed account reads its
+# control-plane origin and its own unit name from a file the task channel cannot
+# rewrite. The token never appears here.
+capability_agent_config_write() {
+  [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ] || return 0
+  capability_config_dir="\${CAPABILITY_AGENT_CONFIG_PATH%/*}"
+  if ! install -d -m 0755 -o root -g root "$capability_config_dir"; then
+    printf '%s\\n' 'fleet-enroll: the managed agent configuration directory could not be created' >&2
+    return 1
+  fi
+  # The body is exactly the documented production key set: the agent's parser
+  # rejects unknown top-level keys and requires numeric intervals, so an extra
+  # schema/node_uid field or a nested range would make the unit exit 2 forever.
+  # node_uid is non-secret but lives in ~/.config/ghostfleet/node.json; keeping
+  # it out of the root-owned file leaves one owner for that fact.
+  capability_config_body='{"control_plane_origin":"'"$NODE_PLANE_ORIGIN"'","heartbeat_interval_s":30,"heartbeat_interval_min_s":30,"heartbeat_interval_max_s":300,"allowed_units":["'"$CAPABILITY_USER_UNIT"'"]}'
+  if [ -r "$CAPABILITY_AGENT_CONFIG_PATH" ] && [ ! -L "$CAPABILITY_AGENT_CONFIG_PATH" ] &&
+     [ "$(cat "$CAPABILITY_AGENT_CONFIG_PATH" 2>/dev/null)" = "$capability_config_body" ] &&
+     [ "$(stat -c '%U:%G' "$CAPABILITY_AGENT_CONFIG_PATH" 2>/dev/null)" = 'root:root' ] &&
+     [ "$(stat -c '%a' "$CAPABILITY_AGENT_CONFIG_PATH" 2>/dev/null)" = 644 ]; then
+    return 0
+  fi
+  if [ -e "$CAPABILITY_AGENT_CONFIG_PATH" ] && [ ! -f "$CAPABILITY_AGENT_CONFIG_PATH" ]; then
+    printf '%s\\n' "fleet-enroll: [CAPABILITY_AGENT_CONFIG_UNSAFE] $CAPABILITY_AGENT_CONFIG_PATH is not a regular file; refusing to replace the managed agent configuration" >&2
+    return 1
+  fi
+  if [ -e "$CAPABILITY_AGENT_CONFIG_PATH" ] &&
+     [ "$(stat -c '%U:%G' "$CAPABILITY_AGENT_CONFIG_PATH" 2>/dev/null)" != 'root:root' ]; then
+    printf '%s\\n' "fleet-enroll: [CAPABILITY_AGENT_CONFIG_UNSAFE] $CAPABILITY_AGENT_CONFIG_PATH is not owned by root:root; refusing to replace a configuration file this courier did not install" >&2
+    return 1
+  fi
+  if ! printf '%s\\n' "$capability_config_body" > "$CAPABILITY_AGENT_CONFIG_PATH.$$"; then
+    rm -f "$CAPABILITY_AGENT_CONFIG_PATH.$$"
+    printf '%s\\n' 'fleet-enroll: the managed agent configuration could not be staged' >&2
+    return 1
+  fi
+  if ! chmod 0644 "$CAPABILITY_AGENT_CONFIG_PATH.$$" ||
+     ! chown root:root "$CAPABILITY_AGENT_CONFIG_PATH.$$" ||
+     ! sync; then
+    rm -f "$CAPABILITY_AGENT_CONFIG_PATH.$$"
+    printf '%s\\n' 'fleet-enroll: the managed agent configuration could not be sealed' >&2
+    return 1
+  fi
+  if ! mv -f "$CAPABILITY_AGENT_CONFIG_PATH.$$" "$CAPABILITY_AGENT_CONFIG_PATH"; then
+    rm -f "$CAPABILITY_AGENT_CONFIG_PATH.$$"
+    printf '%s\\n' 'fleet-enroll: the managed agent configuration could not be installed' >&2
+    return 1
+  fi
+  if [ "$(stat -c '%a' "$CAPABILITY_AGENT_CONFIG_PATH" 2>/dev/null)" != 644 ]; then
+    printf '%s\\n' "fleet-enroll: [CAPABILITY_AGENT_CONFIG_UNSAFE] the managed agent configuration is not 0644 after install" >&2
+    return 1
+  fi
+  CAPABILITY_CREATED_AGENT_CONFIG=1
+  return 0
+}
+
+# The completion response is the ONLY place a node credential is delivered. The
+# token is parsed into shell variables, never printed, never passed in argv and
+# never written to a name: a missing or expired credential fails here, before any
+# payload or unit exists on the host.
+capability_node_credential_parse() {
+  [ -n "$CAPABILITY_COMPLETE_RESPONSE" ] ||
+    fail '[CAPABILITY_NODE_CREDENTIAL_MISSING] the control plane returned an empty completion response, so no node credential could be delivered; the agent payload and the user unit were not installed, nothing was enabled and Linger was not enabled; re-run the authorized Console command'
+  capability_handoff="$(printf '%s' "$CAPABILITY_COMPLETE_RESPONSE" | tr -d '\\n\\r' | sed -n 's/.*"credential_handoff"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p')"
+  CAPABILITY_CREDENTIAL_HANDOFF="$capability_handoff"
+  if [ "$capability_handoff" = EXPIRED ]; then
+    fail '[CAPABILITY_NODE_CREDENTIAL_EXPIRED] the node credential handoff for this ticket expired before the agent could be installed; the control plane keeps the credential ciphertext for a bounded window, so it cannot be re-delivered for this ticket; retire the node and re-sign the enrollment ticket, then run the authorized Console command again'
+  fi
+  capability_credential="$(printf '%s' "$CAPABILITY_COMPLETE_RESPONSE" | tr -d '\\n\\r' | sed -n 's/.*"node_credential"[[:space:]]*:[[:space:]]*{\\([^}]*\\)}.*/\\1/p')"
+  CAPABILITY_NODE_TOKEN=
+  capability_credential_uid=
+  if [ -n "$capability_credential" ]; then
+    CAPABILITY_NODE_TOKEN="$(printf '%s' "$capability_credential" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p')"
+    capability_credential_uid="$(printf '%s' "$capability_credential" | sed -n 's/.*"node_uid"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p')"
+  fi
+  if [ -z "$CAPABILITY_NODE_TOKEN" ]; then
+    fail '[CAPABILITY_NODE_CREDENTIAL_MISSING] the completion response carried no node credential, so this node cannot authenticate to the control plane; the agent payload and the user unit were not installed, nothing was enabled and Linger was not enabled; re-run the authorized Console command and, if the response still carries no credential, retire the node and re-sign the enrollment ticket'
+  fi
+  if ! printf '%s' "$CAPABILITY_NODE_TOKEN" | grep -Eq '^[A-Za-z0-9_-]{43}$'; then
+    fail '[CAPABILITY_NODE_CREDENTIAL_INVALID] the delivered node credential is not a 32-byte base64url token; the agent payload and the user unit were not installed and Linger was not enabled'
+  fi
+  if ! printf '%s' "$capability_credential_uid" | grep -Eq '^node-[A-Za-z0-9-]{8,80}$'; then
+    fail '[CAPABILITY_NODE_CREDENTIAL_INVALID] the delivered node credential carries no node_uid; the agent payload and the user unit were not installed and Linger was not enabled'
+  fi
+  if [ -n "$NODE_UID" ] && [ "$capability_credential_uid" != "$NODE_UID" ]; then
+    fail '[CAPABILITY_NODE_CREDENTIAL_INVALID] the delivered node credential belongs to a different node than the claim; the agent payload and the user unit were not installed and Linger was not enabled'
+  fi
+  CAPABILITY_NODE_CREDENTIAL_RECEIVED=yes
+  CAPABILITY_AGENT_CONFIGURED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  return 0
+}
+
+# Install the credential into the control account's home: node-token 0600 in a
+# 0700 directory, plus the non-secret node.json. The token is staged root-only
+# under the checkpoint directory and installed with install(1), so it never
+# travels through a redirection written as another account. A retry that
+# receives the SAME token is an idempotent success; a DIFFERENT token is refused
+# instead of silently replacing a credential the running agent may already use.
+capability_node_credential_write() {
+  capability_home="$(capability_control_home)"
+  [ -n "$capability_home" ] || fail 'the selected control account has no home directory; no node credential could be installed'
+  capability_token_dir="$capability_home/.config/ghostfleet"
+  capability_token_file="$capability_token_dir/node-token"
+  capability_node_json="$capability_token_dir/node.json"
+  install -d -m 0700 -o "$CAPABILITY_CONTROL_ACCOUNT" -g "$(capability_control_group)" "$capability_token_dir" ||
+    fail 'the node credential directory could not be created for the control account'
+  capability_stage_token="$CHECKPOINT_DIR/.node-token.$$"
+  printf '%s' "$CAPABILITY_NODE_TOKEN" > "$capability_stage_token" ||
+    { rm -f "$capability_stage_token"; fail 'the node credential could not be staged'; }
+  chmod 0600 "$capability_stage_token" &&
+    chown root:root "$capability_stage_token" ||
+    { rm -f "$capability_stage_token"; fail 'the staged node credential could not be protected'; }
+  sync
+  capability_token_existed=0
+  if [ -e "$capability_token_file" ] || [ -L "$capability_token_file" ]; then
+    capability_token_existed=1
+    if [ -L "$capability_token_file" ] || [ ! -f "$capability_token_file" ]; then
+      rm -f "$capability_stage_token"
+      fail "[CAPABILITY_NODE_TOKEN_OWNER_UNSAFE] $capability_token_file is not a regular file; refusing to write the node token through a link"
+    fi
+    if [ "$(stat -c '%U' "$capability_token_file" 2>/dev/null)" != "$CAPABILITY_CONTROL_ACCOUNT" ]; then
+      rm -f "$capability_stage_token"
+      fail "[CAPABILITY_NODE_TOKEN_OWNER_UNSAFE] $capability_token_file is not owned by $CAPABILITY_CONTROL_ACCOUNT; refusing to overwrite a file this courier does not own"
+    fi
+    if cmp -s "$capability_stage_token" "$capability_token_file"; then
+      rm -f "$capability_stage_token"
+      CAPABILITY_NODE_TOKEN_STATE="$(capability_node_token_state)"
+      [ "$CAPABILITY_NODE_TOKEN_STATE" = COMPLIANT ] ||
+        fail "[CAPABILITY_NODE_TOKEN_INVALID] the stored node token already matches the one the control plane delivered but its state is $CAPABILITY_NODE_TOKEN_STATE; repair mode 0600 and owner $CAPABILITY_CONTROL_ACCOUNT on $capability_token_dir and $capability_token_file before retrying"
+      CAPABILITY_NODE_TOKEN_MODE=0600
+      return 0
+    fi
+    rm -f "$capability_stage_token"
+    fail "[CAPABILITY_NODE_CREDENTIAL_CONFLICT] this node already stores a different node token at $capability_token_file; overwriting it would silently replace a credential the agent may already be using; retire the node and re-sign the enrollment ticket instead of overwriting the stored token"
+  fi
+  install -m 0600 -o "$CAPABILITY_CONTROL_ACCOUNT" -g "$(capability_control_group)" "$capability_stage_token" "$capability_token_file" ||
+    { rm -f "$capability_stage_token"; fail "the node token could not be installed for $CAPABILITY_CONTROL_ACCOUNT"; }
+  rm -f "$capability_stage_token"
+  sync
+  capability_node_json_body='{"node_uid":"'"$capability_credential_uid"'","platform":"'"$(uname -s | tr 'A-Z' 'a-z')-$(uname -m)"'","issued_at":"'"$CAPABILITY_AGENT_CONFIGURED_AT"'"}'
+  printf '%s\\n' "$capability_node_json_body" > "$capability_node_json.$$" &&
+    chmod 0600 "$capability_node_json.$$" &&
+    chown "$CAPABILITY_CONTROL_ACCOUNT:$(capability_control_group)" "$capability_node_json.$$" &&
+    sync &&
+    mv -f "$capability_node_json.$$" "$capability_node_json" ||
+    { rm -f "$capability_node_json.$$"; fail 'the node descriptor could not be written for the control account'; }
+  if [ "$capability_token_existed" = 0 ]; then CAPABILITY_CREATED_NODE_TOKEN=1; fi
+  CAPABILITY_CREATED_NODE_JSON=1
+  CAPABILITY_NODE_TOKEN_STATE="$(capability_node_token_state)"
+  [ "$CAPABILITY_NODE_TOKEN_STATE" = COMPLIANT ] ||
+    fail "[CAPABILITY_NODE_TOKEN_INVALID] the installed node token failed its postcondition ($CAPABILITY_NODE_TOKEN_STATE); the agent payload and the user unit were not installed and Linger was not enabled"
+  CAPABILITY_NODE_TOKEN_MODE=0600
+  return 0
+}
+
+# The public capability projection is the only thing an unprivileged reader may
+# see. It is written after the managed lane converged, is re-derived from the
+# validated selection, and never carries a token, a secret, a home path or any
+# 0600 data. A failed projection fails the lane: no half-written file, no
+# "installed but unrecorded" node.
+# @@GHOSTFLEET_CAPABILITY_STATUS_FRAGMENT_PROJECTION_BEGIN@@
+capability_status_projection() {
+  if [ "$CAPABILITY_USER_SERVICE_REQUIRED" != 1 ]; then return 0; fi
+  capability_status_dir="$CAPABILITY_AGENT_CONFIG_DIR"
+  capability_status_file="$capability_status_dir/capability-status.json"
+  [ -n "$CAPABILITY_TEMPLATE_DIGEST" ] || return 1
+  capability_status_pin="$(printf '%s' "$CAPABILITY_TEMPLATE_DIGEST" | sed 's/^sha256://' | cut -c 1-40)"
+  case "$capability_status_pin" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+    *) printf '%s\\n' 'fleet-enroll: the reviewed template digest cannot be projected as a release pin' >&2; return 1 ;;
+  esac
+  if [ -f "$capability_status_file" ] && [ ! -L "$capability_status_file" ] &&
+     [ "$(stat -c '%U:%G' "$capability_status_file" 2>/dev/null)" = 'root:root' ] &&
+     [ "$(stat -c '%a' "$capability_status_file" 2>/dev/null)" = 644 ] &&
+     grep -Fq "\\"release_pin\\":\\"$capability_status_pin\\"" "$capability_status_file" 2>/dev/null &&
+     grep -Fq "\\"payload_sha256\\":\\"$CAPABILITY_AGENT_PAYLOAD_SHA256\\"" "$capability_status_file" 2>/dev/null &&
+     grep -Fq "\\"control_account\\":\\"$CAPABILITY_CONTROL_ACCOUNT\\"" "$capability_status_file" 2>/dev/null; then
+    return 0
+  fi
+  capability_status_artifacts=''
+  capability_status_unit_sha=''
+  capability_status_index=1
+  while [ "$capability_status_index" -le "$CAPABILITY_ARTIFACT_COUNT" ]; do
+    capability_status_row="$(capability_artifact_row "$capability_status_index")"
+    capability_status_name="$capability_status_row"
+    capability_status_name="\${capability_status_name%%|*}"
+    capability_status_rest="$capability_status_row"
+    capability_status_rest="\${capability_status_rest#*|}"
+    capability_status_sha="\${capability_status_rest%%|*}"
+    capability_status_mode="\${capability_status_rest#*|}"
+    capability_status_kind=helper
+    [ "$capability_status_name" != "$CAPABILITY_INSTALLER" ] || capability_status_kind=installer
+    [ "$capability_status_name" != "$CAPABILITY_PRIVILEGED_KEY" ] || capability_status_kind=key
+    [ "$capability_status_name" != "$CAPABILITY_USER_UNIT_ARTIFACT" ] || capability_status_kind=unit
+    [ "$capability_status_name" != "$CAPABILITY_USER_UNIT_PAYLOAD_ARTIFACT" ] || capability_status_kind=payload
+    [ "$capability_status_name" != "$CAPABILITY_USER_UNIT_ARTIFACT" ] || capability_status_unit_sha="$capability_status_sha"
+    [ -z "$capability_status_artifacts" ] || capability_status_artifacts="$capability_status_artifacts,"
+    capability_status_artifacts="$capability_status_artifacts{\\"name\\":\\"$capability_status_name\\",\\"sha256\\":\\"$capability_status_sha\\",\\"mode\\":\\"$capability_status_mode\\",\\"kind\\":\\"$capability_status_kind\\"}"
+    capability_status_index=$((capability_status_index + 1))
+  done
+  [ -n "$capability_status_unit_sha" ] || return 1
+  capability_status_body="{\\"schema\\":\\"ghostfleet-capability-status/v1\\",\\"selection_schema\\":\\"$CAPABILITY_SCHEMA\\",\\"release_pin\\":\\"$capability_status_pin\\",\\"applied_at\\":\\"\${CAPABILITY_STATUS_APPLIED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}\\",\\"control_account\\":\\"$CAPABILITY_CONTROL_ACCOUNT\\",\\"privileged_account\\":\\"$CAPABILITY_PRIVILEGED_ACCOUNT\\",\\"artifacts\\":[$capability_status_artifacts],\\"user_unit\\":{\\"name\\":\\"$CAPABILITY_USER_UNIT\\",\\"sha256\\":\\"$capability_status_unit_sha\\",\\"payload_sha256\\":\\"$CAPABILITY_AGENT_PAYLOAD_SHA256\\",\\"payload_path\\":\\"$CAPABILITY_AGENT_PAYLOAD_PATH\\"}}"
+  [ -d "$capability_status_dir" ] || install -d -m 0755 -o root -g root "$capability_status_dir" || {
+    printf '%s\\n' 'fleet-enroll: the public capability directory could not be created' >&2; return 1; }
+  [ "$(stat -c '%U:%G' "$capability_status_dir" 2>/dev/null)" = 'root:root' ] || {
+    printf '%s\\n' 'fleet-enroll: the public capability directory is not owned by root:root' >&2; return 1; }
+  # A projection this run replaces must be restorable: a failed lane never
+  # leaves a public file that names a version the node does not run.
+  CAPABILITY_STATUS_BACKUP=''
+  if [ -e "$capability_status_file" ] || [ -L "$capability_status_file" ]; then
+    capability_status_backup="$CHECKPOINT_DIR/.capability-status.json.bak.$$"
+    rm -f "$capability_status_backup"
+    if ! cp -p "$capability_status_file" "$capability_status_backup" 2>/dev/null; then
+      rm -f "$capability_status_backup"
+      printf '%s\\n' 'fleet-enroll: the previous public capability projection could not be preserved for rollback' >&2
+      return 1
+    fi
+    CAPABILITY_STATUS_BACKUP="$capability_status_backup"
+  fi
+  capability_status_tmp="$capability_status_dir/.capability-status.json.$$"
+  rm -f "$capability_status_tmp"
+  if ! printf '%s\\n' "$capability_status_body" > "$capability_status_tmp"; then
+    rm -f "$capability_status_tmp"
+    printf '%s\\n' 'fleet-enroll: the public capability projection could not be staged' >&2
+    return 1
+  fi
+  if ! chmod 0644 "$capability_status_tmp" || ! chown root:root "$capability_status_tmp" ||
+     ! sync "$capability_status_tmp" 2>/dev/null; then
+    rm -f "$capability_status_tmp"
+    printf '%s\\n' 'fleet-enroll: the public capability projection could not be sealed' >&2
+    return 1
+  fi
+  if ! mv -f "$capability_status_tmp" "$capability_status_file"; then
+    rm -f "$capability_status_tmp"
+    printf '%s\\n' 'fleet-enroll: the public capability projection could not be promoted' >&2
+    return 1
+  fi
+  CAPABILITY_CREATED_STATUS_PROJECTION=1
+  sync "$capability_status_dir" 2>/dev/null || sync
+  if [ -L "$capability_status_file" ] || [ ! -f "$capability_status_file" ] ||
+     [ "$(stat -c '%U:%G' "$capability_status_file" 2>/dev/null)" != 'root:root' ] ||
+     [ "$(stat -c '%a' "$capability_status_file" 2>/dev/null)" != 644 ]; then
+    rm -f "$capability_status_file"
+    printf '%s\\n' 'fleet-enroll: the public capability projection failed its postcondition' >&2
+    return 1
+  fi
+  return 0
+}
+# @@GHOSTFLEET_CAPABILITY_STATUS_FRAGMENT_PROJECTION_END@@
+
+# Machine-readable success evidence for the external consumer. Only non-secret
+# facts are emitted: the token never reaches this line, a log or a status report.
+capability_evidence() {
+  capability_evidence_payload_owner=''
+  capability_evidence_payload_mode=''
+  capability_evidence_token_owner=''
+  capability_evidence_token_mode=''
+  capability_evidence_token_type=absent
+  capability_evidence_dir_owner=''
+  capability_evidence_dir_mode=''
+  capability_evidence_dir_type=absent
+  capability_evidence_state_owner=''
+  capability_evidence_state_mode=''
+  capability_evidence_state_type=absent
+  if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
+    if [ -f "$CAPABILITY_AGENT_PAYLOAD_PATH" ] && [ ! -L "$CAPABILITY_AGENT_PAYLOAD_PATH" ]; then
+      capability_evidence_payload_owner="$(stat -c '%U:%G' "$CAPABILITY_AGENT_PAYLOAD_PATH" 2>/dev/null)"
+      capability_evidence_payload_mode="$(stat -c '%a' "$CAPABILITY_AGENT_PAYLOAD_PATH" 2>/dev/null)"
+    fi
+    capability_evidence_home="$(capability_control_home)"
+    if [ -n "$capability_evidence_home" ]; then
+      capability_evidence_dir="$capability_evidence_home/.config/ghostfleet"
+      capability_evidence_file="$capability_evidence_dir/node-token"
+      if [ -d "$capability_evidence_dir" ] && [ ! -L "$capability_evidence_dir" ]; then
+        capability_evidence_dir_type=directory
+        capability_evidence_dir_owner="$(stat -c '%U' "$capability_evidence_dir" 2>/dev/null)"
+        capability_evidence_dir_mode="$(stat -c '%a' "$capability_evidence_dir" 2>/dev/null)"
+      fi
+      capability_evidence_state_dir="$capability_evidence_home/.local/state/ghostfleet-agent"
+      if [ -d "$capability_evidence_state_dir" ] && [ ! -L "$capability_evidence_state_dir" ]; then
+        capability_evidence_state_type=directory
+        capability_evidence_state_owner="$(stat -c '%U' "$capability_evidence_state_dir" 2>/dev/null)"
+        capability_evidence_state_mode="$(stat -c '%a' "$capability_evidence_state_dir" 2>/dev/null)"
+      fi
+      if [ -f "$capability_evidence_file" ] && [ ! -L "$capability_evidence_file" ]; then
+        capability_evidence_token_type=regular
+        capability_evidence_token_owner="$(stat -c '%U' "$capability_evidence_file" 2>/dev/null)"
+        capability_evidence_token_mode="$(stat -c '%a' "$capability_evidence_file" 2>/dev/null)"
+      fi
+    fi
+  fi
+  printf '%s\\n' \\
+    "capability_agent_payload_sha256=$CAPABILITY_AGENT_PAYLOAD_SHA256" \\
+    "capability_agent_payload_path=$CAPABILITY_AGENT_PAYLOAD_PATH" \\
+    "capability_agent_payload_state=$CAPABILITY_EVIDENCE_PAYLOAD_STATE" \\
+    "capability_agent_payload_owner=$capability_evidence_payload_owner" \\
+    "capability_agent_payload_mode=$capability_evidence_payload_mode" \\
+    "capability_user_unit_state=$CAPABILITY_EVIDENCE_UNIT_STATE" \\
+    "capability_user_unit_exec=$CAPABILITY_USER_UNIT_EXEC" \\
+    "capability_service_state=$CAPABILITY_SERVICE_STATE" \\
+    "capability_node_credential_received=$CAPABILITY_NODE_CREDENTIAL_RECEIVED" \\
+    "capability_node_token_owner=$capability_evidence_token_owner" \\
+    "capability_node_token_mode=$capability_evidence_token_mode" \\
+    "capability_node_token_type=$capability_evidence_token_type" \\
+    "capability_agent_config_dir_owner=$capability_evidence_dir_owner" \\
+    "capability_agent_config_dir_mode=$capability_evidence_dir_mode" \\
+    "capability_agent_config_dir_type=$capability_evidence_dir_type" \\
+    "capability_agent_state_dir_owner=$capability_evidence_state_owner" \\
+    "capability_agent_state_dir_mode=$capability_evidence_state_mode" \\
+    "capability_agent_state_dir_type=$capability_evidence_state_type"
+}
+
+# After the control plane delivered the node credential, install the payload, the
+# unit and Linger. This is the only place a first-run node starts the managed
+# service, and it repeats the whole postcondition before anything is recorded.
+capability_service_finish() {
+  [ "$CAPABILITY_SERVICE_PENDING" = 1 ] || return 0
+  capability_agent_payload_apply
+  capability_agent_state_dirs
+  if [ "$CAPABILITY_USER_UNIT_STATE" != COMPLIANT ]; then
+    if ! capability_user_service_apply; then
+      capability_rollback
+      capability_stage_cleanup
+      fail 'selected user service could not be installed after the node credential was delivered; no completion is reported'
+    fi
+    CAPABILITY_EVIDENCE_UNIT_STATE=INSTALLED
+  else
+    CAPABILITY_EVIDENCE_UNIT_STATE=COMPLIANT
+  fi
+  capability_user_unit_exec_assert
+  if ! capability_agent_config_write; then
+    capability_rollback
+    capability_stage_cleanup
+    fail '[CAPABILITY_AGENT_CONFIG_UNSAFE] the root-owned agent configuration could not be written from the validated selection, so the managed agent would start without it; the lane was rolled back and no completion is reported'
+  fi
+  capability_node_credential_write
+  if ! capability_linger_apply; then
+    capability_rollback
+    capability_stage_cleanup
+    fail 'selected Linger could not be enabled after the node credential was delivered; no completion is reported'
+  fi
+  CAPABILITY_AGENT_PAYLOAD_STATE="$(capability_agent_payload_state)"
+  CAPABILITY_USER_UNIT_STATE="$(capability_user_service_state)"
+  CAPABILITY_USER_SERVICE_STATE="$CAPABILITY_USER_UNIT_STATE"
+  CAPABILITY_NODE_TOKEN_STATE="$(capability_node_token_state)"
+  if ! capability_states_compliant; then
+    capability_rollback
+    capability_stage_cleanup
+    fail "[CAPABILITY_SERVICE_NOT_CONVERGED] the managed node agent did not converge (helper=$CAPABILITY_HELPER_STATE payload=$CAPABILITY_AGENT_PAYLOAD_STATE unit=$CAPABILITY_USER_UNIT_STATE service=$CAPABILITY_USER_SERVICE_STATE token=$CAPABILITY_NODE_TOKEN_STATE linger=$CAPABILITY_LINGER_STATE); no completion is reported"
+  fi
+  if ! capability_status_projection; then
+    capability_rollback
+    capability_stage_cleanup
+    fail '[CAPABILITY_STATUS_PROJECTION_FAILED] the public capability projection could not be written atomically, so this node may not report an installed capability; remove any partial /etc/ghostfleet/capability-status.json and re-run the authorized Console command'
+  fi
+  CAPABILITY_SERVICE_STATE=INSTALLED
+  capability_state_write
+  printf '%s\\n' "fleet-enroll: selected capability $CAPABILITY_VERSION converged mode=$CAPABILITY_MODE helper=$CAPABILITY_HELPER_STATE user_service=$CAPABILITY_USER_SERVICE_STATE linger=$CAPABILITY_LINGER_STATE run_account=$CAPABILITY_ACCOUNT_STATE" >&2
+  capability_evidence
+  capability_stage_cleanup
   return 0
 }
 
@@ -1098,8 +1838,36 @@ capability_refuse_stale_privileged_lane() {
 capability_rollback_files() {
   if [ -n "$CAPABILITY_CREATED_WANT" ]; then rm -f "$CAPABILITY_CREATED_WANT"; fi
   if [ -n "$CAPABILITY_CREATED_UNIT" ]; then rm -f "$CAPABILITY_CREATED_UNIT"; fi
+  # The public projection is restored together with the unit: a rolled-back lane
+  # must never leave a file that tells the agent the new version is READY.
+  if [ "$CAPABILITY_CREATED_STATUS_PROJECTION" = 1 ]; then
+    capability_projection_file="$CAPABILITY_AGENT_CONFIG_DIR/capability-status.json"
+    if [ -n "$CAPABILITY_STATUS_BACKUP" ] && [ -f "$CAPABILITY_STATUS_BACKUP" ]; then
+      mv -f "$CAPABILITY_STATUS_BACKUP" "$capability_projection_file" 2>/dev/null || rm -f "$capability_projection_file"
+    else
+      rm -f "$capability_projection_file"
+    fi
+  fi
+  if [ -n "$CAPABILITY_STATUS_BACKUP" ]; then rm -f "$CAPABILITY_STATUS_BACKUP"; fi
+  # Only artifacts this run created are removed. A payload, token, node
+  # descriptor or configuration file that already existed belongs to the node and
+  # is never deleted by a failed ceremony.
+  if [ "$CAPABILITY_CREATED_PAYLOAD" = 1 ]; then rm -f "$CAPABILITY_AGENT_PAYLOAD_PATH"; fi
+  capability_home="$(capability_control_home 2>/dev/null)"
+  if [ -n "$capability_home" ]; then
+    if [ "$CAPABILITY_CREATED_NODE_TOKEN" = 1 ]; then rm -f "$capability_home/.config/ghostfleet/node-token"; fi
+    if [ "$CAPABILITY_CREATED_NODE_JSON" = 1 ]; then rm -f "$capability_home/.config/ghostfleet/node.json"; fi
+  fi
+  if [ "$CAPABILITY_CREATED_AGENT_CONFIG" = 1 ]; then rm -f "$CAPABILITY_AGENT_CONFIG_PATH"; fi
+  if [ "$CAPABILITY_CREATED_PAYLOAD_DIR" = 1 ]; then rmdir "$(dirname "$CAPABILITY_AGENT_PAYLOAD_PATH")" 2>/dev/null || true; fi
   CAPABILITY_CREATED_WANT=
   CAPABILITY_CREATED_UNIT=
+  CAPABILITY_CREATED_PAYLOAD=
+  CAPABILITY_CREATED_NODE_TOKEN=
+  CAPABILITY_CREATED_NODE_JSON=
+  CAPABILITY_CREATED_PAYLOAD_DIR=
+  CAPABILITY_CREATED_STATUS_PROJECTION=
+  CAPABILITY_STATUS_BACKUP=''
 }
 
 capability_rollback_linger() {
@@ -1195,6 +1963,9 @@ capability_ingest_claim() {
   CAPABILITY_PRIVILEGED_KEY=
   CAPABILITY_USER_UNIT=
   CAPABILITY_USER_UNIT_ARTIFACT=
+  CAPABILITY_USER_UNIT_PAYLOAD_ARTIFACT=
+  CAPABILITY_USER_UNIT_PAYLOAD_PATH=
+  CAPABILITY_USER_UNIT_PAYLOAD_MODE=
   CAPABILITY_ARTIFACT_COUNT=0
   capability_slot=1
   while IFS= read -r capability_line; do
@@ -1212,6 +1983,9 @@ capability_ingest_claim() {
       privileged_key=*) CAPABILITY_PRIVILEGED_KEY="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
       user_unit=*) CAPABILITY_USER_UNIT="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
       user_unit_artifact=*) CAPABILITY_USER_UNIT_ARTIFACT="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
+      user_unit_payload_artifact=*) CAPABILITY_USER_UNIT_PAYLOAD_ARTIFACT="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
+      user_unit_payload_path=*) CAPABILITY_USER_UNIT_PAYLOAD_PATH="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
+      user_unit_payload_mode=*) CAPABILITY_USER_UNIT_PAYLOAD_MODE="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
       artifact=*)
         capability_row="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)"
         # A1: address only. Inline bytes were the old shape and would let the
@@ -1237,8 +2011,12 @@ capability_apply() {
     CAPABILITY_HELPER_STATE=NOT_REQUESTED
     CAPABILITY_USER_SERVICE_STATE=NOT_REQUESTED
     CAPABILITY_LINGER_STATE=NOT_REQUESTED
+    CAPABILITY_AGENT_PAYLOAD_STATE=NOT_REQUESTED
+    CAPABILITY_USER_UNIT_STATE=NOT_REQUESTED
+    CAPABILITY_NODE_TOKEN_STATE=NOT_REQUESTED
     CAPABILITY_MODE=NOT_REQUESTED
     printf '%s\\n' 'fleet-enroll: the selected template requests no privileged capability; nothing was installed' >&2
+    capability_evidence
     return 0
   fi
   capability_validate_selection
@@ -1264,9 +2042,22 @@ capability_apply() {
   fi
   if capability_states_compliant; then
     CAPABILITY_MODE=ADOPT
+    CAPABILITY_USER_SERVICE_STATE="$CAPABILITY_USER_UNIT_STATE"
+    CAPABILITY_EVIDENCE_PAYLOAD_STATE=COMPLIANT
+    CAPABILITY_EVIDENCE_UNIT_STATE=COMPLIANT
+    if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
+      CAPABILITY_SERVICE_STATE=INSTALLED
+      CAPABILITY_USER_UNIT_EXEC="$CAPABILITY_AGENT_PAYLOAD_PATH"
+    fi
+    if ! capability_status_projection; then
+      capability_rollback
+      capability_stage_cleanup
+      fail '[CAPABILITY_STATUS_PROJECTION_FAILED] the public capability projection could not be written atomically, so this node may not report an installed capability; remove any partial /etc/ghostfleet/capability-status.json and re-run the authorized Console command'
+    fi
     capability_state_write
     capability_stage_cleanup
     printf '%s\\n' "fleet-enroll: selected capability $CAPABILITY_VERSION already converged; zero delta" >&2
+    capability_evidence
     return 0
   fi
   case "$CAPABILITY_MODE" in
@@ -1308,18 +2099,87 @@ capability_apply() {
       fail 'the declared privileged account does not match the account the reviewed installer just recorded; no completion is reported'
     fi
   fi
-  if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ] && [ "$CAPABILITY_USER_SERVICE_STATE" != COMPLIANT ]; then
-    if ! capability_user_service_apply; then
-      capability_rollback
+  # The node credential is delivered ONLY in the completion response, so on a
+  # first run the payload, the user unit and Linger are installed afterwards, in
+  # capability_service_finish. Nothing is installed into the control account home
+  # before the control plane has handed this node its credential.
+  if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
+    CAPABILITY_AGENT_PAYLOAD_STATE="$(capability_agent_payload_state)"
+    CAPABILITY_USER_UNIT_STATE="$(capability_user_service_state)"
+    CAPABILITY_NODE_TOKEN_STATE="$(capability_node_token_state)"
+    if [ "$CAPABILITY_NODE_TOKEN_STATE" = COMPLIANT ]; then
+      # A repair run stores the credential already: finish the lane inline.
+      capability_agent_payload_apply
+      capability_agent_state_dirs
+      if [ "$CAPABILITY_USER_UNIT_STATE" != COMPLIANT ]; then
+        if ! capability_user_service_apply; then
+          capability_rollback
+          capability_stage_cleanup
+          fail 'selected user service could not be installed; no completion is reported'
+        fi
+        CAPABILITY_EVIDENCE_UNIT_STATE=INSTALLED
+      else
+        CAPABILITY_EVIDENCE_UNIT_STATE=COMPLIANT
+      fi
+      capability_user_unit_exec_assert
+      if ! capability_agent_config_write; then
+    capability_rollback
+    capability_stage_cleanup
+    fail '[CAPABILITY_AGENT_CONFIG_UNSAFE] the root-owned agent configuration could not be written from the validated selection, so the managed agent would start without it; the lane was rolled back and no completion is reported'
+  fi
+      if ! capability_linger_apply; then
+        capability_rollback
+        capability_stage_cleanup
+        fail 'selected Linger could not be enabled; no completion is reported'
+      fi
+      CAPABILITY_USER_UNIT_STATE="$(capability_user_service_state)"
+      CAPABILITY_USER_SERVICE_STATE="$CAPABILITY_USER_UNIT_STATE"
+      CAPABILITY_AGENT_PAYLOAD_STATE="$(capability_agent_payload_state)"
+      CAPABILITY_NODE_TOKEN_STATE="$(capability_node_token_state)"
+      if ! capability_states_compliant; then
+        capability_rollback
+        capability_stage_cleanup
+        fail "selected capability did not converge (helper=$CAPABILITY_HELPER_STATE payload=$CAPABILITY_AGENT_PAYLOAD_STATE unit=$CAPABILITY_USER_UNIT_STATE service=$CAPABILITY_USER_SERVICE_STATE token=$CAPABILITY_NODE_TOKEN_STATE linger=$CAPABILITY_LINGER_STATE)"
+      fi
+      CAPABILITY_SERVICE_STATE=INSTALLED
+      if ! capability_status_projection; then
+        capability_rollback
+        capability_stage_cleanup
+        fail '[CAPABILITY_STATUS_PROJECTION_FAILED] the public capability projection could not be written atomically, so this node may not report an installed capability; remove any partial /etc/ghostfleet/capability-status.json and re-run the authorized Console command'
+      fi
+      capability_state_write
       capability_stage_cleanup
-      fail 'selected user service could not be installed; no completion is reported'
+      printf '%s\\n' "fleet-enroll: selected capability $CAPABILITY_VERSION converged mode=$CAPABILITY_MODE helper=$CAPABILITY_HELPER_STATE user_service=$CAPABILITY_USER_SERVICE_STATE linger=$CAPABILITY_LINGER_STATE run_account=$CAPABILITY_ACCOUNT_STATE" >&2
+      capability_evidence
+      return 0
     fi
-    CAPABILITY_USER_SERVICE_STATE="$(capability_user_service_state)"
-    if [ "$CAPABILITY_USER_SERVICE_STATE" != COMPLIANT ]; then
-      capability_rollback
-      capability_stage_cleanup
-      fail 'selected user service postcondition failed'
-    fi
+    case "$CAPABILITY_NODE_TOKEN_STATE" in
+      ABSENT)
+        case "$CAPABILITY_SELECTION_ORIGIN" in
+          recorded)
+            capability_rollback
+            capability_stage_cleanup
+            fail '[CAPABILITY_NODE_CREDENTIAL_MISSING] this node owns no stored node credential and a repair run cannot mint one because the completion response is not re-requested; the agent payload and the user unit were not installed, nothing was enabled and Linger was not enabled; run the authorized Console command with a fresh enrollment ticket'
+            ;;
+          *)
+            # First run: the credential arrives with the completion response and
+            # the service lane is finished there. The staged artifacts stay until
+            # that happens, because the unit and payload are installed from them.
+            CAPABILITY_SERVICE_PENDING=1
+            CAPABILITY_USER_SERVICE_STATE=DEFERRED
+            CAPABILITY_LINGER_STATE=DEFERRED
+            capability_state_write
+            printf '%s\\n' "fleet-enroll: selected capability $CAPABILITY_VERSION prepared mode=$CAPABILITY_MODE helper=$CAPABILITY_HELPER_STATE user_service=DEFERRED linger=DEFERRED run_account=$CAPABILITY_ACCOUNT_STATE; the node credential is installed from the completion response before any payload or unit is placed" >&2
+            return 0
+            ;;
+        esac
+        ;;
+      *)
+        capability_rollback
+        capability_stage_cleanup
+        fail "[CAPABILITY_NODE_TOKEN_INVALID] the stored node token is $CAPABILITY_NODE_TOKEN_STATE (expected a 0600 base64url token owned by $CAPABILITY_CONTROL_ACCOUNT in a 0700 directory); repair or remove the stored credential and re-run the authorized Console command; the agent payload and the user unit were not installed and Linger was not enabled"
+        ;;
+    esac
   fi
   if [ "$CAPABILITY_LINGER_REQUIRED" = 1 ]; then
     if ! capability_linger_apply; then
@@ -1333,9 +2193,16 @@ capability_apply() {
     capability_stage_cleanup
     fail 'selected capability did not converge'
   fi
+  if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then CAPABILITY_SERVICE_STATE=INSTALLED; fi
+  if ! capability_status_projection; then
+    capability_rollback
+    capability_stage_cleanup
+    fail '[CAPABILITY_STATUS_PROJECTION_FAILED] the public capability projection could not be written atomically, so this node may not report an installed capability; remove any partial /etc/ghostfleet/capability-status.json and re-run the authorized Console command'
+  fi
   capability_state_write
   capability_stage_cleanup
   printf '%s\\n' "fleet-enroll: selected capability $CAPABILITY_VERSION converged mode=$CAPABILITY_MODE helper=$CAPABILITY_HELPER_STATE user_service=$CAPABILITY_USER_SERVICE_STATE linger=$CAPABILITY_LINGER_STATE run_account=$CAPABILITY_ACCOUNT_STATE" >&2
+  capability_evidence
   return 0
 }
 # @@GHOSTFLEET_CAPABILITY_SECTION_END@@
@@ -1498,6 +2365,14 @@ refuse_unresolved_previous_enrollment() {
 }
 
 fail() {
+  # A failing run leaves no staged artifact behind. The staged bytes include the
+  # node agent payload, and the staged node token is a bearer secret, so both are
+  # removed before the failure is reported.
+  if [ -n "$CAPABILITY_STAGE_DIR" ]; then rm -rf "$CAPABILITY_STAGE_DIR"; fi
+  if [ -n "$CAPABILITY_NODE_TOKEN" ]; then
+    rm -f "$CHECKPOINT_DIR/.node-token.$$"
+    CAPABILITY_NODE_TOKEN=
+  fi
   printf '%s\\n' "fleet-enroll: $*" >&2
   exit 1
 }
@@ -1638,7 +2513,18 @@ if checkpoint_identity_converged; then
     # and applied inside the same ceremony. Never a selection-less "repair".
     :
   elif capability_probe_all; then
+    CAPABILITY_EVIDENCE_PAYLOAD_STATE="$CAPABILITY_AGENT_PAYLOAD_STATE"
+    CAPABILITY_EVIDENCE_UNIT_STATE="$CAPABILITY_USER_UNIT_STATE"
+    if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
+      CAPABILITY_SERVICE_STATE=INSTALLED
+      CAPABILITY_USER_UNIT_EXEC="$CAPABILITY_AGENT_PAYLOAD_PATH"
+      CAPABILITY_NODE_TOKEN_MODE=0600
+    fi
+    if ! capability_status_projection; then
+      fail '[CAPABILITY_STATUS_PROJECTION_FAILED] the public capability projection could not be written atomically, so this node may not report an installed capability; remove any partial /etc/ghostfleet/capability-status.json and re-run the authorized Console command'
+    fi
     printf '%s\\n' 'fleet-enroll: already converged; no enrollment credentials requested' >&2
+    capability_evidence
     exit 0
   else
     # Only the selected capability drifted: repair it from the selection the
@@ -1951,8 +2837,17 @@ EOF
 chmod 0600 "$REPORT_FILE"
 chown root:root "$REPORT_FILE"
 
-if ! printf '{"resume_session":"%s","report":{"identity_kind":"%s","enrollment_id":"%s","node_id":"%s","os_id":"%s","os_version_id":"%s","ssh_host_key_sha256":"%s","bootstrap_version":"%s","identity_evidence_b64":"%s","identity_evidence_sha256":"%s","capability_version":"%s","capability_mode":"%s","capability_selection_digest":"%s"}}' "$RESUME_SESSION" "$IDENTITY_KIND" "$ENROLLMENT_ID" "$NODE_ID" "$OS_ID" "$OS_VERSION_ID" "$SSH_HOST_KEY_SHA" "$BOOTSTRAP_VERSION" "$IDENTITY_EVIDENCE_B64" "$IDENTITY_EVIDENCE_SHA" "$CAPABILITY_VERSION" "$CAPABILITY_MODE" "$CAPABILITY_SELECTION_DIGEST" | curl -fsS --connect-timeout 10 --max-time 30 --header 'content-type: application/json' --data-binary @- "$BROKER_ORIGIN/v1/enroll/complete" >/dev/null; then
+# The completion response is the only delivery point for the node credential. It
+# is captured into a variable, never into a file name, an argument list or a log
+# line, and the managed service lane is finished from it.
+CAPABILITY_COMPLETE_RESPONSE="$(printf '{"resume_session":"%s","report":{"identity_kind":"%s","enrollment_id":"%s","node_id":"%s","os_id":"%s","os_version_id":"%s","ssh_host_key_sha256":"%s","bootstrap_version":"%s","identity_evidence_b64":"%s","identity_evidence_sha256":"%s","capability_version":"%s","capability_mode":"%s","capability_selection_digest":"%s"}}' "$RESUME_SESSION" "$IDENTITY_KIND" "$ENROLLMENT_ID" "$NODE_ID" "$OS_ID" "$OS_VERSION_ID" "$SSH_HOST_KEY_SHA" "$BOOTSTRAP_VERSION" "$IDENTITY_EVIDENCE_B64" "$IDENTITY_EVIDENCE_SHA" "$CAPABILITY_VERSION" "$CAPABILITY_MODE" "$CAPABILITY_SELECTION_DIGEST" | curl -fsS --connect-timeout 10 --max-time 30 --header 'content-type: application/json' --data-binary @- "$BROKER_ORIGIN/v1/enroll/complete")" ||
   fail 'completion report failed'
+
+if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
+  capability_node_credential_parse
+  capability_service_finish
+  CAPABILITY_NODE_TOKEN=
+  CAPABILITY_COMPLETE_RESPONSE=
 fi
 
 checkpoint_write CHECKPOINT COMPLIANT

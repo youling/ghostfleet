@@ -12,6 +12,12 @@ name="$(basename "$0")"
 state="${FIXTURE_STATE:?FIXTURE_STATE is required}"
 home_root="${FIXTURE_HOME_ROOT:-$state/homes}"
 record() { printf '%s\n' "$*" >> "$state/calls.log"; }
+# Ownership is modelled, not real: every command here runs as the test user, so
+# an install into root:root would be indistinguishable from the current user.
+# Every write that names an owner records it here and the stat stub answers from
+# it, which lets the courier's ownership postconditions be asserted without root.
+owner_marker() { printf '%s|%s\n' "$1" "$2" >> "$state/stat-owner.tsv"; }
+owner_lookup() { grep -F "$1|" "$state/stat-owner.tsv" 2>/dev/null | tail -n1 | cut -d'|' -f2-; }
 account_exists() { [ -f "$state/accounts/$1" ]; }
 account_home() { cut -d'|' -f1 "$state/accounts/$1"; }
 account_shell() { cut -d'|' -f2 "$state/accounts/$1"; }
@@ -160,6 +166,15 @@ case "$name" in
       */v1/enroll/complete)
         cat > "$state/complete-body.json"
         record "curl complete"
+        # The completion response is the only place a node credential is
+        # delivered. A test overrides it with state/complete-response.json
+        # (expired handoff, missing credential, different token).
+        if [ -f "$state/complete-response.json" ]; then
+          cat "$state/complete-response.json"
+        else
+          complete_node_uid="$(sed -n 's/.*"node_uid"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$state/claim.json" | head -n1)"
+          printf '{"outcome":"COMPLETE","node_credential":{"token":"%s","node_uid":"%s","handoff_id":"fixture-handoff-0001"}}\n' "${FIXTURE_NODE_TOKEN:-fixture-node-token-000000000000000000000000}" "$complete_node_uid"
+        fi
         ;;
       *noarmor.gpg|*tailscale-keyring.list)
         previous=
@@ -179,17 +194,124 @@ case "$name" in
     printf '%s SHA256:fixturehostfingerprint (ED25519)\n' "$keyfile"
     ;;
   install)
+    record "install $*"
+    # Two passes: one strips -o/-g so the real install runs as the test user, the
+    # other records the owner, the group and every destination, so the courier's
+    # ownership postconditions are observable without root.
     arguments=()
+    skip_next=0
+    for argument in "$@"; do
+      if [ "$skip_next" = 1 ]; then skip_next=0; continue; fi
+      case "$argument" in
+        -o|-g) skip_next=1; continue ;;
+        -o*|-g*) continue ;;
+      esac
+      arguments+=("$argument")
+    done
+    owner=
+    group=
+    install_directory=0
+    destinations=()
     while [ "$#" -gt 0 ]; do
       case "$1" in
-        -o|-g) shift 2 ;;
-        -o*|-g*) shift ;;
-        *) arguments+=("$1"); shift ;;
+        -o) owner="${2:-}"; shift 2 ;;
+        -g) group="${2:-}"; shift 2 ;;
+        -m) shift 2 ;;
+        -d|--directory) install_directory=1; shift ;;
+        -o*) owner="${1#-o}"; shift ;;
+        -g*) group="${1#-g}"; shift ;;
+        -m*) shift ;;
+        -*) shift ;;
+        *) destinations+=("$1"); shift ;;
       esac
     done
-    exec /usr/bin/install "${arguments[@]}"
+    /usr/bin/install "${arguments[@]}"
+    install_status=$?
+    if [ "$install_status" -ne 0 ]; then exit "$install_status"; fi
+    if [ -n "$owner" ] && [ "${#destinations[@]}" -gt 0 ]; then
+      marker_owner="$owner:${group:-$owner}"
+      if [ "$install_directory" = 1 ]; then
+        for destination in "${destinations[@]}"; do owner_marker "$destination" "$marker_owner"; done
+      else
+        destination="${destinations[${#destinations[@]}-1]}"
+        source="${destinations[0]}"
+        if [ -d "$destination" ]; then
+          owner_marker "$destination/$(basename "$source")" "$marker_owner"
+        else
+          owner_marker "$destination" "$marker_owner"
+        fi
+      fi
+    fi
+    exit 0
     ;;
-  chown) record "chown $*" ;;
+  stat)
+    # stat is real except for ownership queries about a modelled path: a test can
+    # seed it, and an install/chown records it.
+    stat_format=
+    stat_target=
+    stat_original=("$@")
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -c|--format|--printf) stat_format="${2:-}"; shift 2 ;;
+        -c*) stat_format="${1#-c}"; shift ;;
+        --format=*) stat_format="${1#--format=}"; shift ;;
+        --printf=*) stat_format="${1#--printf=}"; shift ;;
+        -*) shift ;;
+        *) [ -n "$stat_target" ] || stat_target="$1"; shift ;;
+      esac
+    done
+    if [ -n "$stat_target" ] && [ -f "$state/stat-owner.tsv" ]; then
+      stat_owner="$(owner_lookup "$stat_target")"
+      if [ -n "$stat_owner" ]; then
+        case "$stat_format" in
+          '%U:%G') printf '%s\n' "$stat_owner"; exit 0 ;;
+          '%U') printf '%s\n' "${stat_owner%%:*}"; exit 0 ;;
+          '%G') printf '%s\n' "${stat_owner##*:}"; exit 0 ;;
+        esac
+      fi
+    fi
+    exec /usr/bin/stat "${stat_original[@]}"
+    ;;
+  mv)
+    # A rename moves the modelled ownership with the file, so the courier's
+    # tmp-file-then-rename install lane stays observable after the move.
+    mv_arguments=()
+    mv_destination=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -fnivub*|--force|--interactive|--no-clobber|--verbose) shift ;;
+        -*) shift ;;
+        *) mv_arguments+=("$1"); mv_destination="$1"; shift ;;
+      esac
+    done
+    if [ "${#mv_arguments[@]}" -ge 2 ]; then
+      mv_source="${mv_arguments[0]}"
+      mv_owner="$(owner_lookup "$mv_source")"
+      if [ -n "$mv_owner" ]; then
+        if [ -d "$mv_destination" ]; then
+          owner_marker "$mv_destination/$(basename "$mv_source")" "$mv_owner"
+        else
+          owner_marker "$mv_destination" "$mv_owner"
+        fi
+      fi
+    fi
+    exec /usr/bin/mv "${mv_arguments[@]}"
+    ;;
+  chown)
+    record "chown $*"
+    chown_owner=
+    chown_targets=()
+    for argument in "$@"; do
+      case "$argument" in
+        -*) ;;
+        *:*) [ -n "$chown_owner" ] || chown_owner="$argument" ;;
+        *) chown_targets+=("$argument") ;;
+      esac
+    done
+    if [ -n "$chown_owner" ]; then
+      for chown_target in "${chown_targets[@]}"; do owner_marker "$chown_target" "$chown_owner"; done
+    fi
+    ;;
   useradd)
     record "useradd $*"
     account=

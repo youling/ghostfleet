@@ -29,13 +29,15 @@ const UNIT_NAME = /^[a-z][a-z0-9_.-]{0,63}\.service$/;
 const SELECTION_TEXT_KEYS = new Set([
   "schema", "version", "template_digest", "helper_required", "linger_required",
   "user_service_required", "control_account", "privileged_account", "installer",
-  "privileged_key", "user_unit", "user_unit_artifact", "artifact",
+  "privileged_key", "user_unit", "user_unit_artifact", "user_unit_payload_artifact",
+  "user_unit_payload_path", "user_unit_payload_mode", "artifact",
 ]);
 const SELECTION_KEYS = [
   "source", "template_digest", "version", "helper_required", "linger_required",
   "user_service_required", "control_account", "privileged_account", "installer",
   "privileged_key", "user_unit", "artifacts",
 ];
+const USER_UNIT_KEYS = ["name", "artifact", "payload_artifact", "payload_path", "payload_mode"];
 
 const invalid = (code) => new Error(code);
 
@@ -62,10 +64,20 @@ export function capabilityDigest(selection) {
 export function selectedCapabilitiesFromPosture(posture, { userUnit = null } = {}) {
   const value = posture && typeof posture === "object" && !Array.isArray(posture) ? posture : {};
   const helper_required = value.privilege?.helper_required === true;
-  const linger_required = Array.isArray(value.roles) && value.roles.includes("managed");
-  const user_service_required = userUnit !== null && userUnit !== undefined;
-  if (!helper_required && !linger_required && !user_service_required) return null;
-  return Object.freeze({ helper_required, linger_required, user_service_required });
+  const managed = Array.isArray(value.roles) && value.roles.includes("managed");
+  // The managed role decides the service, never the caller's data: a managed
+  // template always means a managed user service plus Linger. Linger with no
+  // service is not a managed lane - it only grants the account a permanent
+  // residency semantic with nothing to keep alive - so a caller that forgets the
+  // reviewed worker unit fails closed here instead of silently downgrading.
+  if (managed && (userUnit === null || userUnit === undefined)) {
+    throw invalid("CAPABILITY_MANAGED_ARTIFACTS_INCOMPLETE");
+  }
+  if (!managed && userUnit !== null && userUnit !== undefined) {
+    throw invalid("CAPABILITY_NOT_REQUESTED_BY_TEMPLATE");
+  }
+  if (!helper_required && !managed) return null;
+  return Object.freeze({ helper_required, linger_required: managed, user_service_required: managed });
 }
 
 // Artifacts are pinned twice: by the content address that travels with the
@@ -86,9 +98,16 @@ function normalizeArtifacts(artifacts) {
     const hasContent = item.content !== undefined && item.content !== null;
     let sha256;
     if (hasContent) {
-      if (typeof item.content !== "string" || item.content.includes("\u0000")) throw invalid("CAPABILITY_ARTIFACT_CONTENT_INVALID");
-      if (!item.content.length) throw invalid("CAPABILITY_ARTIFACT_CONTENT_INVALID");
-      sha256 = "sha256:" + createHash("sha256").update(item.content, "utf8").digest("hex");
+      // A reviewed artifact is a byte string. Most fixtures are UTF-8 text, but
+      // the pinned agent payload is a zipapp, so a deployment bundle may carry
+      // raw bytes and the digest must cover exactly those bytes.
+      const bytes = typeof item.content === "string"
+        ? Buffer.from(item.content, "utf8")
+        : (item.content instanceof Uint8Array ? Buffer.from(item.content) : null);
+      if (!bytes) throw invalid("CAPABILITY_ARTIFACT_CONTENT_INVALID");
+      if (typeof item.content === "string" && item.content.includes("\u0000")) throw invalid("CAPABILITY_ARTIFACT_CONTENT_INVALID");
+      if (!bytes.length) throw invalid("CAPABILITY_ARTIFACT_CONTENT_INVALID");
+      sha256 = "sha256:" + createHash("sha256").update(bytes).digest("hex");
       // A declared digest is an assertion about the reviewed bytes, not a
       // second source of truth: a mismatch means the artifact changed after
       // review, so the deployment must re-review rather than relabel.
@@ -115,6 +134,181 @@ function normalizeArtifacts(artifacts) {
  * render time, so a malformed or unrequested privileged component can never
  * reach a host.
  */
+// Where the courier installs the pinned agent payload and the exact mode that
+// payload must carry. The released user unit starts this path and nothing else,
+// so the destination is part of the published contract and the courier
+// re-asserts the installed unit against the file it just wrote.
+export const AGENT_PAYLOAD_PATH = "/usr/local/libexec/ghostfleet/node-agent.pyz";
+export const AGENT_PAYLOAD_MODE = "0755";
+export const AGENT_USER_UNIT_NAME = "ghostfleet-managed.service";
+// Non-secret agent configuration. The courier writes it root:root 0644 so the
+// managed account reads its control-plane origin from a root-owned file
+// instead of trusting anything the task channel could deliver.
+export const AGENT_CONFIG_PATH = "/etc/ghostfleet/node-agent.json";
+
+// A deployment renders the reviewed selection, and only the review pins the
+// exact destination. The shape below keeps the courier from installing the
+// payload anywhere that is not a ghostfleet libexec directory while still
+// allowing the disposable-linux harness to relocate the prefix so the same
+// code path runs without root. Production always renders AGENT_PAYLOAD_PATH.
+const PAYLOAD_PATH_SHAPE = /^\/[A-Za-z0-9._/-]*\/libexec\/ghostfleet\/node-agent\.pyz$/;
+
+function isPayloadPath(value) {
+  return typeof value === "string"
+    && PAYLOAD_PATH_SHAPE.test(value)
+    && !value.includes("..")
+    && !value.includes("//");
+}
+
+// A pinned user unit is a launcher for the installed payload, never a script
+// transport. A unit that spawns a shell interpreter with -c, fetches remote
+// code, or declares any Exec directive other than ExecStart would let a later
+// template change turn the managed run account into arbitrary code execution.
+const UNIT_SHELL_INTERPRETER = /(^|[^A-Za-z0-9_.-])(sh|bash|dash|zsh)[ \t]+-c([^A-Za-z0-9_.-]|$)/;
+const UNIT_REMOTE_FETCH = /(^|[^A-Za-z0-9_.-])(curl|wget|fetch)([^A-Za-z0-9_.-]|$)/;
+const UNIT_BIN_SH = /(^|[^A-Za-z0-9_.-])\/bin\/sh([^A-Za-z0-9_.-]|$)/;
+// systemd accepts a small, documented value set per hardening directive. A unit
+// that asks for a value systemd rejects (ProtectHome=read-write was the shipped
+// draft) fails to start at all, so the shape is refused at render time instead
+// of being discovered on the managed host.
+const UNIT_HARDENING = new Map([
+  ["protecthome", ["yes", "no", "true", "false", "read-only", "tmpfs"]],
+  ["protectsystem", ["yes", "no", "true", "false", "full", "strict"]],
+  ["protectkerneltunables", ["yes", "no", "true", "false"]],
+  ["protectkernelmodules", ["yes", "no", "true", "false"]],
+  ["protectkernellogs", ["yes", "no", "true", "false"]],
+  ["protectcontrolgroups", ["yes", "no", "true", "false"]],
+  ["protectclock", ["yes", "no", "true", "false"]],
+  ["protecthostname", ["yes", "no", "true", "false"]],
+  ["protectproc", ["default", "invisible", "no", "yes", "true", "false"]],
+  ["nonewprivileges", ["yes", "no", "true", "false"]],
+  ["privatetmp", ["yes", "no", "true", "false", "disconnected"]],
+  ["privatedevices", ["yes", "no", "true", "false"]],
+  ["privateusers", ["yes", "no", "true", "false"]],
+  ["privateipc", ["yes", "no", "true", "false"]],
+  ["privatenetwork", ["yes", "no", "true", "false"]],
+  ["lockpersonality", ["yes", "no", "true", "false"]],
+  ["memorydenywriteexecute", ["yes", "no", "true", "false"]],
+  ["restrictsuidgid", ["yes", "no", "true", "false"]],
+  ["restrictrealtime", ["yes", "no", "true", "false"]],
+  ["restrictnamespaces", ["yes", "no", "true", "false"]],
+]);
+// Directives that hand the manager unit a writable path outside the run
+// account's own home. Only ReadWritePaths may open write access, and only for
+// %h-owned state, so a later template edit cannot widen the filesystem view.
+const UNIT_OUTSIDE_HOME = new Set([
+  "bindpaths", "bindreadonlypaths", "rootdirectory", "mountimages",
+  "runtimedirectory",
+]);
+// A --user unit resolves StateDirectory/ConfigurationDirectory under the run
+// account's own XDG directories, which is exactly where ReadWritePaths points.
+// systemd creates and owns those directories before the sandbox is built, so a
+// unit that lists %h/... in ReadWritePaths without declaring the matching
+// directory directive dies with status=226/NAMESPACE on a fresh host. Accept
+// only a single relative component (it cannot escape the home) and require the
+// directive to agree with every %h ReadWritePaths entry it has to provide.
+const UNIT_HOME_DIRECTORY = new Map([
+  ["statedirectory", ["%h/.local/state/", "state"]],
+  ["configurationdirectory", ["%h/.config/", "config"]],
+]);
+const UNIT_HOME_DIRECTORY_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+function assertUnitSafe(content, payloadPath) {
+  let execStart = 0;
+  let execStartArgv = "";
+  const declaredDirectories = new Map();
+  const requiredDirectories = new Map();
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) continue;
+    if (/^\[[A-Za-z]+\]$/.test(trimmed)) continue;
+    const directive = /^([A-Za-z][A-Za-z0-9]*)[ \t]*=(.*)$/.exec(trimmed);
+    if (!directive) throw invalid("CAPABILITY_USER_UNIT_UNSAFE");
+    const key = directive[1];
+    const value = directive[2].trim();
+    const lower = key.toLowerCase();
+    if (key === "ExecStart") {
+      execStart += 1;
+      execStartArgv = value;
+      continue;
+    }
+    if (lower.startsWith("exec")) throw invalid("CAPABILITY_USER_UNIT_UNSAFE");
+    if (lower === "readwritepaths") {
+      for (const token of value.split(/[ \t]+/).filter(Boolean)) {
+        const target = token.replace(/^-/, "");
+        if (!target.startsWith("%h/") || target.includes("..")) throw invalid("CAPABILITY_USER_UNIT_UNSAFE");
+        for (const [directive, [prefix, kind]] of UNIT_HOME_DIRECTORY) {
+          if (!target.startsWith(prefix)) continue;
+          const name = target.slice(prefix.length);
+          if (!name || name.includes("/")) throw invalid("CAPABILITY_USER_UNIT_UNSAFE");
+          requiredDirectories.set(directive, { name, kind });
+        }
+      }
+      continue;
+    }
+    if (UNIT_HOME_DIRECTORY.has(lower)) {
+      if (!UNIT_HOME_DIRECTORY_NAME.test(value)) throw invalid("CAPABILITY_USER_UNIT_UNSAFE");
+      declaredDirectories.set(lower, value);
+      continue;
+    }
+    if (lower === "workingdirectory") {
+      const target = value.replace(/^-/, "");
+      if (!target.startsWith("%h") || target.includes("..")) throw invalid("CAPABILITY_USER_UNIT_UNSAFE");
+      continue;
+    }
+    if (UNIT_OUTSIDE_HOME.has(lower)) throw invalid("CAPABILITY_USER_UNIT_UNSAFE");
+    const legal = UNIT_HARDENING.get(lower);
+    if (legal && !legal.includes(value)) throw invalid("CAPABILITY_USER_UNIT_UNSAFE");
+  }
+  for (const [directive, required] of requiredDirectories) {
+    if (declaredDirectories.get(directive) !== required.name) {
+      throw invalid("CAPABILITY_USER_UNIT_UNSAFE");
+    }
+  }
+  if (execStart > 1) throw invalid("CAPABILITY_USER_UNIT_UNSAFE");
+  if (execStart === 1) {
+    const argv = execStartArgv.split(/[ \t]+/).filter(Boolean);
+    const binary = argv[0];
+    if (!binary || !binary.startsWith("/")) throw invalid("CAPABILITY_USER_UNIT_UNSAFE");
+    if (binary === "/usr/bin/env") throw invalid("CAPABILITY_USER_UNIT_UNSAFE");
+    if (typeof payloadPath === "string" && payloadPath.length && !argv.includes(payloadPath)) {
+      throw invalid("CAPABILITY_USER_UNIT_UNSAFE");
+    }
+    // The production launcher is exactly the reviewed literal: the system
+    // interpreter with -I (no site-packages, no PYTHONPATH), the pinned payload
+    // path and the run subcommand. --config/--token/--url style overrides are a
+    // test seam on the agent and must never be reachable from the shipped unit.
+    if (argv.some((token) => /^--(config|token|url|endpoint|host|auth|credential)(=|$)/.test(token))) {
+      throw invalid("CAPABILITY_USER_UNIT_UNSAFE");
+    }
+    if (typeof payloadPath === "string" && payloadPath.length) {
+      const expectedArgv = ["/usr/bin/python3", "-I", payloadPath, "run"];
+      if (argv.length !== expectedArgv.length || expectedArgv.some((token, index) => argv[index] !== token)) {
+        throw invalid("CAPABILITY_USER_UNIT_UNSAFE");
+      }
+    }
+  }
+  if (UNIT_SHELL_INTERPRETER.test(content) || UNIT_REMOTE_FETCH.test(content) || UNIT_BIN_SH.test(content)) {
+    throw invalid("CAPABILITY_USER_UNIT_UNSAFE");
+  }
+}
+
+// The managed role pins two artifacts by name: the launcher bytes and the
+// runtime bytes the launcher starts. A deployment may address the runtime by
+// its content digest instead of its pinned name; both forms resolve to the
+// pinned row so the encoded claim and the rendered block stay name-addressed.
+function resolveManagedArtifact(declared, artifacts, names) {
+  if (typeof declared !== "string" || !declared.length) {
+    throw invalid("CAPABILITY_MANAGED_ARTIFACTS_INCOMPLETE");
+  }
+  if (names.has(declared)) return artifacts.find((item) => item.name === declared);
+  const digest = declared.replace(/^sha256:/, "");
+  if (RAW_DIGEST.test(digest)) {
+    const matches = artifacts.filter((item) => item.sha256 === digest);
+    if (matches.length === 1) return matches[0];
+  }
+  throw invalid("CAPABILITY_MANAGED_ARTIFACTS_INCOMPLETE");
+}
+
 export function normalizeSelectedCapability(selection) {
   if (selection === null || selection === undefined) return null;
   if (typeof selection !== "object" || Array.isArray(selection)) throw invalid("CAPABILITY_SELECTION_INVALID");
@@ -130,6 +324,11 @@ export function normalizeSelectedCapability(selection) {
   const helper_required = selection.helper_required === true;
   const linger_required = selection.linger_required === true;
   const user_service_required = selection.user_service_required === true;
+  // Linger exists only to keep the managed user service alive without a login
+  // session. A selection that asks for Linger but installs no service would open
+  // a permanent residency semantic for the account with nothing to hold alive -
+  // a downgraded managed lane, never a managed lane - so the shape is refused.
+  if (linger_required && !user_service_required) throw invalid("CAPABILITY_LINGER_REQUIRES_USER_SERVICE");
   const selected = helper_required || linger_required || user_service_required;
   const artifacts = normalizeArtifacts(selection.artifacts ?? []);
   if (artifacts.length > CAPABILITY_MAX_ARTIFACTS) throw invalid("CAPABILITY_TOO_MANY_ARTIFACTS");
@@ -170,11 +369,39 @@ export function normalizeSelectedCapability(selection) {
     privileged_key = null;
   }
   if (user_service_required) {
+    // A user service without Linger disappears when the Human's last session
+    // ends, so it is not a managed service at all: refuse the shape instead of
+    // installing a lane whose lifetime is decided by someone else's logout.
+    if (!linger_required) throw invalid("CAPABILITY_USER_SERVICE_REQUIRES_LINGER");
     const unit = selection.user_unit;
     if (!unit || typeof unit !== "object" || Array.isArray(unit)) throw invalid("CAPABILITY_USER_UNIT_REQUIRED");
+    for (const key of Object.keys(unit)) {
+      if (!USER_UNIT_KEYS.includes(key)) throw invalid("CAPABILITY_USER_UNIT_INVALID");
+    }
     if (typeof unit.name !== "string" || !UNIT_NAME.test(unit.name)) throw invalid("CAPABILITY_USER_UNIT_INVALID");
     if (typeof unit.artifact !== "string" || !names.has(unit.artifact)) throw invalid("CAPABILITY_USER_UNIT_NOT_PINNED");
-    user_unit = Object.freeze({ name: unit.name, artifact: unit.artifact });
+    // The managed role owns two artifacts: the launcher bytes and the runtime
+    // bytes it starts. A selection that pins only one of them is refused here,
+    // which is the only place that can stop a half-installable managed lane.
+    const payloadArtifact = resolveManagedArtifact(unit.payload_artifact, artifacts, names);
+    if (payloadArtifact.name === unit.artifact) throw invalid("CAPABILITY_USER_UNIT_PAYLOAD_INVALID");
+    // The destination and the mode are contract, not preference: the courier
+    // writes the payload root:root 0755 at the reviewed path and starts exactly
+    // that file, so a selection that redirects either one is refused.
+    if (unit.payload_path !== AGENT_PAYLOAD_PATH && !isPayloadPath(unit.payload_path)) {
+      throw invalid("CAPABILITY_USER_UNIT_PAYLOAD_INVALID");
+    }
+    if (unit.payload_mode !== AGENT_PAYLOAD_MODE) throw invalid("CAPABILITY_USER_UNIT_PAYLOAD_INVALID");
+    if (payloadArtifact.mode !== AGENT_PAYLOAD_MODE) throw invalid("CAPABILITY_USER_UNIT_PAYLOAD_INVALID");
+    const unitArtifact = artifacts.find((item) => item.name === unit.artifact);
+    if (typeof unitArtifact.content === "string") assertUnitSafe(unitArtifact.content, unit.payload_path);
+    user_unit = Object.freeze({
+      name: unit.name,
+      artifact: unit.artifact,
+      payload_artifact: payloadArtifact.name,
+      payload_path: unit.payload_path,
+      payload_mode: AGENT_PAYLOAD_MODE,
+    });
   } else if (selection.user_unit !== null && selection.user_unit !== undefined) {
     throw invalid("CAPABILITY_NOT_REQUESTED_BY_TEMPLATE");
   }
@@ -212,7 +439,8 @@ export function renderCapabilityBlock(selection) {
       "CAPABILITY_PRIVILEGED_ACCOUNT=''",
       "CAPABILITY_INSTALLER=''", "CAPABILITY_PRIVILEGED_KEY=''",
       "CAPABILITY_USER_UNIT=''", "CAPABILITY_USER_UNIT_ARTIFACT=''",
-      "CAPABILITY_ARTIFACT_COUNT=0");
+      "CAPABILITY_USER_UNIT_PAYLOAD_ARTIFACT=''", "CAPABILITY_USER_UNIT_PAYLOAD_PATH=''",
+      "CAPABILITY_USER_UNIT_PAYLOAD_MODE=''", "CAPABILITY_ARTIFACT_COUNT=0");
     return lines.join("\n");
   }
   lines.push(
@@ -231,6 +459,9 @@ export function renderCapabilityBlock(selection) {
     "CAPABILITY_PRIVILEGED_KEY=" + quote(normalized.privileged_key ?? ""),
     "CAPABILITY_USER_UNIT=" + quote(normalized.user_unit?.name ?? ""),
     "CAPABILITY_USER_UNIT_ARTIFACT=" + quote(normalized.user_unit?.artifact ?? ""),
+    "CAPABILITY_USER_UNIT_PAYLOAD_ARTIFACT=" + quote(normalized.user_unit?.payload_artifact ?? ""),
+    "CAPABILITY_USER_UNIT_PAYLOAD_PATH=" + quote(normalized.user_unit?.payload_path ?? ""),
+    "CAPABILITY_USER_UNIT_PAYLOAD_MODE=" + quote(normalized.user_unit?.payload_mode ?? ""),
     "CAPABILITY_ARTIFACT_COUNT=" + normalized.artifacts.length,
   );
   normalized.artifacts.forEach((item, index) => {
@@ -289,6 +520,9 @@ export function encodeCapabilitySelection(selection, { templateDigest = null } =
     "privileged_key=" + (normalized.privileged_key ?? ""),
     "user_unit=" + (normalized.user_unit?.name ?? ""),
     "user_unit_artifact=" + (normalized.user_unit?.artifact ?? ""),
+    "user_unit_payload_artifact=" + (normalized.user_unit?.payload_artifact ?? ""),
+    "user_unit_payload_path=" + (normalized.user_unit?.payload_path ?? ""),
+    "user_unit_payload_mode=" + (normalized.user_unit?.payload_mode ?? ""),
   ];
   for (const item of normalized.artifacts) {
     // A1: the claim delivers the content address, never the artifact bytes.
@@ -336,7 +570,15 @@ export function decodeCapabilitySelection(text, { templateDigest = null } = {}) 
     privileged_account: fields.get("privileged_account"),
     installer: fields.get("installer") || null,
     privileged_key: fields.get("privileged_key") || null,
-    user_unit: fields.get("user_unit") ? { name: fields.get("user_unit"), artifact: fields.get("user_unit_artifact") } : null,
+    user_unit: fields.get("user_unit")
+      ? {
+        name: fields.get("user_unit"),
+        artifact: fields.get("user_unit_artifact"),
+        payload_artifact: fields.get("user_unit_payload_artifact"),
+        payload_path: fields.get("user_unit_payload_path"),
+        payload_mode: fields.get("user_unit_payload_mode"),
+      }
+      : null,
     artifacts,
   });
 }
@@ -353,6 +595,9 @@ export function capabilitySelectionDigest(selection) {
     selection.privileged_key ?? "",
     selection.user_unit?.name ?? "",
     selection.user_unit?.artifact ?? "",
+    selection.user_unit?.payload_artifact ?? "",
+    selection.user_unit?.payload_path ?? "",
+    selection.user_unit?.payload_mode ?? "",
   ];
   const rows = selection.artifacts
     .map((item) => item.name + "|" + item.sha256 + "|" + item.mode)

@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+# Synthetic GhostFleet node agent payload fixture - NOT the product agent.
+# It models only the startup configuration contract the real agent (a Python
+# zipapp built from packages/node-agent) enforces, so the courier's generated
+# /etc/ghostfleet/node-agent.json can be replayed deterministically through
+# `check-config`. It performs no network, credential or protocol work and must
+# never be installed as a production payload.
+"""Synthetic GhostFleet node agent payload (test fixture)."""
+
+import json
+import os
+import re
+import stat
+import sys
+from urllib.parse import urlsplit
+
+TOP_LEVEL_KEYS = frozenset({
+    "control_plane_origin",
+    "control_plane_url",
+    "heartbeat_interval_s",
+    "heartbeat_interval_min_s",
+    "heartbeat_interval_max_s",
+    "jitter_ratio",
+    "request_timeout_s",
+    "allowed_units",
+    "token_path",
+    "node_meta_path",
+    "state_dir",
+    "interval_s",
+    "agent_version",
+})
+MIN_INTERVAL_S = 15.0
+MAX_INTERVAL_S = 300.0
+MAX_ALLOWED_UNITS = 16
+UNIT_RE = re.compile(r"^[a-z][a-z0-9_.@-]{0,63}\.service$")
+NODE_UID_RE = re.compile(r"^node-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+ABSOLUTE_KEYS = ("token_path", "node_meta_path", "state_dir")
+CREDENTIAL_CODES = frozenset({
+    "CREDENTIAL_TOKEN_MISSING",
+    "CREDENTIAL_TOKEN_INVALID",
+    "CREDENTIAL_NODE_META_MISSING",
+    "CREDENTIAL_NODE_META_INVALID",
+    "AGENT_CREDENTIAL_PERMISSIVE",
+})
+
+
+class ConfigError(Exception):
+    def __init__(self, code, detail, status=2):
+        super().__init__(code)
+        self.code = code
+        self.detail = detail
+        self.status = status
+
+
+def _emit(payload):
+    sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
+
+
+def _read_regular(path, missing_code, invalid_code, field):
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        raise ConfigError(missing_code, field, 3) from None
+    except OSError:
+        raise ConfigError(invalid_code, field, 3) from None
+    if not stat.S_ISREG(info.st_mode):
+        raise ConfigError(invalid_code, field, 3)
+    with open(path, "rb") as handle:
+        return handle.read(65536), info
+
+
+def _origin(value):
+    if not isinstance(value, str) or not value:
+        raise ConfigError("CONFIG_TYPE_INVALID", "control_plane_origin")
+    parts = urlsplit(value)
+    if parts.scheme != "https" or not parts.hostname:
+        raise ConfigError("CONFIG_URL_INVALID", "control_plane_origin")
+    if parts.username or parts.password or parts.query or parts.fragment:
+        raise ConfigError("CONFIG_URL_INVALID", "control_plane_origin")
+    if parts.path not in ("", "/"):
+        raise ConfigError("CONFIG_URL_INVALID", "control_plane_origin")
+    return value
+
+
+def _interval(config, name, default):
+    if name not in config:
+        return default
+    value = config[name]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError("CONFIG_TYPE_INVALID", name)
+    number = float(value)
+    if number < MIN_INTERVAL_S or number > MAX_INTERVAL_S:
+        raise ConfigError("CONFIG_VALUE_INVALID", name)
+    return number
+
+
+def _allowed_units(value):
+    if not isinstance(value, list):
+        raise ConfigError("CONFIG_TYPE_INVALID", "allowed_units")
+    if len(value) > MAX_ALLOWED_UNITS or len(set(map(str, value))) != len(value):
+        raise ConfigError("CONFIG_UNIT_INVALID", "allowed_units")
+    for unit in value:
+        if not isinstance(unit, str) or not UNIT_RE.fullmatch(unit):
+            raise ConfigError("CONFIG_UNIT_INVALID", "allowed_units")
+    return list(value)
+
+
+def _load_token(path):
+    raw, _info = _read_regular(
+        path, "CREDENTIAL_TOKEN_MISSING", "CREDENTIAL_TOKEN_INVALID", "token_path"
+    )
+    try:
+        token = raw.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        raise ConfigError("CREDENTIAL_TOKEN_INVALID", "token_path", 3) from None
+    if not token:
+        raise ConfigError("CREDENTIAL_TOKEN_MISSING", "token_path", 3)
+    for char in token:
+        if char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F:
+            raise ConfigError("CREDENTIAL_TOKEN_INVALID", "token_path", 3)
+    if len(token) > 512:
+        raise ConfigError("CREDENTIAL_TOKEN_INVALID", "token_path", 3)
+    return token
+
+
+def _verify_token_trust(path):
+    info = os.lstat(path)
+    if not stat.S_ISREG(info.st_mode):
+        raise ConfigError("AGENT_CREDENTIAL_PERMISSIVE", "token_path", 3)
+    if info.st_uid != os.geteuid():
+        raise ConfigError("AGENT_CREDENTIAL_PERMISSIVE", "token_path", 3)
+    if stat.S_IMODE(info.st_mode) != 0o600:
+        raise ConfigError("AGENT_CREDENTIAL_PERMISSIVE", "token_path", 3)
+
+
+def _load_node_uid(path):
+    raw, _info = _read_regular(
+        path, "CREDENTIAL_NODE_META_MISSING", "CREDENTIAL_NODE_META_INVALID", "node_meta_path"
+    )
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise ConfigError("CREDENTIAL_NODE_META_INVALID", "node_meta_path", 3) from None
+    if not isinstance(document, dict):
+        raise ConfigError("CREDENTIAL_NODE_META_INVALID", "node_meta_path", 3)
+    node_uid = document.get("node_uid")
+    if not isinstance(node_uid, str) or not NODE_UID_RE.fullmatch(node_uid):
+        raise ConfigError("CREDENTIAL_NODE_META_INVALID", "node_meta_path", 3)
+    return node_uid
+
+
+def check_config(path):
+    try:
+        raw = open(path, "rb").read(65536)
+    except OSError:
+        raise ConfigError("CONFIG_FILE_MISSING", path, 3) from None
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise ConfigError("CONFIG_JSON_INVALID", path) from None
+    if not isinstance(document, dict):
+        raise ConfigError("CONFIG_NOT_OBJECT", path)
+    unknown = sorted(set(document) - TOP_LEVEL_KEYS)
+    if unknown:
+        raise ConfigError("CONFIG_UNKNOWN_KEY", unknown[0])
+    if "control_plane_origin" not in document:
+        raise ConfigError("CONFIG_MISSING_FIELD", "control_plane_origin")
+    origin = _origin(document["control_plane_origin"])
+    upper = _interval(document, "heartbeat_interval_max_s", 300.0)
+    lower = _interval(document, "heartbeat_interval_min_s", MIN_INTERVAL_S)
+    heartbeat = _interval(document, "heartbeat_interval_s", 30.0)
+    if lower > heartbeat or heartbeat > upper:
+        raise ConfigError("CONFIG_VALUE_INVALID", "heartbeat_interval_s")
+    units = _allowed_units(document.get("allowed_units", []))
+    for key in ABSOLUTE_KEYS:
+        if key in document:
+            value = document[key]
+            if not isinstance(value, str) or not os.path.isabs(value):
+                raise ConfigError("CONFIG_VALUE_INVALID", key)
+    home = os.path.expanduser("~")
+    token_path = document.get("token_path", os.path.join(home, ".config", "ghostfleet", "node-token"))
+    meta_path = document.get("node_meta_path", os.path.join(home, ".config", "ghostfleet", "node.json"))
+    token = _load_token(token_path)
+    _verify_token_trust(token_path)
+    node_uid = _load_node_uid(meta_path)
+    _emit({
+        "ok": True,
+        "command": "check-config",
+        "control_plane_host": urlsplit(origin).hostname,
+        "node_uid": node_uid,
+        "allowed_units": len(units),
+        "state_dir": document.get(
+            "state_dir", os.path.join(home, ".local", "state", "ghostfleet-agent")
+        ),
+        "token_present": bool(token),
+    })
+    return 0
+
+
+def main(argv):
+    if not argv:
+        _emit({"ok": False, "code": "COMMAND_MISSING"})
+        return 2
+    command = argv[0]
+    if command in ("run", "status"):
+        return 0
+    if command != "check-config":
+        _emit({"ok": False, "code": "COMMAND_UNKNOWN"})
+        return 2
+    config_path = None
+    index = 1
+    while index < len(argv):
+        argument = argv[index]
+        if argument == "--config" and index + 1 < len(argv):
+            config_path = argv[index + 1]
+            index += 2
+            continue
+        if argument.startswith("--config="):
+            config_path = argument.split("=", 1)[1]
+            index += 1
+            continue
+        _emit({"ok": False, "code": "ARGUMENT_UNKNOWN"})
+        return 2
+    if not config_path:
+        _emit({"ok": False, "code": "CONFIG_PATH_REQUIRED"})
+        return 2
+    try:
+        return check_config(config_path)
+    except ConfigError as error:
+        _emit({"ok": False, "code": error.code, "detail": error.detail})
+        return error.status
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
