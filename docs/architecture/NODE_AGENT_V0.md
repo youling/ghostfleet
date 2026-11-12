@@ -165,6 +165,7 @@ ProtectSystem=strict
 ProtectHome=read-only
 StateDirectory=ghostfleet-agent
 ConfigurationDirectory=ghostfleet
+ConfigurationDirectoryMode=0700
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
@@ -189,6 +190,11 @@ WantedBy=default.target
 - **故障恢复**：`Restart=on-failure` + `RestartSec=5`（正常 `SIGTERM` 退出 0 不重启，异常退出/信号/看门狗超时才重启，语义边界明确）；`WatchdogSec=60` 由 Agent 每次循环 `sd_notify(WATCHDOG=1)` 喂狗，卡死则被杀重启。
 - **配置有效性必测**：unit 必须通过 `systemd-analyze --user verify`；`ProtectHome=read-only` 是合法取值（`read-write` 不是，旧稿已修），真实读写目录只经 `ReadWritePaths` 精确开放。
 - **目录必须先存在**（实测教训）：`ReadWritePaths` 指向不存在的目录会让服务在挂载命名空间阶段直接失败（`status=226/NAMESPACE`，且 `Restart=on-failure` 会无限重试）。因此 unit 用 `StateDirectory=ghostfleet-agent` + `ConfigurationDirectory=ghostfleet` 让 systemd 创建这两个目录（`verify` 与启动均通过），courier 安装时也要创建并把 `~/.config/ghostfleet` 收紧到 `0700`——两条路径互为自愈。
+- **user manager 的硬化会隐式启用 `PrivateUsers=`（实测，2026-11-12）**：`man systemd.exec` 明确写着，mount 类保护项（`PrivateTmp`/`PrivateDevices`/`ProtectSystem`/`ProtectHome` 等）在 per-user manager 里只有隐式开启 `PrivateUsers=` 才可用。实际效果：服务进程处在只映射自身 UID 的 user namespace（`/proc/self/uid_map` = `1002 1002 1`），**host root 拥有的文件在沙箱内一律显示为 overflow uid**（`/proc/sys/kernel/overflowuid`，默认 65534），同时 `/` 被以 `ro` 挂载。实测（Ubuntu 24.04 / systemd 255）：沙箱内 `stat /etc/ghostfleet/node-agent.json` 得到 `65534:65534 0644`、`/` 挂载选项 `ro,relatime`。因此在 unit 里用「`st_uid == 0`」判 host root 归属**必然失败**——首轮真机启动就是这么挂的：`AGENT_CONFIG_UNTRUSTED` / `CONFIG_OWNER_NOT_ROOT`，退出 3，`Restart=on-failure` 无限重启。
+- **host-root 信任判据（Agent 与能力投影共用同一实现）**：默认路径上的文件可信，当且仅当它是常规文件（`lstat`，非符号链接），且满足其一：(a) `uid 0` 在当前 `/proc/self/uid_map` 中已映射时 `st_uid == 0`；或 (b) `uid 0` 未映射时 `st_uid == overflowuid` **且** 该路径在 `/proc/self/mountinfo` 中按最长前缀匹配到的挂载带 `ro` **且** `os.access(path, W_OK)` 为假。配置文件另要求 `mode == 0644`；`/etc/ghostfleet/capability-status.json` 另要求 `mode & 0o022 == 0`。mountinfo 读不到或解析失败一律 fail closed。
+  - (b) 不是放宽：在只映射自身 UID 的命名空间里「host root 拥有」与「host 65534 拥有」在 uid 上无法区分，唯一的内核级等价不变量是只读挂载；`RestrictNamespaces=yes` 又阻止服务自己再建 mount namespace 造可写视图。门禁真正要保证的是「托管账户改不了这个文件」，`ro` 挂载由内核强制，等价成立。
+  - 负向臂必须证明：可写挂载上的 overflow uid 文件仍被拒；`W_OK` 为真被拒；mode 不是 0644 被拒；`uid_map` 映射了 0 但 `st_uid != 0` 被拒。
+- **`ConfigurationDirectoryMode=0700`**：courier 为放 `node-token` 把 `~/.config/ghostfleet` 建成 `0700`，而 `ConfigurationDirectory=ghostfleet` 默认要求 `0755`，systemd 每次启动都告警 `ConfigurationDirectory 'ghostfleet' already exists but the mode is different (File system: 700 ConfigurationDirectoryMode: 755)`；若目录尚未存在，systemd 会按 0755 创建。unit 必须显式 `ConfigurationDirectoryMode=0700` 与 courier 口径对齐；`StateDirectoryMode` 保持默认（状态目录不放秘密）。
 - **安全停止**：`SIGTERM` → 停止取新任务、flush outbox（有界超时 10 s）、写 `last_stop` 事实、退出 0。
 - **健康可见性**：`systemctl --user show` 的 `ActiveState`/`NRestarts`/`ExecMainStatus` 外加 Agent 自报的 `health`，构成独立消费者可观察的外部证据。
 
@@ -202,6 +208,7 @@ WantedBy=default.target
 | 恶意任务（提权/命令注入） | 双端 allowlist、无 shell、数组传参、禁用键递归检查、参数长度与深度上限 |
 | 崩溃后重复执行 | `MAY_HAVE_EXECUTED` 栅栏 + 服务端按 `task_id` 幂等 |
 | Agent 越权 | 无 sudo、无特权组、无 Helper 访问；`NoNewPrivileges`、`ProtectSystem=strict`（`/var/lib/fleet`、`/etc/sudoers.d` 均不可写） |
+| 伪造 root-owned 配置/投影 | 信任判据是「host root 拥有」或（user namespace 内）「只读挂载 + overflow uid + 当前用户不可写」；`RestrictNamespaces=yes` 阻止自造挂载视图；判据解析失败 fail closed |
 | 日志泄密 | 字段白名单 + 脱敏 + 只写 stdout |
 | 资源耗尽 | `MemoryMax`、`TasksMax`、body 上限、队列表上限、退避封顶 |
 
@@ -221,7 +228,8 @@ WantedBy=default.target
 4. 发布选择必须显式 `user_service_required=true` 且声明 `managed` 角色；缺 unit 或 pyz 制品 → `fail closed`（`CAPABILITY_MANAGED_ARTIFACTS_INCOMPLETE`），不再“没 unit 就当不需要”。
 5. unit 的 `ExecStart` 是**唯一**启动形态：必须精确等于 `/usr/bin/python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz run`，不得携带 `--config`/`--token`/`--url` 等参数。`--config` 只是测试与排障口子（信任规则仅要求属主为当前用户且组/其他不可写），生产路径固定读 root 拥有的 `/etc/ghostfleet/node-agent.json`；unit 是 pin 过的 root 安装制品，参数面不给攻击者留扩展位。
 6. 回滚必须与本 run 的写入对称：若 `/etc/ghostfleet/capability-status.json` 由本次安装写入，回滚要在同一原子序列里删除它（旧文件已存在则恢复原字节）。不许出现「已回滚但投影还写着新 SHA」的状态——那会让 agent 上报 READY 而实际跑的是旧制品。
-7. unit 文本必须通过 `systemd-analyze --user verify`（CI 与 disposable 各一次），并断言不含 `sh -c`/`curl`/`wget`/`/bin/sh`、不写 `%h` 之外路径、不声明 `ProtectHome=read-write` 之类非法取值（`CAPABILITY_USER_UNIT_UNSAFE`）。
+7. `/etc/ghostfleet/capability-status.json` 只能由一个产品内写入器产出（courier 与验收共用同一个函数/命令，禁止验收脚本手写 JSON 绕过），输入是已校验的 selection 与 artifact 实测摘要，写出用 tmp+fsync+rename 原子替换，schema `ghostfleet-capability-status/v1`。
+8. unit 文本必须通过 `systemd-analyze --user verify`（CI 与 disposable 各一次），并断言不含 `sh -c`/`curl`/`wget`/`/bin/sh`、不写 `%h` 之外路径、不声明 `ProtectHome=read-write` 之类非法取值（`CAPABILITY_USER_UNIT_UNSAFE`）。
 
 ## 12. 验收矩阵
 
@@ -231,6 +239,7 @@ WantedBy=default.target
 | 开机恢复 | `loginctl terminate-user` / 重启 user manager 后服务自动回来，无需人类登录 | 真实 systemd |
 | 故障恢复 | `kill -9` 主进程 → `Restart=on-failure` 拉回，`NRestarts` +1，心跳恢复；`SIGTERM` 干净退出 0 且**不**重启 | 真实 systemd |
 | 配置有效 | `systemd-analyze --user verify` 通过；保护项与实际读写路径一致（写入被拒的路径确实被拒） | 真实 systemd |
+| 沙箱信任判据 | 真实 systemd 下 unit `active` + `READY`（同时证明 `PrivateUsers` 里 `sd_notify` 可用）；EVIDENCE 记录沙箱内 `uid_map`、`overflowuid`、`/` 的 `ro` 挂载、配置文件的沙箱内 uid/mode；负向臂「rw 挂载 + overflow uid 文件」被拒 | 真实 systemd + 单元测试 |
 | 持续工作 | 控制面下发 `node.observe`/`service.status.read`，节点返回真实观测，且两次结果随时间变化 | 端到端 |
 | 身份安全 | 三账户隔离（Human / ops / managed）；managed 无 sudo、无 ops 组 | 真实 systemd + 断言 |
 | 权限安全 | managed 直接调用 Helper → 被 `dedicated_caller_identity` 拒；`sudo -n` 被拒 | 负向证明 |
