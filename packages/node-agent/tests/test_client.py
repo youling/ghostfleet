@@ -468,13 +468,43 @@ def test_conflict_retry_is_skipped_when_the_timeout_budget_is_spent():
         f"/v0/nodes/{NODE_UID}/heartbeat",
         _heartbeat_body,
         category=CATEGORY_HEARTBEAT,
-        timeout_s=0.25,
+        timeout_s=0.6,
     )
-    # 0.25 s 预算已被第一次 409 花掉 0.2 s，剩余 0.05 s < MIN_SEND_WINDOW_S：不重试。
+    # 0.6 s 预算被第一次 409 花掉 0.2 s，剩余 0.4 s < MIN_SEND_WINDOW_S + 本地构包开销：不重试。
     assert len(transport.calls) == 1
-    assert transport.calls[0]["timeout_s"] == pytest.approx(0.25)
+    assert transport.calls[0]["timeout_s"] == pytest.approx(0.6)
     assert response.kind == OUTCOME_NONCE_REPLAY
-    assert clock["now"] - 500.0 <= 0.25
+    assert clock["now"] - 500.0 <= 0.6
+
+
+def test_request_is_not_sent_when_the_local_build_consumes_the_budget():
+    """P3：剩余预算连 MIN_SEND_WINDOW_S 都不到时，一个字节都不发。
+
+    旧实现只在 remaining <= 0 时放弃，且 _request_timeout 有 max(0.05, …) 地板：
+    预算 1.0 s、本地构包 0.999 s 时仍会 POST 0.05 s → 墙钟 1.049 s，超过预算。
+    """
+    clock = {"now": 2000.0}
+    transport = TimedTransport(
+        [json_response(409, {"code": NODE_NONCE_REPLAY}), json_response(200, {"interval_s": 30, "tasks": []})],
+        clock,
+        0.1,
+    )
+    client = make_client(transport, monotonic=lambda: clock["now"])
+
+    def slow_body(nonce):
+        clock["now"] += 0.999  # 本地构包/序列化几乎吃穿预算
+        return _heartbeat_body(nonce)
+
+    response = client.send(
+        f"/v0/nodes/{NODE_UID}/heartbeat",
+        slow_body,
+        category=CATEGORY_HEARTBEAT,
+        timeout_s=1.0,
+    )
+    assert transport.calls == []
+    assert response.kind == OUTCOME_NETWORK_ERROR
+    assert response.code == AGENT_NETWORK_ERROR
+    assert clock["now"] - 2000.0 <= 1.0
 
 
 def test_local_build_cost_is_charged_before_the_first_attempt():

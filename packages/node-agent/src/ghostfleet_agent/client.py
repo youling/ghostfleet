@@ -458,9 +458,11 @@ class ControlPlaneClient:
         if len(encoded) > limit:
             raise ProtocolError(AGENT_PAYLOAD_TOO_LARGE, "request body exceeds endpoint limit")
         remaining = self._remaining(deadline)
-        if remaining is not None and remaining <= 0.0:
-            # 本地构包已吃穿预算：连一次最小请求都发不出去，直接按网络错误交给上层
-            # 退避（绝不"再补一份预算"）。剩余>0 时仍然尝试，只是把超时钳到剩余值。
+        if remaining is not None and remaining < MIN_SEND_WINDOW_S:
+            # 本地构包已把预算吃到不足以发一次有意义的请求：一个字节都不发，直接按网络
+            # 错误交给上层退避（绝不"再补一份预算"）。不能用"剩余>0 就发、超时抬到
+            # 0.05 s 地板"的写法：剩余 0.001 s 仍会 POST 0.05 s，墙钟就超过预算约 49 ms，
+            # README:181「一次 send 的墙钟不超过它的预算」也就不成立了。
             self.logger.warning(
                 "request_budget_exhausted_before_post",
                 category=category,

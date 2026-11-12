@@ -261,35 +261,66 @@ class AgentLoop:
         self._replay_outbox_dropped()
         task_ids = self.ledger.pending_reconcile()
         for task_id in task_ids:
-            entry = self.ledger.get(task_id) or {}
-            self._reconcile_task(task_id, entry.get("operation"))
+            self._reconcile_task(task_id)
         if task_ids:
             self.logger.info("startup_reconcile", tasks=len(task_ids))
         return len(task_ids)
 
-    def _reconcile_task(self, task_id: str, operation) -> None:
+    def _reconcile_task(self, task_id: str) -> None:
+        """对"已栅栏、未收敛"的 task 补事实；operation 一律取自账本，绝不看新 envelope。
+
+        账本里的 operation 是 begin() 当时记下的那一次，控制面据此（ADR:109）校验
+        result.operation 必须等于任务 operation。若用新到达 envelope 的 operation
+        回 UNKNOWN（例如原任务 node.observe、重投 envelope 却是 capability.inspect），
+        控制面会回 409 TASK_OPERATION_MISMATCH，client 把它归入永久拒绝、outbox 删除
+        该结果；而账本已是终态，下一次重投被 inspect() 直接跳过——一个 MAY_HAVE_EXECUTED
+        的任务就永远没有可接受的结果了。
+        """
+        entry = self.ledger.get(task_id)
+        recorded = entry.get("operation") if isinstance(entry, dict) else None
+        ledger_operation = recorded if isinstance(recorded, str) and recorded else "unknown"
         existing = self.outbox.get(task_id)
         if existing is not None:
             body = existing.get("body") if isinstance(existing.get("body"), dict) else {}
             result = body.get("result") if isinstance(body.get("result"), dict) else None
             status = result.get("status") if isinstance(result, dict) else None
             digest = body.get("result_digest")
-            if status in RESULT_STATUSES and isinstance(digest, str):
-                # 结果已在 outbox：以事实为准补齐 ledger 终态，绝不重跑。
+            queued_operation = result.get("operation") if isinstance(result, dict) else None
+            if status in RESULT_STATUSES and isinstance(digest, str) and queued_operation == ledger_operation:
+                # 结果已在 outbox 且 operation 与账本一致：以事实为准补齐 ledger 终态，绝不重跑。
                 self.ledger.complete(task_id, status, result_digest=digest)
-            else:
-                self.ledger.mark_unknown(task_id)
-            self.ledger.mark_reconciled(task_id)
-            return
-        safe_operation = operation if isinstance(operation, str) and operation else "unknown"
+                self.ledger.mark_reconciled(task_id)
+                return
+            # 队列里的 body 不能原样发送：operation 与账本不一致会被控制面永久 409 丢弃，
+            # 发送出去的也就不是"这个 task 的已提交结果"。撤回并按账本 operation 重建 UNKNOWN。
+            self.logger.error(
+                "queued_result_not_sendable",
+                task_id=task_id,
+                queued_operation=queued_operation if isinstance(queued_operation, str) else None,
+                queued_status=status if isinstance(status, str) else None,
+                ledger_operation=ledger_operation,
+            )
+            try:
+                removed = self.outbox.retract(task_id)
+            except OutboxWriteError as error:
+                # 撤不回内存/磁盘：发送闸（_result_digest_committed）会按摘要不匹配拒发，
+                # 这里仍按账本事实收敛终态，绝不把这个 body 发出去（fail closed）。
+                removed = False
+                self.logger.error("queued_result_retract_failed", task_id=task_id, outbox_error=str(error))
+            if not removed:
+                self.logger.error("queued_result_left_pending_unsendable", task_id=task_id)
         result = make_result(
             task_id=task_id,
             node_uid=self.node_uid,
-            operation=safe_operation,
+            operation=ledger_operation,
             status=RESULT_UNKNOWN,
             code=AGENT_EXECUTION_UNKNOWN,
         )
-        self._enqueue_result(result)
+        add = self._enqueue_result(result)
+        if getattr(add, "status", None) == CONFLICT:
+            # 旧 body 撤不掉时 add 会 CONFLICT：这条 UNKNOWN 进不了队列，账本摘要与
+            # 队列 body 不匹配 → 发送闸拒发。宁可没有结果，也不发错误 operation 的结果。
+            self.logger.error("queued_result_conflict_after_reconcile", task_id=task_id)
         self.ledger.mark_unknown(task_id, result_digest=digest_of(result))
         self.ledger.mark_reconciled(task_id)
         self.logger.warning("task_result_unknown_after_crash", task_id=task_id)
@@ -502,7 +533,7 @@ class AgentLoop:
             # FENCED → 按既有语义补 UNKNOWN；已有终态/墓碑 → 跳过；从未见过 → REFUSED。
             known = self.ledger.inspect(task_id)
             if known == FENCED:
-                self._reconcile_task(task_id, safe_operation)
+                self._reconcile_task(task_id)
                 self.logger.info("task_duplicate_skipped", task_id=task_id, state=known)
                 return
             if known is not None:
@@ -518,7 +549,8 @@ class AgentLoop:
         if begin != "NEW":
             if begin == "ALREADY_FENCED":
                 # 重复投递 + 上次崩在 execute 与 complete 之间：只补事实，不重跑。
-                self._reconcile_task(task_id, safe_operation)
+                # operation 从账本读（重投 envelope 的 operation 可能是另一个合法值）。
+                self._reconcile_task(task_id)
             self.logger.info("task_duplicate_skipped", task_id=task_id, state=begin)
             return
         self._emit("task_start", {"task_id": task_id, "operation": safe_operation})
