@@ -1521,7 +1521,8 @@ wait_value 30 "no-session-after-terminate" "0" account_session_count
 assert_eq "$(account_session_count)" "0" "terminate-user must leave no session behind"
 record_ok "loginctl terminate-user destroyed the user manager and every session of ${ACCOUNT} in ${RECOVERY_ELAPSED}s"
 
-# Boot recovery is the same code path: systemd starts user@UID.service for a
+# Boot recovery is the same code path: systemd starts the per-uid user manager
+# (user@.service, uid-scoped) for a
 # lingering account with no login and default.target brings the unit back.
 #
 # Measured behaviour (systemd 257, WSL and any non-reboot teardown): terminate-user

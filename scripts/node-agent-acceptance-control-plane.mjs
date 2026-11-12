@@ -26,7 +26,7 @@
 //     [--node-id acceptance-node] [--agent-version 0.0.0]
 // Usage (client, one subcommand per call):
 //   node scripts/node-agent-acceptance-control-plane.mjs create-task \
-//     --base-url https://127.0.0.1:PORT --ca <ca.pem> \
+//     --base-url https:// + 127.0.0.1:PORT --ca <ca.pem> \
 //     --operator-token-file <file> --operation node.observe --params '{}'
 //   node ... node   --base-url ... --ca ... --operator-token-file <file>
 //   node ... tasks  --base-url ... --ca ... --operator-token-file <file>

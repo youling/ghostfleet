@@ -138,7 +138,7 @@ managed 账户没有 sudo、没有特权组；token 是 `0600` 且与配置目�
 
 判定标准：必须同时满足「`/run` 下的 tmpfs 标记文件消失」（fresh tmpfs）与「PID-1 namespace inode 变化」（fresh init namespace），否则该轮不算重启证据；`kernel boot_id` 与 kernel uptime 在 WSL2 里是共享内核事实，**不能**用来判 distro 重启。
 
-本轮用的采集脚本是 WSL 专用的一次性 harness（`nsenter --preserve-credentials` 读沙箱视图、`--since` 限定 journal 计数、`runuser` 切 managed 身份），未入库；可复用的 disposable 验收 harness 见验收分支的 `scripts/test-node-agent-lifecycle-disposable-linux.sh`（其中 S6c 用慢控制面 + 服务端 `received_at` 复现本节第 5 步，断言从服务端侧计数）。
+本轮用的采集脚本是 WSL 专用的一次性 harness（`nsenter --preserve-credentials` 读沙箱视图、`--since` 限定 journal 计数、`runuser` 切 managed 身份），未入库；可复用的 disposable 验收 harness 是本仓库的 `scripts/test-node-agent-lifecycle-disposable-linux.sh`（其中 S6c 用慢控制面 + 服务端 `received_at` 复现本节第 5 步，断言从服务端侧计数），运行方法见 `docs/CHAIN-ACCEPTANCE-RUNBOOK.md`。
 
 ## 9. 未被本文件证明的事
 
@@ -146,3 +146,37 @@ managed 账户没有 sudo、没有特权组；token 是 `0600` 且与配置目�
 - 结果词汇、入站鉴权、队列修剪等控制面行：由 `test/control-plane/node-agent.test.js` 与验收 harness 覆盖，不依赖本文件的真机证据。
 - 物理机重启、只读根文件系统、CPU/内存压力下的看门狗行为。
 - 跨发行版差异：只在 Ubuntu-24.04（systemd 255）与 Debian（python 3.13）上测过；systemd 249/252 等旧版本未验（ADR §14 已列为风险）。
+
+## 10. 官方验收跑（独立装置、冻结字节）
+
+上面 §1–§7 的机器是我自己的 WSL Ubuntu-24.04。为避免「被测装置自己出题自己判卷」，另一次正式跑由独立验收 lane 在**另一台** Debian（systemd 257 / Python 3.13.5 / root / 真 `systemd --user`）上，用仓库内 harness 对**同一冻结字节**跑两轮：
+
+| 项 | 值 |
+| --- | --- |
+| 验收分支 head | `8fd4876`（把冻结 tuple 的 integration head `a1dac97` 合入；唯一冲突 `docs/architecture/NODE_AGENT_V0.md` 取集成侧） |
+| 冻结 payload | `b2b2acea9d5a99c30f18a2169a8f7709807742ab64c2d8a8f42dd5c95ccc609f` / 225,102 B（fixture 由 `git archive HEAD` 重建后用 `build_pyz.py` 复现，字节一致） |
+| 冻结 unit | `2b54d05d38c32082e5dbf63035bb03e64da0e7b7332f5504a0e512ba1acd8e58` / 948 B |
+| 执行字节 | lifecycle 脚本 sha256 `806e7721…8c9b`（2805 行）、控制面 harness `94f700cd…c5` |
+| 全量跑（默认开关） | **PASS**，EXIT 0，墙钟 560 s，OK 88 / EVIDENCE 296 / NOT_RUN 7 / FAIL 0 |
+| S6c 跑（`GHOSTFLEET_ACCEPTANCE_SLOW_PLANE=1`） | **PASS**，EXIT 0，墙钟 563 s，OK 91 / EVIDENCE 306 / NOT_RUN 6 / FAIL 0 |
+
+S6c 的三个硬断言（本文件 §5 的服务端侧复核，慢控制面对 `/v0/nodes/*` 每请求 hold 3500 ms）：
+
+```
+slow_plane.delay_ms=3500   in_flight_at_signal=1   requests_after_signal=0
+stop_seconds=4   ExecMainStatus=0   Result=success   NRestarts unchanged
+journal_request_events_after_signal=0   journal_lines_before_signal=1263  after_signal=4
+```
+
+journal 顺序（该跑原样摘录，unit `_UID=1011`）：
+
+```
+{"event":"signal_received","level":"info","signal":15,"ts":"2026-11-12T18:26:26Z"}
+ghostfleet-managed.service: Sent signal SIGTERM to main process 99745 (python3) on client request.
+{"event":"iteration_stopped_before_poll","level":"info","ts":"2026-11-12T18:26:30Z"}
+{"elapsed_s":0.0,"event":"agent_stopped","level":"info","outbox_depth":0,"reason":"signal","rejected":0,"sent":0,"ts":"2026-11-12T18:26:30Z"}
+```
+
+同一跑的旁证：unit 的 SIGTERM 臂 `exec_main_status=0` / `result=success` / 12 s 无重启窗口 / `NRestarts` 不变；S6b 离线 240 s（24 采样 `non_active=0`、`WatchdogTimestamp` 前进 240 s、watchdog journal 0 行、NOTIFY 拒绝 0 行）；S3c 沙箱 `uid_map "1011 1011 1"`、配置视图 `65534:65534:644`、token `1011:1011:600`、state 目录 `1011:1011:700`、`/` 只读；S9 三个拒绝码（`NODE_NONCE_REPLAY` / `NODE_SEQ_REGRESSION` / `NODE_NONCE_REPLAY`）+ 幂等 200 + `TASK_RESULT_CONFLICT` 409 + 崩溃栅栏恰好一条 `UNKNOWN`；未投影节点心跳被接受且 `capability_digest` 为 null、0 条 `NODE_REQUEST_INVALID`。
+
+这一跑的 7（S6c 跑为 6）条 NOT_RUN 都写在运行手册的通过条件里，主干是：真实 tailnet 远端 operator 跳、真实 Cloudflare Worker 部署、真实 OMV8 硬件、真实 PAM `su`/`sudo` 交互、真实内核重启 + 凭据轮换 + 多节点租约竞争、需要 courier 行的正向 `capability-status.json`。**这些都不由本文件的真机证据替代，也不由 synthetic PASS 冒充。**
