@@ -1,6 +1,7 @@
 """tasks：信封 fail closed、只读分派、单位白名单、无 shell。"""
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -9,6 +10,7 @@ from agent_test_support import make_task
 from ghostfleet_agent import protocol
 from ghostfleet_agent.protocol import (
     AGENT_EXECUTION_FAILED,
+    AGENT_EXECUTION_INTERRUPTED,
     AGENT_EXECUTION_UNKNOWN,
     AGENT_UNIT_NOT_ALLOWED,
     RESULT_FAILED,
@@ -512,3 +514,59 @@ def test_self_test_without_nonce_and_with_bad_nonce():
     )
     assert refused["status"] == RESULT_REFUSED
     assert refused["code"] == TASK_PARAMS_FORBIDDEN
+
+
+# -- SIGTERM 协作式取消（P1：退出延迟） --------------------------------------
+class InterruptingObserver(StubObserver):
+    """第一次 unit_state 之后置中断事件：模拟 SIGTERM 落在任务执行中间。"""
+
+    def __init__(self, interrupt, *, units):
+        super().__init__(unit_states={unit: "active" for unit in units})
+        self.interrupt = interrupt
+        self.units_read: list[str] = []
+
+    def unit_state(self, unit):
+        state = super().unit_state(unit)
+        self.units_read.append(unit)
+        self.interrupt.set()
+        return state
+
+
+def test_interrupt_before_implementation_is_failed_not_refused():
+    interrupt = threading.Event()
+    interrupt.set()
+    observer = StubObserver()
+    result = executor(observer=observer, interrupt=interrupt).handle(make_task(node_uid=NODE_UID))
+    # 绝不能冒充 REFUSED：REFUSED 是"实现从未被调用"的承诺；这里是 SIGTERM 中止。
+    assert result["status"] == RESULT_FAILED
+    assert result["code"] == AGENT_EXECUTION_INTERRUPTED
+    assert observer.observed == []
+
+
+def test_interrupt_between_units_stops_the_rest_of_the_task():
+    interrupt = threading.Event()
+    units = ["a.service", "b.service", "c.service"]
+    observer = InterruptingObserver(interrupt, units=units)
+    interruptible = TaskExecutor(
+        node_uid=NODE_UID,
+        agent_version=AGENT_VERSION,
+        observer=observer,
+        allowed_units=units,
+        interrupt=interrupt,
+    )
+    result = interruptible.handle(
+        make_task(node_uid=NODE_UID, operation=OPERATION_SERVICE_STATUS, params={"units": units})
+    )
+    assert result["status"] == RESULT_FAILED
+    assert result["code"] == AGENT_EXECUTION_INTERRUPTED
+    assert observer.units_read == ["a.service"]  # 剩余 unit 一次都没读
+
+
+def test_interrupt_with_may_mutate_implementation_is_unknown():
+    interrupt = threading.Event()
+    interrupt.set()
+    result = MutatingExecutor(
+        node_uid=NODE_UID, agent_version=AGENT_VERSION, observer=StubObserver(), interrupt=interrupt
+    ).handle(make_task(node_uid=NODE_UID, operation="test.mutate"))
+    assert result["status"] == RESULT_UNKNOWN
+    assert result["code"] == AGENT_EXECUTION_UNKNOWN

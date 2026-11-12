@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 import time
 from types import SimpleNamespace
 
@@ -16,12 +17,21 @@ import pytest
 from agent_test_support import TEST_AGENT_VERSION, TEST_TOKEN, AgentSandbox, make_task
 from ghostfleet_agent import protocol
 from ghostfleet_agent.cli import build_loop, load_node_uid, load_token
-from ghostfleet_agent.config import load_config
+from ghostfleet_agent.config import DEFAULT_REQUEST_TIMEOUT_S, load_config
 from ghostfleet_agent.ledger import MAX_LEDGER_ENTRIES
-from ghostfleet_agent.loop import WATCHDOG_INTERVAL_S, WatchdogThread
+from ghostfleet_agent.loop import (
+    MAX_SLEEP_CHUNK_S,
+    SHUTDOWN_FLUSH_BUDGET_S,
+    SHUTDOWN_RESERVE_S,
+    STOP_SLICE_S,
+    TIMEOUT_STOP_SEC,
+    WATCHDOG_INTERVAL_S,
+    WatchdogThread,
+)
 from ghostfleet_agent.logging import Logger, clear_secrets
 from ghostfleet_agent.outbox import Outbox
 from ghostfleet_agent.protocol import (
+    AGENT_EXECUTION_INTERRUPTED,
     AGENT_EXECUTION_UNKNOWN,
     AGENT_NETWORK_ERROR,
     NODE_BOOT_ID_CAPACITY_REACHED,
@@ -30,6 +40,7 @@ from ghostfleet_agent.protocol import (
     AGENT_LEDGER_EXHAUSTED,
     TASK_OPERATION_MISMATCH,
     TASK_RESULT_SCHEMA_UNSUPPORTED,
+    RESULT_FAILED,
     RESULT_STATUSES,
     RESULT_SUCCEEDED,
     RESULT_UNKNOWN,
@@ -764,4 +775,141 @@ def test_run_once_never_starts_the_watchdog_thread(sandbox, control_plane):
     assert loop.run_once() == 0
     assert loop._watchdog is None
     assert "watchdog" not in notifier.calls
+
+
+def test_stop_budget_arithmetic_fits_timeout_stop_sec():
+    """停机上界的静态断言：任何一段被改大，这条测试立刻红。
+
+    三段来源（都从模块常量导入，绝不硬抄）：
+      STOP_SLICE_S（1 s，睡眠打断粒度）
+      + DEFAULT_REQUEST_TIMEOUT_S（10 s，在途 HTTP 不可中途 abort，ADR §6 的请求超时）
+      + SHUTDOWN_FLUSH_BUDGET_S（8 s，有界 result flush）
+      + SHUTDOWN_RESERVE_S（2 s，STOPPING 通知 / last_stop 落盘 / 进程退出）
+    """
+    worst = STOP_SLICE_S + DEFAULT_REQUEST_TIMEOUT_S + SHUTDOWN_FLUSH_BUDGET_S + SHUTDOWN_RESERVE_S
+    assert worst <= TIMEOUT_STOP_SEC, f"stop budget {worst}s exceeds TimeoutStopSec={TIMEOUT_STOP_SEC}s"
+    assert worst == 21.0  # 1 + 10 + 8 + 2；余量 9 s
+    assert STOP_SLICE_S + DEFAULT_REQUEST_TIMEOUT_S + SHUTDOWN_FLUSH_BUDGET_S == 19.0
+    # flush 单独也必须留在 TimeoutStopSec 的 1/3 之内（lead 合同）。
+    assert SHUTDOWN_FLUSH_BUDGET_S <= TIMEOUT_STOP_SEC / 3
+    # 睡眠块必须小于两个喂狗周期，否则主线程块间喂狗也救不了 WatchdogSec=60。
+    assert MAX_SLEEP_CHUNK_S < 2 * WATCHDOG_INTERVAL_S
+
+
+# -- P1：SIGTERM 必须打断睡眠（任意时刻 ≤5 s 退出，退出码 0） -----------------
+class FakeClockWaiter:
+    """把 _stop_waiter 变成假时钟：累计请求秒数，到点置事件并报告已中断。
+
+    不真实睡眠，因此"信号→退出"时延是可断言的确定值。
+    """
+
+    def __init__(self, stop_event, interrupt_after):
+        self.stop_event = stop_event
+        self.interrupt_after = float(interrupt_after)
+        self.now = 0.0
+        self.signal_at = None
+
+    def __call__(self, event, timeout):
+        self.now += float(timeout)
+        if self.signal_at is None and self.now >= self.interrupt_after:
+            self.signal_at = self.now
+            event.set()
+        return event.is_set()
+
+
+def test_sigterm_during_backoff_exits_within_five_seconds(sandbox, control_plane):
+    control_plane.respond = lambda record: (503, {"code": "AGENT_SERVER_ERROR"})
+    loop, _ = build_agent(sandbox, control_plane)
+    loop.state_store.state.consecutive_failures = 5  # 下一轮失败 → 32 s 退避
+    loop.state_store.save()
+    stop_event = threading.Event()
+    clock = FakeClockWaiter(stop_event, interrupt_after=32.0)
+    loop._stop_waiter = clock
+
+    # 关键：32 s 退避期间收到 SIGTERM，必须在 ≤5 s 内脱离睡眠并以 0 退出。
+    assert loop.run_forever(stop_event=stop_event) == 0
+    assert clock.signal_at is not None
+    assert clock.now >= 32.0
+    assert clock.now - clock.signal_at <= 5.0
+
+
+def test_sigterm_during_idle_interval_exits_within_five_seconds(sandbox, control_plane):
+    control_plane.respond = idle_responder(control_plane)
+    control_plane.heartbeat_interval_s = 30.0
+    loop, _ = build_agent(sandbox, control_plane)
+    stop_event = threading.Event()
+    clock = FakeClockWaiter(stop_event, interrupt_after=30.0)
+    loop._stop_waiter = clock
+    notifier = RecordingNotifier()
+    loop.notifier = notifier
+
+    assert loop.run_forever(stop_event=stop_event) == 0
+    assert clock.signal_at is not None
+    assert clock.now - clock.signal_at <= 5.0
+    assert notifier.calls[0] == "ready"
+    assert notifier.calls[-1] == "stopping"  # STOPPING 在退出前发出，之后不再有 WATCHDOG
+
+
+def test_sigterm_during_task_reports_interrupted_failed_and_exits_zero(sandbox, control_plane):
+    control_plane.respond = idle_responder(control_plane)
+    control_plane.heartbeat_tasks = [
+        make_task(
+            node_uid=sandbox.node_uid,
+            task_id="task-inflight",
+            operation="agent.self.test",
+            params={"nonce": protocol.new_nonce()},
+        )
+    ]
+    loop, _ = build_agent(sandbox, control_plane)
+    stop_event = threading.Event()
+    loop._stop_waiter = FakeClockWaiter(stop_event, interrupt_after=0.0)
+    real_handle = loop.executor.handle
+
+    def handle(envelope):
+        stop_event.set()  # 模拟 SIGTERM 落在任务执行中
+        return real_handle(envelope)
+
+    loop.executor.handle = handle
+
+    assert loop.run_forever(stop_event=stop_event) == 0
+    posts = control_plane.requests_to("/result")
+    assert len(posts) == 1
+    result = posts[0]["body"]["result"]
+    # 只读任务被中断：FAILED（无副作用、可重投），绝不冒充 REFUSED。
+    assert result["status"] == RESULT_FAILED
+    assert result["code"] == AGENT_EXECUTION_INTERRUPTED
+    assert loop.outbox.depth() == 0
+
+
+def test_stop_event_is_checked_before_starting_remaining_batch(sandbox, control_plane):
+    control_plane.respond = idle_responder(control_plane)
+    control_plane.poll_tasks = [
+        make_task(node_uid=sandbox.node_uid, task_id="task-aaaa"),
+        make_task(node_uid=sandbox.node_uid, task_id="task-bbbb"),
+    ]
+    loop, _ = build_agent(sandbox, control_plane)
+    stop_event = threading.Event()
+    loop.bind_stop_event(stop_event)
+    processed = []
+    real_process = loop._process_task
+
+    def wrapped(envelope):
+        processed.append(envelope.get("task_id"))
+        stop_event.set()  # 第一个任务执行期间收到 SIGTERM
+        return real_process(envelope)
+
+    loop._process_task = wrapped
+    loop.iteration()
+    # 第二个任务绝不能被"开始"：没有栅栏，控制面可以安全重投。
+    assert processed == ["task-aaaa"]
+    assert loop.ledger.get("task-bbbb") is None
+
+
+def test_sleep_with_jitter_returns_immediately_when_stop_event_is_set(sandbox, control_plane):
+    loop, _ = build_agent(sandbox, control_plane)
+    stop_event = threading.Event()
+    stop_event.set()
+    started = time.monotonic()
+    assert loop._sleep_with_jitter(300.0, stop_event=stop_event) is True
+    assert time.monotonic() - started < 0.5
 

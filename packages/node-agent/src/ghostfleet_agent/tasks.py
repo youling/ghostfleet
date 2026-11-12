@@ -28,6 +28,7 @@ from .observe import (
 )
 from .protocol import (
     AGENT_EXECUTION_FAILED,
+    AGENT_EXECUTION_INTERRUPTED,
     AGENT_EXECUTION_UNKNOWN,
     AGENT_UNIT_NOT_ALLOWED,
     MAX_PARAMS_DEPTH,
@@ -102,6 +103,19 @@ class TaskRefused(Exception):
         self.code = code
         self.detail = detail
         super().__init__(f"{code}: {detail}" if detail else code)
+
+
+class TaskInterrupted(Exception):
+    """SIGTERM 协作式取消：实现已被调用、但没有完成全部操作。
+
+    read_only → FAILED（无副作用，可重投）；may_mutate → UNKNOWN（不可重投）。
+    绝不使用 TaskRefused：REFUSED 的语义是"实现从未被调用"。
+    """
+
+    def __init__(self, detail: str = "") -> None:
+        self.code = AGENT_EXECUTION_INTERRUPTED
+        self.detail = detail
+        super().__init__(f"{AGENT_EXECUTION_INTERRUPTED}: {detail}" if detail else AGENT_EXECUTION_INTERRUPTED)
 
 
 class ValidatedTask:
@@ -264,6 +278,7 @@ class TaskExecutor:
         allowed_units=(),
         logger=None,
         operations=OPERATION_SPECS,
+        interrupt=None,
     ) -> None:
         self.node_uid = node_uid
         self.agent_version = agent_version
@@ -271,6 +286,13 @@ class TaskExecutor:
         self.operations = dict(operations)
         self.observer = observer or Observer(node_uid=node_uid, agent_version=agent_version, allowed_units=self.allowed_units)
         self.logger = logger or get_logger()
+        # SIGTERM 事件（threading.Event 或任何有 is_set() 的对象）；None 表示不协作取消。
+        self.interrupt = interrupt
+
+    def _check_interrupt(self) -> None:
+        interrupt = self.interrupt
+        if interrupt is not None and interrupt.is_set():
+            raise TaskInterrupted("agent is shutting down")
 
     # -- 入口 ---------------------------------------------------------------
     def handle(self, envelope) -> dict:
@@ -377,6 +399,7 @@ class TaskExecutor:
 
     # -- 分派 ---------------------------------------------------------------
     def _dispatch(self, task: ValidatedTask, spec: OperationSpec) -> dict:
+        self._check_interrupt()
         handler = getattr(self, spec.handler, None)
         if not callable(handler):
             # 声明表与实现不一致属于本地实现缺陷：按执行失败处理（只读 → FAILED）。
@@ -391,8 +414,14 @@ class TaskExecutor:
     def _service_status(self, task: ValidatedTask) -> dict:
         # 参数与白名单已在 validate_envelope 阶段校验：这里只执行，不再拒绝。
         selected = tuple(task.params.get("units") or ())
+        units: dict[str, str] = {}
+        for unit in selected:
+            # 每个 unit 都是一次有超时的子进程；SIGTERM 时在两次之间停下，
+            # 把"已读到的部分 + 中断"报成 FAILED（只读、无副作用、可重投）。
+            self._check_interrupt()
+            units[unit] = self.observer.unit_state(unit)
         return {
-            "units": {unit: self.observer.unit_state(unit) for unit in selected},
+            "units": units,
             "configured_units": len(self.allowed_units),
         }
 
