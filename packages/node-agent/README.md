@@ -33,6 +33,7 @@ The package is stdlib-only and ships as a deterministic zipapp for `python3 -I`.
 | `~/.config/ghostfleet/node-token` | 0600 | 节点 bearer token 原文（单行） |
 | `~/.config/ghostfleet/node.json` | 0600 | `node_uid` / `platform` / `issued_at`（不含 origin） |
 | `~/.local/state/ghostfleet-agent/` | 0700 | `state.json` / `ledger.json` / `outbox.json`（均 0600） |
+| `~/.local/state/ghostfleet-agent/tasks/` | 0700 | 每个 task 一份权威记录（`<sha256(task_id)>.json`，0600）；存储层已落地，loop 接线在下一阶段 |
 
 控制面 origin 只能由 root-owned 配置给出，普通用户无法把 Agent 指向攻击者端点。
 运行期状态文件同样按 fail-closed 校验：`ensure_state_dir` 要求目录属主 `== os.geteuid()` 且 mode `0700`，
@@ -184,6 +185,84 @@ boot 重放换新 boot_id 重试一次，`NODE_BOOT_ID_CAPACITY_REACHED` 无法�
 - 重建 `UNKNOWN` 与丢弃不可验证 body 都**账本优先**：重建先 `mark_unknown()` + `mark_reconciled()`（账本指向新摘要），再用一次 **`outbox.replace()` 原子替换** body（同一次写里换 `digest`、清零 `attempts`）；`replace` 是单次原子写，因此**同一 task 任何时刻都至少有一条排队 body**，绝不会出现「账本有新摘要、磁盘上没有 body」。「账本已指向新摘要、body 还是旧的」这个窗口最长只到下次启动，重启后同一套逐字段闸会再重建一次并**在同一次 flush 内直接发出**。账本写失败时一律 `OUTCOME_DENIED`、旧 body 原样保留、本轮按 retry 退避，**绝不 HANDLED**——HANDLED 等于宣称本地已处置完，会把摘要对不上的 body 留在磁盘上等下一轮再撞闸。`replace` 连续失败同样只 DENIED、不删任何条目；失败恢复后**恰好一条** POST、摘要等于账本。丢弃路径同理：先 `mark_result_dropped()` 再撤回，记账失败 → DENIED 且 body 保留，恢复后零 POST 收敛（`result_state=RESULT_DROPPED`、执行终态与摘要不变）。逐字段闸里的 `result.status` 先做 `isinstance(str)` 守卫：JSON 里的 `[]` / `{}` 若直接拿去 `in frozenset` 会抛 `TypeError`，从 flush 一路逃到 `run_once` 就是 exit 5 脏退出（没有 `STOPPING`、没有 last_stop）；现在按「非法状态」走丢弃路径。`outbox.load()` 遇到同一 `task_id` 两条条目直接 `OutboxCorruptError`——重建只能换掉一条，另一条永远对不上账本，闸会在两条之间反复判为不可验证。回归测试：`test_rebuild_keeps_the_old_body_when_the_ledger_write_fails`、`test_interrupted_body_swap_heals_on_restart_with_exactly_one_post`、`test_repeated_body_replace_failures_heal_into_exactly_one_post`、`test_drop_keeps_the_body_when_the_ledger_write_fails`、`test_non_string_result_status_is_settled_without_a_type_error`、`tests/test_outbox.py::test_load_rejects_duplicate_task_ids`。
 - 「dispatch 前就拒绝」的路径同样**先读账本历史再下结论**（`ledger.inspect()`，只读）：`MAY_HAVE_EXECUTED` → 按既有语义对账成 `UNKNOWN`；已有终态或只剩墓碑 → 记 `task_duplicate_skipped` 后跳过；只有完全没见过的 task_id 才写 `REFUSED`。否则同一 task_id 第二次到达（内容被改成未知 operation）会覆盖第一个摘要，甚至把已排队的 `UNKNOWN` 撤回。账本 `complete()` 自身也有 backstop：已有终态但 `result_digest` 不同时直接抛 `LedgerWriteError`（同摘要幂等）。**对账出来的 `UNKNOWN` 绑定账本里 `begin()` 记录的 operation，绝不使用重投 envelope 的 operation**：控制面按 ADR:109 校验 `result.operation` 等于任务 operation，用新 operation 回 `UNKNOWN`（同一 task_id 从 `node.observe` 重投成 `capability.inspect`）会被 409 `TASK_OPERATION_MISMATCH` 永久丢弃，而账本已是终态、下一次重投又被 `inspect()` 跳过——`MAY_HAVE_EXECUTED` 的任务就永远没有可接受的结果。outbox 里已有 body 时用的是与发送闸**同一套逐字段校验**（一条实现、两处调用：`_outbox_body_problems`），与账本不一致就撤回并按账本 operation 重建 `UNKNOWN`（撤不回则 fail closed，发送闸拒发），绝不原样发送。回归测试 `test_known_terminal_task_is_not_refused_again`、`test_known_in_flight_task_is_reconciled_not_refused`、`test_reconciled_unknown_uses_the_operation_recorded_at_fence_time`、`test_queued_result_with_a_foreign_operation_is_rebuilt_not_sent`、`test_tombstoned_task_is_skipped_not_refused`、`test_first_unknown_operation_is_still_refused`、`tests/test_ledger.py::test_complete_rejects_a_second_digest_for_a_terminal_task`。
 
+### 任务记录（`tasks/`：一 task 一文件、一次 rename 一个提交）
+
+路线 C 的权威存储：每个 task 一份记录文件，**执行事实与投递事实写在同一个文件里**，一次交易只允许一次 `rename`。
+这样就不存在「账本说 A、队列说 B」的两个文件互相打架的窗口（旧的 `ledger.json` / `outbox.json` / `tombstones.json`
+三文件方案正是因此被取代）。
+
+| 路径 | 权限 | 内容 |
+| --- | --- | --- |
+| `<state>/tasks/` | 0700 | 任务记录目录，文件名 = `sha256(task_id)` 的 64 位小写十六进制 + `.json` |
+| `<state>/tasks/<hash>.json` | 0600 | 一条 `ghostfleet-node-task-record/v1` 记录（canonical JSON + 行尾换行，上限 256 KiB）；内容自带 `task_id`，`load` 重算 sha256 与文件名比对 |
+| `<state>/legacy/` | 0700 | 迁移时把旧 `ledger.json` / `outbox.json` / `tombstones.json` **原样移动**进来（字节不变，不删除） |
+| `<state>/legacy/IMPORTED` | 0600 | 迁移清单：每个旧文件名、sha256、字节数、导入条数与时间，外加迁移告警 |
+
+记录字段：`schema` / `task_id` / `operation`（一次写定永不改写）/ `attempt` / `execution_state`
+（`MAY_HAVE_EXECUTED`、`SUCCEEDED`、`REFUSED`、`FAILED`、`UNKNOWN`）/ `reconciled` / `started_at` /
+`completed_at` / `result_body` / `result_digest` / `delivery_state`（`NONE`、`PENDING`、`ACKED`、`DROPPED`、
+`QUARANTINED`）/ `delivery_attempts` / `last_error_code` / `queued_at` / `acked_at` / `dropped_at` /
+`quarantined_at` / `quarantine_reason` / `original_node_uid`。
+
+不变量（`load` 与每次写盘前都自检，违反即 `TaskStoreCorruptError` fail closed，绝不静默重置）：
+
+1. 终态 ⟺ `result_digest` 非空；`MAY_HAVE_EXECUTED` 的记录不得带 `result_body` 或摘要。
+2. `PENDING` ⟹ body 与摘要都在，且 `result_digest == digest_of(body.result)`、`body.result.task_id` /
+   `body.operation` 与记录一致、`body.result.status == execution_state` —— body 能被独立重算并逐字对上。
+3. 唯一允许补事实的路径：启动时 `MAY_HAVE_EXECUTED` → **一次原子写**成 `UNKNOWN` + 一次性生成的 `UNKNOWN` body +
+   摘要 + `PENDING` + `queued_at`（ADR §7 允许，只发生一次）。
+4. `ACKED` ⟹ body 已清空、摘要保留、`acked_at` 非空 —— **这就是墓碑**，不再有独立墓碑文件。
+5. `DROPPED` 只来自「迁移来的旧丢弃事实」（body 可为空）或明确的永不发送判定。
+5b. `QUARANTINED` ⟹ body 与摘要**原样保留**（摘要仍等于 `digest_of(body.result)`）、`quarantined_at` /
+   `quarantine_reason` / `original_node_uid` 非空、没有 `acked_at` / `dropped_at`。
+6. 同一 task 只允许一个摘要离开节点：`result_digest` 只在「从未发出过」的前提下被第 3 条改写一次，其余一律
+   `TaskStoreConflictError`；`ACKED` 之后 operation / body / 摘要全部不可再写。
+
+提交语义（`state.py` 的 `atomic_write_json_checked` + store 的 `_commit`）：
+
+- 写 `.tmp-*`（0600）→ `fsync(file)` → `rename` → `fsync(dir)`。**rename 之前**任何失败都是 `StateWriteError` →
+  `TaskStoreWriteError`：磁盘字节不变、内存索引不变，调用方 fail closed，绝不带着半截状态继续。
+- **rename 之后** `fsync(dir)` 失败是 `StateCommitUncertain` → `TaskStoreUncertainError`：磁盘可能是新内容，
+  **内存一律保持旧值**，loop 必须走 FATAL（退出非 0，supervisor 重启后从磁盘读真值），绝不拿可能不一致的内存继续跑。
+- 内存索引只在 durable 成功之后更新；进程被强杀留下的 `.tmp-*` 不是事实，`load` 直接删掉并记 `task_store_temp_removed`。
+- 一次交易禁止写第二个文件：`begin` / `complete` / `ack` / `drop` / `record_delivery_failure` 观测到的写入集合恰为该
+  task 的一个文件（`test_begin_writes_exactly_one_record_file`、
+  `test_ack_keeps_the_digest_and_drops_the_body_in_one_write`）。
+- `state.json`（心跳 seq、last_stop 等）保持现状，**不属于**这条交易路径。
+
+容量：`MAX_TASK_RECORDS = 4096`（含 `ACKED` 墓碑）、`MAX_PENDING_DELIVERIES = 64`。达任一上限时**停止领取新任务**：
+未知 task 的 `begin()` 返回 `CAPACITY` 且**一个字节都不写**，loop 记 `task_intake_paused`
+（`reason=record_capacity` / `pending_capacity`）、跳过本轮 poll、心跳照常；已知 task 重投仍照旧回答 `FENCED` / `DONE`
+（不加写）。**绝不驱逐、绝不删除**已执行任务的记录——旧方案「outbox 溢出丢最旧」的语义整段删除，只在迁移旧
+`dropped[]` 时生成 `DROPPED` 记录。
+已知限制（明说，不粉饰）：活跃记录到 4096 之后 agent 会**停摆**，直到人工归档；append-only 归档
+（`archive/records-NNNNNN.jsonl`，append+fsync 成功后才 unlink `tasks` 文件，`load` 按 `(task_id, result_digest)`
+去重）由后续任务落地，**本阶段没有归档实现**。
+
+隔离（`QUARANTINED`）：节点身份（`node_uid`）变更后，已执行任务的旧 body 收件方会当成外来节点拒绝，但删掉它等于把
+真实执行事实变成不可追溯的丢弃记录。因此改为**同一文件内的一次写**：`delivery_state` → `QUARANTINED`，body 与摘要
+原样保留，写 `quarantined_at` / `quarantine_reason=node_uid_changed` / `original_node_uid`。隔离是**状态**不是移动文件：
+永不发送、永不删除、不计入 `MAX_PENDING_DELIVERIES`，`status` 必须把它们列出来
+（`list_quarantined()` / `quarantined_count()`），日志 `result_body_quarantined_foreign_node_uid`。
+真正的转换接线在下一阶段。
+
+迁移（幂等、可审计、**绝不重建摘要**）：`load()` 先读 `tasks/*.json`，若存在旧三文件就导入缺失项：`ledger` 的
+`MAY_HAVE_EXECUTED` → 栅栏（`MAY_HAVE_EXECUTED`）、终态同名 + `ACKED`（body 为空、摘要保留）、`tombstones` → 终态 +
+`ACKED`、`outbox` 条目 → body / 摘要 / `PENDING` / `delivery_attempts` / `last_error_code` / `queued_at`、`outbox` 的
+`dropped[]` → `DROPPED`。同一 task 兼有 ledger 与 outbox 时以 ledger 的执行状态为准，且 body 必须通过第 2 条不变量才
+保留（否则转 `DROPPED` + 迁移告警 `queued-body-unverifiable`）；栅栏 + 孤儿 body 保留栅栏、丢弃 body
+（`orphan-body-discarded`）。迁移完成后把旧文件**移动**进 `legacy/` 并写 `IMPORTED` 清单，记 `state_layout_migrated`。
+只发生一次：`legacy/IMPORTED` 已存在就不再导入；移动失败则 `TaskStoreWriteError` fail closed（旧文件字节不变）；
+旧文件损坏（终态却没有摘要等）→ `TaskStoreCorruptError`，不启动轮询。
+
+向前兼容（归档字段）：`archived_at` / `archive_reason` 之类**不在** v1 记录 schema 里，只出现在未来的归档行；记录文件里
+出现未知字段时 `load` 是**忽略并记 `task_record_unknown_fields_ignored`**，不是报错——旧版本不能因为新字段就拒绝启动
+（`test_archive_fields_are_ignored_instead_of_corrupting_the_record`）。
+
+本阶段的边界（诚实说明）：`records.py` 的存储层、校验、迁移与故障注入测试已落地，**loop 仍走旧 `ledger` / `outbox`
+路径**；接线（begin → 执行 → complete → send → ack、重启补 `UNKNOWN`、按 `queued_at` 重发 `PENDING`、投递失败只改
+`delivery_attempts` / `last_error_code`）与删除旧修补路径是下一阶段的工作，本阶段**不重建** `dist/node-agent.pyz`。
+
 ### 停机预算（`TimeoutStopSec=30` 内，三段相加）
 
 | 段 | 常量 | 上界 | 来源 |
@@ -282,3 +361,8 @@ python3 -m pytest -q
 测试全部确定性：不访问外网（本地 `http.server` 假控制面绑 127.0.0.1）、无长睡眠、时间可控；
 包含 zipapp 冒烟（临时 pyz + `python3 -I` 跑 `check-config`/`status --json`）与
 "重新构建字节等于 `dist/node-agent.pyz`"的确定性断言。
+
+任务记录存储的故障注入测试在 `tests/test_task_records.py`：注入点 1-4（tmp 创建 / fsync(file) / rename / 目录
+fsync 失败）、7（容量满时不写盘、不删除、已知 task 照旧回答）、10（迁移映射、字节不变、二次 load 不重复导入、移动失败保留旧字节）、
+11（坏文件名、文件名哈希不符、未知 schema、被篡改的 PENDING body、栅栏带 body、旧账本终态缺摘要）以及隔离
+（`QUARANTINED` 保留 body 与摘要、缺 body 或缺原因即损坏）和归档字段向前兼容。

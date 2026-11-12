@@ -74,6 +74,18 @@ class StateReadError(StoreError):
     code = "STATE_READ_FAILED"
 
 
+class StateCommitUncertain(StoreError):
+    """rename 之后的目录 fsync 失败：磁盘上的内容可能是新的，也可能还是旧的。
+
+    这是唯一无法从返回值判断"提交是否发生"的失败点。调用方（task 记录存储）必须
+    按"提交不确定"处理：绝不继续用旧的内存对象，而是走 FATAL 让进程退出，重启后
+    由 load() 从磁盘重新读出真值。把它混进 StateWriteError（"磁盘未变"）就会制造
+    一个"内存说没写、磁盘说写了"的伪提交。
+    """
+
+    code = "STATE_COMMIT_UNCERTAIN"
+
+
 # 同一 path+mode 的宽松权限告警每进程只打一次（真机每轮启动会重复 4–5 条）。
 _LOOSE_PERMISSION_WARNINGS: set[tuple[str, int]] = set()
 
@@ -195,6 +207,65 @@ def atomic_write_json(path: str, document, *, logger=None) -> None:
     except ProtocolError:
         raise StateWriteError("document is not canonical JSON serialisable", path=path) from None
     atomic_write_bytes(path, (text + "\n").encode("utf-8"), logger=logger)
+
+
+def atomic_write_json_checked(path: str, document, *, logger=None) -> None:
+    """带提交边界的原子写：rename 之前失败 = 未提交，rename 之后失败 = 提交不确定。
+
+    与 atomic_write_bytes 唯一的区别是失败分类：本函数的调用方（每个 task 一份权威
+    记录）必须知道"这次写到底有没有落盘"，因为内存索引只能在 durable 之后更新：
+
+    - mkstemp / 写 tmp / fsync(file) / os.replace 任一失败 → StateWriteError：
+      磁盘上的目标文件字节未变，调用方保持旧内存值、可以安全重试。
+    - os.replace 成功之后目录 fsync 失败 → StateCommitUncertain：rename 已经发生，
+      磁盘内容可能是新的；调用方必须停止使用旧内存对象（FATAL），绝不自称未提交。
+    """
+    log = logger or get_logger()
+    from .protocol import canonical_json
+
+    try:
+        text = canonical_json(document)
+    except ProtocolError:
+        raise StateWriteError("document is not canonical JSON serialisable", path=path) from None
+    payload = (text + "\n").encode("utf-8")
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    temp_path = ""
+    descriptor = -1
+    try:
+        descriptor, temp_path = tempfile.mkstemp(prefix=".tmp-", suffix=".json", dir=directory)
+        os.fchmod(descriptor, STATE_FILE_MODE)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        # rename 已发生：从这里开始磁盘上就是新内容了，必须走"提交不确定"分支。
+        temp_path = ""
+    except OSError as error:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temp_path:
+            _unlink_quietly(temp_path)
+        log.error("state_write_failed", path=path, reason=getattr(error, "strerror", None) or "write failed")
+        raise StateWriteError(f"atomic write failed: {error.strerror or 'write failed'}", path=path) from None
+    except Exception:  # noqa: BLE001 - 任何异常都不允许留下临时文件
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temp_path:
+            _unlink_quietly(temp_path)
+        raise
+    try:
+        _fsync_directory(directory)
+    except StoreError as error:
+        log.error("state_commit_uncertain", path=path, detail=str(error))
+        raise StateCommitUncertain(f"directory fsync failed after rename: {error.detail}", path=path) from None
 
 
 def load_json_document(
