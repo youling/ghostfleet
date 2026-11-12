@@ -888,3 +888,70 @@ test("operator node routes still require the operator bearer", async () => {
     assert.equal([401, 403].includes(denied.status), true, path + " must stay operator-gated");
   }
 });
+
+test("the durable object persists only successful node mutations", async () => {
+  const fixture = workerFixture();
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "persist-device");
+  const credential = giveCredential(parts.controller, node_uid);
+  fixture.values.set("ghostfleet-state", parts.store.snapshot());
+  const blob = () => JSON.stringify(fixture.values.get("ghostfleet-state"));
+  const nodeHeaders = (token) => {
+    const headers = {
+      "content-type": "application/json",
+      "x-ghostfleet-node-uid": node_uid,
+      "x-ghostfleet-agent-version": AGENT_VERSION,
+    };
+    if (token) headers.authorization = "Bearer " + token;
+    return headers;
+  };
+  const envelope = (nonce, seq, boot_id = "boot-worker-1") => JSON.stringify({
+    schema: AGENT_SCHEMA, node_uid, nonce, sent_at: new Date().toISOString(), boot_id, seq,
+  });
+  const nonce = randomBytes(18).toString("base64url");
+
+  const seeded = blob();
+  const anonymous = await fixture.request("/v0/nodes/" + node_uid + "/heartbeat", {
+    headers: nodeHeaders(null), body: envelope(nonce, 0),
+  });
+  assert.equal(anonymous.status, 401);
+  assert.equal(blob(), seeded, "an unauthenticated request must not rewrite the durable blob");
+
+  const accepted = await fixture.request("/v0/nodes/" + node_uid + "/heartbeat", {
+    headers: nodeHeaders(credential.token), body: envelope(nonce, 0),
+  });
+  assert.equal(accepted.status, 200);
+  const afterAccepted = blob();
+  assert.notEqual(afterAccepted, seeded, "a successful request is what commits the blob");
+
+  for (const [label, body] of [
+    ["byte-for-byte replay", envelope(nonce, 0)],
+    ["used nonce with a fresh seq", envelope(nonce, 1)],
+  ]) {
+    const rejected = await fixture.request("/v0/nodes/" + node_uid + "/heartbeat", {
+      headers: nodeHeaders(credential.token), body,
+    });
+    assert.equal(rejected.status, 409, label);
+    assert.equal(blob(), afterAccepted, "a rejected replay must not rewrite the durable blob");
+  }
+
+  const oversized = await fixture.request("/v0/nodes/" + node_uid + "/heartbeat", {
+    headers: nodeHeaders(credential.token), body: "x".repeat(NODE_BODY_LIMITS.heartbeat + 64),
+  });
+  assert.equal(oversized.status, 413);
+  assert.equal((await oversized.json()).error, "NODE_BODY_TOO_LARGE");
+  assert.equal(blob(), afterAccepted, "an oversized body must not rewrite the durable blob");
+
+  // Seed an exhausted bucket: the rate limit must also be a non-mutating refusal.
+  const record = parts.store.getNode(node_uid);
+  parts.store.putNodeAgent(node_uid, { ...record.agent, rate: { tokens: 0, updated_at_ms: Date.now() } });
+  fixture.values.set("ghostfleet-state", parts.store.snapshot());
+  const limitedSeed = blob();
+  const limited = await fixture.request("/v0/nodes/" + node_uid + "/tasks/poll", {
+    headers: nodeHeaders(credential.token), body: envelope(randomBytes(18).toString("base64url"), 2),
+  });
+  assert.equal(limited.status, 429);
+  assert.equal((await limited.json()).error, "NODE_RATE_LIMITED");
+  assert.equal(limited.headers.get("retry-after"), String(NODE_RATE_LIMIT.refill_seconds));
+  assert.equal(blob(), limitedSeed, "a rate-limited request must not rewrite the durable blob");
+});
