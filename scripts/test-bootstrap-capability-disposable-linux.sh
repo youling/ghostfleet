@@ -652,6 +652,7 @@ cat > "$work/decommission-harness.sh" <<'HARNESS'
 #!/bin/sh
 set -eu
 CHECKPOINT_DIR="$HARNESS_CHECKPOINT"
+ASSETS_ORIGIN="${GHOSTFLEET_ASSETS_ORIGIN:?}"
 fail() { printf '%s\n' "fleet-enroll: $*" >&2; exit 1; }
 printf '%s\n' "sentinel-v1-record" > "$CHECKPOINT_DIR/capability-selection.txt"
 . "$CAPABILITY_LIBRARY"
