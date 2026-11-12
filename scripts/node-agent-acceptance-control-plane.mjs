@@ -328,6 +328,11 @@ function createHarnessServer(plane, fixture, options) {
     // slow control plane for the stop-during-in-flight-request arm without
     // restarting this server (a restart would drop the tokens and the state).
     request_delay_ms: 0,
+    // Node-plane requests currently on the wire (between receipt and response).
+    // The shell cannot see this from the journal, because a journal row is only
+    // written once the request is answered, so the stop arm needs this counter
+    // to send SIGTERM while a request is demonstrably in flight.
+    inflight_node_requests: 0,
   };
 
   function operatorAuthorized(request) {
@@ -403,6 +408,7 @@ function createHarnessServer(plane, fixture, options) {
         last_agent_sent_at: state.last_agent_sent_at,
         results: state.results.length,
         request_delay_ms: state.request_delay_ms,
+        inflight_node_requests: state.inflight_node_requests,
         host: state.host,
       });
     }
@@ -426,6 +432,16 @@ function createHarnessServer(plane, fixture, options) {
       return json({ ok: true, request_delay_ms: state.request_delay_ms });
     }
 
+    // Lets the slow-plane arm send SIGTERM at a moment it can prove: at least
+    // one node-plane request has arrived and has not been answered yet.
+    if (method === "GET" && path === "/acceptance/inflight") {
+      return json({
+        ok: true,
+        inflight: state.inflight_node_requests,
+        request_delay_ms: state.request_delay_ms,
+      });
+    }
+
     // Real product routes: operator task creation/listing and the node
     // projection, exactly as src/control-plane/http.js defines them. Nothing
     // here re-implements the protocol; the harness only adds the transport
@@ -444,6 +460,7 @@ function createHarnessServer(plane, fixture, options) {
     let status = 500;
     let text = JSON.stringify({ ok: false, error: "HARNESS_INTERNAL" });
     let isNodePlane = NODE_PLANE_PATHS.some((pattern) => pattern.test(path));
+    if (isNodePlane) state.inflight_node_requests += 1;
     try {
       rawBody = await readRequestBuffer(request);
       const webRequest = toWebRequest(request, rawBody);
@@ -498,6 +515,7 @@ function createHarnessServer(plane, fixture, options) {
       "cache-control": "no-store",
     });
     response.end(text);
+    if (isNodePlane) state.inflight_node_requests -= 1;
     // The journal is the harness's own wire record: it lets the shell compare
     // what the agent actually reported (result payloads) instead of trusting a
     // self-description. Tokens never enter it; authorization is redacted.

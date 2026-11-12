@@ -1824,10 +1824,14 @@ from datetime import datetime
 journal_path, signal_ms = sys.argv[1], int(sys.argv[2])
 
 def epoch_ms(text):
+    # Journal stamps carry milliseconds ("...T17:15:43.406Z"), so a strict
+    # "%Y-%m-%dT%H:%M:%SZ" parse would silently drop every row and turn this
+    # arm into a false negative.
     if not isinstance(text, str) or not text:
         return None
+    candidate = text[:-1] + "+00:00" if text.endswith("Z") else text
     try:
-        return int(datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").timestamp() * 1000)
+        return int(datetime.fromisoformat(candidate).timestamp() * 1000)
     except ValueError:
         return None
 
@@ -1867,9 +1871,24 @@ PY
 
   account_systemctl restart "${UNIT_NAME}"
   wait_value 120 "slow-plane-active" "active" unit_show ActiveState
-  # The restart makes the agent send its heartbeat immediately; the server holds
-  # it for SLOW_PLANE_MS, so 1.5s later that request is still on the wire.
-  sleep 1.5
+  # The restart makes the agent send its heartbeat at once and the server holds it
+  # for SLOW_PLANE_MS. Wait until the harness reports that a node-plane request is
+  # actually on the wire, then signal: a fixed sleep would make this arm depend on
+  # timing luck, and the journal cannot show an in-flight request (its row is
+  # appended only after the response).
+  SLOW_INFLIGHT_PROBE_STARTED=$SECONDS
+  SLOW_INFLIGHT_SEEN=0
+  while ((SECONDS - SLOW_INFLIGHT_PROBE_STARTED < 30)); do
+    SLOW_INFLIGHT_JSON="$(curl -sS --cacert "${WORK}/tls/ca.crt" "${BASE_URL}/acceptance/inflight" 2>/dev/null || true)"
+    SLOW_INFLIGHT_NOW="$(printf '%s' "${SLOW_INFLIGHT_JSON}" | json_value inflight 2>/dev/null || true)"
+    if [[ "${SLOW_INFLIGHT_NOW}" =~ ^[0-9]+$ ]] && ((SLOW_INFLIGHT_NOW >= 1)); then
+      SLOW_INFLIGHT_SEEN=1
+      break
+    fi
+    sleep 0.1
+  done
+  SLOW_INFLIGHT_PROBE_SECONDS=$((SECONDS - SLOW_INFLIGHT_PROBE_STARTED))
+  ((SLOW_INFLIGHT_SEEN == 1)) || fail_check "the harness never reported a node-plane request on the wire within ${SLOW_INFLIGHT_PROBE_SECONDS}s of the restart, so a SIGTERM could not be proven to land inside one; this arm is inconclusive on this build"
   SLOW_SIGNAL_MS="$(date +%s%3N)"
   run_as_account systemctl --user kill --kill-whom=main --signal=TERM "${UNIT_NAME}" || fail_check "could not send SIGTERM to the live MainPID"
   SLOW_STOP_STARTED=$SECONDS
@@ -1892,6 +1911,7 @@ PY
   evidence "slow_plane.requests_after_signal=${SLOW_REQUESTS_AFTER}"
   evidence "slow_plane.in_flight_at_signal=${SLOW_IN_FLIGHT}"
   evidence "slow_plane.stop_seconds=${SLOW_STOP_SECONDS}"
+  evidence "slow_plane.inflight_probe_seconds=${SLOW_INFLIGHT_PROBE_SECONDS}"
   evidence "slow_plane.journal_request_events_after_signal=${SLOW_AFTER_SIGNAL}"
 
   curl -sS --cacert "${WORK}/tls/ca.crt" -X POST "${BASE_URL}/acceptance/delay" \
