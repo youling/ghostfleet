@@ -13,10 +13,12 @@ import http.client
 import json
 import socket
 import ssl
+import time
 import urllib.error
 import urllib.request
 
 from .logging import get_logger
+from .outbox import MIN_SEND_WINDOW_S
 from .protocol import (
     AGENT_CONTROL_PLANE_UNREACHABLE,
     AGENT_INVALID_RESPONSE,
@@ -322,6 +324,7 @@ class ControlPlaneClient:
         logger=None,
         transport=None,
         nonce_factory=new_nonce,
+        monotonic=None,
     ) -> None:
         if not base_url or base_url.endswith("/"):
             base_url = base_url.rstrip("/")
@@ -337,6 +340,8 @@ class ControlPlaneClient:
         self.logger = logger or get_logger()
         self.transport = transport or UrllibTransport()
         self._nonce_factory = nonce_factory
+        # 注入点：测试用假时钟验证 409 重试只花剩余预算，不引入真实睡眠。
+        self._monotonic = monotonic or time.monotonic
 
     # -- 请求 ---------------------------------------------------------------
     def _headers(self) -> dict:
@@ -362,14 +367,39 @@ class ControlPlaneClient:
         retry_hook(kind) 在重试前被调用：loop 用它轮换 boot_id（NODE_BOOT_REPLAY）。
         nonce 与 seq 由 body_builder 每次重新生成，因此天然换新。
         timeout_s 是调用方给的剩余停机预算：只允许缩短、绝不允许超过配置值。
+        重试与第一次尝试共用同一个预算：第一次花掉的时间从重试预算里扣掉，剩余
+        不足 MIN_SEND_WINDOW_S 时直接返回第一次响应（不重试）。调用方没给预算时
+        就以配置的 request_timeout_s 作为预算（心跳/poll 也如此），因此**一次 send
+        的总耗时不超过它的预算**，重试永远不可能翻倍——这是 TimeoutStopSec=30 下
+        停机有界的依据。
         """
         limit = CATEGORY_LIMITS[category]
+        started = self._monotonic()
         response = self._send_once(path, body_builder, category=category, limit=limit, timeout_s=timeout_s)
         if response.kind in self.RETRYABLE_CONFLICTS:
+            retry_timeout = timeout_s
+            budget = self.timeout_s if timeout_s is None else timeout_s
+            remaining = None
+            try:
+                remaining = float(budget) - (self._monotonic() - started)
+            except (TypeError, ValueError):
+                remaining = None
+            if remaining is not None and remaining < MIN_SEND_WINDOW_S:
+                # 预算已不够一次有意义的请求：不重试，把第一次的 409 交给上层。
+                # 这里绝不"补一份新预算"，否则一次 send 最坏会吃两份 timeout。
+                self.logger.warning(
+                    "request_conflict_retry_skipped",
+                    category=category,
+                    outcome=response.kind,
+                    remaining_s=round(remaining, 3),
+                )
+                return response
+            if remaining is not None:
+                retry_timeout = remaining
             self.logger.warning("request_conflict_retry", category=category, outcome=response.kind)
             if retry_hook is not None:
                 retry_hook(response.kind)
-            response = self._send_once(path, body_builder, category=category, limit=limit, timeout_s=timeout_s)
+            response = self._send_once(path, body_builder, category=category, limit=limit, timeout_s=retry_timeout)
         return response
 
     def _request_timeout(self, timeout_s) -> float:

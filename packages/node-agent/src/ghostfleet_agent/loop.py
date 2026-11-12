@@ -17,10 +17,10 @@ import time
 from types import SimpleNamespace
 
 from .client import MIN_INTERVAL_S
-from .ledger import LedgerWriteError
+from .ledger import TERMINAL_STATES, LedgerWriteError
 from .logging import get_logger
 from .observe import HEALTH_DEGRADED, compute_drift
-from .outbox import CONFLICT, DUPLICATE, TOO_LARGE
+from .outbox import CONFLICT, DUPLICATE, TOO_LARGE, OutboxWriteError
 from .protocol import (
     AGENT_EXECUTION_UNKNOWN,
     AGENT_LEDGER_EXHAUSTED,
@@ -488,7 +488,10 @@ class AgentLoop:
             return
         operation = envelope.get("operation")
         safe_operation = operation if isinstance(operation, str) and operation else "unknown"
-        if operation not in SUPPORTED_OPERATIONS:
+        if not isinstance(operation, str) or operation not in SUPPORTED_OPERATIONS:
+            # 非字符串（JSON list/dict）绝不能进 frozenset 成员判断：那会抛 TypeError
+            # 直接穿透 run_forever（只捕 AuthFatalError），常驻进程变成 exit 5 脏退出、
+            # 没有 STOPPING / last_stop。这类 envelope 同样在 fence 之前按 REFUSED 处理。
             # P2d：未知/缺失 operation 必须在 fence 之前拒绝。
             # 栅栏的语义是"实现可能已经跑过"，而这类任务根本不会进入 dispatch；
             # 先 fence 会留下一条 MAY_MUTATE 等级、不可驱逐的条目，512 个未知
@@ -529,13 +532,20 @@ class AgentLoop:
         # 丢弃清单与 items 在同一次原子写里持久化；这里先记账后清空（P2a 崩溃窗）。
         for dropped in self._apply_outbox_drops():
             self.logger.warning("outbox_overflow", task_id=dropped)
-        self.ledger.complete(
-            task_id,
-            status,
-            result_digest=digest,
-            code=result.get("code"),
-            operation=operation,
-        )
+        try:
+            self.ledger.complete(
+                task_id,
+                status,
+                result_digest=digest,
+                code=result.get("code"),
+                operation=operation,
+            )
+        except LedgerWriteError as error:
+            # 终态摘要没提交进账本 → 这条结果从此不可发送：shutdown flush 真发出去、
+            # 重启 reconcile 又补发 UNKNOWN，同一 task 会出现两个摘要
+            # （控制面只能回 TASK_RESULT_CONFLICT，破坏 ADR §5.2/§7 的"一 task 一摘要"）。
+            self._retract_uncommitted_result(task_id, detail=str(error), stage="complete")
+            raise
         self._emit("task_result", {"task_id": task_id, "operation": operation, "status": status, "code": result.get("code")})
         self.logger.info("task_processed", task_id=task_id, operation=operation, status=status)
 
@@ -548,10 +558,64 @@ class AgentLoop:
         }
         return self.outbox.add(body)
 
+    def _retract_uncommitted_result(self, task_id: str, *, detail: str, stage: str) -> bool:
+        """账本终态未提交时撤回待发结果；撤回本身失败就 fail closed（绝不发送）。
+
+        返回 True 表示条目已从 outbox（内存 + 磁盘）移除；False 表示磁盘写失败，
+        调用方必须拒绝发送并留下结构化错误——宁可剩一条永远发不出的 pending，
+        也不能让同一 task 出现两个摘要。
+        """
+        try:
+            removed = self.outbox.retract(task_id)
+        except OutboxWriteError as retract_error:
+            self.logger.error(
+                "result_uncommitted_unsendable",
+                task_id=task_id,
+                stage=stage,
+                detail=detail,
+                outbox_error=str(retract_error),
+            )
+            return False
+        self.logger.error(
+            "result_retracted_before_send",
+            task_id=task_id,
+            stage=stage,
+            removed=removed,
+            detail=detail,
+        )
+        return True
+
+    def _result_digest_committed(self, task_id, digest) -> bool:
+        """发送前的最后一道闸：账本里必须有与 body 完全一致的终态摘要。
+
+        已收敛的只读终态会被有界驱逐、只剩墓碑，而墓碑同样记录 result_digest
+        （ledger._prune）。这种情况仍算"已提交"：否则队列里合法待发的结果会被
+        误撤回，控制面永远收不到该 result（墓碑只让 begin() 返回 DONE，不会补发）。
+        """
+        if not isinstance(task_id, str) or not isinstance(digest, str):
+            return False
+        entry = self.ledger.get(task_id)
+        if isinstance(entry, dict):
+            if entry.get("result_digest") == digest and entry.get("state") in TERMINAL_STATES:
+                return True
+        tombstones = getattr(self.ledger, "tombstones", None)
+        tombstone = tombstones.get(task_id) if isinstance(tombstones, dict) else None
+        return isinstance(tombstone, dict) and tombstone.get("result_digest") == digest
+
     def _send_outbox_item(self, item, timeout_s=None):
         body = item.get("body")
         if not isinstance(body, dict):
             return SimpleNamespace(kind=OUTCOME_REJECTED, code=AGENT_INTERNAL_ERROR)
+        task_id = item.get("task_id")
+        digest = body.get("result_digest")
+        if not self._result_digest_committed(task_id, digest):
+            # 账本没有这条 body 的终态摘要 → 绝不发送（fail closed）。正常情况下
+            # complete()/reconcile 已先行提交；这里兜住"提交失败后仍在队列里"的条目。
+            retracted = self._retract_uncommitted_result(
+                task_id, detail="terminal result digest is not committed in the ledger", stage="send"
+            )
+            kind = OUTCOME_REJECTED if retracted else OUTCOME_DENIED
+            return SimpleNamespace(kind=kind, code=AGENT_INTERNAL_ERROR)
         try:
             response = self.client.send_result_body(
                 lambda nonce: self._envelope(nonce, body),
