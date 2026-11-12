@@ -652,7 +652,7 @@ assert_eq "${CONFIG_DIR_MODE_LINE}" "ConfigurationDirectoryMode=0700" "Configura
 # creates ~/.local/state/ghostfleet-agent world-traversable, which the ADR forbids.
 STATE_DIR_MODE_LINE="$(printf '%s\n' "${UNIT_TEXT}" | grep -E '^StateDirectoryMode=' || true)"
 if [[ -z "${STATE_DIR_MODE_LINE}" ]]; then
-  fail_check "MISSING_UNIT_STATE_DIRECTORY_MODE: the unit asset does not set StateDirectoryMode, so the agent state directory (ledger, outbox, state) is created with the systemd default mode instead of 0700. packages/bootstrap/assets/ghostfleet-managed.service sets StateDirectoryMode=0700; re-run this acceptance after that asset lands."
+  fail_check "MISSING_UNIT_STATE_DIRECTORY_MODE: the unit asset does not set StateDirectoryMode, so the agent state directory (task records and delivery state) is created with the systemd default mode instead of 0700. packages/bootstrap/assets/ghostfleet-managed.service sets StateDirectoryMode=0700; re-run this acceptance after that asset lands."
 fi
 assert_eq "${STATE_DIR_MODE_LINE}" "StateDirectoryMode=0700" "StateDirectoryMode value"
 evidence "artifacts.unit_state_dir_mode=${STATE_DIR_MODE_LINE}"
@@ -2253,7 +2253,7 @@ evidence "identity.payload_writable=$([[ "${PYZ_WRITABLE_STATUS}" == "0" ]] && e
 evidence "identity.operator_token_readable=$([[ "${OPERATOR_READABLE_STATUS}" == "0" ]] && echo yes || echo no)"
 
 # --- S9: task safety ------------------------------------------------------
-section "S9 task safety: replay, idempotency, forbidden operations, crash fence"
+section "S9 task safety: replay, idempotency, forbidden operations, crash fence, ACK loss, record integrity"
 assert_payload_intact "S9"
 
 AGENT_VERSION="$(json_value agent_version <"${READY_JSON}")"
@@ -2493,57 +2493,268 @@ evidence "task_safety.boundary_short_nonce=${SHORT_NONCE_STATUS}"
 evidence "task_safety.boundary_illegal_task_id=${ILLEGAL_TASK_ID_STATUS}"
 evidence "task_safety.boundary_illegal_task_id_code=${ILLEGAL_TASK_ID_CODE}"
 
-# Crash fence: inject the ADR section 7 ledger record as if the previous attempt
-# had fsynced MAY_HAVE_EXECUTED and died. On start the agent must report UNKNOWN
-# and must NOT execute the task again.
-TASK_CRASH_JSON="$(create_task node.observe '{"want":["uptime"]}')"
-TASK_CRASH_ID="$(printf '%s' "${TASK_CRASH_JSON}" | json_value task_id)"
-[[ -n "${TASK_CRASH_ID}" ]] || fail_check "the operator could not create the crash-fence task"
+# Task records: the storage decision C makes every task its own authoritative
+# record file, tasks/<sha256(task_id)>.json, schema
+# ghostfleet-node-task-record/v1, committed atomically one record at a time
+# instead of through the shared ledger/outbox/tombstone trio. The three arms
+# below inject that record as if a previous process had died or the delivery
+# acknowledgement had been lost, so they measure the product's own recovery and
+# delivery logic instead of its happy path.
 STATE_DIR="${ACCOUNT_HOME}/.local/state/ghostfleet-agent"
-LEDGER_PATH="${STATE_DIR}/ledger.json"
-CRASH_STARTED_AT="2026-01-01T00:00:00Z"
-install -d -m 0700 -o "${ACCOUNT}" -g "${ACCOUNT}" "${STATE_DIR}"
-python3 - "${LEDGER_PATH}" "${TASK_CRASH_ID}" "${CRASH_STARTED_AT}" <<'PY' || fail_check "could not inject the MAY_HAVE_EXECUTED ledger record"
+TASKS_DIR="${STATE_DIR}/tasks"
+TASK_RECORD_SCHEMA="ghostfleet-node-task-record/v1"
+TASK_RECORD_STARTED_AT="2026-01-01T00:00:00Z"
+
+task_record_sha() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
+task_record_path() { printf '%s/%s.json' "${TASKS_DIR}" "$(task_record_sha "$1")"; }
+task_record_field() {
+  python3 - "$(task_record_path "$1")" "$2" <<'PY'
 import json
 import sys
 
-# The exact ledger shape from packages/node-agent/src/ghostfleet_agent/ledger.py:
-# {schema: ghostfleet-node-agent-ledger/v0, entries: {task_id: {state, operation,
-# attempt, started_at, reconciled}}}. A wrong schema key is refused on load, so
-# this also proves the agent validates the ledger instead of trusting it.
-LEDGER_SCHEMA = "ghostfleet-node-agent-ledger/v0"
-path, task_id, started_at = sys.argv[1:4]
+path, field = sys.argv[1:3]
 try:
     with open(path, "r", encoding="utf-8") as handle:
         document = json.load(handle)
-    if not isinstance(document, dict):
-        document = {}
 except (FileNotFoundError, ValueError):
-    document = {}
-entries = document.get("entries")
-if not isinstance(entries, dict):
-    entries = {}
-document["schema"] = LEDGER_SCHEMA
-document["entries"] = entries
-entries[task_id] = {
-    "state": "MAY_HAVE_EXECUTED",
+    raise SystemExit(1)
+if not isinstance(document, dict) or field not in document:
+    raise SystemExit(1)
+value = document[field]
+if isinstance(value, str):
+    print(value)
+elif value is None:
+    print("")
+else:
+    print(json.dumps(value, sort_keys=True))
+PY
+}
+task_record_sealed() { [[ "$(task_record_field "$1" delivery_state)" == "ACKED" ]]; }
+task_record_execution_state_is() { [[ "$(task_record_field "$1" execution_state)" == "$2" ]]; }
+prepare_tasks_dir() {
+  install -d -m 0700 -o "${ACCOUNT}" -g "${ACCOUNT}" "${STATE_DIR}"
+  install -d -m 0700 -o "${ACCOUNT}" -g "${ACCOUNT}" "${TASKS_DIR}"
+}
+journal_poll_count() {
+  python3 - "${JOURNAL}" <<'PY'
+import json
+import sys
+
+count = 0
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if str(entry.get("path") or "").endswith("/tasks/poll"):
+                count += 1
+except FileNotFoundError:
+    count = 0
+print(count)
+PY
+}
+journal_line_count() {
+  run_as_account journalctl --user -u "${UNIT_NAME}" --no-pager -o cat 2>/dev/null | wc -l
+}
+journal_new_lines() {
+  local since="$1" out="$2"
+  run_as_account journalctl --user -u "${UNIT_NAME}" --no-pager -o cat 2>/dev/null | tail -n +"$((since + 1))" > "${out}" || true
+}
+structured_refusal_in() {
+  python3 - "$1" <<'PY'
+import json
+import re
+import sys
+
+code_pattern = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
+hints = ("record", "task", "state", "digest", "schema", "integrity", "ledger")
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        lines = handle.readlines()
+except FileNotFoundError:
+    raise SystemExit(0)
+for line in lines:
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        document = json.loads(line)
+    except ValueError:
+        continue
+    if not isinstance(document, dict):
+        continue
+    code = document.get("code")
+    if not isinstance(code, str) or not code_pattern.fullmatch(code):
+        continue
+    lowered = line.lower()
+    if any(hint in lowered for hint in hints):
+        print(code)
+        raise SystemExit(0)
+raise SystemExit(0)
+PY
+}
+stop_agent_for_record_arm() {
+  run_as_account systemctl --user stop "${UNIT_NAME}" >/dev/null 2>&1 || true
+  run_as_account systemctl --user reset-failed "${UNIT_NAME}" >/dev/null 2>&1 || true
+  # A failed refusal unit is not stopped yet; reset-failed turns it into
+  # inactive, so accept either shape while waiting for the agent to be gone.
+  local deadline=$((SECONDS + 90)) state=""
+  while (( SECONDS < deadline )); do
+    state="$(unit_show ActiveState)"
+    [[ "${state}" == "inactive" ]] && return 0
+    [[ "${state}" == "failed" ]] && run_as_account systemctl --user reset-failed "${UNIT_NAME}" >/dev/null 2>&1 || true
+    sleep 0.2
+  done
+  fail_check "the unit did not stop for a task-record arm (last state ${state})"
+}
+start_agent_and_wait_ready() {
+  local label="$1" before
+  before="$(health_json | json_value heartbeats)"
+  account_systemctl start "${UNIT_NAME}"
+  wait_value 120 "agent-active-${label}" "active" unit_show ActiveState
+  wait_until 240 "heartbeat-${label}" health_at_least_heartbeats "$((before + 1))"
+}
+
+# ACK loss: the agent finished the task and committed its record, but the
+# control plane's acknowledgement never came back. The record still carries the
+# result and its digest, so on the next start the agent must resend the SAME
+# digest, the plane must answer idempotent 200, and only then may the record
+# become ACKED with its body dropped and its digest kept.
+TASK_ACK_JSON="$(create_task node.observe '{"want":["uptime"]}')"
+TASK_ACK_ID="$(printf '%s' "${TASK_ACK_JSON}" | json_value task_id)"
+[[ -n "${TASK_ACK_ID}" ]] || fail_check "the operator could not create the ACK-loss task"
+ACK_RESULT_BODY="${WORK}/body-result-ack.json"
+node "${CONTROL_PLANE_TOOL}" request-body --kind result \
+  --node-uid "${SERVER_NODE_UID}" --agent-version "${AGENT_VERSION}" \
+  --boot-id "acceptance-harness" --seq 10 --task-id "${TASK_ACK_ID}" \
+  --operation node.observe \
+  --result '{"status":"SUCCEEDED","observation":{"source":"acceptance-harness","replay":"ack-loss"}}' \
+  > "${ACK_RESULT_BODY}"
+ACK_PREPOST_STATUS="$(plane_post "/v0/nodes/${SERVER_NODE_UID}/tasks/${TASK_ACK_ID}/result" "${ACK_RESULT_BODY}")"
+ACK_PREPOST_DIGEST="$(json_value result_digest <"${WORK}/last-response.json")"
+ACK_PREPOST_IDEMPOTENT="$(json_value idempotent <"${WORK}/last-response.json")"
+assert_eq "${ACK_PREPOST_STATUS}" "200" "the harness must be able to pre-post the ACK-loss result"
+assert_eq "${ACK_PREPOST_IDEMPOTENT}" "false" "the pre-posted ACK-loss result is the first one"
+ACK_RECORD_PATH="$(task_record_path "${TASK_ACK_ID}")"
+prepare_tasks_dir
+python3 - "${ACK_RECORD_PATH}" "${TASK_ACK_ID}" "${ACK_RESULT_BODY}" "${TASK_RECORD_STARTED_AT}" "${TASK_RECORD_SCHEMA}" <<'PY' || fail_check "could not inject the ACK-loss task record"
+import json
+import sys
+
+path, task_id, body_path, started_at, schema = sys.argv[1:6]
+with open(body_path, "r", encoding="utf-8") as handle:
+    envelope = json.load(handle)
+result = envelope.get("result")
+digest = envelope.get("result_digest")
+if not isinstance(result, dict) or not isinstance(digest, str) or not digest:
+    raise SystemExit("the harness result body is not a usable record body")
+record = {
+    "schema": schema,
+    "task_id": task_id,
     "operation": "node.observe",
     "attempt": 1,
+    "execution_state": "SUCCEEDED",
+    "reconciled": True,
     "started_at": started_at,
-    "reconciled": False,
+    "completed_at": "2026-01-01T00:00:05Z",
+    "result_body": result,
+    "result_digest": digest,
+    "delivery_state": "PENDING",
+    "delivery_attempts": 0,
+    "last_error_code": None,
+    "queued_at": "2025-12-31T23:59:00Z",
+    "acked_at": None,
+    "dropped_at": None,
 }
 with open(path, "w", encoding="utf-8") as handle:
-    json.dump(document, handle, indent=2, sort_keys=True)
+    json.dump(record, handle, indent=2, sort_keys=True)
     handle.write("\n")
 PY
-chown "${ACCOUNT}:${ACCOUNT}" "${LEDGER_PATH}"
-chmod 0600 "${LEDGER_PATH}"
-assert_eq "$(stat -c '%U:%G:%a' "${LEDGER_PATH}")" "${ACCOUNT}:${ACCOUNT}:600" "injected ledger ownership and mode"
+chown "${ACCOUNT}:${ACCOUNT}" "${ACK_RECORD_PATH}"
+chmod 0600 "${ACK_RECORD_PATH}"
+assert_eq "$(stat -c '%U:%G:%a' "${ACK_RECORD_PATH}")" "${ACCOUNT}:${ACCOUNT}:600" "injected ACK-loss record ownership and mode"
+assert_eq "$(task_record_field "${TASK_ACK_ID}" schema)" "${TASK_RECORD_SCHEMA}" "the injected ACK-loss record must carry the declared schema"
+assert_eq "$(task_record_field "${TASK_ACK_ID}" result_digest)" "${ACK_PREPOST_DIGEST}" "the injected record must carry the digest the plane already holds"
+
+ACK_ARM_STARTED=$SECONDS
+start_agent_and_wait_ready "ack-loss"
+wait_until 240 "ack-loss-record-acked" task_record_sealed "${TASK_ACK_ID}"
+ACK_SECONDS=$((SECONDS - ACK_ARM_STARTED))
+ACK_ROWS="$(journal_result_for "${TASK_ACK_ID}")"
+ACK_ROW_COUNT="$(printf '%s' "${ACK_ROWS}" | json_query 'len(doc)')"
+((ACK_ROW_COUNT >= 1)) || fail_check "the agent never resent the ACK-loss result"
+ACK_LAST_IDEMPOTENT="$(printf '%s' "${ACK_ROWS}" | json_query 'doc[-1].get("idempotent")')"
+ACK_LAST_DIGEST="$(printf '%s' "${ACK_ROWS}" | json_query 'str(doc[-1].get("result_digest") or "")')"
+assert_eq "${ACK_LAST_IDEMPOTENT}" "True" "the resent ACK-loss result must be acknowledged as idempotent"
+assert_eq "${ACK_LAST_DIGEST}" "${ACK_PREPOST_DIGEST}" "the resend must carry the same digest, byte for byte"
+assert_eq "$(task_record_field "${TASK_ACK_ID}" schema)" "${TASK_RECORD_SCHEMA}" "the delivered record must keep its declared schema"
+assert_eq "$(task_record_field "${TASK_ACK_ID}" delivery_state)" "ACKED" "the record must be acknowledged once the plane accepted the resend"
+assert_eq "$(task_record_field "${TASK_ACK_ID}" result_body)" "" "an ACKED record must drop the result body"
+assert_eq "$(task_record_field "${TASK_ACK_ID}" result_digest)" "${ACK_PREPOST_DIGEST}" "an ACKED record keeps the digest"
+assert_ne "$(task_record_field "${TASK_ACK_ID}" acked_at)" "" "an ACKED record must carry its acknowledgement time"
+ACK_SUMMARIES="$(tasks_json | python3 -c 'import json, sys; document = json.load(sys.stdin); print(sum(1 for task in document.get("tasks", []) if task.get("task_id") == sys.argv[1]))' "${TASK_ACK_ID}")"
+assert_eq "${ACK_SUMMARIES}" "1" "the control plane must hold exactly one summary for the ACK-loss task"
+assert_eq "$(task_field "${TASK_ACK_ID}" status)" "COMPLETED" "the ACK-loss task must be completed once, idempotently"
+record_ok "an unacknowledged finished record was resent with the same digest (idempotent 200), then became ACKED with its body dropped and its digest kept, and the plane holds one summary"
+evidence "task_safety.ack_loss_seconds=${ACK_SECONDS}"
+evidence "task_safety.ack_loss_resend_count=${ACK_ROW_COUNT}"
+evidence "task_safety.ack_loss_idempotent=${ACK_LAST_IDEMPOTENT}"
+evidence "task_safety.ack_loss_digest=${ACK_LAST_DIGEST}"
+evidence "task_safety.ack_loss_summaries=${ACK_SUMMARIES}"
+stop_agent_for_record_arm
+
+# Crash fence: the record says the previous process started the task and died
+# before it could decide. On start the agent must report UNKNOWN exactly once and
+# must not execute the task again; the record it then owns must show the
+# reconciliation, keep the original started_at and its digest, and end ACKED
+# with the result body dropped.
+TASK_CRASH_JSON="$(create_task node.observe '{"want":["uptime"]}')"
+TASK_CRASH_ID="$(printf '%s' "${TASK_CRASH_JSON}" | json_value task_id)"
+[[ -n "${TASK_CRASH_ID}" ]] || fail_check "the operator could not create the crash-fence task"
+CRASH_RECORD_PATH="$(task_record_path "${TASK_CRASH_ID}")"
+prepare_tasks_dir
+python3 - "${CRASH_RECORD_PATH}" "${TASK_CRASH_ID}" "${TASK_RECORD_STARTED_AT}" "${TASK_RECORD_SCHEMA}" <<'PY' || fail_check "could not inject the MAY_HAVE_EXECUTED task record"
+import json
+import sys
+
+path, task_id, started_at, schema = sys.argv[1:5]
+record = {
+    "schema": schema,
+    "task_id": task_id,
+    "operation": "node.observe",
+    "attempt": 1,
+    "execution_state": "MAY_HAVE_EXECUTED",
+    "reconciled": False,
+    "started_at": started_at,
+    "completed_at": None,
+    "result_body": None,
+    "result_digest": None,
+    "delivery_state": "NONE",
+    "delivery_attempts": 0,
+    "last_error_code": None,
+    "queued_at": "2025-12-31T23:59:00Z",
+    "acked_at": None,
+    "dropped_at": None,
+}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(record, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PY
+chown "${ACCOUNT}:${ACCOUNT}" "${CRASH_RECORD_PATH}"
+chmod 0600 "${CRASH_RECORD_PATH}"
+assert_eq "$(stat -c '%U:%G:%a' "${CRASH_RECORD_PATH}")" "${ACCOUNT}:${ACCOUNT}:600" "injected crash-fence record ownership and mode"
+assert_eq "$(task_record_field "${TASK_CRASH_ID}" execution_state)" "MAY_HAVE_EXECUTED" "the injected record must start at the fence"
 
 crash_result_seen() { [[ "$(journal_result_for "${TASK_CRASH_ID}")" != "[]" ]]; }
 CRASH_FENCE_STARTED=$SECONDS
-run_as_account systemctl --user start "${UNIT_NAME}"
+account_systemctl start "${UNIT_NAME}"
 wait_value 120 "agent-active-after-crash-fence" "active" unit_show ActiveState
+wait_until 240 "crash-fence-reconciled-record" task_record_execution_state_is "${TASK_CRASH_ID}" UNKNOWN
 wait_until 240 "crash-fence-result-posted" crash_result_seen
 CRASH_FENCE_SECONDS=$((SECONDS - CRASH_FENCE_STARTED))
 CRASH_ROWS="$(journal_result_for "${TASK_CRASH_ID}")"
@@ -2558,26 +2769,156 @@ evidence "task_safety.crash_fence_seconds=${CRASH_FENCE_SECONDS}"
 evidence "task_safety.crash_outcome=${CRASH_OUTCOME}"
 evidence "task_safety.crash_result_count=${CRASH_ROW_COUNT}"
 
-LEDGER_AFTER="$(python3 - "${LEDGER_PATH}" "${TASK_CRASH_ID}" <<'PY'
+CRASH_RECORD_STATE="$(task_record_field "${TASK_CRASH_ID}" execution_state)"
+CRASH_RECORD_STARTED="$(task_record_field "${TASK_CRASH_ID}" started_at)"
+CRASH_RECORD_RECONCILED="$(task_record_field "${TASK_CRASH_ID}" reconciled)"
+CRASH_RECORD_DIGEST="$(task_record_field "${TASK_CRASH_ID}" result_digest)"
+assert_eq "${CRASH_RECORD_STATE}" "UNKNOWN" "the record must hold the reconciled UNKNOWN execution state, never SUCCEEDED"
+assert_eq "${CRASH_RECORD_RECONCILED}" "true" "the record must mark the reconciled task reconciled=true"
+assert_eq "${CRASH_RECORD_STARTED}" "${TASK_RECORD_STARTED_AT}" "the record must keep the original started_at, proving the task was not re-executed"
+assert_eq "$(task_record_field "${TASK_CRASH_ID}" attempt)" "1" "reconciliation must not start a new attempt"
+assert_eq "$(task_record_field "${TASK_CRASH_ID}" schema)" "${TASK_RECORD_SCHEMA}" "the reconciled record must keep its declared schema"
+[[ -n "${CRASH_RECORD_DIGEST}" ]] || fail_check "the reconciled record must keep the digest of the UNKNOWN result"
+assert_eq "${CRASH_RECORD_DIGEST}" "$(task_field "${TASK_CRASH_ID}" result_digest)" "the record digest must equal the digest the control plane stored"
+CRASH_RECORD_BODY="$(task_record_field "${TASK_CRASH_ID}" result_body)"
+if [[ -n "${CRASH_RECORD_BODY}" ]]; then
+  CRASH_BODY_DIGEST="$(printf '%s' "${CRASH_RECORD_BODY}" | python3 -c '
+import hashlib, json, sys
+document = json.load(sys.stdin)
+print(hashlib.sha256(json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest())
+')"
+  assert_eq "${CRASH_BODY_DIGEST}" "${CRASH_RECORD_DIGEST}" "the record body must be exactly the result its digest names"
+  record_ok "the reconciled record still carried one result body whose canonical digest is ${CRASH_RECORD_DIGEST}"
+else
+  note "the record was already acknowledged when it was sampled (delivery_state=$(task_record_field "${TASK_CRASH_ID}" delivery_state)); delivery is asserted below"
+fi
+wait_until 240 "crash-fence-record-acked" task_record_sealed "${TASK_CRASH_ID}"
+assert_eq "$(task_record_field "${TASK_CRASH_ID}" delivery_state)" "ACKED" "a delivered crash-fence record must end ACKED"
+assert_eq "$(task_record_field "${TASK_CRASH_ID}" result_body)" "" "an ACKED crash-fence record must drop the result body"
+assert_eq "$(task_record_field "${TASK_CRASH_ID}" result_digest)" "${CRASH_RECORD_DIGEST}" "an ACKED crash-fence record keeps its digest"
+record_ok "the fenced task record is UNKNOWN with reconciled=true, keeps the original started_at ${TASK_RECORD_STARTED_AT} and its digest, and ends ACKED with the body dropped: the task was neither re-run nor lost"
+evidence "task_safety.crash_record_state=${CRASH_RECORD_STATE}"
+evidence "task_safety.crash_record_started_at=${CRASH_RECORD_STARTED}"
+evidence "task_safety.crash_record_reconciled=${CRASH_RECORD_RECONCILED}"
+evidence "task_safety.crash_record_digest=${CRASH_RECORD_DIGEST}"
+evidence "task_safety.crash_record_delivery=$(task_record_field "${TASK_CRASH_ID}" delivery_state)"
+
+# A record the agent cannot trust must stop it before it polls: the record is the
+# authority, so a file whose name is not sha256(task_id), or a PENDING delivery
+# whose body has no digest, must fail closed with a structured error and must be
+# left byte-identical. A lenient agent would poll and execute the shadowed task.
+RECORD_DEFECT_SUMMARY=""
+inject_record_defect() {
+  local mode="$1" record_path="$2" task_id="$3"
+  prepare_tasks_dir
+  python3 - "${record_path}" "${task_id}" "${TASK_RECORD_STARTED_AT}" "${TASK_RECORD_SCHEMA}" "${mode}" <<'PY' || fail_check "could not inject the ${mode} record"
 import json
 import sys
 
-path, task_id = sys.argv[1:3]
-with open(path, "r", encoding="utf-8") as handle:
-    document = json.load(handle)
-entries = document.get("entries") if isinstance(document.get("entries"), dict) else {}
-entry = entries.get(task_id)
-print(json.dumps(entry if isinstance(entry, dict) else {"state": None}, sort_keys=True))
+path, task_id, started_at, schema, mode = sys.argv[1:6]
+pending_without_digest = mode == "pending_without_digest"
+record = {
+    "schema": schema,
+    "task_id": task_id,
+    "operation": "node.observe",
+    "attempt": 1,
+    "execution_state": "SUCCEEDED" if pending_without_digest else "MAY_HAVE_EXECUTED",
+    "reconciled": pending_without_digest,
+    "started_at": started_at,
+    "completed_at": "2026-01-01T00:00:05Z" if pending_without_digest else None,
+    "result_body": {"status": "SUCCEEDED", "observation": {"source": "acceptance-harness", "replay": "defect"}} if pending_without_digest else None,
+    "result_digest": None,
+    "delivery_state": "PENDING" if pending_without_digest else "NONE",
+    "delivery_attempts": 0,
+    "last_error_code": None,
+    "queued_at": "2025-12-31T23:59:00Z",
+    "acked_at": None,
+    "dropped_at": None,
+}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(record, handle, indent=2, sort_keys=True)
+    handle.write("\n")
 PY
-)"
-assert_eq "$(printf '%s' "${LEDGER_AFTER}" | json_value state)" "UNKNOWN" "a fenced task must be recorded as UNKNOWN, never as SUCCEEDED"
-assert_eq "$(printf '%s' "${LEDGER_AFTER}" | json_value started_at)" "${CRASH_STARTED_AT}" "the ledger must keep the original started_at, proving the task was not re-executed"
-assert_eq "$(printf '%s' "${LEDGER_AFTER}" | json_value reconciled)" "true" "the ledger must mark the reconciled entry reconciled=true"
-assert_eq "$(printf '%s' "${LEDGER_AFTER}" | json_value attempt)" "1" "reconciliation must not start a new attempt"
-record_ok "the ledger holds the fenced task as UNKNOWN with reconciled=true and keeps the original started_at ${CRASH_STARTED_AT}: the task was not re-run"
-evidence "task_safety.ledger_state=$(printf '%s' "${LEDGER_AFTER}" | json_value state)"
-evidence "task_safety.ledger_started_at=$(printf '%s' "${LEDGER_AFTER}" | json_value started_at)"
-evidence "task_safety.ledger_reconciled=$(printf '%s' "${LEDGER_AFTER}" | json_value reconciled)"
+  chown "${ACCOUNT}:${ACCOUNT}" "${record_path}"
+  chmod 0600 "${record_path}"
+}
+
+record_defect_arm() {
+  local label="$1" task_id="$2" record_path="$3"
+  local before_sha before_stat polls_before journal_before started deadline refusal
+  local start_status polls_after after_sha after_stat results state window
+  stop_agent_for_record_arm
+  before_sha="$(sha256sum "${record_path}" | cut -d' ' -f1)"
+  before_stat="$(stat -c '%U:%G:%a' "${record_path}")"
+  polls_before="$(journal_poll_count)"
+  journal_before="$(journal_line_count)"
+  started=$SECONDS
+  set +e
+  account_systemctl start --no-block "${UNIT_NAME}" >"${WORK}/${label}-start.out" 2>&1
+  start_status=$?
+  set -e
+  deadline=$((SECONDS + 60))
+  refusal=""
+  while (( SECONDS < deadline )); do
+    journal_new_lines "${journal_before}" "${WORK}/${label}-journal.txt"
+    refusal="$(structured_refusal_in "${WORK}/${label}-journal.txt")"
+    [[ -n "${refusal}" ]] && break
+    sleep 1
+  done
+  if [[ -z "${refusal}" ]]; then
+    fail_check "a ${label} record must be refused with a structured journal event before the agent polls; the journal only said: $(tail -5 "${WORK}/${label}-journal.txt" 2>/dev/null | tr '\n' '|' | cut -c1-500)"
+  fi
+  # A lenient agent would poll on its first iteration, so wait a full heartbeat
+  # interval from the start before measuring: "it did not poll" must be measured,
+  # not won by being fast.
+  window=$((started + 40))
+  while (( SECONDS < window )); do sleep 1; done
+  polls_after="$(journal_poll_count)"
+  results="$(journal_result_for "${task_id}")"
+  after_sha="$(sha256sum "${record_path}" | cut -d' ' -f1)"
+  after_stat="$(stat -c '%U:%G:%a' "${record_path}")"
+  assert_eq "${polls_after}" "${polls_before}" "a ${label} record must stop the agent before it polls for tasks"
+  assert_eq "${results}" "[]" "a ${label} record must not produce a result for ${task_id}"
+  assert_eq "${after_sha}" "${before_sha}" "the refused ${label} record must not be rewritten"
+  assert_eq "${after_stat}" "${before_stat}" "the refused ${label} record must keep its ownership and mode"
+  [[ -f "${record_path}" ]] || fail_check "the refused ${label} record must not be deleted"
+  record_ok "a ${label} record was refused with ${refusal} before any poll and the record file stayed byte-identical: the agent fails closed instead of guessing"
+  RECORD_DEFECT_SUMMARY="${RECORD_DEFECT_SUMMARY:+${RECORD_DEFECT_SUMMARY}; }${label}=${refusal}"
+  evidence "task_safety.${label}_code=${refusal}"
+  evidence "task_safety.${label}_start_status=${start_status}"
+  evidence "task_safety.${label}_polls_before=${polls_before}"
+  evidence "task_safety.${label}_polls_after=${polls_after}"
+  evidence "task_safety.${label}_sha256=${after_sha}"
+  stop_agent_for_record_arm
+  rm -f "${record_path}"
+}
+
+TASK_BAD_NAME_JSON="$(create_task node.observe '{"want":["uptime"]}')"
+TASK_BAD_NAME_ID="$(printf '%s' "${TASK_BAD_NAME_JSON}" | json_value task_id)"
+[[ -n "${TASK_BAD_NAME_ID}" ]] || fail_check "the operator could not create the record-integrity task"
+BAD_NAME_SHA="$(printf 'not-the-record-of-this-task' | sha256sum | cut -d' ' -f1)"
+BAD_NAME_PATH="${TASKS_DIR}/${BAD_NAME_SHA}.json"
+inject_record_defect "hash_mismatch" "${BAD_NAME_PATH}" "${TASK_BAD_NAME_ID}"
+assert_ne "${BAD_NAME_SHA}" "$(task_record_sha "${TASK_BAD_NAME_ID}")" "the injected file name must not be sha256(task_id)"
+record_defect_arm "record-hash-mismatch" "${TASK_BAD_NAME_ID}" "${BAD_NAME_PATH}"
+
+TASK_NO_DIGEST_JSON="$(create_task node.observe '{"want":["uptime"]}')"
+TASK_NO_DIGEST_ID="$(printf '%s' "${TASK_NO_DIGEST_JSON}" | json_value task_id)"
+[[ -n "${TASK_NO_DIGEST_ID}" ]] || fail_check "the operator could not create the delivery-digest task"
+NO_DIGEST_PATH="$(task_record_path "${TASK_NO_DIGEST_ID}")"
+inject_record_defect "pending_without_digest" "${NO_DIGEST_PATH}" "${TASK_NO_DIGEST_ID}"
+record_defect_arm "record-pending-without-digest" "${TASK_NO_DIGEST_ID}" "${NO_DIGEST_PATH}"
+
+# Removing the untrusted records must let the agent come back and run the tasks
+# those records shadowed: a fail-closed refusal is only correct if it is
+# recoverable. Both tasks then complete normally, which also keeps the later
+# "every task in the timeline is COMPLETED" assertion honest.
+start_agent_and_wait_ready "after-record-defects"
+wait_until 240 "record-defect-hash-task-completed" task_status_is "${TASK_BAD_NAME_ID}" COMPLETED
+wait_until 240 "record-defect-digest-task-completed" task_status_is "${TASK_NO_DIGEST_ID}" COMPLETED
+record_ok "after the untrusted records were removed the agent polled again and completed both shadowed tasks, so the refusal was recoverable"
+evidence "task_safety.record_defect_task_status=$(task_status "${TASK_BAD_NAME_ID}")"
+evidence "task_safety.record_defect_delivery_task_status=$(task_status "${TASK_NO_DIGEST_ID}")"
 
 HEARTBEATS_BEFORE_WATCH="$(health_json | json_value heartbeats)"
 wait_until 240 "heartbeat-after-crash-fence" health_at_least_heartbeats "$((HEARTBEATS_BEFORE_WATCH + 1))"
@@ -2771,7 +3112,8 @@ REAL: after loginctl terminate-user the enabled service returned to active in ${
 REAL: kill -9 returned the service to active in ${KILL_RECOVERY_SECONDS}s with NRestarts ${N_RESTARTS_BEFORE_KILL} -> ${N_RESTARTS_AFTER_KILL}; SIGTERM exited 0 and did not restart within ${WINDOW_OBSERVED}s
 REAL: two node.observe tasks returned different observations (${DIFF_COUNT} differing fields, ${UPTIME_DIFFS} uptime-like), agent.self.test echoed a fresh nonce, and service.status.read reported the agent-observed unit state ${SVC_OBSERVED_STATE}
 REAL: task safety held (byte-identical heartbeat replay 409 ${CAPTURED_REPLAY_ERROR}, stale sequence with a fresh nonce 409 ${STALE_SEQ_ERROR}, reused nonce with an advancing sequence 409 ${REPLAY_ERROR}, idempotent result 200, conflicting result 409 TASK_RESULT_CONFLICT, forbidden operations and parameters refused, and malformed submissions refused at the operator surface with ${WANT_STRING_STATUS}/${SHORT_NONCE_STATUS}/${ILLEGAL_TASK_ID_STATUS})
-REAL: the MAY_HAVE_EXECUTED fence produced exactly one UNKNOWN result and no re-execution (ledger RECONCILED, started_at kept)
+REAL: the MAY_HAVE_EXECUTED fence produced exactly one UNKNOWN result and no re-execution (its task record went UNKNOWN and reconciled, kept started_at and its digest, then ended ACKED with the body dropped), and a lost delivery acknowledgement was resent with the same digest (idempotent 200) before that record was ACKed
+REAL: two untrusted task records (a file name that was not sha256(task_id), and a PENDING delivery whose body had no digest) each stopped the agent before it polled with ${RECORD_DEFECT_SUMMARY} and left the record file byte-identical; removing them let both shadowed tasks complete
 REAL: a read-only consumer with its own token read agent health ${OBSERVED_HEALTH}, version ${OBSERVED_AGENT_VERSION} and result digest ${CONSUMER_OBSERVE_DIGEST} through the product timeline, and could not mint tasks
 REAL: the unit runs inside an implicit PrivateUsers namespace (uid_map "${UID_MAP_FIRST}" from the host and "${SANDBOX_UID_MAP}" from inside it), sees the host configuration as uid ${SANDBOX_CONFIG_UID} mode ${SANDBOX_CONFIG_MODE} through nsenter --preserve-credentials, and has a read-only mount of / (${ROOT_MOUNT_FLAGS}) while staying active
 REAL: a configuration the control account cannot read stops the agent with exit ${CONFIG_TRUST_EXIT} and ${CONFIG_TRUST_CODE}, and restoring the mode returns the unit to active

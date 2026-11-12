@@ -335,13 +335,49 @@ What the job proves, measured on the host rather than read off a config:
   `TASK_PARAMS_INVALID`; only the raw HTTP probe that carries an illegal
   caller-supplied task id is expected to answer `400`, with one of
   `NODE_REQUEST_INVALID`, `TASK_REQUEST_INVALID` or `TASK_ID_INVALID`;
-  nothing is queued in any of the three cases), and a task left at
-  `MAY_HAVE_EXECUTED` by a crash is reported as `UNKNOWN` exactly once
-  and never re-run;
+  nothing is queued in any of the three cases);
+- task records: the storage decision gives every task one authoritative file,
+  `tasks/<sha256(task_id)>.json` (schema `ghostfleet-node-task-record/v1`,
+  directory `0700`, file `0600`), committed one record at a time instead of
+  through the shared ledger, outbox and tombstone files. Three arms inject that
+  record as if a previous process had died, and measure the recovery:
+  a `MAY_HAVE_EXECUTED` record is reconciled to `UNKNOWN` exactly once and
+  never re-run, the record keeps its original `started_at` and the result
+  digest, and it ends `ACKED` with the result body dropped; a finished record
+  whose delivery was never acknowledged is resent with the same digest, the
+  plane answers idempotent `200` and the record then becomes `ACKED` with one
+  summary only; and a record whose file name is not `sha256(task_id)`, or a
+  `PENDING` delivery whose body has no digest, stops the agent before any poll
+  with a structured journal error and leaves the record file byte-identical
+  (removing the bad record brings the agent back, and the task it shadowed then
+  completes normally);
 - an independent read-only consumer, holding a token that is neither the
   operator's nor the node's, reads the node projection (agent health, version,
   last heartbeat) and the task timeline through the product routes, cannot
   create tasks, and receives no credential or token field.
+
+The record an arm injects (all fields are always present, `null` included):
+
+```json
+{
+  "schema": "ghostfleet-node-task-record/v1",
+  "task_id": "task-00000000-0000-4000-8000-000000000000",
+  "operation": "node.observe",
+  "attempt": 1,
+  "execution_state": "MAY_HAVE_EXECUTED",
+  "reconciled": false,
+  "started_at": "2026-01-01T00:00:00Z",
+  "completed_at": null,
+  "result_body": null,
+  "result_digest": null,
+  "delivery_state": "NONE",
+  "delivery_attempts": 0,
+  "last_error_code": null,
+  "queued_at": "2025-12-31T23:59:00Z",
+  "acked_at": null,
+  "dropped_at": null
+}
+```
 
 What the job does not prove: a real tailnet and the operator hop over it (the
 listener is loopback only), a real Cloudflare deployment of the bridge, real
@@ -497,4 +533,9 @@ runner gates:
 - The summary is also a pass gate: the run fails when it produced fewer than
   40 `OK` assertions or fewer than 15 `EVIDENCE` lines, whatever the
   individual arms said.
+- A release freeze is gated on the review findings, not on this job: no `P0` or
+  `P1` finding may remain open, and no `P2` finding that touches data
+  integrity, crash recovery or execution correctness may remain open; remaining
+  `P3` findings go to the backlog. A green acceptance run is evidence for the
+  frozen bytes - it does not replace that review gate.
 
