@@ -2693,7 +2693,12 @@ record_ok "the run produced ${OK_COUNT} measured OK assertions and ${EVIDENCE_CO
 evidence "summary.ok_count=${OK_COUNT}"
 evidence "summary.evidence_count=${EVIDENCE_COUNT}"
 evidence "summary.node_uid=${SERVER_NODE_UID}"
-evidence "summary.agent_version=${AGENT_VERSION}"
+# The fixture constant is not the product's version: report the version the
+# product agent actually put on the wire, and keep the harness constant named
+# separately so nobody mistakes it for measured product output.
+evidence "summary.agent_version=${OBSERVED_AGENT_VERSION}"
+evidence "summary.agent_version_source=observer_node_projection"
+evidence "summary.harness_fixture_agent_version=${AGENT_VERSION}"
 evidence "summary.account=${ACCOUNT}"
 evidence "summary.account_uid=${ACCOUNT_UID}"
 evidence "summary.payload_sha256=${SECOND_SHA}"
@@ -2710,6 +2715,7 @@ evidence "summary.na_plane_head=${GHOSTFLEET_NA_PLANE_HEAD:-not_provided}"
 # synthetic seams, NOT_RUN facts are outside what a disposable cloud runner can
 # prove. Keeping them apart is the point of the runbook section.
 RESULT_LINES="${WORK}/result-lines.txt"
+INSTALLED_UNIT_BYTES="$(stat -c %s "${ACCOUNT_HOME}/.config/systemd/user/${UNIT_NAME}")"
 cat > "${RESULT_LINES}" <<TXT
 REAL: a deterministically built zipapp and the pinned systemd user unit were installed and verified (systemd-analyze --user verify exit ${VERIFY_STATUS})
 REAL: the resident control account ${ACCOUNT} (uid ${ACCOUNT_UID}) runs the agent with no login, no sudo and no privileged group
@@ -2725,7 +2731,7 @@ REAL: a configuration the control account cannot read stops the agent with exit 
 REAL: with an unreachable control plane (${OFFLINE_ORIGIN}) the agent stayed active for ${OFFLINE_WINDOW_SECONDS}s across ${OFFLINE_SAMPLES} samples (NRestarts ${OFFLINE_N_RESTARTS_START} -> ${OFFLINE_N_RESTARTS_END}, no watchdog kill, WatchdogTimestamp advanced ${OFFLINE_WATCHDOG_ADVANCE}s) and heartbeated again ${OFFLINE_RECOVERY_SECONDS}s after the origin was restored
 REAL: with no capability projection in place the agent's heartbeat was still accepted and the control plane projected capability_digest as ${UNPROJECTED_DIGEST} (no NODE_REQUEST_INVALID refused heartbeats in the journal)
 REAL: child processes never inherited NOTIFY_SOCKET (${NOTIFY_REJECT_LINES} "reception only permitted for main PID" journal lines in ${NOTIFY_SOCKET_JOURNAL_LINES} lines of unit journal)
-  printf 'REAL: the two artifacts measured end to end are the payload sha256 %s (%s B) and the unit sha256 %s (%s B), measured by this run against na-core %s and na-plane %s; the freeze request is recorded in the frozen.* EVIDENCE lines and a deviation aborts at the FROZEN_ARTIFACT_MISMATCH gate above\n' "${SECOND_SHA}" "${PAYLOAD_BYTES}" "${INSTALLED_UNIT_SHA}" "$(stat -c %s "${ACCOUNT_HOME}/.config/systemd/user/${UNIT_NAME}")" "${GHOSTFLEET_NA_CORE_HEAD:-not_provided}" "${GHOSTFLEET_NA_PLANE_HEAD:-not_provided}" >>"${RESULT_LINES}"
+REAL: the two artifacts measured end to end are the payload sha256 ${SECOND_SHA} (${PAYLOAD_BYTES} B) and the unit sha256 ${INSTALLED_UNIT_SHA} (${INSTALLED_UNIT_BYTES} B), measured by this run against na-core ${GHOSTFLEET_NA_CORE_HEAD:-not_provided} and na-plane ${GHOSTFLEET_NA_PLANE_HEAD:-not_provided}; the freeze request is recorded in the frozen.* EVIDENCE lines and a deviation aborts at the FROZEN_ARTIFACT_MISMATCH gate above
 STUB: the control plane is the repository's own handler, store and node-plane verification served over loopback HTTPS with a synthetic node fixture (admitted through the real controller calls, no enrollment ticket, no public bridge); the operator/observer bearer split lives in this harness because src/control-plane/http.js deliberately owns no transport auth
 NOT_RUN: real tailnet reachability and a real remote operator hop
 NOT_RUN: a real Cloudflare Worker deployment of the node bridge or of the control plane
