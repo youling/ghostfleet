@@ -108,10 +108,11 @@ async function derivedKey(prefix, value) {
 
 /**
  * Advisory per-node limit. Denies only on an explicit success:false; a missing
- * binding, a throwing getter, no WebCrypto, a throwing limit() or a malformed
- * answer all fail open. A broken-but-present binding is reported as a structured
- * warning so an operator can see it; an absent binding is the documented disabled
- * state and stays silent. Success here is never authorization.
+ * binding, a throwing getter, no WebCrypto, a non-callable limit, a throwing
+ * limit() or a malformed answer all fail open. Any binding that is present but
+ * unusable is reported as a structured warning so an operator can see it; an
+ * absent binding is the documented disabled state and stays silent. Success here
+ * is never authorization.
  */
 async function advisoryDenied(resolveBinding, prefix, value) {
   let binding;
@@ -121,7 +122,14 @@ async function advisoryDenied(resolveBinding, prefix, value) {
     return false;
   }
   // No binding is the documented "limiter disabled" state: stay silent.
-  if (!binding || typeof binding.limit !== "function") return false;
+  if (!binding) return false;
+  // A configured binding without a callable limit is a deployment mistake that
+  // silently disables rate limiting, which is exactly the failure this warning
+  // exists to expose. It still fails open, and the warning carries no node handle.
+  if (typeof binding.limit !== "function") {
+    console.warn(JSON.stringify({ event: "rate_limiter_unavailable", reason: "limit_not_callable" }));
+    return false;
+  }
   try {
     const outcome = await binding.limit({ key: await derivedKey(prefix, value) });
     if (!outcome || typeof outcome !== "object") {
