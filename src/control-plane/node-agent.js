@@ -408,8 +408,11 @@ export function credentialHandoffUsable(handoff, nowMs) {
   if (!handoff || typeof handoff !== "object") return false;
   const expiresAt = Date.parse(handoff.expires_at);
   if (!Number.isFinite(expiresAt) || nowMs >= expiresAt) return false;
-  const deliveries = Number.isInteger(handoff.deliveries) ? handoff.deliveries : 0;
-  return deliveries < CREDENTIAL_HANDOFF_MAX_DELIVERIES;
+  // A counter that is not a non-negative integer cannot be trusted: coercing it
+  // would make "7" become "71" and the delivery budget would never trip. A
+  // malformed record is treated as unusable, so no token is handed out.
+  if (!Number.isInteger(handoff.deliveries) || handoff.deliveries < 0) return false;
+  return handoff.deliveries < CREDENTIAL_HANDOFF_MAX_DELIVERIES;
 }
 
 export function defaultAgentState() {
@@ -508,7 +511,16 @@ export function publicTask(task) {
     dispatched_at: task.dispatched_at ?? null,
     completed_at: task.completed_at ?? null,
     result_digest: task.result_digest ?? null,
-    result_outcome: task.result_outcome ?? null,
+    // The public projection may only ever carry the crash-safety vocabulary. A
+    // durable record written by an older build (or a hand-edited blob) must not
+    // echo an unknown status a consumer might trust, so anything else reads as
+    // UNKNOWN; a missing outcome still reads as null.
+    result_outcome:
+      task.result_outcome === null || task.result_outcome === undefined
+        ? null
+        : RESULT_STATUSES.includes(task.result_outcome)
+          ? task.result_outcome
+          : "UNKNOWN",
   };
 }
 
@@ -588,9 +600,10 @@ function credentialDigests(state) {
 
 /**
  * §5.1 request verification, in the ADR's order: body cap, content-type,
- * credential, lifecycle, clock, replay, rate. Every failure is returned before
- * any state is touched; on success the caller receives a commit token (the
- * nonce plus the next rate window) that it applies together with its own write.
+ * credential, lifecycle, clock, nonce replay, rate, then the boot/seq replay
+ * extension. Every failure is returned before any state is touched; on success
+ * the caller receives a commit token (the nonce plus the next rate window) that
+ * it applies together with its own write.
  */
 export function verifyNodeRequest(state, input) {
   const nowMs = input?.nowMs;
@@ -684,7 +697,32 @@ export function verifyNodeRequest(state, input) {
     return deny("NODE_CLOCK_SKEW", 401);
   }
 
-  // 6. Replay, first line: boot identity and sequence. A retried request inside
+  // 6. Replay, first line: the nonce ring. §5.1 checks the nonce window before
+  //    the rate budget, and it is checked before the boot/seq rule so a
+  //    byte-for-byte replay reports NODE_NONCE_REPLAY, not a seq regression. The
+  //    ring is bounded per node so durable state cannot grow without bound (§10).
+  const nonceWindowMs = NONCE_WINDOW_SECONDS * 1000;
+  const liveNonces = agent.nonces.filter(
+    (entry) =>
+      entry &&
+      typeof entry === "object" &&
+      Number.isFinite(entry.at_ms) &&
+      entry.at_ms > nowMs - nonceWindowMs,
+  );
+  if (liveNonces.some((entry) => entry.nonce === nonce)) {
+    return deny("NODE_NONCE_REPLAY", 409);
+  }
+
+  // 7. Rate, per-node token bucket (§5.1 item 7): one token per request, refilled
+  //    on a fixed cadence. The refusal carries Retry-After so an agent can back off.
+  const rate = refillRateBucket(agent.rate, nowMs);
+  if (rate.tokens < 1) {
+    return deny("NODE_RATE_LIMITED", 429, {
+      retry_after_s: rateLimitRetryAfterSeconds(agent.rate, nowMs),
+    });
+  }
+
+  // 8. Replay, second line: boot identity and sequence. A retried request inside
   //    one boot must move the seq forward but not race ahead; a reboot may reset
   //    the seq to zero only under a boot id that has never been retired.
   const lastBootId = agent.last_boot_id;
@@ -706,29 +744,6 @@ export function verifyNodeRequest(state, input) {
     nextRetiredBootIds = lastBootId
       ? [...agent.retired_boot_ids, lastBootId].slice(-BOOT_ID_HISTORY_LIMIT)
       : agent.retired_boot_ids;
-  }
-
-  // 7. Replay, second line: a nonce is remembered for the freshness window, up to
-  //    a fixed ring size per node so durable state cannot grow without bound (§10).
-  const nonceWindowMs = NONCE_WINDOW_SECONDS * 1000;
-  const liveNonces = agent.nonces.filter(
-    (entry) =>
-      entry &&
-      typeof entry === "object" &&
-      Number.isFinite(entry.at_ms) &&
-      entry.at_ms > nowMs - nonceWindowMs,
-  );
-  if (liveNonces.some((entry) => entry.nonce === nonce)) {
-    return deny("NODE_NONCE_REPLAY", 409);
-  }
-
-  // 8. Rate, per-node token bucket (§5.1 item 7): one token per request, refilled
-  //    on a fixed cadence. The refusal carries Retry-After so an agent can back off.
-  const rate = refillRateBucket(agent.rate, nowMs);
-  if (rate.tokens < 1) {
-    return deny("NODE_RATE_LIMITED", 429, {
-      retry_after_s: rateLimitRetryAfterSeconds(agent.rate, nowMs),
-    });
   }
 
   const nextNonces = [...liveNonces, { nonce, at_ms: nowMs }].slice(-NONCE_RING_LIMIT);

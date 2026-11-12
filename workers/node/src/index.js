@@ -17,11 +17,18 @@
  *
  * This file is the single implementation of that boundary (workers/README.md).
  */
-const NODE_UID = "[a-z0-9][a-z0-9_-]{0,63}";
-const TASK_ID = "[a-z0-9][a-z0-9_-]{0,63}";
+// Exact copies of the control-plane classes: NODE_UID_PATTERN in
+// src/control-plane/node-agent.js is ^node-[A-Za-z0-9-]{1,80}$ and TASK_ID_PATTERN
+// is ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}$. A narrower class here would 404 a handle
+// the control plane accepts and the bridge would silently become the stricter
+// authority; a wider one would forward handles the control plane rejects.
+const NODE_UID = "node-[A-Za-z0-9-]{1,80}";
+const TASK_ID = "[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}";
 
 // One route table, in the ADR's order. The strict character classes are the
-// contract: a percent-encoded or uppercase uid is not a node handle.
+// contract: a percent-encoded segment never matches (the handle is not decoded
+// here), while the uppercase and punctuation forms the control plane accepts
+// must still pass this edge.
 export const ROUTES = Object.freeze([
   { kind: "heartbeat", path: new RegExp("^/v0/nodes/(" + NODE_UID + ")/heartbeat$"), limit: "heartbeat" },
   { kind: "poll", path: new RegExp("^/v0/nodes/(" + NODE_UID + ")/tasks/poll$"), limit: "poll" },
@@ -102,16 +109,29 @@ async function derivedKey(prefix, value) {
 /**
  * Advisory per-node limit. Denies only on an explicit success:false; a missing
  * binding, a throwing getter, no WebCrypto, a throwing limit() or a malformed
- * answer all fail open. Success here is never authorization.
+ * answer all fail open. A broken-but-present binding is reported as a structured
+ * warning so an operator can see it; an absent binding is the documented disabled
+ * state and stays silent. Success here is never authorization.
  */
 async function advisoryDenied(resolveBinding, prefix, value) {
+  let binding;
   try {
-    const binding = resolveBinding();
-    if (!binding || typeof binding.limit !== "function") return false;
+    binding = resolveBinding();
+  } catch {
+    return false;
+  }
+  // No binding is the documented "limiter disabled" state: stay silent.
+  if (!binding || typeof binding.limit !== "function") return false;
+  try {
     const outcome = await binding.limit({ key: await derivedKey(prefix, value) });
-    if (!outcome || typeof outcome !== "object") return false;
+    if (!outcome || typeof outcome !== "object") {
+      // Fail open, but an enabled-yet-broken binding must be observable.
+      console.warn(JSON.stringify({ event: "rate_limiter_unavailable", reason: "malformed_answer" }));
+      return false;
+    }
     return outcome.success === false;
   } catch {
+    console.warn(JSON.stringify({ event: "rate_limiter_unavailable", reason: "limiter_threw" }));
     return false;
   }
 }
