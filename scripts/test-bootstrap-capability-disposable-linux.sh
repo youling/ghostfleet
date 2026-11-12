@@ -124,6 +124,13 @@ const longRunning = { ...selection, user_unit: { name: "ghostfleet-managed.servi
 longRunning.artifacts = selection.artifacts.map((item) =>
   item.name === "ghostfleet-managed.service" ? { ...item, content: longRunningUnit } : item);
 writeFileSync(join(work, "stale-data.sh"), module.renderCapabilityBlock(longRunning) + "\n");
+// The decommission harness stages through the same content-addressed origin, so
+// the long-running unit bytes must be published at their digest too.
+const staged = module.normalizeSelectedCapability(longRunning);
+mkdirSync(join(work, "assets", "sha256"), { recursive: true });
+for (const item of staged.artifacts) {
+  writeFileSync(join(work, "assets", "sha256", item.sha256), item.content);
+}
 // The claim channel: the same selection, base64-encoded exactly as the claim
 // response delivers it, so the published parser is what runs here.
 writeFileSync(join(work, "claim.json"), JSON.stringify({
@@ -669,6 +676,7 @@ run_decommission() {
   HARNESS_CHECKPOINT="$work/decommission-checkpoint" \
     CAPABILITY_LIBRARY="$work/capability-library.sh" \
     CAPABILITY_DATA="$work/stale-data.sh" \
+    GHOSTFLEET_ASSETS_ORIGIN="$good_origin" \
     STALE_ACCOUNT="$privileged_account" \
     STALE_UNIT="$stale_unit" \
     STALE_WANT="$stale_want" \
