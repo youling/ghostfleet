@@ -76,7 +76,9 @@ def uid_zero_mapped(*, uid_map_path: str | None = None) -> bool:
         except ValueError:
             ambiguous = True
             continue
-        if fields[1].strip() == "0" and length > 0:
+        # 内核格式为「inside outside length」，两列都可能等于 0；
+        # 任一侧出现 0 就按「uid 0 已映射」处理（更严格，fail closed）。
+        if length > 0 and ("0" in (fields[0].strip(), fields[1].strip())):
             return True
     return True if ambiguous else False
 

@@ -143,6 +143,16 @@ def test_uid_map_detects_root_mapping_and_self_only_mapping(tmp_path):
     assert trust.uid_zero_mapped(uid_map_path=str(self_only / "uid_map")) is False
 
 
+def test_either_uid_map_column_naming_zero_counts_as_mapped(tmp_path):
+    inside_zero = write_proc(tmp_path / "inside", uid_map="          0       1002          1\n")
+    outside_zero = write_proc(tmp_path / "outside", uid_map="       1002          0          1\n")
+    assert trust.uid_zero_mapped(uid_map_path=str(inside_zero / "uid_map")) is True
+    assert trust.uid_zero_mapped(uid_map_path=str(outside_zero / "uid_map")) is True
+    # 已映射 → 只认 st_uid == 0，overflow 一律不可信。
+    assert probe(inside_zero, uid=0)[0] is True
+    assert probe(outside_zero, uid=0)[0] is True
+
+
 def test_zero_length_mapping_does_not_count(tmp_path):
     proc = write_proc(tmp_path / "proc", uid_map="          0          0          0\n")
     assert trust.uid_zero_mapped(uid_map_path=str(proc / "uid_map")) is False
