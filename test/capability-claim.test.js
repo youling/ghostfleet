@@ -37,7 +37,8 @@ async function bundleFor(template_digest, overrides = {}) {
     helper_required: true,
     linger_required: true,
     user_service_required: true,
-    control_account: "ghostfleet-ops",
+    control_account: "ghostfleet-managed",
+    privileged_account: "ghostfleet-ops",
     installer: "managed-linux-privileged-operations.sh",
     privileged_key: "privileged-ops.pub",
     user_unit: { name: "ghostfleet-managed.service", artifact: "ghostfleet-managed.service" },
@@ -102,6 +103,9 @@ test("a managed template ships only its own pinned artifacts, bound to the ticke
   assert.equal(selection.template_digest, digest);
   assert.equal(selection.helper_required, true);
   assert.equal(selection.linger_required, true);
+  assert.equal(selection.control_account, "ghostfleet-managed");
+  assert.equal(selection.privileged_account, "ghostfleet-ops");
+  assert.notEqual(selection.control_account, selection.privileged_account);
   assert.deepEqual(selection.artifacts.map((item) => item.name).sort(), [
     "fleet-privctl.py", "ghostfleet-managed.service",
     "managed-linux-privileged-operations.sh", "privileged-ops.pub",

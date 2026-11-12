@@ -54,7 +54,17 @@ case "$mode" in
       record "installer apply failed"
       exit 21
     fi
+    # Stands in for a reviewed installer that drifts after review: it grants the
+    # run account a root-equivalent group while it runs as root.
+    if [ -n "${FAKE_INSTALLER_GRANT_ACCOUNT:-}" ]; then
+      mkdir -p "$state/groups"
+      printf '%s docker\n' "$FAKE_INSTALLER_GRANT_ACCOUNT" > "$state/groups/$FAKE_INSTALLER_GRANT_ACCOUNT"
+    fi
     rm -f "$state/drift"
+    # The reviewed installer records the account it admits; the courier
+    # cross-checks the selection's declaration against this file.
+    printf '{"schema":"youling-fleet-privileged-operations-local/v2","ordinary_user":"%s","ops_user":"%s"}\n' \
+      "$FLEET_CONTROL_ORDINARY_USER" "${FIXTURE_INSTALLER_OPS_USER:-ghostfleet-ops}" > "$state/control.json"
     printf '{"complete":true,"ordinary_user":"%s","key_sha256":"%s","applies":%s}\n' \
       "$FLEET_CONTROL_ORDINARY_USER" "$key_sha" "$applies" > "$state/installed.json"
     print_state

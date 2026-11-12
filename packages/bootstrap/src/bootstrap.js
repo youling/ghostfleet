@@ -56,6 +56,7 @@ CAPABILITY_HELPER_REQUIRED=0
 CAPABILITY_LINGER_REQUIRED=0
 CAPABILITY_USER_SERVICE_REQUIRED=0
 CAPABILITY_CONTROL_ACCOUNT=''
+CAPABILITY_PRIVILEGED_ACCOUNT=''
 CAPABILITY_INSTALLER=''
 CAPABILITY_PRIVILEGED_KEY=''
 CAPABILITY_USER_UNIT=''
@@ -94,21 +95,33 @@ CAPABILITY_RECORD_FILE="$CHECKPOINT_DIR/capability-selection.txt"
 CAPABILITY_STAGE_DIR=
 CAPABILITY_CREATED_UNIT=
 CAPABILITY_CREATED_WANT=
+CAPABILITY_ACCOUNT_STATE=UNKNOWN
+CAPABILITY_ACCOUNT_RECONCILED=
+CAPABILITY_CREATED_ACCOUNT=0
+CAPABILITY_ENABLED_LINGER=0
 CAPABILITY_REQUIRED_MARKERS="HELPER=COMPLIANT ENTRY=COMPLIANT AUTHORIZED_KEY=CONFIGURED SUDOERS=CONFIGURED ORDINARY_USER_SUDO_GRANT=ABSENT OPS_ACCOUNT=COMPLIANT"
 
 capability_selected() {
   [ "$CAPABILITY_HELPER_REQUIRED" = 1 ] || [ "$CAPABILITY_LINGER_REQUIRED" = 1 ] || [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]
 }
 
-# TWO identities, never interchangeable:
-#   * the DEDICATED MANAGED identity is CAPABILITY_CONTROL_ACCOUNT, chosen by the
-#     reviewed template (e.g. ghostfleet-ops). It owns the user unit and Linger,
-#     so the managed runtime inherits only that account's rights.
-#   * the ORDINARY HUMAN is this function's value: the person running the
+# THREE identities, never interchangeable:
+#   * the DEDICATED RUN identity is CAPABILITY_CONTROL_ACCOUNT. It owns the user
+#     unit and Linger, so the managed runtime inherits only that account's
+#     rights. It is a least-privilege account: no sudo, no root-equivalent
+#     group, no privileged helper entry. The courier creates it inside this same
+#     authorized ceremony when it is absent, and adopts a pre-existing account
+#     only after re-proving that same negative.
+#   * the PRIVILEGED OPERATIONS identity is CAPABILITY_PRIVILEGED_ACCOUNT (e.g.
+#     ghostfleet-ops). The reviewed installer provisions it with the bounded
+#     NOPASSWD rule for fleet-privctl and the forced-command SSH entry. It must
+#     NEVER be the run identity: that would hand every managed process the
+#     privilege the helper exists to bound.
+#   * the ORDINARY HUMAN is capability_operating_user(): the person running the
 #     Console command. It is only the helper's admission user; it must never own
 #     a long-running service, because that would hand the managed runtime the
 #     Human's rights and defeat least privilege.
-# Neither may be root, and both are validated independently.
+# None may be root, and each is validated independently.
 #
 # The ordinary Human identity. It is the ONLY value the launcher may hand to
 # this script, and it is only ever used to name the Human owner of the user
@@ -152,10 +165,11 @@ capability_states_compliant() {
 # components and every pinned artifact) to what the node recorded and reported.
 capability_selection_digest() {
   {
-    printf '%s\\n' 'ghostfleet-selected-capability/v1'
+    printf '%s\\n' 'ghostfleet-selected-capability/v2'
     printf '%s\\n' "$CAPABILITY_VERSION" "$CAPABILITY_TEMPLATE_DIGEST" \\
       "$CAPABILITY_HELPER_REQUIRED$CAPABILITY_LINGER_REQUIRED$CAPABILITY_USER_SERVICE_REQUIRED" \\
-      "$CAPABILITY_CONTROL_ACCOUNT" "$CAPABILITY_INSTALLER" "$CAPABILITY_PRIVILEGED_KEY" \\
+      "$CAPABILITY_CONTROL_ACCOUNT" "$CAPABILITY_PRIVILEGED_ACCOUNT" \\
+      "$CAPABILITY_INSTALLER" "$CAPABILITY_PRIVILEGED_KEY" \\
       "$CAPABILITY_USER_UNIT" "$CAPABILITY_USER_UNIT_ARTIFACT"
     capability_index=1
     while [ "$capability_index" -le "$CAPABILITY_ARTIFACT_COUNT" ]; do
@@ -173,7 +187,8 @@ capability_selection_text() {
     "template_digest=$CAPABILITY_TEMPLATE_DIGEST" \\
     "helper_required=$CAPABILITY_HELPER_REQUIRED" "linger_required=$CAPABILITY_LINGER_REQUIRED" \\
     "user_service_required=$CAPABILITY_USER_SERVICE_REQUIRED" \\
-    "control_account=$CAPABILITY_CONTROL_ACCOUNT" "installer=$CAPABILITY_INSTALLER" \\
+    "control_account=$CAPABILITY_CONTROL_ACCOUNT" \\
+    "privileged_account=$CAPABILITY_PRIVILEGED_ACCOUNT" "installer=$CAPABILITY_INSTALLER" \\
     "privileged_key=$CAPABILITY_PRIVILEGED_KEY" "user_unit=$CAPABILITY_USER_UNIT" \\
     "user_unit_artifact=$CAPABILITY_USER_UNIT_ARTIFACT"
   capability_index=1
@@ -204,7 +219,20 @@ capability_validate_selection() {
     [ -z "$CAPABILITY_INSTALLER" ] || fail 'refusing a privileged capability installer that no template requested'
     return 0
   fi
-  [ "$CAPABILITY_SCHEMA" = 'ghostfleet-selected-capability/v1' ] || fail 'selected-capability schema is not supported'
+  # A lane left inside the privileged account by a v1 selection is refused
+  # before the schema gate: that recorded selection is exactly the provenance
+  # which lets this run decommission its own earlier effect.
+  capability_refuse_stale_privileged_lane
+  case "$CAPABILITY_SCHEMA" in
+    ghostfleet-selected-capability/v2) ;;
+    ghostfleet-selected-capability/v1)
+      # v1 never declared which account holds the privileged helper, so the
+      # courier cannot prove the run account is separated from it. Refusing to
+      # guess is the whole point: a default here would BE the boundary.
+      fail '[CAPABILITY_SCHEMA_V1_UNPROVEN] selected-capability schema v1 does not declare privileged_account, so the managed run account cannot be proved separate from the privileged operations account; re-render the reviewed enrollment template as ghostfleet-selected-capability/v2 with privileged_account=<the account the reviewed installer provisions>, then run the authorized Console command again; a node that already recorded a v1 selection must have that record removed first, because this courier never migrates a selection it cannot verify'
+      ;;
+    *) fail 'selected-capability schema is not supported' ;;
+  esac
   printf '%s' "$CAPABILITY_VERSION" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._+/-]{0,63}$' || fail 'selected-capability version is missing or invalid'
   printf '%s' "$CAPABILITY_TEMPLATE_DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$' || fail 'selected-capability template digest is invalid'
   case "$CAPABILITY_ARTIFACT_COUNT" in ''|*[!0-9]*) fail 'selected-capability artifact count is invalid' ;; esac
@@ -232,6 +260,15 @@ capability_validate_selection() {
   done
   printf '%s' "$CAPABILITY_CONTROL_ACCOUNT" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || fail 'selected-capability control account is invalid'
   [ "$CAPABILITY_CONTROL_ACCOUNT" != root ] || fail 'selected-capability control account must not be root'
+  [ -n "$CAPABILITY_PRIVILEGED_ACCOUNT" ] ||
+    fail '[CAPABILITY_PRIVILEGED_ACCOUNT_REQUIRED] selected-capability declares no privileged_account; the courier will not guess which account the reviewed installer gives the bounded fleet-privctl rule to, because that guess decides whether the managed run account stays unprivileged; re-render the reviewed template with privileged_account=<the installer-provisioned account, e.g. ghostfleet-ops>'
+  printf '%s' "$CAPABILITY_PRIVILEGED_ACCOUNT" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || fail '[CAPABILITY_PRIVILEGED_ACCOUNT_INVALID] selected-capability privileged account is invalid'
+  [ "$CAPABILITY_PRIVILEGED_ACCOUNT" != root ] || fail 'selected-capability privileged account must not be root'
+  # The identity that owns the user unit and Linger, and therefore every process
+  # the managed runtime starts, is NEVER the identity that holds the bounded
+  # NOPASSWD helper entry.
+  [ "$CAPABILITY_CONTROL_ACCOUNT" != "$CAPABILITY_PRIVILEGED_ACCOUNT" ] ||
+    fail "[CAPABILITY_ACCOUNT_COLLISION] the managed run account must not be the privileged operations account ($CAPABILITY_PRIVILEGED_ACCOUNT); that account carries the bounded NOPASSWD fleet-privctl entry, so pointing the user unit at it would hand the managed runtime the privilege the helper exists to bound; choose a dedicated run account for control_account"
   if [ "$CAPABILITY_HELPER_REQUIRED" = 1 ]; then
     [ -n "$CAPABILITY_INSTALLER_INDEX" ] || fail 'selected privileged helper does not pin its installer artifact'
     [ -n "$CAPABILITY_KEY_INDEX" ] || fail 'selected privileged helper does not pin the admitted privileged SSH public key'
@@ -243,6 +280,7 @@ capability_validate_selection() {
     printf '%s' "$capability_ordinary" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || fail 'operating Human user name is invalid'
     [ "$capability_ordinary" != root ] || fail 'operating Human user must not be root'
     [ "$capability_ordinary" != "$CAPABILITY_CONTROL_ACCOUNT" ] || fail 'ordinary and dedicated control accounts must differ'
+    [ "$capability_ordinary" != "$CAPABILITY_PRIVILEGED_ACCOUNT" ] || fail 'the operating Human account must not be the privileged operations account; run the Console one-time command from the Human administrator account, not from the bounded helper identity'
   fi
   if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
     [ -n "$CAPABILITY_UNIT_INDEX" ] || fail 'selected user service does not pin its unit artifact'
@@ -373,6 +411,22 @@ capability_probe_all() {
   capability_probe
   capability_result=0
   capability_states_compliant || capability_result=1
+  # The zero-delta claim is also a security claim: an account that gained sudo
+  # or a root-equivalent group since the ceremony is drift, not convergence, and
+  # this read-only probe must never let the node report "already converged".
+  if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ] || [ "$CAPABILITY_LINGER_REQUIRED" = 1 ]; then
+    capability_probe_criteria="$(capability_account_criteria_state "$CAPABILITY_CONTROL_ACCOUNT")"
+    [ "$capability_probe_criteria" = SAFE ] || capability_result=1
+  fi
+  # Independent of the account lane: a helper-only template still declares a
+  # privileged account, and a compliant helper with no readable record must not
+  # answer "already converged".
+  if [ "$CAPABILITY_HELPER_REQUIRED" = 1 ]; then
+    capability_probe_declared_mode="$(capability_declared_privileged_account_mode)"
+    if ! ( capability_verify_declared_privileged_account "$capability_probe_declared_mode" ) >/dev/null 2>&1; then
+      capability_result=1
+    fi
+  fi
   capability_stage_cleanup
   return "$capability_result"
 }
@@ -404,10 +458,607 @@ capability_linger_apply() {
   if [ "$CAPABILITY_LINGER_STATE" = COMPLIANT ]; then return 0; fi
   loginctl enable-linger "$CAPABILITY_CONTROL_ACCOUNT" ||
     { printf '%s\\n' 'fleet-enroll: Linger could not be enabled for the dedicated control account' >&2; return 1; }
+  CAPABILITY_ENABLED_LINGER=1
   CAPABILITY_LINGER_STATE="$(capability_linger_state)"
   [ "$CAPABILITY_LINGER_STATE" = COMPLIANT ] ||
     { printf '%s\\n' 'fleet-enroll: Linger postcondition failed for the dedicated control account' >&2; return 1; }
   return 0
+}
+
+# The dedicated run account owns the user unit and Linger, so every process the
+# managed runtime starts inherits exactly its rights. Those rights must be
+# nothing more than "run as this uid": no sudo grant, no root-equivalent group,
+# no login shell, no usable password, no unproven group and never the privileged
+# operations account that holds the bounded NOPASSWD fleet-privctl rule.
+#
+# The SAME criteria apply to an account this courier creates and to one it
+# adopts, and they are proved again after the root-privileged installer has run:
+# an artifact that runs as root can change groups or sudoers, and nothing may be
+# installed into an account whose least privilege was only proved earlier.
+CAPABILITY_PRIVILEGED_GROUPS='root sudo wheel admin docker lxd libvirt libvirtd incus incus-admin podman disk shadow'
+
+# Read-only. Prints exactly one token:
+#   ABSENT      no such account
+#   ROOT        uid 0
+#   SYSTEM_UID  uid outside the ordinary human range
+#   SHELL       a login shell
+#   UNLOCKED    the password field is not locked
+#   NO_HOME     no home directory
+#   NO_GROUP    no group of the same name (the unit directory cannot be owned)
+#   GROUP:<g>   membership of a root-equivalent group
+#   SUDOERS     a sudo grant
+#   UNKNOWN     sudo's answer could not be interpreted
+#   SAFE        least privilege, usable as the run identity
+capability_account_criteria_state() {
+  # One NSS query decides "no such account" from "the account database cannot be
+  # queried". Only getent's own exit 2 means the account does not exist; any
+  # other failure is UNKNOWN and the caller fails closed. Treating a broken NSS
+  # as "no such account" would let a lookup outage decide a security property.
+  capability_probe_row="$(getent passwd "$1" 2>/dev/null)" && capability_probe_lookup=0 || capability_probe_lookup=$?
+  if [ "$capability_probe_lookup" -ne 0 ]; then
+    if [ "$capability_probe_lookup" -eq 2 ] && [ -z "$capability_probe_row" ]; then
+      printf '%s' ABSENT
+    else
+      printf '%s' LOOKUP_FAILED:passwd
+    fi
+    return 0
+  fi
+  if [ -z "$capability_probe_row" ]; then
+    printf '%s' LOOKUP_FAILED:passwd
+    return 0
+  fi
+  capability_probe_uid="$(printf '%s' "$capability_probe_row" | cut -d ':' -f 3)"
+  case "$capability_probe_uid" in
+    ''|*[!0-9]*) printf '%s' LOOKUP_FAILED:passwd; return 0 ;;
+  esac
+  [ "$capability_probe_uid" != 0 ] || { printf '%s' ROOT; return 0; }
+  if [ "$capability_probe_uid" -lt 1000 ] || [ "$capability_probe_uid" -ge 60000 ]; then
+    printf '%s' SYSTEM_UID
+    return 0
+  fi
+  # Group membership is the other half of "no privileged group". Capture the
+  # LIST first and check the exit status separately: a failing id (sssd/LDAP
+  # outage, timeout) must never be read as "not a member".
+  if ! capability_probe_groups="$(id -nG "$1" 2>/dev/null)"; then
+    printf '%s' LOOKUP_FAILED:id-groups
+    return 0
+  fi
+  # id -nG always lists the primary group, so an empty answer means the lookup
+  # was lost rather than that the account has no groups.
+  if [ -z "$capability_probe_groups" ]; then
+    printf '%s' LOOKUP_FAILED:groups-empty
+    return 0
+  fi
+  capability_probe_primary_gid="$(printf '%s' "$capability_probe_row" | cut -d ':' -f 4)"
+  capability_probe_primary_group="$(getent group "$capability_probe_primary_gid" 2>/dev/null | cut -d ':' -f 1)"
+  if [ -z "$capability_probe_primary_group" ]; then
+    printf '%s' LOOKUP_FAILED:primary-lookup
+    return 0
+  fi
+  capability_probe_primary_seen=0
+  capability_probe_members=0
+  for capability_probe_member in $capability_probe_groups; do
+    case "$capability_probe_member" in
+      ''|*[!A-Za-z0-9._@-]*) printf '%s' LOOKUP_FAILED:groups-parse; return 0 ;;
+    esac
+    if [ "$capability_probe_member" = "$capability_probe_primary_group" ]; then
+      capability_probe_primary_seen=1
+    fi
+    capability_probe_members=$((capability_probe_members + 1))
+  done
+  if [ "$capability_probe_members" -eq 0 ] || [ "$capability_probe_primary_seen" != 1 ]; then
+    # The primary group is always listed by id -nG; its absence means the output
+    # was truncated, replaced or rewritten, so nothing about membership is proved.
+    printf '%s' LOOKUP_FAILED:primary-missing
+    return 0
+  fi
+  for capability_probe_group in $CAPABILITY_PRIVILEGED_GROUPS; do
+    for capability_probe_member in $capability_probe_groups; do
+      if [ "$capability_probe_member" = "$capability_probe_group" ]; then
+        printf 'GROUP:%s' "$capability_probe_group"
+        return 0
+      fi
+    done
+  done
+  capability_probe_home="$(printf '%s' "$capability_probe_row" | cut -d ':' -f 6)"
+  capability_probe_shell="$(printf '%s' "$capability_probe_row" | cut -d ':' -f 7)"
+  case "$capability_probe_shell" in
+    */nologin|*/false) ;;
+    *) printf '%s' SHELL; return 0 ;;
+  esac
+  if [ -z "$capability_probe_home" ] || [ ! -d "$capability_probe_home" ]; then
+    printf '%s' NO_HOME
+    return 0
+  fi
+  if getent group "$1" >/dev/null 2>&1; then
+    capability_probe_group_lookup=0
+  else
+    capability_probe_group_lookup=$?
+  fi
+  if [ "$capability_probe_group_lookup" -eq 2 ]; then
+    printf '%s' NO_GROUP
+    return 0
+  fi
+  if [ "$capability_probe_group_lookup" -ne 0 ]; then
+    printf '%s' LOOKUP_FAILED:group
+    return 0
+  fi
+  # A locked password field is the other half of "no credential": an empty or
+  # hashed password would be a login identity the deployment never approved. A
+  # failed lookup cannot prove the lock, so it is UNKNOWN rather than UNLOCKED.
+  capability_probe_shadow="$(getent shadow "$1" 2>/dev/null)" && capability_probe_shadow_status=0 || capability_probe_shadow_status=$?
+  if [ "$capability_probe_shadow_status" -ne 0 ] || [ -z "$capability_probe_shadow" ]; then
+    printf '%s' LOOKUP_FAILED:shadow
+    return 0
+  fi
+  capability_probe_password="$(printf '%s' "$capability_probe_shadow" | cut -d ':' -f 2)"
+  case "$capability_probe_password" in
+    '!'*|'*'*) ;;
+    '') printf '%s' LOOKUP_FAILED:shadow; return 0 ;;
+    *) printf '%s' UNLOCKED; return 0 ;;
+  esac
+  # sudo's own evaluation resolves %group rules, User_Alias and sudoers.d order;
+  # a text search over /etc/sudoers would miss all three.
+  if command -v sudo >/dev/null 2>&1; then
+    capability_probe_sudo="$(sudo -n -l -U "$1" 2>/dev/null || true)"
+    case "$capability_probe_sudo" in
+      *'may run the following commands'*) printf '%s' SUDOERS; return 0 ;;
+      *'is not allowed to run sudo'*) ;;
+      *) printf '%s' UNKNOWN; return 0 ;;
+    esac
+  fi
+  printf '%s' SAFE
+}
+
+# Reports the failure and returns 1 instead of exiting: the caller still has to
+# roll back what it already created (an account that failed its own post-check,
+# or one that lost its proof after the installer ran) before the run may stop.
+capability_account_criteria_fail() {
+  case "$1" in
+    SAFE) return 0 ;;
+    ABSENT) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_ABSENT] the managed run account $CAPABILITY_CONTROL_ACCOUNT does not exist" >&2 ;;
+    ROOT) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_PRIVILEGED] the managed run account $CAPABILITY_CONTROL_ACCOUNT is uid 0; the managed runtime must never inherit host root authority" >&2 ;;
+    SYSTEM_UID) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_NOT_DEDICATED] the managed run account $CAPABILITY_CONTROL_ACCOUNT has a system uid; a login-capable or system account is not a dedicated run identity, so create or designate an ordinary account that owns no other workload" >&2 ;;
+    SHELL) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_NOT_DEDICATED] the managed run account $CAPABILITY_CONTROL_ACCOUNT has a login shell; the run identity must not be a login identity, so set it to /usr/sbin/nologin" >&2 ;;
+    UNLOCKED) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_NOT_DEDICATED] the password of the managed run account $CAPABILITY_CONTROL_ACCOUNT is not locked; lock it (passwd -l) so no login path exists for the identity that owns the unit" >&2 ;;
+    NO_HOME) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_NOT_DEDICATED] the managed run account $CAPABILITY_CONTROL_ACCOUNT has no home directory; the user unit and Linger it owns need one" >&2 ;;
+    NO_GROUP) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_NOT_DEDICATED] the managed run account $CAPABILITY_CONTROL_ACCOUNT has no group of the same name; the user unit directory is created $CAPABILITY_CONTROL_ACCOUNT:$CAPABILITY_CONTROL_ACCOUNT and cannot be owned otherwise" >&2 ;;
+    LOOKUP_FAILED:*)
+      capability_lookup_reason="$(printf '%s' "$1" | cut -d ':' -f 2)"
+      case "$capability_lookup_reason" in
+        passwd) capability_lookup_detail="getent passwd $CAPABILITY_CONTROL_ACCOUNT did not answer with a usable record" ;;
+        id-groups) capability_lookup_detail="id -nG $CAPABILITY_CONTROL_ACCOUNT failed" ;;
+        groups-empty) capability_lookup_detail="id -nG $CAPABILITY_CONTROL_ACCOUNT succeeded with an empty list, but it always includes the primary group" ;;
+        groups-parse) capability_lookup_detail="id -nG $CAPABILITY_CONTROL_ACCOUNT returned a token that is not a group name" ;;
+        primary-lookup) capability_lookup_detail="the primary group of $CAPABILITY_CONTROL_ACCOUNT could not be resolved from its gid" ;;
+        primary-missing) capability_lookup_detail="id -nG $CAPABILITY_CONTROL_ACCOUNT does not list the account's primary group, so the answer was replaced or truncated" ;;
+        group) capability_lookup_detail="getent group $CAPABILITY_CONTROL_ACCOUNT failed" ;;
+        shadow) capability_lookup_detail="getent shadow $CAPABILITY_CONTROL_ACCOUNT failed" ;;
+        *) capability_lookup_detail="a name-service query for $CAPABILITY_CONTROL_ACCOUNT failed" ;;
+      esac
+      printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_UNPROVEN] the account database could not be queried: $capability_lookup_detail (NSS outage, remote directory unreachable or timeout); an unreadable answer is never read as 'no privilege', so this run stops. Check getent passwd $CAPABILITY_CONTROL_ACCOUNT, id -nG $CAPABILITY_CONTROL_ACCOUNT and the NSS configuration, then re-run the authorized Console command" >&2
+      ;;
+    LOOKUP_FAILED) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_UNPROVEN] the account database could not be queried for $CAPABILITY_CONTROL_ACCOUNT; an unreadable answer is never read as 'no privilege', so this run stops" >&2 ;;
+    GROUP:*)
+      capability_privilege_group="$(printf '%s' "$1" | cut -d ':' -f 2)"
+      printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_PRIVILEGED] the managed run account $CAPABILITY_CONTROL_ACCOUNT is a member of the root-equivalent group $capability_privilege_group; that group reaches root or device authority without the mediated path, so it cannot own the user unit" >&2
+      ;;
+    SUDOERS) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_PRIVILEGED] the managed run account $CAPABILITY_CONTROL_ACCOUNT has a sudo grant; the managed runtime would inherit a sudo lane the bounded fleet-privctl entry exists to prevent, which would leave a second root path outside the reviewed helper" >&2 ;;
+    *) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_UNPROVEN] the privileges of the managed run account $CAPABILITY_CONTROL_ACCOUNT could not be proved absent (state $1); refusing to point a long-running service at an account whose authority is unknown" >&2 ;;
+  esac
+  return 1
+}
+
+capability_control_account_create() {
+  # A group that already owns this name without the account is not ours: its
+  # members and privileges were never audited here, so adopting it would make an
+  # unproven group the primary group of the managed runtime.
+  if getent group "$CAPABILITY_CONTROL_ACCOUNT" >/dev/null 2>&1; then
+    printf '%s\\n' "fleet-enroll: a group named $CAPABILITY_CONTROL_ACCOUNT already exists without the managed run account; refusing to adopt an unproven primary group" >&2
+    return 1
+  fi
+  command -v useradd >/dev/null 2>&1 || { printf '%s\\n' 'fleet-enroll: useradd is required to create the dedicated managed run account' >&2; return 1; }
+  [ -x /usr/sbin/nologin ] || { printf '%s\\n' 'fleet-enroll: /usr/sbin/nologin is required for the dedicated managed run account shell' >&2; return 1; }
+  # No sudo, no supplementary group, no login shell, no usable password: the
+  # account exists only to own the user unit. --user-group gives it the same-name
+  # group the unit directory is chowned to, and a locked password keeps every
+  # login path shut.
+  useradd --create-home --user-group --shell /usr/sbin/nologin "$CAPABILITY_CONTROL_ACCOUNT" ||
+    { printf '%s\\n' "fleet-enroll: the dedicated managed run account $CAPABILITY_CONTROL_ACCOUNT could not be created; no privileged component was installed" >&2; return 1; }
+  # Ownership is recorded the moment the account exists. A later check may fail,
+  # and the rollback must still remove this half-created account rather than
+  # leave it behind as an orphan.
+  CAPABILITY_CREATED_ACCOUNT=1
+  capability_created_row="$(getent passwd "$CAPABILITY_CONTROL_ACCOUNT" 2>/dev/null || true)"
+  if [ -z "$capability_created_row" ]; then
+    printf '%s\\n' "fleet-enroll: the dedicated managed run account $CAPABILITY_CONTROL_ACCOUNT does not resolve after creation" >&2
+    return 1
+  fi
+  return 0
+}
+
+capability_provision_control_account() {
+  if [ "$CAPABILITY_USER_SERVICE_REQUIRED" != 1 ] && [ "$CAPABILITY_LINGER_REQUIRED" != 1 ]; then
+    CAPABILITY_ACCOUNT_STATE=NOT_REQUESTED
+    return 0
+  fi
+  [ -z "$CAPABILITY_ACCOUNT_RECONCILED" ] || return 0
+  CAPABILITY_ACCOUNT_RECONCILED=1
+  capability_account_criteria="$(capability_account_criteria_state "$CAPABILITY_CONTROL_ACCOUNT")"
+  if [ "$capability_account_criteria" = ABSENT ]; then
+    if ! capability_control_account_create; then
+      CAPABILITY_ACCOUNT_STATE=UNKNOWN
+      return 1
+    fi
+    capability_account_criteria="$(capability_account_criteria_state "$CAPABILITY_CONTROL_ACCOUNT")"
+    if [ "$capability_account_criteria" != SAFE ]; then
+      CAPABILITY_ACCOUNT_STATE=UNKNOWN
+      capability_account_criteria_fail "$capability_account_criteria"
+      return 1
+    fi
+    CAPABILITY_ACCOUNT_STATE=CREATED
+    printf '%s\\n' "fleet-enroll: created the dedicated managed run account $CAPABILITY_CONTROL_ACCOUNT (nologin shell, locked password, no sudo, no supplementary group)" >&2
+    return 0
+  fi
+  # A pre-existing account is adopted exactly as found: this courier never
+  # grants, revokes or rewrites the privilege state of an account it did not
+  # create. It is accepted only when the criteria above hold for it too.
+  if [ "$capability_account_criteria" != SAFE ]; then
+    CAPABILITY_ACCOUNT_STATE=UNKNOWN
+    capability_account_criteria_fail "$capability_account_criteria"
+    return 1
+  fi
+  CAPABILITY_ACCOUNT_STATE=EXISTING
+  return 0
+}
+
+# The reviewed installer runs as root. After it has run, the run account is
+# proved again: nothing may be installed into its home, enabled through Linger or
+# recorded as converged while the account's least privilege is unproven.
+# The reviewed installer records the account it actually admits in its own state
+# file. The selection only DECLARES one, so comparing the two is what turns a
+# well-formed but wrong declaration into a refusal.
+CAPABILITY_PRIVILEGED_STATE_FILE=/etc/youling-fleet/privileged-operations/control.json
+
+# The reviewed installer runs as root. After it has run, the run account is
+# proved again and the declared privileged account is cross-checked against what
+# the installer recorded: nothing may be installed into the run account's home,
+# enabled through Linger or recorded as converged while either is unproven.
+capability_installer_ops_user() {
+  [ -r "$CAPABILITY_PRIVILEGED_STATE_FILE" ] || return 0
+  # Parsed, never pattern-matched: the installer may reformat its JSON, and a
+  # wrong match here would silently vouch for the wrong account.
+  python3 -I -c 'import json,sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+out = value.get("ops_user") if isinstance(value, dict) else None
+print(out if isinstance(out, str) else "")' "$CAPABILITY_PRIVILEGED_STATE_FILE" 2>/dev/null || true
+}
+
+# The selection DECLARES the privileged account; the installer RECORDS the one it
+# admits. "required" is used wherever the helper is (or claims to be) installed:
+# a compliant helper with no readable record cannot be reconciled, so that is a
+# refusal and not a "nothing to check". "optional" is only for a host where the
+# helper is genuinely absent, because then there is nothing to compare yet.
+capability_verify_declared_privileged_account() {
+  [ "$CAPABILITY_HELPER_REQUIRED" = 1 ] || return 0
+  capability_declared_required=0
+  [ "$1" = required ] && capability_declared_required=1
+  if [ ! -r "$CAPABILITY_PRIVILEGED_STATE_FILE" ]; then
+    [ "$capability_declared_required" = 1 ] || return 0
+    CAPABILITY_ACCOUNT_STATE=UNKNOWN
+    printf '%s\\n' "fleet-enroll: [CAPABILITY_PRIVILEGED_ACCOUNT_UNVERIFIED] the reviewed installer reports the helper installed but $CAPABILITY_PRIVILEGED_STATE_FILE is missing, so privileged_account=$CAPABILITY_PRIVILEGED_ACCOUNT cannot be cross-checked against the account that actually holds the bounded fleet-privctl rule; re-apply the reviewed installer (it writes that file) before this node may converge" >&2
+    return 1
+  fi
+  capability_installer_ops="$(capability_installer_ops_user)"
+  if [ -z "$capability_installer_ops" ]; then
+    [ "$capability_declared_required" = 1 ] || return 0
+    CAPABILITY_ACCOUNT_STATE=UNKNOWN
+    printf '%s\\n' "fleet-enroll: [CAPABILITY_PRIVILEGED_ACCOUNT_UNVERIFIED] $CAPABILITY_PRIVILEGED_STATE_FILE exists but records no readable ops_user (it may be truncated, reformatted or hand-edited), so privileged_account=$CAPABILITY_PRIVILEGED_ACCOUNT cannot be cross-checked; re-apply the reviewed installer rather than editing that file" >&2
+    return 1
+  fi
+  if [ "$capability_installer_ops" != "$CAPABILITY_PRIVILEGED_ACCOUNT" ]; then
+    CAPABILITY_ACCOUNT_STATE=UNKNOWN
+    printf '%s\\n' "fleet-enroll: [CAPABILITY_PRIVILEGED_ACCOUNT_MISMATCH] the selection declares privileged_account=$CAPABILITY_PRIVILEGED_ACCOUNT but the reviewed installer admits $capability_installer_ops; the declared account is not the one holding the bounded fleet-privctl rule. This is a selection declaration error, not an account-privilege problem: re-render the reviewed template with privileged_account=$capability_installer_ops" >&2
+    return 1
+  fi
+  return 0
+}
+
+# The mode a read-only probe should use: once the reviewed installer reports the
+# helper installed, its record is mandatory; before that it may not exist yet.
+capability_declared_privileged_account_mode() {
+  if [ "$CAPABILITY_HELPER_STATE" = COMPLIANT ]; then
+    printf '%s' required
+  else
+    printf '%s' optional
+  fi
+}
+
+capability_reprove_control_account() {
+  if [ "$CAPABILITY_USER_SERVICE_REQUIRED" != 1 ] && [ "$CAPABILITY_LINGER_REQUIRED" != 1 ]; then
+    return 0
+  fi
+  capability_account_reproof="$(capability_account_criteria_state "$CAPABILITY_CONTROL_ACCOUNT")"
+  if [ "$capability_account_reproof" != SAFE ]; then
+    CAPABILITY_ACCOUNT_STATE=UNKNOWN
+    capability_account_criteria_fail "$capability_account_reproof"
+    return 1
+  fi
+  return 0
+}
+
+# v1 selections pointed the managed lane at the privileged operations account, so
+# a node upgraded from one still owns a unit, an enablement link and Linger in
+# that account. Installing the v2 lane beside it would leave two long-running
+# services, one of them privileged, and silently widen what the runtime inherits.
+# The residue is detected before any effect. It is only REMOVED when this run
+# restored its selection from this node's own record (channel-scoped provenance)
+# AND the bytes at those paths are the reviewed ones; otherwise the run stops and
+# prints the exact decommission steps, because deleting a pre-existing account's
+# files is never this courier's decision.
+capability_probe_privileged_lane_residue() {
+  CAPABILITY_STALE_LANE_FOUND=
+  CAPABILITY_STALE_UNIT=
+  CAPABILITY_STALE_WANT=
+  CAPABILITY_STALE_ACCOUNT=
+  # A v2 selection names the privileged account. A v1 selection does not: the
+  # account it ordered the unit into IS the candidate, and that is exactly the
+  # residue this probe exists to find.
+  capability_residue_account="$CAPABILITY_PRIVILEGED_ACCOUNT"
+  if [ -z "$capability_residue_account" ]; then
+    capability_residue_account="$(capability_recorded_control_account)"
+  fi
+  [ -n "$capability_residue_account" ] || return 0
+  if [ -n "$CAPABILITY_PRIVILEGED_ACCOUNT" ] && [ "$capability_residue_account" = "$CAPABILITY_CONTROL_ACCOUNT" ]; then
+    return 0
+  fi
+  CAPABILITY_STALE_ACCOUNT="$capability_residue_account"
+  capability_residue_row="$(getent passwd "$capability_residue_account" 2>/dev/null || true)"
+  [ -n "$capability_residue_row" ] || return 0
+  capability_residue_home="$(printf '%s' "$capability_residue_row" | cut -d ':' -f 6 || true)"
+  [ -n "$capability_residue_home" ] || return 0
+  if [ -n "$CAPABILITY_USER_UNIT" ]; then
+    CAPABILITY_STALE_UNIT="$capability_residue_home/.config/systemd/user/$CAPABILITY_USER_UNIT"
+    CAPABILITY_STALE_WANT="$capability_residue_home/.config/systemd/user/default.target.wants/$CAPABILITY_USER_UNIT"
+    if [ -e "$CAPABILITY_STALE_UNIT" ] || [ -L "$CAPABILITY_STALE_UNIT" ]; then
+      CAPABILITY_STALE_LANE_FOUND="$CAPABILITY_STALE_LANE_FOUND unit"
+    else
+      CAPABILITY_STALE_UNIT=
+    fi
+    if [ -e "$CAPABILITY_STALE_WANT" ] || [ -L "$CAPABILITY_STALE_WANT" ]; then
+      CAPABILITY_STALE_LANE_FOUND="$CAPABILITY_STALE_LANE_FOUND enablement-link"
+    else
+      CAPABILITY_STALE_WANT=
+    fi
+  fi
+  if command -v loginctl >/dev/null 2>&1; then
+    case "$(loginctl show-user "$capability_residue_account" -p Linger 2>/dev/null || true)" in
+      *Linger=yes*) CAPABILITY_STALE_LANE_FOUND="$CAPABILITY_STALE_LANE_FOUND linger" ;;
+    esac
+  fi
+  return 0
+}
+
+capability_recorded_control_account() {
+  [ "$CAPABILITY_SELECTION_ORIGIN" = recorded ] || return 0
+  [ -r "$CAPABILITY_RECORD_FILE" ] || return 0
+  base64 -d "$CAPABILITY_RECORD_FILE" 2>/dev/null | sed -n 's/^control_account=//p' | head -n1 || true
+}
+
+capability_declared_unit_digest() {
+  capability_index=1
+  while [ "$capability_index" -le "$CAPABILITY_ARTIFACT_COUNT" ]; do
+    if [ "$(capability_artifact_field "$capability_index" 1)" = "$CAPABILITY_USER_UNIT_ARTIFACT" ]; then
+      capability_artifact_field "$capability_index" 2
+      return 0
+    fi
+    capability_index=$((capability_index + 1))
+  done
+  return 0
+}
+
+# Deletes only bytes this product's own record reviewed: the enablement link must
+# point at this unit and the unit must hash to the pinned artifact digest. A path
+# that now belongs to something else is reported and left untouched.
+# Deletes only bytes this product's own record reviewed: the enablement link must
+# point at this unit and the unit must hash to the pinned artifact digest. Both
+# are verified BEFORE anything is touched, so a refusal never leaves the lane
+# half-removed. Order: enablement link, Linger, unit — a running instance is not
+# stopped by this courier.
+# systemd's ExecStart may carry the -/@/+/!: prefixes and arguments. Only an
+# absolute executable path can be attributed to a process set, so the rule is:
+# first whitespace-separated token of the first ExecStart line, leading prefix
+# characters stripped, and used only when the result is absolute. Anything else
+# (a relative name, an environment expansion, a %-specifier) returns empty and
+# the caller refuses to migrate instead of skipping the process check.
+capability_unit_exec_start() {
+  capability_exec_line=
+  if [ -r "$1" ]; then
+    capability_exec_line="$(sed -n 's/^ExecStart=//p' "$1" 2>/dev/null | head -n1)"
+  fi
+  capability_exec_line="$(printf '%s' "$capability_exec_line" | sed 's/^[[:space:]]*//')"
+  [ -n "$capability_exec_line" ] || return 0
+  capability_exec_token="$(printf '%s' "$capability_exec_line" | awk '{print $1}')"
+  capability_exec_bin="$(printf '%s' "$capability_exec_token" | sed 's/^[-@+!:]*//')"
+  case "$capability_exec_bin" in
+    /*) printf '%s' "$capability_exec_bin" ;;
+    *) return 0 ;;
+  esac
+}
+
+# A unit file is not a process. Before the v1 lane is deleted its service is
+# stopped in the privileged account's own session and proved stopped: the unit is
+# inactive or failed AND no process of its ExecStart binary still runs as that
+# account. A v2 lane running next to a live privileged instance is exactly the
+# state this ruling removes, so an unprovable stop deletes nothing.
+#
+# Everything that can be known WITHOUT touching the system is checked first —
+# the ExecStart the process set is attributed to, that sudo can enter the
+# account's session, and that pgrep exists. Only then is the unit stopped, so a
+# run that could never prove the outcome never changes the system, every refusal
+# names exactly one reason, and there is no "stopped but unprovable" state.
+capability_stale_lane_stop_and_prove() {
+  CAPABILITY_STALE_STOP_FAILED=
+  capability_stale_stop_cmd="sudo -iu $CAPABILITY_STALE_ACCOUNT systemctl --user stop $CAPABILITY_USER_UNIT"
+  if [ -n "$CAPABILITY_STALE_UNIT" ]; then
+    capability_stale_exec="$(capability_unit_exec_start "$CAPABILITY_STALE_UNIT")"
+    if [ -z "$capability_stale_exec" ]; then
+      CAPABILITY_STALE_STOP_FAILED="the unit's ExecStart does not name an absolute executable, so no process can be attributed to it"
+      printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED; nothing is removed and the unit is left running as it was" >&2
+      return 1
+    fi
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    CAPABILITY_STALE_STOP_FAILED="sudo is not available to enter the $CAPABILITY_STALE_ACCOUNT session"
+    printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED, so the v1 unit cannot be stopped; nothing is removed and the unit is left running as it was" >&2
+    return 1
+  fi
+  if ! command -v pgrep >/dev/null 2>&1; then
+    CAPABILITY_STALE_STOP_FAILED="pgrep is not installed, so the absence of the unit's processes cannot be proved"
+    printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED; nothing is removed and the unit is left running as it was" >&2
+    return 1
+  fi
+  if ! $capability_stale_stop_cmd >/dev/null 2>&1; then
+    CAPABILITY_STALE_STOP_FAILED="stopping the unit in the $CAPABILITY_STALE_ACCOUNT session failed"
+    printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED (no live user manager for that account?); nothing is removed" >&2
+    return 1
+  fi
+  capability_stale_active="$(sudo -iu "$CAPABILITY_STALE_ACCOUNT" systemctl --user is-active "$CAPABILITY_USER_UNIT" 2>/dev/null || true)"
+  case "$capability_stale_active" in
+    inactive|failed) ;;
+    *)
+      CAPABILITY_STALE_STOP_FAILED="the unit still reports '$capability_stale_active' in the $CAPABILITY_STALE_ACCOUNT session after stop"
+      printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED; nothing is removed" >&2
+      return 1
+      ;;
+  esac
+  # pgrep's contract: 0 = matched, 1 = no match, anything else = the query
+  # itself failed. Only "no match" may be read as "the process is gone".
+  if pgrep -u "$CAPABILITY_STALE_ACCOUNT" -f "$capability_stale_exec" >/dev/null 2>&1; then
+    capability_pgrep_status=0
+  else
+    capability_pgrep_status=$?
+  fi
+  case "$capability_pgrep_status" in
+    0)
+      CAPABILITY_STALE_STOP_FAILED="processes of $capability_stale_exec still run as $CAPABILITY_STALE_ACCOUNT"
+      printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED after stop; nothing is removed" >&2
+      return 1
+      ;;
+    1) : ;;
+    *)
+      CAPABILITY_STALE_STOP_FAILED="pgrep could not answer for $CAPABILITY_STALE_ACCOUNT (exit $capability_pgrep_status), so the unit's processes cannot be proved gone"
+      printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED; nothing is removed" >&2
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+# Deletes only bytes this product's own record reviewed: the enablement link must
+# point at this unit and the unit must hash to the pinned artifact digest, and the
+# service must be proved stopped. Every check happens BEFORE anything is touched,
+# so a refusal never leaves the lane half-removed. Order: prove stopped, delete
+# the enablement link, disable Linger, delete the unit.
+capability_decommission_stale_lane() {
+  capability_stale_removed=
+  capability_stale_warnings=
+  if [ -n "$CAPABILITY_STALE_UNIT" ]; then
+    capability_expected_unit="$(capability_declared_unit_digest)"
+    capability_actual_unit=
+    if [ -f "$CAPABILITY_STALE_UNIT" ] && [ ! -L "$CAPABILITY_STALE_UNIT" ]; then
+      capability_actual_unit="$(sha256sum "$CAPABILITY_STALE_UNIT" 2>/dev/null | cut -d ' ' -f 1 || true)"
+    fi
+    if [ -z "$capability_expected_unit" ] || [ "$capability_actual_unit" != "$capability_expected_unit" ]; then
+      capability_actual_unit_label="$capability_actual_unit"
+      if [ -z "$capability_actual_unit_label" ]; then
+        capability_actual_unit_label='not a regular file'
+      fi
+      printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_UNIT does not hash to the reviewed unit artifact (reviewed: $capability_expected_unit, found: $capability_actual_unit_label); left in place" >&2
+      return 1
+    fi
+  fi
+  if [ -n "$CAPABILITY_STALE_WANT" ]; then
+    capability_want_target="$(readlink "$CAPABILITY_STALE_WANT" 2>/dev/null || true)"
+    if [ "$capability_want_target" != "../$CAPABILITY_USER_UNIT" ] && [ "$capability_want_target" != "$CAPABILITY_STALE_UNIT" ]; then
+      printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_WANT does not point at $CAPABILITY_USER_UNIT (target: $capability_want_target); left in place" >&2
+      return 1
+    fi
+  fi
+  if [ -n "$CAPABILITY_STALE_UNIT" ]; then
+    capability_stale_lane_stop_and_prove || return 1
+  fi
+  if [ -n "$CAPABILITY_STALE_WANT" ]; then
+    if rm -f "$CAPABILITY_STALE_WANT"; then
+      capability_stale_removed="$capability_stale_removed enablement-link"
+    fi
+  fi
+  case "$CAPABILITY_STALE_LANE_FOUND" in
+    *linger*)
+      if command -v loginctl >/dev/null 2>&1 && loginctl disable-linger "$CAPABILITY_STALE_ACCOUNT" >/dev/null 2>&1; then
+        capability_stale_removed="$capability_stale_removed linger"
+      else
+        capability_stale_warnings="linger-not-disabled"
+        printf '%s\\n' "fleet-enroll: Linger for $CAPABILITY_STALE_ACCOUNT could not be disabled; the unit is still removed, disable Linger by hand before the account is reused" >&2
+      fi
+      ;;
+  esac
+  if [ -n "$CAPABILITY_STALE_UNIT" ]; then
+    if rm -f "$CAPABILITY_STALE_UNIT"; then
+      capability_stale_removed="$capability_stale_removed unit"
+    fi
+  fi
+  return 0
+}
+
+capability_refuse_stale_privileged_lane() {
+  capability_probe_privileged_lane_residue
+  capability_recorded_owner="$(capability_recorded_control_account)"
+  # A v1 record whose lane is already gone is only a stale record. Left in place
+  # it would block the next authorized claim at the schema gate, so it goes with
+  # the lane it described.
+  if [ "$CAPABILITY_SELECTION_ORIGIN" = recorded ] && [ -n "$capability_recorded_owner" ] &&
+     [ -z "$CAPABILITY_PRIVILEGED_ACCOUNT" ] && [ -z "$CAPABILITY_STALE_LANE_FOUND" ]; then
+    rm -f "$CAPABILITY_RECORD_FILE"
+    printf '%s\\n' "fleet-enroll: removed the recorded v1 selection that named $capability_recorded_owner as the unit owner; no unit, enablement link or Linger remains under it" >&2
+    fail "[CAPABILITY_STALE_PRIVILEGED_LANE] the recorded v1 selection was stale and blocked the next claim; the record was removed and this run stops without installing anything; re-run the authorized Console command so the next claim delivers the v2 selection"
+  fi
+  [ -n "$CAPABILITY_STALE_LANE_FOUND" ] || return 0
+  # Provenance is channel-scoped: only a selection this run restored from the
+  # node's own record proves the product created that lane. A delivered payload
+  # that merely finds the file never authorises a delete.
+  if [ "$CAPABILITY_SELECTION_ORIGIN" = recorded ] && [ "$capability_recorded_owner" = "$CAPABILITY_STALE_ACCOUNT" ]; then
+    if ! capability_decommission_stale_lane; then
+      if [ -n "$CAPABILITY_STALE_STOP_FAILED" ]; then
+        fail "[CAPABILITY_STALE_PRIVILEGED_LANE] the v1 privileged lane under $CAPABILITY_STALE_ACCOUNT is still running and could not be proved stopped ($CAPABILITY_STALE_STOP_FAILED), so nothing was removed and the record was kept. Stop it yourself: sudo -iu $CAPABILITY_STALE_ACCOUNT systemctl --user stop $CAPABILITY_USER_UNIT; confirm with sudo -iu $CAPABILITY_STALE_ACCOUNT systemctl --user is-active $CAPABILITY_USER_UNIT (expect inactive or failed) and pgrep -u $CAPABILITY_STALE_ACCOUNT -f '<ExecStart binary>' (expect no output); then re-run the authorized Console command"
+      fi
+      fail "[CAPABILITY_STALE_PRIVILEGED_LANE] the recorded v1 lane under $CAPABILITY_STALE_ACCOUNT contains something this courier will not delete automatically (see the line above); review it, remove it by hand, then re-run the authorized Console command"
+    fi
+    rm -f "$CAPABILITY_RECORD_FILE"
+    capability_stale_warning_text=
+    if [ -n "$capability_stale_warnings" ]; then
+      capability_stale_warning_text=" (warning: $capability_stale_warnings)"
+    fi
+    printf '%s\\n' "fleet-enroll: decommissioned the v1 managed lane this node recorded under the privileged account $CAPABILITY_STALE_ACCOUNT ($capability_stale_removed)$capability_stale_warning_text and removed the recorded v1 selection" >&2
+    fail "[CAPABILITY_STALE_PRIVILEGED_LANE] the recorded v1 selection owned the managed unit inside the privileged operations account; that lane and the record were removed and this run stops without installing anything; re-run the authorized Console command so the next claim delivers the v2 selection"
+  fi
+  capability_stale_steps=
+  capability_stale_stop_note=
+  if [ -n "$CAPABILITY_STALE_UNIT" ]; then
+    capability_stale_steps="$capability_stale_steps sudo -iu $CAPABILITY_STALE_ACCOUNT systemctl --user disable --now $CAPABILITY_USER_UNIT;"
+    capability_stale_steps="$capability_stale_steps rm -f $CAPABILITY_STALE_UNIT;"
+    capability_stale_stop_note=' The sudo -iu line stops a running instance in that account.'
+  fi
+  if [ -n "$CAPABILITY_STALE_WANT" ]; then
+    capability_stale_steps="$capability_stale_steps rm -f $CAPABILITY_STALE_WANT;"
+  fi
+  case "$CAPABILITY_STALE_LANE_FOUND" in
+    *linger*) capability_stale_steps="$capability_stale_steps loginctl disable-linger $CAPABILITY_STALE_ACCOUNT;" ;;
+  esac
+  fail "[CAPABILITY_STALE_PRIVILEGED_LANE] the account $CAPABILITY_STALE_ACCOUNT still owns $CAPABILITY_STALE_LANE_FOUND from a v1 managed lane; installing the v2 lane beside it would leave two long-running services, one of them privileged. Decommission it first:$capability_stale_stop_note $capability_stale_steps then re-run the authorized Console command with the v2 selection"
 }
 
 capability_rollback_files() {
@@ -417,10 +1068,47 @@ capability_rollback_files() {
   CAPABILITY_CREATED_UNIT=
 }
 
+capability_rollback_linger() {
+  [ "$CAPABILITY_ENABLED_LINGER" = 1 ] || return 0
+  loginctl disable-linger "$CAPABILITY_CONTROL_ACCOUNT" >/dev/null 2>&1 || true
+  CAPABILITY_ENABLED_LINGER=0
+  return 0
+}
+
+# Only what THIS run created is removed. A pre-existing run account, unit file or
+# Linger state belonged to the host before the ceremony and is left untouched, so
+# a failed ceremony can never delete an account the deployment already owned.
+capability_rollback_account() {
+  [ "$CAPABILITY_CREATED_ACCOUNT" = 1 ] || return 0
+  if userdel -r "$CAPABILITY_CONTROL_ACCOUNT" >/dev/null 2>&1; then
+    CAPABILITY_CREATED_ACCOUNT=0
+    CAPABILITY_ACCOUNT_STATE=ROLLED_BACK
+  else
+    printf '%s\\n' "fleet-enroll: the managed run account $CAPABILITY_CONTROL_ACCOUNT was created by this run but could not be removed; remove it before retrying" >&2
+  fi
+  return 0
+}
+
+capability_rollback() {
+  capability_rollback_files
+  capability_rollback_linger
+  capability_rollback_account
+}
+
 capability_state_write() {
   install -d -m 0700 -o root -g root "$CHECKPOINT_DIR"
   capability_state_file="$CHECKPOINT_DIR/capability-state.json"
-  capability_state_body='{"schema":"ghostfleet-capability-state/v1","version":"'"$CAPABILITY_VERSION"'","selection_digest":"'"$CAPABILITY_SELECTION_DIGEST"'","template_digest":"'"$CAPABILITY_TEMPLATE_DIGEST"'","mode":"'"$CAPABILITY_MODE"'","components":{"privileged_helper":"'"$CAPABILITY_HELPER_STATE"'","user_service":"'"$CAPABILITY_USER_SERVICE_STATE"'","linger":"'"$CAPABILITY_LINGER_STATE"'"}}'
+  # Provenance is sticky: once a ceremony created the run account, later runs
+  # keep recording that fact even though they only adopt it. It records who owns
+  # the account, so a rollback can tell "ours" from "the deployment's".
+  capability_created_recorded=false
+  if [ "$CAPABILITY_CREATED_ACCOUNT" = 1 ]; then
+    capability_created_recorded=true
+  elif [ "$CAPABILITY_ACCOUNT_STATE" != NOT_REQUESTED ] &&
+       grep -q '"control_account_created_by_courier":true' "$capability_state_file" 2>/dev/null; then
+    capability_created_recorded=true
+  fi
+  capability_state_body='{"schema":"ghostfleet-capability-state/v1","version":"'"$CAPABILITY_VERSION"'","selection_digest":"'"$CAPABILITY_SELECTION_DIGEST"'","template_digest":"'"$CAPABILITY_TEMPLATE_DIGEST"'","mode":"'"$CAPABILITY_MODE"'","control_account":"'"$CAPABILITY_CONTROL_ACCOUNT"'","control_account_state":"'"$CAPABILITY_ACCOUNT_STATE"'","control_account_created_by_courier":'"$capability_created_recorded"',"privileged_account":"'"$CAPABILITY_PRIVILEGED_ACCOUNT"'","components":{"privileged_helper":"'"$CAPABILITY_HELPER_STATE"'","user_service":"'"$CAPABILITY_USER_SERVICE_STATE"'","linger":"'"$CAPABILITY_LINGER_STATE"'"}}'
   if [ -r "$capability_state_file" ] && [ "$(cat "$capability_state_file")" = "$capability_state_body" ]; then
     capability_record_write
     return 0
@@ -468,6 +1156,7 @@ capability_ingest_claim() {
   CAPABILITY_LINGER_REQUIRED=0
   CAPABILITY_USER_SERVICE_REQUIRED=0
   CAPABILITY_CONTROL_ACCOUNT=
+  CAPABILITY_PRIVILEGED_ACCOUNT=
   CAPABILITY_INSTALLER=
   CAPABILITY_PRIVILEGED_KEY=
   CAPABILITY_USER_UNIT=
@@ -484,6 +1173,7 @@ capability_ingest_claim() {
       linger_required=*) CAPABILITY_LINGER_REQUIRED="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
       user_service_required=*) CAPABILITY_USER_SERVICE_REQUIRED="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
       control_account=*) CAPABILITY_CONTROL_ACCOUNT="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
+      privileged_account=*) CAPABILITY_PRIVILEGED_ACCOUNT="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
       installer=*) CAPABILITY_INSTALLER="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
       privileged_key=*) CAPABILITY_PRIVILEGED_KEY="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
       user_unit=*) CAPABILITY_USER_UNIT="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
@@ -500,7 +1190,9 @@ capability_ingest_claim() {
   done < "$capability_tmp"
   rm -f "$capability_tmp"
   CAPABILITY_ARTIFACT_COUNT=$((capability_slot - 1))
-  CAPABILITY_SELECTION_ORIGIN=claim
+  # A selection restored from this node's own record keeps its provenance, so the
+  # v1 residue check can tell "our earlier lane" from "the deployment's".
+  [ "$CAPABILITY_SELECTION_ORIGIN" = recorded ] || CAPABILITY_SELECTION_ORIGIN=claim
   capability_validate_selection
 }
 
@@ -516,6 +1208,24 @@ capability_apply() {
   capability_validate_selection
   capability_stage
   capability_probe
+  # The run account boundary is re-proved before any effect, and before the
+  # zero-delta decision: a converged node whose run account was later added to
+  # sudo or to a root-equivalent group must stop reporting "already converged".
+  if ! capability_provision_control_account; then
+    capability_rollback
+    capability_stage_cleanup
+    fail 'the dedicated managed run account could not be provisioned and proved least-privilege; no completion is reported'
+  fi
+  # A converged node re-proves the declaration too: a selection that names an
+  # account the installer does not admit — or a helper that reports COMPLIANT
+  # with no readable record — must never answer "already converged".
+  if [ "$CAPABILITY_HELPER_REQUIRED" = 1 ]; then
+    if ! capability_verify_declared_privileged_account "$(capability_declared_privileged_account_mode)"; then
+      capability_rollback
+      capability_stage_cleanup
+      fail 'the declared privileged account could not be proved against the reviewed installer record; no completion is reported'
+    fi
+  fi
   if capability_states_compliant; then
     CAPABILITY_MODE=ADOPT
     capability_state_write
@@ -535,43 +1245,61 @@ capability_apply() {
   esac
   if [ "$CAPABILITY_HELPER_REQUIRED" = 1 ] && [ "$CAPABILITY_HELPER_STATE" != COMPLIANT ]; then
     if ! capability_installer --apply; then
+      capability_rollback
       capability_stage_cleanup
       fail 'selected privileged helper apply failed; no completion is reported'
     fi
     CAPABILITY_HELPER_STATE="$(capability_helper_state)"
     if [ "$CAPABILITY_HELPER_STATE" != COMPLIANT ]; then
+      capability_rollback
       capability_stage_cleanup
       fail 'selected privileged helper postcondition failed'
     fi
   fi
+  # The installer just ran as root. Re-prove the run account (when a lane uses it)
+  # and the declared privileged account before anything is installed into a home
+  # or recorded as converged: a drifted or compromised artifact must not be able
+  # to hand the runtime a group, a sudo rule, or a different ops identity.
+  if ! capability_reprove_control_account; then
+    capability_rollback
+    capability_stage_cleanup
+    fail 'the managed run account lost its least-privilege proof after the reviewed installer ran; remove the account privilege named above (sudoers file and groups) and re-run the authorized Console command; no completion is reported'
+  fi
+  if [ "$CAPABILITY_HELPER_REQUIRED" = 1 ]; then
+    if ! capability_verify_declared_privileged_account required; then
+      capability_rollback
+      capability_stage_cleanup
+      fail 'the declared privileged account does not match the account the reviewed installer just recorded; no completion is reported'
+    fi
+  fi
   if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ] && [ "$CAPABILITY_USER_SERVICE_STATE" != COMPLIANT ]; then
     if ! capability_user_service_apply; then
-      capability_rollback_files
+      capability_rollback
       capability_stage_cleanup
       fail 'selected user service could not be installed; no completion is reported'
     fi
     CAPABILITY_USER_SERVICE_STATE="$(capability_user_service_state)"
     if [ "$CAPABILITY_USER_SERVICE_STATE" != COMPLIANT ]; then
-      capability_rollback_files
+      capability_rollback
       capability_stage_cleanup
       fail 'selected user service postcondition failed'
     fi
   fi
   if [ "$CAPABILITY_LINGER_REQUIRED" = 1 ]; then
     if ! capability_linger_apply; then
-      capability_rollback_files
+      capability_rollback
       capability_stage_cleanup
       fail 'selected Linger could not be enabled; no completion is reported'
     fi
   fi
   if ! capability_states_compliant; then
-    capability_rollback_files
+    capability_rollback
     capability_stage_cleanup
     fail 'selected capability did not converge'
   fi
   capability_state_write
   capability_stage_cleanup
-  printf '%s\\n' "fleet-enroll: selected capability $CAPABILITY_VERSION converged mode=$CAPABILITY_MODE helper=$CAPABILITY_HELPER_STATE user_service=$CAPABILITY_USER_SERVICE_STATE linger=$CAPABILITY_LINGER_STATE" >&2
+  printf '%s\\n' "fleet-enroll: selected capability $CAPABILITY_VERSION converged mode=$CAPABILITY_MODE helper=$CAPABILITY_HELPER_STATE user_service=$CAPABILITY_USER_SERVICE_STATE linger=$CAPABILITY_LINGER_STATE run_account=$CAPABILITY_ACCOUNT_STATE" >&2
   return 0
 }
 # @@GHOSTFLEET_CAPABILITY_SECTION_END@@

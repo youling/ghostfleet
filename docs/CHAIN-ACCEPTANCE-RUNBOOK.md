@@ -29,9 +29,57 @@ machine.
    its ownership, its bytes matching the pinned artifact and its enablement.
 5. `FLEET_CONTROL_ORDINARY_USER` equals the Human; the unit and Linger belong to
    the template's `control_account`; neither is root; a second run is zero delta.
+6. The run account is created by the courier inside the same ceremony and is
+   least privilege: `sudo -l -U <control_account>` reports no grant, its groups
+   contain no root-equivalent group, and `su -s /bin/sh <control_account> -c
+   'sudo -n /usr/local/libexec/youling-fleet/fleet-privctl'` fails, while the
+   same command run as the privileged `ghostfleet-ops` account reaches the
+   helper. `control_account` and `privileged_account` are never equal.
 
 The only allowed stub is the **Tailscale provider join** (a real tailnet auth key
 is an external credential). Everything else must be real.
+
+## v1 selections are not migrated
+
+A v1 selection (`ghostfleet-selected-capability/v1`) put the managed unit and Linger
+inside the privileged operations account. The courier refuses such a selection, and
+it refuses to install the v2 lane beside the residue:
+
+```sh
+getent passwd ghostfleet-ops | cut -d: -f6          # the privileged home
+ls -l  "<privileged home>/.config/systemd/user/ghostfleet-managed.service"
+ls -l  "<privileged home>/.config/systemd/user/default.target.wants/ghostfleet-managed.service"
+loginctl show-user ghostfleet-ops -p Linger          # expect Linger=no on a v1-free node
+```
+
+Decommission the old lane before rendering a v2 selection:
+
+```sh
+sudo -iu ghostfleet-ops systemctl --user disable --now ghostfleet-managed.service
+sudo -iu ghostfleet-ops systemctl --user is-active ghostfleet-managed.service   # expect inactive or failed
+pgrep -u ghostfleet-ops -f '<ExecStart binary>'                                  # expect no output
+rm -f "<privileged home>/.config/systemd/user/default.target.wants/ghostfleet-managed.service"
+rm -f "<privileged home>/.config/systemd/user/ghostfleet-managed.service"
+loginctl disable-linger ghostfleet-ops
+# the v1 record would otherwise block the next claim at the schema gate
+rm -f /var/lib/fleet/capability-selection.txt
+```
+
+The courier removes a stale v1 record by itself when the lane it describes is
+already gone, but the manual path must do the same or the next claim is refused
+with `[CAPABILITY_SCHEMA_V1_UNPROVEN]`.
+
+The courier deletes that lane itself only in one narrow case: this run restored
+its selection **from this node's own record** (`/var/lib/fleet/capability-selection.txt`,
+no rendered payload was delivered) and the record names the privileged account as
+the unit owner. Even then it verifies the bytes first — the unit must hash to the
+pinned artifact digest and the enablement link must point at that unit — and it
+removes the record in the same step so the next authorized claim can deliver the
+v2 selection. A delivered payload that merely finds the file never authorises a
+delete: the residue is reported and left in place. A *running* instance is not
+stopped by the courier; stop it in that account's session
+(`sudo -iu <account> systemctl --user disable --now <unit>`) before removing the
+files by hand.
 
 ## Step 1 — disposable VM and a Human account
 

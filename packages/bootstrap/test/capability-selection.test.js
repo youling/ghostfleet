@@ -19,7 +19,8 @@ function selection(overrides = {}) {
     helper_required: true,
     linger_required: true,
     user_service_required: true,
-    control_account: "ghostfleet-ops",
+    control_account: "ghostfleet-managed",
+    privileged_account: "ghostfleet-ops",
     installer: "managed-linux-privileged-operations.sh",
     privileged_key: "privileged-ops.pub",
     user_unit: { name: "ghostfleet-managed.service", artifact: "ghostfleet-managed.service" },
@@ -75,6 +76,8 @@ test("rendered capability carries version, template provenance and SHA-256 pinne
   assert.ok(block.includes("CAPABILITY_VERSION='" + supplied.version + "'"));
   assert.ok(block.includes("CAPABILITY_TEMPLATE_DIGEST='" + supplied.template_digest + "'"));
   assert.match(block, /^CAPABILITY_SELECTION_DIGEST='sha256:[0-9a-f]{64}'$/m);
+  assert.ok(block.includes("CAPABILITY_CONTROL_ACCOUNT='" + supplied.control_account + "'"));
+  assert.ok(block.includes("CAPABILITY_PRIVILEGED_ACCOUNT='" + supplied.privileged_account + "'"));
   assert.ok(rendered.includes("BROKER_ORIGIN='https://fixture.example.invalid'"));
   assert.ok(rendered.includes("CHECKPOINT_DIR='/tmp/synthetic-fixture'"));
   for (const artifact of supplied.artifacts) {
@@ -106,6 +109,11 @@ test("unrequested, unpinned or inconsistent privilege selections are refused at 
   assert.throws(render({ template_digest: "sha256:short" }), /CAPABILITY_TEMPLATE_DIGEST_INVALID/);
   assert.throws(render({ version: "bad version" }), /CAPABILITY_VERSION_INVALID/);
   assert.throws(render({ control_account: "root" }), /CAPABILITY_CONTROL_ACCOUNT_INVALID/);
+  // The privileged account is a deployment fact, never a courier default.
+  assert.throws(render({ privileged_account: undefined }), /CAPABILITY_PRIVILEGED_ACCOUNT_REQUIRED/);
+  assert.throws(render({ privileged_account: "" }), /CAPABILITY_PRIVILEGED_ACCOUNT_REQUIRED/);
+  assert.throws(render({ privileged_account: "root" }), /CAPABILITY_PRIVILEGED_ACCOUNT_INVALID/);
+  assert.throws(render({ privileged_account: "ghostfleet-managed" }), /CAPABILITY_ACCOUNT_COLLISION/);
   assert.throws(render({ unexpected: true }), /CAPABILITY_SELECTION_INVALID/);
   assert.throws(() => renderBootstrap({
     brokerOrigin: "https://fixture.example.invalid",
@@ -178,6 +186,10 @@ test("an unchanged artifact set keeps a stable selection digest", () => {
   assert.equal(first.selection_digest, second.selection_digest);
   const changed = normalizeSelectedCapability(selection({ version: "managed-linux-privileged-operations/2026.12" }));
   assert.notEqual(changed.selection_digest, first.selection_digest);
+  // The account boundary is part of the reviewed selection, so the digest binds
+  // it: swapping the privileged account cannot keep the recorded digest.
+  const otherPrivileged = normalizeSelectedCapability(selection({ privileged_account: "ghostfleet-ops-alt" }));
+  assert.notEqual(otherPrivileged.selection_digest, first.selection_digest);
 });
 
 test("both the default and the selected courier stay valid POSIX shell", { skip: process.platform !== "linux" }, () => {

@@ -35,7 +35,8 @@ fi
 
 workspace="$GITHUB_WORKSPACE"
 human=gf-review-human
-control_account=ghostfleet-ops
+control_account=ghostfleet-managed
+privileged_account=ghostfleet-ops
 short_code=41832576
 node_id="gf-chain-$(openssl rand -hex 4)"
 installer_state=/etc/youling-fleet/privileged-operations/control.json
@@ -410,13 +411,49 @@ assert_eq "Linger" "Linger=yes" "$linger_out"
 control_uid="$(id -u "$control_account")"
 [[ "$control_uid" -ne 0 ]] || fail_check "the control account is root"
 record_ok "control account uid is not root: $control_account uid=$control_uid"
+# The identity that owns the unit and Linger is neither the Human, root, nor the
+# privileged operations account, and it carries no sudo lane of its own.
+if [[ "$control_account" = "$privileged_account" || "$control_account" = "$human" ]]; then
+  fail_check "the run account collides with the Human or the privileged account"
+fi
+record_ok "run account and privileged account are distinct: $control_account / $privileged_account"
+control_groups="$(id -nG "$control_account")"
+for group in sudo wheel admin docker lxd disk shadow; do
+  if printf '%s\n' "$control_groups" | tr ' ' '\n' | grep -qx "$group"; then
+    fail_check "the run account is in the root-equivalent group $group"
+  fi
+done
+record_ok "run account groups: $control_groups"
+control_sudo="$(sudo -l -U "$control_account" 2>&1 || true)"
+case "$control_sudo" in
+  *"is not allowed to run sudo"*) record_ok "run account has no sudo grant: $control_account" ;;
+  *) fail_check "the run account has a sudo grant: $control_sudo" ;;
+esac
+ops_sudo="$(sudo -l -U "$privileged_account" 2>/dev/null || true)"
+case "$ops_sudo" in
+  */usr/local/libexec/youling-fleet/fleet-privctl[[:space:]]*) record_ok "the ops lane still names the pinned helper: $privileged_account" ;;
+  *) fail_check "the ops sudoers rule does not name the pinned helper: $ops_sudo" ;;
+esac
+if su -s /bin/sh "$control_account" -c 'sudo -n /usr/local/libexec/youling-fleet/fleet-privctl </dev/null' >"$work/run-account-sudo.log" 2>&1; then
+  fail_check "the run account reached the privileged helper through sudo"
+fi
+record_ok "negative: $control_account cannot invoke the helper through sudo"
+if su -s /bin/sh "$privileged_account" -c 'sudo -n /usr/local/libexec/youling-fleet/fleet-privctl </dev/null' >"$work/ops-sudo.log" 2>&1; then
+  fail_check "the privileged helper accepted an empty request"
+fi
+grep -q '"ok":false' "$work/ops-sudo.log" || fail_check "the ops lane did not execute the helper"
+record_ok "positive: $privileged_account still reaches the helper through the mediated lane"
 [[ "$human_uid" -ne 0 ]] || fail_check "the Human is root"
 record_ok "Human uid is not root: $human uid=$human_uid"
 [[ -r "$installer_state" ]] || fail_check "the installer did not record its state"
 record_ok "installer state recorded: $installer_state"
 ordinary_user="$(json_value "$installer_state" ordinary_user)"
 assert_eq "FLEET_CONTROL_ORDINARY_USER recorded" "$human" "$ordinary_user"
-assert_eq "recorded ops user" "$control_account" "$(json_value "$installer_state" ops_user)"
+assert_eq "recorded ops user" "$privileged_account" "$(json_value "$installer_state" ops_user)"
+assert_eq "recorded run account" "$control_account" "$(json_value "$capability_state" control_account)"
+assert_eq "recorded privileged account" "$privileged_account" "$(json_value "$capability_state" privileged_account)"
+assert_eq "run account origin" CREATED "$(json_value "$capability_state" control_account_state)"
+assert_eq "run account provenance" True "$(json_value "$capability_state" control_account_created_by_courier)"
 helper_path=/usr/local/libexec/youling-fleet/fleet-privctl
 assert_eq "helper bytes match the pinned artifact" "$HELPER_SHA256" "$(sha256sum "$helper_path" | cut -d ' ' -f1)"
 visudo -cf /etc/sudoers.d/90-youling-fleet-privileged-operations >/dev/null || fail_check "the managed sudoers file is invalid"
@@ -469,6 +506,8 @@ evidence "selection_digests recorded_by_courier=$recorded_selection_digest modul
 evidence "installer_sha256=$installer_sha pinned_artifacts=$ARTIFACT_COUNT delivered_artifact_rows=$selection_artifact_rows"
 evidence "unit=$unit unit_stat=$unit_stat unit_sha256=$unit_sha"
 evidence "linger=$linger_out installer_ordinary_user=$ordinary_user"
+evidence "run_account=$control_account uid=$control_uid groups=$control_groups privileged_account=$privileged_account"
+evidence "negative=run_account cannot sudo the helper; positive=ops lane executed the helper: $(cat "$work/ops-sudo.log")"
 evidence "courier_downloaded_sha256=$downloaded_sha_1 courier_served_sha256=$served_sha courier_published_sha256=$published_sha"
 
 section "run 2: the same launcher again must be zero delta"
