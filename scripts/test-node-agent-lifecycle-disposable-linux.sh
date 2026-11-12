@@ -1889,6 +1889,11 @@ PY
   done
   SLOW_INFLIGHT_PROBE_SECONDS=$((SECONDS - SLOW_INFLIGHT_PROBE_STARTED))
   ((SLOW_INFLIGHT_SEEN == 1)) || fail_check "the harness never reported a node-plane request on the wire within ${SLOW_INFLIGHT_PROBE_SECONDS}s of the restart, so a SIGTERM could not be proven to land inside one; this arm is inconclusive on this build"
+  # The unit journal already holds the SIGTERM of the S6 arm, so the "no request
+  # event after signal_received" count must be scoped to the lines this stop
+  # produced: remember how many lines the journal had, and only inspect the tail
+  # that grows after the signal.
+  SLOW_JOURNAL_BEFORE_LINES="$(run_as_account journalctl --user -u "${UNIT_NAME}" --no-pager -o cat 2>/dev/null | wc -l)"
   SLOW_SIGNAL_MS="$(date +%s%3N)"
   run_as_account systemctl --user kill --kill-whom=main --signal=TERM "${UNIT_NAME}" || fail_check "could not send SIGTERM to the live MainPID"
   SLOW_STOP_STARTED=$SECONDS
@@ -1905,7 +1910,10 @@ PY
   assert_eq "$(unit_show NRestarts)" "${OFFLINE_N_RESTARTS_END}" "a clean stop must not add a restart"
   ((SLOW_STOP_SECONDS <= 15)) || fail_check "the unit took ${SLOW_STOP_SECONDS}s to stop after SIGTERM, more than the 15s the slow-plane budget allows"
   SLOW_UNIT_JOURNAL="$(run_as_account journalctl --user -u "${UNIT_NAME}" --no-pager -o cat 2>/dev/null || true)"
-  SLOW_AFTER_SIGNAL="$(printf '%s\n' "${SLOW_UNIT_JOURNAL}" | awk '/signal_received/ { seen = 1; next } seen && /heartbeat|tasks\/poll|result_posted/ { count += 1 } END { print count + 0 }')"
+  SLOW_JOURNAL_NEW="$(printf '%s\n' "${SLOW_UNIT_JOURNAL}" | tail -n +$((SLOW_JOURNAL_BEFORE_LINES + 1)))"
+  SLOW_SIGNAL_LINES="$(printf '%s\n' "${SLOW_JOURNAL_NEW}" | grep -c 'signal_received' || true)"
+  assert_eq "${SLOW_SIGNAL_LINES}" "1" "the journal lines produced by this stop must contain exactly one signal_received"
+  SLOW_AFTER_SIGNAL="$(printf '%s\n' "${SLOW_JOURNAL_NEW}" | awk '/signal_received/ { seen = 1; next } seen && /heartbeat|tasks\/poll|result_posted/ { count += 1 } END { print count + 0 }')"
   assert_eq "${SLOW_AFTER_SIGNAL}" "0" "the agent journal shows ${SLOW_AFTER_SIGNAL} request event(s) after signal_received"
   record_ok "with a ${SLOW_PLANE_MS}ms control-plane hold, SIGTERM landed while ${SLOW_IN_FLIGHT} request was in flight; the agent finished it, started ${SLOW_REQUESTS_AFTER} more and stopped in ${SLOW_STOP_SECONDS}s with exit 0"
   evidence "slow_plane.requests_after_signal=${SLOW_REQUESTS_AFTER}"
@@ -1913,6 +1921,8 @@ PY
   evidence "slow_plane.stop_seconds=${SLOW_STOP_SECONDS}"
   evidence "slow_plane.inflight_probe_seconds=${SLOW_INFLIGHT_PROBE_SECONDS}"
   evidence "slow_plane.journal_request_events_after_signal=${SLOW_AFTER_SIGNAL}"
+  evidence "slow_plane.journal_lines_before_signal=${SLOW_JOURNAL_BEFORE_LINES}"
+  evidence "slow_plane.journal_lines_after_signal=$(printf '%s\n' "${SLOW_JOURNAL_NEW}" | wc -l)"
 
   curl -sS --cacert "${WORK}/tls/ca.crt" -X POST "${BASE_URL}/acceptance/delay" \
     -H 'content-type: application/json' --data-binary '{"ms": 0}' >/dev/null 2>&1 || fail_check "could not clear the slow-control-plane hold"
