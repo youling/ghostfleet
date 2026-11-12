@@ -134,7 +134,7 @@ systemd --user (control account, Linger=yes)
 
 ## 7. 耐用状态与崩溃语义
 
-任务执行前：`ledger[task_id] = {state: MAY_HAVE_EXECUTED, operation, started_at}` → `fsync` 目录项 → 才调用实现函数。完成后写 `{state: SUCCEEDED|REFUSED|FAILED, finished_at, result_digest}`（`REFUSED` = 校验拒绝且无副作用，`FAILED` = 尝试过但失败，`UNKNOWN` = 无法判定是否已执行；结果信封复用任务信封的 `schema` 并附加 `{task_id, operation, result, result_digest}`）。启动时扫描 ledger：任何 `MAY_HAVE_EXECUTED` 且无终态的任务，先补写一条 `UNKNOWN` 结果进 outbox（只报事实，不重跑），再标 `RECONCILED`。
+任务执行前：`ledger[task_id] = {state: MAY_HAVE_EXECUTED, operation, started_at}` → `fsync` 目录项 → 才调用实现函数。完成后写 `{state: SUCCEEDED|REFUSED|FAILED, finished_at, result_digest}`（`REFUSED` = 校验拒绝且**副作用为零**，`FAILED` = 尝试过但失败，`UNKNOWN` = 无法判定是否已执行；结果信封复用任务信封的 `schema` 并附加 `{task_id, operation, result, result_digest}`）。三者不可混用：**实现函数调用期间抛出的异常绝不报 `REFUSED`**——那等于向控制面承诺「可以安全重投」。规则由每个 operation 的显式声明决定：声明 `effect: none`（v0 的四个 operation 全部是只读观测/回显）→ 抛异常报 `FAILED` + 具体错误码；声明 `effect: may_mutate`（v0 不存在，预留给后续写操作）→ 抛异常一律报 `UNKNOWN`，宁可让控制面按未知副作用处理，也不猜。启动时扫描 ledger：任何 `MAY_HAVE_EXECUTED` 且无终态的任务，先补写一条 `UNKNOWN` 结果进 outbox（只报事实，不重跑），再标 `RECONCILED`。
 
 有界驱逐绝不丢未对账条目：超过上限时只驱逐已终态条目（`RESULT_DROPPED` 优先，其次其他终态，最后才 `FENCED`），`MAY_HAVE_EXECUTED` **永不驱逐**；若账本达上限且仍含未对账条目，agent 停止接收新任务并以 `AGENT_LEDGER_EXHAUSTED` fail closed，直到下一次成功对账——`不重复执行` 优先于 `有界`，宁可停摆也不猜。
 
@@ -219,7 +219,9 @@ WantedBy=default.target
 2. **user unit** 是第二个独立 pin 的 artifact，安装到 control account 的 `~/.config/systemd/user/ghostfleet-managed.service`，随后 `systemctl --user daemon-reload && systemctl --user enable --now ghostfleet-managed.service` + `loginctl enable-linger`。
 3. 三方一致由确定性测试断言：unit 的 `ExecStart` 路径 == pyz 安装路径；unit 的 `ReadWritePaths` 与凭证/状态路径 == courier 实际创建路径（`%h/.config/ghostfleet`、`%h/.local/state/ghostfleet-agent`）；selection 中 pyz 与 unit 的 `sha256` == 安装时校验值。
 4. 发布选择必须显式 `user_service_required=true` 且声明 `managed` 角色；缺 unit 或 pyz 制品 → `fail closed`（`CAPABILITY_MANAGED_ARTIFACTS_INCOMPLETE`），不再“没 unit 就当不需要”。
-5. unit 文本必须通过 `systemd-analyze --user verify`（CI 与 disposable 各一次），并断言不含 `sh -c`/`curl`/`wget`/`/bin/sh`、不写 `%h` 之外路径、不声明 `ProtectHome=read-write` 之类非法取值（`CAPABILITY_USER_UNIT_UNSAFE`）。
+5. unit 的 `ExecStart` 是**唯一**启动形态：必须精确等于 `/usr/bin/python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz run`，不得携带 `--config`/`--token`/`--url` 等参数。`--config` 只是测试与排障口子（信任规则仅要求属主为当前用户且组/其他不可写），生产路径固定读 root 拥有的 `/etc/ghostfleet/node-agent.json`；unit 是 pin 过的 root 安装制品，参数面不给攻击者留扩展位。
+6. 回滚必须与本 run 的写入对称：若 `/etc/ghostfleet/capability-status.json` 由本次安装写入，回滚要在同一原子序列里删除它（旧文件已存在则恢复原字节）。不许出现「已回滚但投影还写着新 SHA」的状态——那会让 agent 上报 READY 而实际跑的是旧制品。
+7. unit 文本必须通过 `systemd-analyze --user verify`（CI 与 disposable 各一次），并断言不含 `sh -c`/`curl`/`wget`/`/bin/sh`、不写 `%h` 之外路径、不声明 `ProtectHome=read-write` 之类非法取值（`CAPABILITY_USER_UNIT_UNSAFE`）。
 
 ## 12. 验收矩阵
 
@@ -252,3 +254,5 @@ WantedBy=default.target
 - v0 已提供轮换端点（`POST /v0/node-credential/rotate`，operator 鉴权，旧 token 立即失效并重置该节点 nonce/seq 状态）与吊销；节点侧非对称密钥对（可复用 `PRIVILEGE_LEASE_VALIDATOR_V0` 的签名风格）留给 v1。
 - 控制面 ↔ 节点的时间同步仅靠 ±300 s 窗口；真机上需要 chrony/systemd-timesyncd 在位（disposable 验收会断言）。
 - 日志目前只进 journald，不集中上传；跨节点日志聚合留给后续版本。
+- `AGENT_LEDGER_EXHAUSTED` 是有意选择的 fail-closed 停摆：控制面长期 5xx 导致对账永不成功时，节点会停止取新任务并持续 `DEGRADED`。这是**接受的**取舍（不重复执行优先于持续取任务），但代价是可用性面——控制面必须能看见 `health=DEGRADED`/`health_reason`，并由 operator 介入（修控制面或 `rotate` 后重启）。v1 再考虑「超时后允许丢弃最旧 `UNKNOWN`」的显式阈值。
+- `capability.inspect` 新鲜度由安装器契约保证（rollback 删投影），agent 只校验文件属主与权限、不判 `applied_at` 陈旧；真出现陈旧投影，上报的是「安装器说的事实」，责任在安装器而非 agent。
