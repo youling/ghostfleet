@@ -257,3 +257,97 @@ CHAIN_NOT_RUN: <step>, because <reason>
 ```
 
 Do not replace a failing step with a stub and call it PASS.
+
+## The node agent lifecycle job
+
+`node-agent-disposable` in `.github/workflows/ci.yml` runs
+`scripts/test-node-agent-lifecycle-disposable-linux.sh` as root on a one-use
+GitHub-hosted Ubuntu VM, with the same fork protection and
+`RUNNER_ENVIRONMENT=github-hosted` gate as the other privileged jobs.
+
+The script builds the artifacts the courier is supposed to install instead of
+trusting a checked-in copy: it discovers the agent's build entry, builds the
+zipapp twice and requires byte equality, then asserts the pinned systemd user
+unit against `docs/architecture/NODE_AGENT_V0.md` section 8 (no shell, no
+`curl`/`wget`, no `/bin/sh`, writes only under `%h`,
+`ProtectHome=read-only` present and `read-write` absent, `ExecStart`
+path character-equal to the install path, `StateDirectory` and
+`ConfigurationDirectory` covering the two `ReadWritePaths`), and runs
+`python3 -I <pyz> check-config` against both the missing-configuration and
+the installed-configuration shapes.
+
+The control plane it talks to is not a stub of the protocol: the script starts
+`scripts/node-agent-acceptance-control-plane.mjs`, which imports
+`src/control-plane/{http,store,controller,node-agent}.js` from the checkout
+and serves the repository's own `createHttpHandler` over a loopback HTTPS
+listener with a throwaway CA. Only the enrollment is synthetic: a node fixture
+is minted through the real `createEnrollmentAttempt` / `prepareEnrollmentAttempt`
+/ `claimEnrollmentAttempt` / `startMaterialization` sequence and gets a
+credential from the real `mintNodeCredential`, so the three node routes run
+their real verification order (body caps, content type, token digest in
+constant time, lifecycle, clock window, nonce ring, rate limit). The harness
+refuses to start when any of those modules or exports is missing, and the
+script proves that refusal in a separate arm.
+
+What the job proves, measured on the host rather than read off a config:
+
+- the artifact is built deterministically and installed `root:root 0755` at
+  the path `ExecStart` names;
+- a real non-root control account with no login session runs the agent under
+  `loginctl enable-linger`, with `ActiveState=active`,
+  `SubState=running`, a live `MainPID` owned by that account, and new
+  observations across more than two heartbeat intervals;
+- the unit is not vacuous: a copy without `StateDirectory` and
+  `ConfigurationDirectory` fails to start when the directories are missing
+  (`status=226/NAMESPACE`), while the shipped unit self-heals by recreating
+  them, so both arms are recorded;
+- boot and session recovery: after `loginctl terminate-user` and a
+  user-manager restart, with no session and no login, the service returns to
+  `active`;
+- failure recovery: `kill -9` increments `NRestarts` by exactly one and
+  the agent returns active; `SIGTERM` exits `0` and does not restart
+  across more than two `RestartSec` windows;
+- continuous work: operator-created `node.observe` and
+  `service.status.read` tasks complete through the real routes, and two
+  `node.observe` results differ over time, so nothing is replaying a fixed
+  payload;
+- identity and authority: `sudo -n true` fails for the control account, it
+  holds no privileged group, and a privileged helper probe rejects it with a
+  dedicated-caller code while accepting root;
+- task safety: nonce replay is `409 NODE_NONCE_REPLAY`, a duplicate result
+  is idempotent, a conflicting result is `409 TASK_RESULT_CONFLICT`,
+  `node.exec` and forbidden parameter keys are rejected, and a task left at
+  `MAY_HAVE_EXECUTED` by a crash is reported as `UNKNOWN` exactly once
+  and never re-run;
+- an independent read-only consumer, holding a token that is neither the
+  operator's nor the node's, reads the node projection (agent health, version,
+  last heartbeat) and the task timeline through the product routes, cannot
+  create tasks, and receives no credential or token field.
+
+What the job does not prove: a real tailnet and the operator hop over it (the
+listener is loopback only), a real Cloudflare deployment of the bridge, real
+OMV8 hardware with its disks and units, real PAM `su`/`sudo`
+interaction (the control account has a `nologin` shell), a real machine
+reboot, credential rotation, and multi-node lease races. Two seams are
+acceptance-only: the operator/observer bearer split lives in the harness because
+`src/control-plane/http.js` deliberately owns no transport auth, and the node
+fixture is synthetic (it is admitted through the real controller calls but has
+no enrollment ticket and no public bridge). The `ActiveState` the timeline
+carries is the agent's own `service.status.read` observation, not a
+control-plane measurement.
+
+The job needs an exclusive machine. It creates and deletes
+`ghostfleet-managed`/`ghostfleet-ops`, `/etc/ghostfleet`,
+`/usr/local/libexec/ghostfleet`, a trusted CA and a lingering user manager, so
+a second acceptance run on the same box will collide with it on every one of
+those paths: shared hosts and shared WSL distros produce false red (measured:
+another disposable run deleting `/usr/local/libexec/ghostfleet` mid-flight
+turned a healthy agent into a restart loop). Use a one-use VM or a dedicated
+distro. It also needs node 19 or newer (the control-plane modules use the global
+Web Crypto object; CI pins node 22) and refuses to start otherwise instead of
+failing later with a module error.
+
+The job prints `OK <n>: <fact>` for every assertion and
+`EVIDENCE <key>=<value>` for every measured value, then a
+`REAL`/`STUB`/`NOT_RUN` block assembled from those measured values.
+Quote that block in the PR.

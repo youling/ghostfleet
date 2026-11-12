@@ -39,6 +39,30 @@ jobs:
         run: sudo -n env "PATH=$PATH" node --test test/enrollment-launcher-composition.test.js
       - run: npm run test:all
       - run: npm run check:all
+      # The node agent zipapp is a pinned release artifact: rebuild it from the
+      # committed build entry and require byte equality, then smoke the entry
+      # point. These two checks ship with the node agent implementation, so a
+      # branch without it fails here instead of silently skipping the pin.
+      - if: runner.os == 'Linux'
+        name: Verify the deterministic node agent payload
+        run: |
+          if [ ! -f scripts/verify-node-agent-pyz.mjs ]; then
+            echo "::error::MISSING_VERIFY_SCRIPT: scripts/verify-node-agent-pyz.mjs ships with the node agent implementation"
+            exit 1
+          fi
+          npm run --silent verify:node-agent-pyz
+      # The systemd user unit is the second pinned artifact. Verify that it
+      # parses and print its digest so the log pins the exact bytes.
+      - if: runner.os == 'Linux'
+        name: Verify the pinned systemd user unit
+        run: |
+          unit=packages/bootstrap/assets/ghostfleet-managed.service
+          if [ ! -f "$unit" ]; then
+            echo "::error::MISSING_UNIT_ASSET: $unit ships with the courier install line"
+            exit 1
+          fi
+          sha256sum "$unit"
+          systemd-analyze verify "$unit"
       - run: npm run check:publication
       - run: npm run check:docs
       - run: npm run build:console
@@ -136,3 +160,33 @@ jobs:
             GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
             PATH="$PATH" \
             bash scripts/test-chain-acceptance-disposable-linux.sh
+
+  node-agent-disposable:
+    # Proves the node agent artifact the courier ships: deterministic zipapp,
+    # pinned systemd user unit, a real non-root control account behind Linger,
+    # boot/session recovery, failure recovery, crash-fence UNKNOWN, task safety
+    # and a read-only consumer, all against the repository's own control plane
+    # modules over loopback HTTPS. Fork PRs do not run contributor-provided
+    # root-level code.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Node agent lifecycle acceptance (artifact, linger, recovery, tasks)
+        shell: bash
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo -n env GITHUB_ACTIONS="$GITHUB_ACTIONS" \
+            RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            GHOSTFLEET_DISPOSABLE_TEST_CONFIRMED=1 \
+            GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            PATH="$PATH" \
+            bash scripts/test-node-agent-lifecycle-disposable-linux.sh
