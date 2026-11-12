@@ -182,6 +182,26 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+      # Ubuntu 24.04 restricts unprivileged user namespaces by default
+      # (kernel.apparmor_restrict_unprivileged_userns=1). A user unit then cannot
+      # set up the namespaces the hardened service asks for: systemd logs
+      # "UTS namespace setup is prohibited (container manager?)" and every
+      # Protect*/ReadWritePaths directive silently degrades to a no-op, so the
+      # harness could never prove the sandbox it exists to prove. Node
+      # administrators lift the same switch on such hosts; lifting it here keeps
+      # the harness bytes identical to the ones that produced the acceptance
+      # evidence instead of weakening an assertion.
+      - name: Permit unprivileged user namespaces
+        shell: bash
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns >/dev/null
+          fi
+          if [ -e /proc/sys/kernel/unprivileged_userns_clone ]; then
+            echo 1 | sudo tee /proc/sys/kernel/unprivileged_userns_clone >/dev/null
+          fi
+          sysctl kernel.apparmor_restrict_unprivileged_userns kernel.unprivileged_userns_clone 2>/dev/null || true
+
       # The order matters (m01969): the deterministic payload and the pinned unit
       # are verified before the lifecycle harness installs them, so a bad artifact
       # fails fast with its own name instead of as an obscure lifecycle failure.

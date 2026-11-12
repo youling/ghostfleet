@@ -954,7 +954,9 @@ case "${USER_MANAGER_STATE}" in
   "") fail_check "systemctl --user is-system-running produced no state for ${ACCOUNT_UID}" ;;
   *) fail_check "unexpected user manager state [${USER_MANAGER_STATE}] for ${ACCOUNT_UID}" ;;
 esac
-USER_MANAGER_FAILED="$(run_as_account systemctl --user list-units --failed --no-legend 2>/dev/null | awk '{print $1}' | tr '\n' ' ' || true)"
+# --plain keeps the leading bullet out of the first column, so this records unit
+# names instead of a row of "●" glyphs.
+USER_MANAGER_FAILED="$(run_as_account systemctl --user list-units --failed --no-legend --plain 2>/dev/null | awk '{print $1}' | tr '\n' ' ' || true)"
 if [[ -n "${USER_MANAGER_FAILED// /}" ]]; then
   evidence "account.user_manager_failed_units=${USER_MANAGER_FAILED}"
   case "${USER_MANAGER_FAILED}" in

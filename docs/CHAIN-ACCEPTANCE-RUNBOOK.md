@@ -265,6 +265,22 @@ Do not replace a failing step with a stub and call it PASS.
 GitHub-hosted Ubuntu VM, with the same fork protection and
 `RUNNER_ENVIRONMENT=github-hosted` gate as the other privileged jobs.
 
+Two runner facts the job has to arrange before the script can mean anything.
+Ubuntu 24.04 ships `kernel.apparmor_restrict_unprivileged_userns=1`, which stops
+a *user* manager from setting up namespaces: systemd then logs
+`UTS namespace setup is prohibited (container manager?)` and every
+`Protect*`/`ReadWritePaths` directive of the unit degrades to a no-op, so the
+`226/NAMESPACE` arm below would fail on a product that is fine. The job
+therefore sets that sysctl to `0` (and `kernel.unprivileged_userns_clone` to
+`1` where that key exists) before invoking the script, exactly as a node
+administrator would on such a host, and leaves the harness bytes untouched.
+Second, a fresh user manager on a runner image is frequently `degraded`
+because an unrelated user unit failed at boot, and `systemctl --user
+is-system-running` exits non-zero for `degraded`. The script waits for the
+user *bus* (`systemctl --user show-environment`), then records the state and any
+failed unit names as evidence; it fails only when the state is neither `running`
+nor `degraded`, or when the installed agent unit itself is in the failed list.
+
 The script builds the artifacts the courier is supposed to install instead of
 trusting a checked-in copy: it discovers the agent's build entry, builds the
 zipapp twice and requires byte equality, then checks the pinned systemd user
