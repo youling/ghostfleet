@@ -47,7 +47,7 @@ The package is stdlib-only and ships as a deterministic zipapp for `python3 -I`.
 
 | 字段 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `control_plane_origin` | 是 | — | `https://host[:port]`；仅测试/验收允许 loopback 的明文 `http`（会告警） |
+| `control_plane_origin` | 是 | — | `https://` + `host[:port]`；仅测试/验收允许 loopback 的明文 `http`（会告警） |
 | `heartbeat_interval_s` | 否 | 30 | 心跳/轮询周期，钳制到 [15,300] 秒 |
 | `heartbeat_interval_min_s` / `heartbeat_interval_max_s` | 否 | 15 / 300 | 进一步收窄服务端下发 interval 的接受区间 |
 | `jitter_ratio` | 否 | 0.1 | 抖动比例，钳制到 [0,0.5] |
@@ -84,7 +84,7 @@ python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz status --json
 `status --json` 示例（只读本地状态，单行 JSON）：
 
 ```json
-{"ok":true,"command":"status","agent_version":"0.1.0.dev0","node_uid":"node-...","state_dir":"/home/u/.local/state/ghostfleet-agent","initialised":true,"boot_id":"...","seq":42,"last_start":"...","last_stop":null,"last_heartbeat_at":"...","last_health":"OK","stopping":false,"consecutive_failures":0,"polls":42,"tasks_executed":3,"outbox_overflow":0,"outbox_depth":0,"ledger_entries":3}
+{"ok":true,"command":"status","agent_version":"0.1.0.dev0","node_uid":"node-...","state_dir":"%h/.local/state/ghostfleet-agent","initialised":true,"boot_id":"...","seq":42,"last_start":"...","last_stop":null,"last_heartbeat_at":"...","last_health":"OK","stopping":false,"consecutive_failures":0,"polls":42,"tasks_executed":3,"outbox_overflow":0,"outbox_depth":0,"ledger_entries":3}
 ```
 
 ## 退出码

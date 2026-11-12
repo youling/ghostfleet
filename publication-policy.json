@@ -494,6 +494,97 @@
       "line_sha256": "fc1b52c86effa47ba9b93579b06d1e1467947415aa665dcd511dc8bbe0a86f26",
       "kind": "inert-fixture-or-detector",
       "reason": "Independent synthetic node UUID for consumer toolchain tests; no live host."
+    },
+    {
+      "path": "packages/node-agent/tests/test_client.py",
+      "rule": "node-identity",
+      "line_sha256": "eb6bdfadee7921da03cdedc5e65ac64652f955aebd44048e5aee15752c65ce07",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic node UID fixture (all-zero / all-one UUID) used only to exercise protocol validation; not a real node identity."
+    },
+    {
+      "path": "packages/node-agent/tests/test_config.py",
+      "rule": "credential-url",
+      "line_sha256": "b3a8f6352d4813aa008f5edd6ee4d6062d143bac6e8cfcc5b477b0420b972407",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic URL carrying userinfo, deliberately injected to prove the config layer rejects credentials embedded in the control-plane origin."
+    },
+    {
+      "path": "packages/node-agent/tests/test_config.py",
+      "rule": "unknown-literal-url",
+      "line_sha256": "ec6b6796a34c545bbd2afa1dd04189d30ac471066fc44d423e7140681b04b7c7",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic out-of-range port inside a rejected-URL fixture; the value exists to prove fail-closed URL validation."
+    },
+    {
+      "path": "packages/node-agent/tests/test_config.py",
+      "rule": "instance-email",
+      "line_sha256": "ef2ab85c50f0bd7cf7ed684c127856850e437dee82debc2ac20de6a32f941f16",
+      "kind": "inert-fixture-or-detector",
+      "reason": "systemd instance-unit fixture for the allowed_units whitelist test; it is a systemd unit name, not an email address."
+    },
+    {
+      "path": "packages/node-agent/tests/test_config.py",
+      "rule": "instance-email",
+      "line_sha256": "dcdc176a27124eec28ea7c7afee48e8e6f67f9c14e8af3229010ab302f76e817",
+      "kind": "inert-fixture-or-detector",
+      "reason": "systemd instance-unit fixture for the allowed_units whitelist test; it is a systemd unit name, not an email address."
+    },
+    {
+      "path": "packages/node-agent/tests/test_observe.py",
+      "rule": "node-identity",
+      "line_sha256": "eb6bdfadee7921da03cdedc5e65ac64652f955aebd44048e5aee15752c65ce07",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic node UID fixture (all-zero / all-one UUID) used only to exercise protocol validation; not a real node identity."
+    },
+    {
+      "path": "packages/node-agent/tests/test_protocol.py",
+      "rule": "node-identity",
+      "line_sha256": "6c3cc7819d1f3ac8a7ef69a39535f7a5c0ef83effcc6f9e26711d718992fdf7a",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic node UID fixture (all-zero / all-one UUID) used only to exercise protocol validation; not a real node identity."
+    },
+    {
+      "path": "packages/node-agent/tests/test_protocol.py",
+      "rule": "node-identity",
+      "line_sha256": "cb8a79a3587498919d99f7537e14e9da5fa3b75fef548d82d356fa629cf65c49",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic node UID fixture (all-zero / all-one UUID) used only to exercise protocol validation; not a real node identity."
+    },
+    {
+      "path": "packages/node-agent/tests/test_tasks.py",
+      "rule": "node-identity",
+      "line_sha256": "eb6bdfadee7921da03cdedc5e65ac64652f955aebd44048e5aee15752c65ce07",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic node UID fixture (all-zero / all-one UUID) used only to exercise protocol validation; not a real node identity."
+    },
+    {
+      "path": "packages/node-agent/tests/test_tasks.py",
+      "rule": "node-identity",
+      "line_sha256": "97db7c25dff7db457ed5911a5be4c4633e225cea1ee9719c4a84e31cd770601e",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic node UID fixture (all-zero / all-one UUID) used only to exercise protocol validation; not a real node identity."
+    },
+    {
+      "path": "packages/node-agent/tests/test_zipapp.py",
+      "rule": "node-identity",
+      "line_sha256": "eb6bdfadee7921da03cdedc5e65ac64652f955aebd44048e5aee15752c65ce07",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic node UID fixture (all-zero / all-one UUID) used only to exercise protocol validation; not a real node identity."
+    },
+    {
+      "path": "scripts/test-bootstrap-capability-disposable-linux.sh",
+      "rule": "node-identity",
+      "line_sha256": "9e35f7b9075f3d9f297618c4ec28692bdfc9217a3147fa19c6e3fd902e26c24b",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic node UID fixture (all-zero / all-one UUID) used only to exercise protocol validation; not a real node identity."
+    },
+    {
+      "path": "scripts/test-bootstrap-capability-disposable-linux.sh",
+      "rule": "node-identity",
+      "line_sha256": "10da48960b4d2b8c6659bf5afadebc56427370f24be3238ace3d89645cf6f74a",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Synthetic node UID fixture (all-zero / all-one UUID) used only to exercise protocol validation; not a real node identity."
     }
   ],
   "binary_reviews": [
@@ -538,6 +629,12 @@
       "sha256": "407ed78df2706329674a2426a5364710d52ad91301501aa905afbaa1700a71a0",
       "purpose": "Synthetic Console preview only; no real device/provider inventory.",
       "review": "Reviewed by the extraction reviewer and coordinating Foreman before this policy was added."
+    },
+    {
+      "path": "packages/node-agent/dist/node-agent.pyz",
+      "sha256": "30dacf88c4c8559c22a12fb4867bf633faca1c4ff4589d74f71318a52b6ef3a3",
+      "purpose": "Deterministically built GhostFleet node agent zipapp payload (sources under packages/node-agent/src, builder packages/node-agent/tools/build_pyz.py). Contains no credentials, endpoints or host-specific data; CI rebuilds it and asserts byte equality.",
+      "review": "Reviewed by the coordinating Foreman for the node agent M4 round together with the source it is built from."
     }
   ],
   "public_contacts": [],

@@ -215,7 +215,7 @@ test("the courier installs the pinned payload, unit, credential and public proje
     const agentConfig = await readJson(agentConfigPath);
     assert.equal((await stat(agentConfigPath)).mode & 0o777, 0o644);
     assert.equal(agentConfig.schema, "ghostfleet-node-agent-config/v1");
-    assert.match(agentConfig.control_plane_origin, /^https:\/\//);
+    assert.ok(agentConfig.control_plane_origin.startsWith("https://"));
     assert.ok(agentConfig.heartbeat_interval_s.lower < agentConfig.heartbeat_interval_s.upper);
     assert.deepEqual(agentConfig.allowed_units, [AGENT_USER_UNIT_NAME]);
     assert.equal(agentConfig.node_uid, nodeJson.node_uid);
