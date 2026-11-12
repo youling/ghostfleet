@@ -5,7 +5,8 @@ ADR §6/§7/§8 的编排层：
 - 每个任务先写 ledger 栅栏（MAY_HAVE_EXECUTED）再执行，结果入 outbox；
 - 失败按 1→2→4…300 s 指数退避，控制面不可达时不退出、不丢已执行事实；
 - SIGTERM/SIGINT 由 CLI 设置 stop_event：先停常驻喂狗线程 → 停止取新任务 →
-  ≤10 s flush → 写 last_stop → 发送 STOPPING=1 → 退出 0；
+  ≤SHUTDOWN_FLUSH_BUDGET_S（8 s）有界 flush（每条 send 前查 deadline，单请求超时
+  钳到剩余预算）→ 写 last_stop → 发送 STOPPING=1 → 退出 0；
 - watchdog 由常驻 daemon 线程按 WatchdogSec/3 喂，离线退避/长阻塞时也不会饿死。
 """
 from __future__ import annotations
@@ -16,9 +17,10 @@ import time
 from types import SimpleNamespace
 
 from .client import MIN_INTERVAL_S
+from .ledger import FENCED, TERMINAL_STATES, LedgerWriteError
 from .logging import get_logger
 from .observe import HEALTH_DEGRADED, compute_drift
-from .outbox import CONFLICT, DUPLICATE, TOO_LARGE
+from .outbox import CONFLICT, DUPLICATE, TOO_LARGE, OutboxWriteError
 from .protocol import (
     AGENT_EXECUTION_UNKNOWN,
     AGENT_LEDGER_EXHAUSTED,
@@ -39,7 +41,7 @@ from .protocol import (
     digest_of,
     make_result,
 )
-from .tasks import MAX_TASKS_PER_POLL, TaskExecutor, validate_envelope, TaskRefused
+from .tasks import MAX_TASKS_PER_POLL, SUPPORTED_OPERATIONS, TaskExecutor, validate_envelope, TaskRefused
 from . import protocol as protocol_mod
 
 BACKOFF_BASE_S = 1.0
@@ -197,6 +199,11 @@ class AgentLoop:
             seq = 0
         self.logger.event(event, seq, detail)
 
+    def _stopping(self) -> bool:
+        """SIGTERM/SIGINT 已置位：绝不再发起新的 heartbeat/poll/result send。"""
+        event = self._stop_event
+        return event is not None and event.is_set()
+
     def _retry_hook(self, kind: str) -> None:
         """409 分派：NODE_BOOT_REPLAY 换新 boot_id+seq；nonce/seq 由信封自然换新。"""
         if kind == "BOOT_REPLAY":
@@ -222,20 +229,31 @@ class AgentLoop:
         )
 
     # -- 启动对账 -----------------------------------------------------------
+    def _apply_outbox_drops(self) -> list[str]:
+        """先把丢弃事实记进 ledger，再清空 outbox 的待记账清单。
+
+        顺序不可颠倒：若先 drain 后 mark，drain 落盘后崩溃会让 RESULT_DROPPED
+        事实永久丢失（outbox 已空、ledger 无记录）。反过来崩溃最多重放一次：
+        mark_result_dropped 幂等，pending_dropped 仍在下次启动重放。
+        """
+        dropped = list(self.outbox.pending_dropped())
+        if not dropped:
+            return []
+        for task_id in dropped:
+            self.ledger.mark_result_dropped(task_id)
+            self.state_store.record_outbox_overflow(1)
+        self.outbox.drain_dropped()
+        return dropped
+
     def _replay_outbox_dropped(self) -> int:
         """把 outbox 里持久化的溢出丢弃清单重放成 ledger 的 RESULT_DROPPED 事实。
 
         丢弃清单与 items 同一次原子写落盘，因此"结果丢了但账本不知道"这个
         不一致窗口不存在；这里只负责在进程重启后补账。
         """
-        dropped = list(self.outbox.pending_dropped())
-        if not dropped:
-            return 0
-        for task_id in dropped:
-            self.ledger.mark_result_dropped(task_id)
-            self.state_store.record_outbox_overflow(1)
-        self.outbox.drain_dropped()
-        self.logger.warning("outbox_overflow_replayed", count=len(dropped))
+        dropped = self._apply_outbox_drops()
+        if dropped:
+            self.logger.warning("outbox_overflow_replayed", count=len(dropped))
         return len(dropped)
 
     def reconcile(self) -> int:
@@ -278,13 +296,23 @@ class AgentLoop:
 
     # -- 单轮 ---------------------------------------------------------------
     def iteration(self) -> str:
-        """执行一轮；返回 ok / retry / fatal。"""
+        """执行一轮；返回 ok / retry / fatal / stopped。"""
+        # SIGTERM 后绝不再发起任何新请求（含 startup flush 里的 result send）。
+        if self._stopping():
+            return "stopped"
         # F：上次进程遗留的未确认结果优先重发（同 task_id 同摘要幂等）。
         self._replay_outbox_dropped()
         if self.outbox.depth() > 0:
-            startup_report = self.outbox.flush(self._send_outbox_item)
+            startup_report = self.outbox.flush(
+                self._send_outbox_item,
+                stop_event=self._stop_event,
+                deadline=self._monotonic() + SHUTDOWN_FLUSH_BUDGET_S,
+            )
             if startup_report.fatal:
                 raise AuthFatalError(startup_report.stop_code)
+            if self._stopping():
+                # 停机信号在重放途中到达：不再进入本轮任何控制面交互。
+                return "stopped"
             if startup_report.retry_after_s:
                 # 服务端对重放结果回了 429：本轮不再打任何请求，直接按权威时长退避。
                 return self._fail_iteration(
@@ -316,6 +344,8 @@ class AgentLoop:
         }
         if exhausted:
             heartbeat_extra["health_reason"] = AGENT_LEDGER_EXHAUSTED
+        if self._stopping():
+            return "stopped"
         heartbeat = self.client.heartbeat(
             lambda nonce: self._envelope(nonce, heartbeat_extra),
             interval_bounds=self.config.interval_bounds,
@@ -327,13 +357,23 @@ class AgentLoop:
             return self._fail_iteration("heartbeat", heartbeat.kind, heartbeat.code, heartbeat.retry_after_s)
         if heartbeat.interval_s is not None:
             self._interval_s = heartbeat.interval_s
+        # 心跳往返期间收到 SIGTERM：本轮到此为止，绝不发出 poll。
+        if self._stopping():
+            self.logger.info("iteration_stopped_before_poll")
+            return "stopped"
 
         if exhausted:
             # 不 poll：宁可不取新任务，也不能因账本溢出丢掉"可能已执行"的事实。
-            report = self.outbox.flush(self._send_outbox_item)
+            report = self.outbox.flush(
+                self._send_outbox_item,
+                stop_event=self._stop_event,
+                deadline=self._monotonic() + SHUTDOWN_FLUSH_BUDGET_S,
+            )
             if report.fatal:
                 raise AuthFatalError(report.stop_code)
             self._note_flush_retry_after(report)
+            if self._stopping():
+                return "stopped"
             # 喂狗由常驻线程负责（P1-A）；主循环只保留 _sleep_with_jitter 的块间冗余喂狗。
             self.state_store.record_heartbeat(interval_s=self._interval_s, observation=snapshot, health=health)
             self._emit("poll", {"skipped": AGENT_LEDGER_EXHAUSTED, "tasks": 0, "health": health})
@@ -359,19 +399,38 @@ class AgentLoop:
         if len(batch) > MAX_TASKS_PER_POLL + 2:
             self.logger.warning("task_batch_truncated", received=len(batch))
             batch = batch[: MAX_TASKS_PER_POLL + 2]
-        for task in batch:
-            # SIGTERM 后绝不再开始新任务：未开始的 task 不进 ledger（控制面可安全重投）。
-            stop_event = self._stop_event
-            if stop_event is not None and stop_event.is_set():
-                self.logger.info("task_batch_aborted", pending=len(batch))
-                break
-            self._process_task(task)
+        ledger_blocked = False
+        try:
+            for task in batch:
+                # SIGTERM 后绝不再开始新任务：未开始的 task 不进 ledger（控制面可安全重投）。
+                if self._stopping():
+                    self.logger.info("task_batch_aborted", pending=len(batch))
+                    break
+                self._process_task(task)
+        except LedgerWriteError as error:
+            # 账本在批处理中途耗尽：绝不能让它抛到 CLI 变成 exit 5 脏退出（没有 shutdown /
+            # STOPPING）。放弃本批剩余任务（未 fence 的可由控制面安全重投），本轮改报 DEGRADED。
+            ledger_blocked = True
+            self.logger.warning("ledger_write_failed_during_batch", detail=str(error))
 
-        report = self.outbox.flush(self._send_outbox_item)
+        report = self.outbox.flush(
+            self._send_outbox_item,
+            stop_event=self._stop_event,
+            deadline=self._monotonic() + SHUTDOWN_FLUSH_BUDGET_S,
+        )
         if report.fatal:
             raise AuthFatalError(report.stop_code)
         self._note_flush_retry_after(report)
-        self.state_store.record_heartbeat(interval_s=self._interval_s, observation=snapshot, health=health)
+        if self._stopping():
+            return "stopped"
+        self.state_store.record_heartbeat(
+            interval_s=self._interval_s,
+            observation=snapshot,
+            health=HEALTH_DEGRADED if ledger_blocked else health,
+        )
+        if ledger_blocked:
+            self._emit("backoff", {"stage": "task-batch", "code": AGENT_LEDGER_EXHAUSTED})
+            return "retry"
         if report.remaining or self._retry_after_s > 0:
             return "retry"
         return "ok"
@@ -429,6 +488,30 @@ class AgentLoop:
             return
         operation = envelope.get("operation")
         safe_operation = operation if isinstance(operation, str) and operation else "unknown"
+        if not isinstance(operation, str) or operation not in SUPPORTED_OPERATIONS:
+            # 非字符串（JSON list/dict）绝不能进 frozenset 成员判断：那会抛 TypeError
+            # 直接穿透 run_forever（只捕 AuthFatalError），常驻进程变成 exit 5 脏退出、
+            # 没有 STOPPING / last_stop。这类 envelope 同样在 fence 之前按 REFUSED 处理。
+            # P2d：未知/缺失 operation 必须在 fence 之前拒绝。
+            # 栅栏的语义是"实现可能已经跑过"，而这类任务根本不会进入 dispatch；
+            # 先 fence 会留下一条 MAY_MUTATE 等级、不可驱逐的条目，512 个未知
+            # operation 就能永久耗尽账本并停掉一切 poll。
+            # P1：pre-dispatch 分支也不能绕过账本历史——complete() 会写终态与摘要，
+            # 同一个 task_id 第二次到达就会留下第二个摘要（FENCED 情形更糟：队列里的
+            # UNKNOWN 会被发送闸撤回，而账本说 REFUSED）。因此先做只读查询：
+            # FENCED → 按既有语义补 UNKNOWN；已有终态/墓碑 → 跳过；从未见过 → REFUSED。
+            known = self.ledger.inspect(task_id)
+            if known == FENCED:
+                self._reconcile_task(task_id, safe_operation)
+                self.logger.info("task_duplicate_skipped", task_id=task_id, state=known)
+                return
+            if known is not None:
+                self.logger.info("task_duplicate_skipped", task_id=task_id, state=known)
+                return
+            self._emit("task_start", {"task_id": task_id, "operation": safe_operation})
+            result = self.executor.handle(envelope)
+            self._deliver_result(task_id, safe_operation, result)
+            return
         attempt = envelope.get("attempt")
         safe_attempt = attempt if isinstance(attempt, int) and not isinstance(attempt, bool) else 1
         begin = self.ledger.begin(task_id, safe_operation, safe_attempt)
@@ -441,6 +524,15 @@ class AgentLoop:
         self._emit("task_start", {"task_id": task_id, "operation": safe_operation})
         result = self.executor.handle(envelope)
         self.state_store.record_task_executed()
+        self._deliver_result(task_id, safe_operation, result)
+
+    def _deliver_result(self, task_id: str, operation: str, result: dict) -> None:
+        """持久化一次执行结果：入队 → 重放溢出丢弃 → 补齐 ledger 终态 → 结构化事件。
+
+        顺序是关键：结果先进 outbox（崩溃后仍未发出时下次启动优先重发），
+        溢出/丢弃清单先记进 ledger（_apply_outbox_drops 先 mark 后 drain），
+        最后才写终态并宣告 task_result。
+        """
         status = result.get("status")
         digest = digest_of(result)
         add = self._enqueue_result(result)
@@ -449,14 +541,25 @@ class AgentLoop:
             self.ledger.mark_result_dropped(task_id)
         elif add.status == CONFLICT:
             self.logger.warning("result_digest_conflict_local", task_id=task_id)
-        # 溢出丢弃清单与 items 在同一次原子写里持久化；这里重放成 ledger 事实。
-        for dropped in self.outbox.drain_dropped():
-            self.ledger.mark_result_dropped(dropped)
-            self.state_store.record_outbox_overflow(1)
+        # 丢弃清单与 items 在同一次原子写里持久化；这里先记账后清空（P2a 崩溃窗）。
+        for dropped in self._apply_outbox_drops():
             self.logger.warning("outbox_overflow", task_id=dropped)
-        self.ledger.complete(task_id, status, result_digest=digest, code=result.get("code"))
-        self._emit("task_result", {"task_id": task_id, "operation": safe_operation, "status": status, "code": result.get("code")})
-        self.logger.info("task_processed", task_id=task_id, operation=safe_operation, status=status)
+        try:
+            self.ledger.complete(
+                task_id,
+                status,
+                result_digest=digest,
+                code=result.get("code"),
+                operation=operation,
+            )
+        except LedgerWriteError as error:
+            # 终态摘要没提交进账本 → 这条结果从此不可发送：shutdown flush 真发出去、
+            # 重启 reconcile 又补发 UNKNOWN，同一 task 会出现两个摘要
+            # （控制面只能回 TASK_RESULT_CONFLICT，破坏 ADR §5.2/§7 的"一 task 一摘要"）。
+            self._retract_uncommitted_result(task_id, detail=str(error), stage="complete")
+            raise
+        self._emit("task_result", {"task_id": task_id, "operation": operation, "status": status, "code": result.get("code")})
+        self.logger.info("task_processed", task_id=task_id, operation=operation, status=status)
 
     def _enqueue_result(self, result: dict):
         body = {
@@ -467,15 +570,70 @@ class AgentLoop:
         }
         return self.outbox.add(body)
 
-    def _send_outbox_item(self, item):
+    def _retract_uncommitted_result(self, task_id: str, *, detail: str, stage: str) -> bool:
+        """账本终态未提交时撤回待发结果；撤回本身失败就 fail closed（绝不发送）。
+
+        返回 True 表示条目已从 outbox（内存 + 磁盘）移除；False 表示磁盘写失败，
+        调用方必须拒绝发送并留下结构化错误——宁可剩一条永远发不出的 pending，
+        也不能让同一 task 出现两个摘要。
+        """
+        try:
+            removed = self.outbox.retract(task_id)
+        except OutboxWriteError as retract_error:
+            self.logger.error(
+                "result_uncommitted_unsendable",
+                task_id=task_id,
+                stage=stage,
+                detail=detail,
+                outbox_error=str(retract_error),
+            )
+            return False
+        self.logger.error(
+            "result_retracted_before_send",
+            task_id=task_id,
+            stage=stage,
+            removed=removed,
+            detail=detail,
+        )
+        return True
+
+    def _result_digest_committed(self, task_id, digest) -> bool:
+        """发送前的最后一道闸：账本里必须有与 body 完全一致的终态摘要。
+
+        已收敛的只读终态会被有界驱逐、只剩墓碑，而墓碑同样记录 result_digest
+        （ledger._prune）。这种情况仍算"已提交"：否则队列里合法待发的结果会被
+        误撤回，控制面永远收不到该 result（墓碑只让 begin() 返回 DONE，不会补发）。
+        """
+        if not isinstance(task_id, str) or not isinstance(digest, str):
+            return False
+        entry = self.ledger.get(task_id)
+        if isinstance(entry, dict):
+            if entry.get("result_digest") == digest and entry.get("state") in TERMINAL_STATES:
+                return True
+        tombstones = getattr(self.ledger, "tombstones", None)
+        tombstone = tombstones.get(task_id) if isinstance(tombstones, dict) else None
+        return isinstance(tombstone, dict) and tombstone.get("result_digest") == digest
+
+    def _send_outbox_item(self, item, timeout_s=None):
         body = item.get("body")
         if not isinstance(body, dict):
             return SimpleNamespace(kind=OUTCOME_REJECTED, code=AGENT_INTERNAL_ERROR)
+        task_id = item.get("task_id")
+        digest = body.get("result_digest")
+        if not self._result_digest_committed(task_id, digest):
+            # 账本没有这条 body 的终态摘要 → 绝不发送（fail closed）。正常情况下
+            # complete()/reconcile 已先行提交；这里兜住"提交失败后仍在队列里"的条目。
+            retracted = self._retract_uncommitted_result(
+                task_id, detail="terminal result digest is not committed in the ledger", stage="send"
+            )
+            kind = OUTCOME_REJECTED if retracted else OUTCOME_DENIED
+            return SimpleNamespace(kind=kind, code=AGENT_INTERNAL_ERROR)
         try:
             response = self.client.send_result_body(
                 lambda nonce: self._envelope(nonce, body),
                 str(item.get("task_id")),
                 retry_hook=self._retry_hook,
+                timeout_s=timeout_s,
             )
         except ProtocolError as error:
             return SimpleNamespace(kind=OUTCOME_REJECTED, code=error.code)
@@ -563,7 +721,8 @@ class AgentLoop:
         except AuthFatalError as error:
             self.logger.error("auth_fatal", code=error.code)
             return 4
-        return 0 if outcome == "ok" else 5
+        # stopped = 收到停机信号且未发起新请求：干净退出，不算失败。
+        return 0 if outcome in ("ok", "stopped") else 5
 
     def bind_stop_event(self, stop_event) -> None:
         """把 SIGTERM 事件同时交给睡眠等待与任务执行器（协作式取消）。"""
@@ -597,6 +756,10 @@ class AgentLoop:
                     self.logger.error("auth_fatal", code=error.code)
                     self.shutdown(reason="auth_fatal")
                     return 4
+                if outcome == "stopped":
+                    # 停机信号已置位：本轮没有发起任何新请求，立即进入 shutdown。
+                    stop_reason = "signal"
+                    break
                 interrupted = False
                 if outcome == "ok":
                     interrupted = self._sleep_with_jitter(self._interval_s, stop_event=effective_stop)
@@ -614,31 +777,54 @@ class AgentLoop:
         self.shutdown(reason=stop_reason)
         return 0
 
-    def shutdown(self, *, reason: str) -> None:
-        """有界收尾：先停喂狗线程 → STOPPING=1 → ≤10 s flush → last_stop。
+    def shutdown(self, *, reason: str) -> dict:
+        """有界收尾：先停喂狗线程 → STOPPING=1 → ≤8 s 有界 flush → last_stop。
 
         先停线程再发 STOPPING=1 是合同 D 的顺序要求：STOPPING 之后不允许再有
-        WATCHDOG；flush 阶段由有界预算保证不会超过 systemd 的 TimeoutStopSec。
+        WATCHDOG。停机预算不是"常量相加"：整段收尾共用一个 deadline，每条 send
+        之前都由 Outbox.flush 检查 deadline，单请求超时被钳到剩余预算，因此 64 条
+        积压最坏也只消耗 8 s，而不是 64×request_timeout_s。
+        返回收尾统计（pending/sent/rejected/elapsed_s），供 CLI 与测试断言。
         """
         self._stop_watchdog()
         self.notifier.stopping()
         self.state_store.mark_stopping()
-        deadline = self._monotonic() + SHUTDOWN_FLUSH_BUDGET_S
+        started = self._monotonic()
+        deadline = started + SHUTDOWN_FLUSH_BUDGET_S
+        sent = 0
+        rejected = 0
         attempts = 0
         while self.outbox.depth() > 0 and attempts < SHUTDOWN_FLUSH_ATTEMPTS:
             attempts += 1
-            remaining = deadline - self._monotonic()
-            if remaining <= 0:
+            if self._monotonic() >= deadline:
                 break
-            report = self.outbox.flush(self._send_outbox_item)
+            report = self.outbox.flush(
+                self._send_outbox_item,
+                deadline=deadline,
+                clock=self._monotonic,
+            )
+            sent += len(report.sent)
+            rejected += len(report.rejected)
             if report.fatal:
                 self.logger.error("shutdown_flush_fatal", code=report.stop_code)
                 break
             if report.progressed:
                 continue
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                break
             self._sleep(min(1.0, max(0.05, remaining)))
         pending = self.outbox.depth()
+        elapsed = max(0.0, self._monotonic() - started)
         if pending:
             self.logger.warning("shutdown_outbox_pending", pending=pending, reason=reason)
         self.state_store.record_stop()
-        self.logger.info("agent_stopped", reason=reason, outbox_depth=pending)
+        self.logger.info(
+            "agent_stopped",
+            reason=reason,
+            outbox_depth=pending,
+            sent=sent,
+            rejected=rejected,
+            elapsed_s=round(elapsed, 3),
+        )
+        return {"pending": pending, "sent": sent, "rejected": rejected, "elapsed_s": elapsed}

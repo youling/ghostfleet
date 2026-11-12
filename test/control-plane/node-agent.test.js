@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { GhostFleetController } from "../../src/control-plane/controller.js";
 import { createHttpHandler } from "../../src/control-plane/http.js";
@@ -185,7 +185,9 @@ async function nodePost(handler, path, options) {
 async function plainRequest(handler, path, options = {}) {
   const method = options.method ?? "POST";
   const headers = { "content-type": "application/json" };
-  const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
+  // `raw` keeps a deliberately malformed body unstringified.
+  const payload = options.raw !== undefined ? options.raw
+    : options.body === undefined ? undefined : JSON.stringify(options.body);
   const response = await handler(new Request("https://ghostfleet.invalid" + path, { method, headers, body: payload }));
   const text = await response.text();
   let parsed = null;
@@ -517,22 +519,24 @@ test("nonce replay is rejected and produces no additional side effect", async ()
   assert.equal(first.json.ok, true);
 
   const afterFirst = parts.store.snapshot();
-  // A byte-for-byte replay is caught by the sequence rule before the nonce ring.
+  // §5.1 checks the nonce window before the sequence extension, so a replay that
+  // is identical down to the nonce reports the nonce verdict, not a seq one.
   const exact = await nodePost(parts.handler, "/v0/nodes/" + node_uid + "/heartbeat", {
     token: credential.token, headerUid: node_uid, body,
   });
   assert.equal(exact.status, 409);
-  assert.equal(exact.json.error, "NODE_SEQ_REGRESSION");
-  assert.equal(exact.json.code, "NODE_SEQ_REGRESSION");
+  assert.equal(exact.json.error, "NODE_NONCE_REPLAY");
+  assert.equal(exact.json.code, "NODE_NONCE_REPLAY");
   assert.deepEqual(parts.store.snapshot(), afterFirst);
 
-  // The ring is the second line: a fresh seq cannot smuggle a used nonce back in.
-  const second = await nodePost(parts.handler, "/v0/nodes/" + node_uid + "/heartbeat", {
-    token: credential.token, headerUid: node_uid, body: { ...body, seq: body.seq + 1 },
+  // A fresh nonce cannot smuggle a rolled-back seq in either: the boot/seq rule
+  // still runs, just after the nonce and rate checks.
+  const rolledBack = await nodePost(parts.handler, "/v0/nodes/" + node_uid + "/heartbeat", {
+    token: credential.token, headerUid: node_uid, body: { ...body, nonce: "replay-fresh-nonce-0001", seq: body.seq },
   });
-  assert.equal(second.status, 409);
-  assert.equal(second.json.error, "NODE_NONCE_REPLAY");
-  assert.equal(second.json.code, "NODE_NONCE_REPLAY");
+  assert.equal(rolledBack.status, 409);
+  assert.equal(rolledBack.json.error, "NODE_SEQ_REGRESSION");
+  assert.equal(rolledBack.json.code, "NODE_SEQ_REGRESSION");
   assert.deepEqual(parts.store.snapshot(), afterFirst);
 });
 
@@ -938,7 +942,16 @@ test("worker exempts only the three node routes from operator bearer auth", asyn
 
   for (const [method, path] of [["GET", "/v0/nodes"], ["GET", "/v0/events"], ["POST", "/v0/enrollment-attempts"], ["GET", "/mcp"]]) {
     const denied = await fixture.request(path, { method, headers: jsonHeaders });
-    assert.equal([401, 403].includes(denied.status), true, path + " must still require an operator credential");
+    assert.equal(denied.status, 401, path + " must still require an operator credential");
+    assert.equal((await denied.json()).error, "UNAUTHORIZED", path + " must name the missing credential");
+  }
+
+  // A read-only credential authenticates but cannot mutate, and it is not 401:
+  // the caller is known, so the answer names the authority, not the identity.
+  for (const path of ["/v0/enrollment-attempts", "/v0/node-tasks", "/v0/node-credential/rotate"]) {
+    const readOnly = await fixture.request(path, { method: "POST", headers: { ...jsonHeaders, authorization: "Bearer " + fixture.reader }, body: "{}" });
+    assert.equal(readOnly.status, 403, path + " must refuse a read-only credential");
+    assert.equal((await readOnly.json()).error, "READ_ONLY_CREDENTIAL");
   }
 
   const readerNodes = await fixture.request("/v0/nodes", { method: "GET", headers: { authorization: "Bearer " + fixture.reader } });
@@ -1011,9 +1024,15 @@ test("rotation replaces the node credential and clears replay state", async () =
   assert.equal(rotated.status, 200, rotated.text);
   assert.equal(rotated.json.ok, true);
   assert.equal(rotated.json.node_uid, node_uid);
-  assert.match(rotated.json.node_credential, /^[A-Za-z0-9_-]{43}$/);
-  assert.equal(JSON.stringify(parts.store.snapshot()).includes(rotated.json.node_credential), false);
-  assert.equal(parts.store.getNode(node_uid).agent.credential_digest, sha256Hex(rotated.json.node_credential));
+  // §5.1 pins node_credential to { token, node_uid, handoff_id }; rotate clears
+  // the handoff, so the object carries a null handle and the token itself.
+  const rotatedCredential = rotated.json.node_credential;
+  assert.equal(typeof rotatedCredential, "object");
+  assert.match(rotatedCredential.token, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(rotatedCredential.node_uid, node_uid);
+  assert.equal(rotatedCredential.handoff_id, null);
+  assert.equal(JSON.stringify(parts.store.snapshot()).includes(rotatedCredential.token), false);
+  assert.equal(parts.store.getNode(node_uid).agent.credential_digest, sha256Hex(rotatedCredential.token));
   assert.equal(parts.store.getNode(node_uid).agent.credential_handoff, null, "rotation kills any pending handoff");
   assert.equal(parts.store.getNode(node_uid).agent.credential_handoff_state, null);
 
@@ -1021,7 +1040,7 @@ test("rotation replaces the node credential and clears replay state", async () =
   await expectRejection(parts, () => heartbeat(parts.handler, parts.clock, node_uid, old.token), 401, "NODE_AUTH_INVALID");
 
   // Rotated state restarts the replay window, so a fresh boot may begin at seq 0.
-  const newToken = rotated.json.node_credential;
+  const newToken = rotated.json.node_credential.token;
   const fresh = await nodePost(parts.handler, "/v0/nodes/" + node_uid + "/heartbeat", {
     token: newToken, headerUid: node_uid, body: agentEnvelope(parts.clock, node_uid, {}, { boot_id: "boot-rotated", seq: 0 }),
   });
@@ -1032,7 +1051,10 @@ test("rotation replaces the node credential and clears replay state", async () =
   assert.equal(unknown.json.error, "NODE_NOT_FOUND");
   const missing = await plainRequest(parts.handler, "/v0/node-credential/rotate", { body: {} });
   assert.equal(missing.status, 400);
-  assert.equal(missing.json.error, "NODE_REQUEST_INVALID");
+  // ADR §5.2: the operator edge speaks the task vocabulary; the node-agent
+  // request code stays on the node routes.
+  assert.equal(missing.json.error, "TASK_REQUEST_INVALID");
+  assert.equal(missing.json.code, "TASK_REQUEST_INVALID");
 });
 
 test("operator node task routes validate input and summarise without echoing params", async () => {
@@ -1061,7 +1083,8 @@ test("operator node task routes validate input and summarise without echoing par
     body: { node_uid, operation: "node.observe", params: { want: ["identity"] }, urgent: true },
   });
   assert.equal(extraKey.status, 400);
-  assert.equal(extraKey.json.error, "NODE_REQUEST_INVALID");
+  assert.equal(extraKey.json.error, "TASK_REQUEST_INVALID");
+  assert.equal(extraKey.json.code, "TASK_REQUEST_INVALID");
 
   const unknownNode = await plainRequest(parts.handler, "/v0/node-tasks", {
     body: { node_uid: makeId("node"), operation: "node.observe", params: { want: ["identity"] } },
@@ -1089,18 +1112,34 @@ test("operator node task routes validate input and summarise without echoing par
 
   const missingUid = await plainRequest(parts.handler, "/v0/node-tasks", { method: "GET" });
   assert.equal(missingUid.status, 400);
-  assert.equal(missingUid.json.error, "NODE_REQUEST_INVALID");
+  assert.equal(missingUid.json.error, "TASK_REQUEST_INVALID");
+  assert.equal(missingUid.json.code, "TASK_REQUEST_INVALID");
 });
 
 test("operator node routes still require the operator bearer", async () => {
   const fixture = workerFixture();
-  for (const [method, path] of [
-    ["POST", "/v0/node-tasks"],
-    ["GET", "/v0/node-tasks?node_uid=" + makeId("node")],
-    ["POST", "/v0/node-credential/rotate"],
-  ]) {
-    const denied = await fixture.request(path, { method, headers: { "content-type": "application/json" }, body: method === "POST" ? "{}" : undefined });
-    assert.equal([401, 403].includes(denied.status), true, path + " must stay operator-gated");
+  const routes = [
+    ["POST", "/v0/node-tasks", "{}"],
+    ["GET", "/v0/node-tasks?node_uid=" + makeId("node"), undefined],
+    ["POST", "/v0/node-credential/rotate", "{}"],
+  ];
+  for (const [method, path, body] of routes) {
+    const denied = await fixture.request(path, { method, headers: { "content-type": "application/json" }, body });
+    assert.equal(denied.status, 401, path + " must stay operator-gated");
+    assert.equal((await denied.json()).error, "UNAUTHORIZED", path + " must name the missing credential");
+  }
+  // A read-only credential authenticates but cannot mutate: the answer is 403
+  // READ_ONLY_CREDENTIAL, not 401. A GET is a read, so it passes the authority
+  // check and fails only on the unknown node it asked about.
+  for (const [method, path, body] of routes) {
+    const readOnly = await fixture.request(path, { method, headers: { "content-type": "application/json", authorization: "Bearer " + fixture.reader }, body });
+    if (method === "GET") {
+      assert.equal(readOnly.status, 404, "a read is authorized for a read-only credential: " + path);
+      assert.equal((await readOnly.json()).error, "NODE_NOT_FOUND");
+    } else {
+      assert.equal(readOnly.status, 403, path + " must refuse a read-only credential");
+      assert.equal((await readOnly.json()).error, "READ_ONLY_CREDENTIAL");
+    }
   }
 });
 
@@ -1579,8 +1618,9 @@ test("credential-bearing responses carry cache-control: no-store", async () => {
   giveCredential(parts.controller, node_uid);
   const rotated = await plainRequest(parts.handler, "/v0/node-credential/rotate", { body: { node_uid } });
   assert.equal(rotated.status, 200, rotated.text);
-  assert.equal(typeof rotated.json.node_credential, "string");
-  assert.equal(rotated.json.node_credential.length > 0, true);
+  assert.equal(typeof rotated.json.node_credential, "object");
+  assert.equal(rotated.json.node_credential.token.length > 0, true);
+  assert.equal(rotated.json.node_credential.handoff_id, null);
   assert.equal(rotated.response.headers.get("cache-control"), "no-store");
   assert.equal(rotated.response.headers.get("pragma"), "no-cache");
 
@@ -1648,4 +1688,218 @@ test("the sealed credential handoff is bound to its node and ticket", () => {
     assert.equal(error.code, "NODE_CREDENTIAL_HANDOFF_INVALID");
     assert.equal(String(error.message).includes(token), false);
   }
+});
+
+// P2-6: the delivery budget is a hard cap, and a durable counter of the wrong
+// type can never be coerced into "one more delivery".
+test("the handoff delivery budget is exact and a malformed counter fails closed", async () => {
+  const parts = makeController();
+  const flow = await completeEnrollmentFlow(parts);
+  // Completion already spent the first delivery.
+  let delivered = 1;
+  for (let attempt = 0; attempt < CREDENTIAL_HANDOFF_MAX_DELIVERIES + 5; attempt += 1) {
+    const next = parts.controller.completeEnrollmentTicket({
+      resume_session: flow.claim.resume_session, report: flow.report,
+    });
+    if (next.node_credential === null) {
+      assert.equal(next.credential_handoff, "EXPIRED", "an exhausted budget is an expiry, not a crash");
+      break;
+    }
+    assert.equal(next.node_credential.token, flow.token, "every delivery re-opens the same token");
+    delivered += 1;
+    const record = parts.store.getNode(flow.node_uid);
+    assert.equal(record.agent.credential_handoff.deliveries, delivered);
+    assert.equal(record.agent.credential_handoff_state, "SEALED");
+  }
+  assert.equal(delivered, CREDENTIAL_HANDOFF_MAX_DELIVERIES);
+  const spent = parts.store.getNode(flow.node_uid);
+  assert.equal(spent.agent.credential_handoff, null);
+  assert.equal(spent.agent.credential_handoff_state, "EXPIRED");
+
+  // A counter that is not a non-negative integer is treated as unusable: "7"
+  // must not become "71" and outlive the budget forever.
+  for (const malformed of ["7", -1, 1.5, null]) {
+    const tampered = makeController();
+    const tamperedFlow = await completeEnrollmentFlow(tampered);
+    const record = tampered.store.getNode(tamperedFlow.node_uid);
+    tampered.store.putNodeAgent(tamperedFlow.node_uid, {
+      ...record.agent,
+      credential_handoff: { ...record.agent.credential_handoff, deliveries: malformed },
+    });
+    const closed = tampered.controller.completeEnrollmentTicket({
+      resume_session: tamperedFlow.claim.resume_session, report: tamperedFlow.report,
+    });
+    assert.equal(closed.node_credential, null, "a malformed counter must not release a token: " + String(malformed));
+    assert.equal(closed.credential_handoff, "EXPIRED");
+    assert.equal(JSON.stringify(closed).includes(tamperedFlow.token), false);
+    assert.equal(tampered.store.getNode(tamperedFlow.node_uid).agent.credential_handoff, null);
+  }
+});
+
+// P2-3: the operator view is a projection, not a mirror of the durable record.
+test("an unvetted durable task outcome reads as UNKNOWN to the operator", () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "outcome-device");
+  const task = parts.controller.createNodeTask(node_uid, { operation: "capability.inspect", params: {} });
+  const record = parts.store.getNode(node_uid);
+  const stored = { ...record.agent.tasks[task.task_id] };
+  const readSummary = () => parts.controller.listNodeTaskSummaries(node_uid)[0];
+
+  parts.store.putNodeAgent(node_uid, {
+    ...record.agent, tasks: { ...record.agent.tasks, [task.task_id]: { ...stored, status: TASK_STATUS.SUCCEEDED, result_outcome: "PWNED" } },
+  });
+  assert.equal(readSummary().result_outcome, "UNKNOWN");
+
+  parts.store.putNodeAgent(node_uid, {
+    ...record.agent, tasks: { ...record.agent.tasks, [task.task_id]: { ...stored, status: TASK_STATUS.SUCCEEDED, result_outcome: "REFUSED" } },
+  });
+  assert.equal(readSummary().result_outcome, "REFUSED");
+
+  parts.store.putNodeAgent(node_uid, {
+    ...record.agent, tasks: { ...record.agent.tasks, [task.task_id]: { ...stored, status: TASK_STATUS.SUCCEEDED } },
+  });
+  assert.equal(readSummary().result_outcome, null, "an absent outcome stays null, not UNKNOWN");
+});
+
+// P2-2: the path segment is decoded before authentication, so a decoding failure
+// must be a flat 404: no internal error, no log line, no state.
+test("a malformed percent-encoded path is a flat 404 before authentication", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "malformed-path-device");
+  const credential = giveCredential(parts.controller, node_uid);
+  const before = parts.store.snapshot();
+  const logged = [];
+  const original = console.error;
+  console.error = (...args) => logged.push(args);
+  try {
+    const malformed = "%E0%A4%A";
+    const paths = [
+      ["/v0/nodes/" + malformed + "/heartbeat", "node"],
+      ["/v0/nodes/" + malformed + "/tasks/poll", "node"],
+      ["/v0/nodes/" + node_uid + "/tasks/" + malformed + "/result", "node"],
+      ["/v1/enrollment-tickets/" + malformed + "/claim", "operator"],
+    ];
+    for (const [path, kind] of paths) {
+      const response = kind === "node"
+        ? await nodePost(parts.handler, path, { token: credential.token, headerUid: node_uid, body: agentEnvelope(parts.clock, node_uid) })
+        : await plainRequest(parts.handler, path, { body: {} });
+      assert.equal(response.status, 404, path + " must not be a 500: " + response.text);
+      assert.equal(response.json.error, "NOT_FOUND");
+      assert.equal(response.json.code, undefined, "a routing miss is not a contract code");
+    }
+  } finally {
+    console.error = original;
+  }
+  assert.deepEqual(logged, [], "a routing miss must not be logged as an internal error");
+  assert.deepEqual(parts.store.snapshot(), before, "a routing miss writes nothing");
+});
+
+// P2-5: the persistence comment is now the truth — a rejected result never
+// rewrites the blob, even though the controller read and compared the record.
+test("a conflicting task result is refused without rewriting the durable blob", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "conflict-device");
+  const credential = giveCredential(parts.controller, node_uid);
+  const task = parts.controller.createNodeTask(node_uid, { operation: "capability.inspect", params: {} });
+  const polled = await poll(parts.handler, parts.clock, node_uid, credential.token);
+  assert.equal(polled.json.tasks.length, 1);
+  const first = await sendResult(parts.handler, parts.clock, node_uid, credential.token, task.task_id,
+    taskResult(polled.json.tasks[0], "SUCCEEDED", { data: { probe: "first" } }));
+  assert.equal(first.status, 200, first.text);
+
+  const before = JSON.stringify(parts.store.snapshot());
+  const conflicting = await sendResult(parts.handler, parts.clock, node_uid, credential.token, task.task_id,
+    taskResult(polled.json.tasks[0], "SUCCEEDED", { data: { probe: "second" } }));
+  assert.equal(conflicting.status, 409, conflicting.text);
+  assert.equal(conflicting.json.error, "TASK_RESULT_CONFLICT");
+  assert.equal(JSON.stringify(parts.store.snapshot()), before, "the rejected result must not be persisted");
+});
+
+// P3-10: independent KDF/AEAD vector. The production helpers are not used for the
+// decryption path, so a silent HKDF/AAD change fails here even if seal/open stay
+// self-consistent.
+test("the sealed handoff decrypts with an independent HKDF and AES-256-GCM", () => {
+  const node_uid = "node-synthetic-vector-01";
+  const ticket_id = "ticket-synthetic-vector";
+  const handoff_id = "handoff-synthetic-vector";
+  const token = mintNodeCredential().token;
+  const sealed = sealCredentialHandoff({
+    operatorSecret: HANDOFF_SECRET, token, node_uid, ticket_id, handoff_id, nowMs: START_MS,
+  });
+
+  const key = Buffer.from(hkdfSync(
+    "sha256",
+    Buffer.from(HANDOFF_SECRET, "utf8"),
+    Buffer.from(CREDENTIAL_HANDOFF_SALT, "utf8"),
+    Buffer.from(CREDENTIAL_HANDOFF_INFO, "utf8"),
+    CREDENTIAL_HANDOFF_KEY_BYTES,
+  ));
+  // Canonical JSON sorts keys, so the AAD is handoff_id, node_uid, ticket_id.
+  const aad = JSON.stringify({ handoff_id, node_uid, ticket_id });
+  const openIndependently = (blob, additionalData) => {
+    const sealedBytes = Buffer.from(blob.ciphertext, "base64url");
+    const tag = sealedBytes.subarray(sealedBytes.length - CREDENTIAL_HANDOFF_TAG_BYTES);
+    const body = sealedBytes.subarray(0, sealedBytes.length - CREDENTIAL_HANDOFF_TAG_BYTES);
+    const decipher = createDecipheriv(CREDENTIAL_HANDOFF_CIPHER, key, Buffer.from(blob.iv, "base64url"));
+    decipher.setAAD(Buffer.from(additionalData, "utf8"));
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(body), decipher.final()]).toString("utf8");
+  };
+
+  assert.equal(openIndependently(sealed, aad), token);
+  assert.equal(JSON.stringify(sealed).includes(token), false, "the sealed record never stores plaintext");
+  // A different AAD must not authenticate, even with the right key and tag.
+  assert.throws(() => openIndependently(sealed, JSON.stringify({ handoff_id, node_uid: "node-other-vector", ticket_id })));
+  assert.throws(() => openIndependently(sealed, JSON.stringify({ handoff_id, node_uid, ticket_id: "ticket-other" })));
+});
+
+// P3-2: the operator edge answers a request-shape problem with 400. Only a code
+// that carries an explicit status, or the node edge's retry classes, may differ.
+test("the operator edge answers a malformed request with 400 while node conflicts stay 409", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "status-edge");
+  const credential = giveCredential(parts.controller, node_uid);
+
+  // Malformed JSON used to answer 409 INVALID_JSON because the code contains
+  // "INVALID"; an operator client read that as a state conflict and retried.
+  for (const path of ["/v0/node-tasks", "/v0/enrollment-attempts"]) {
+    const malformed = await plainRequest(parts.handler, path, { method: "POST", raw: "{broken" });
+    assert.equal(malformed.status, 400, path + " must answer malformed JSON with 400: " + malformed.text);
+    assert.equal(malformed.json.error, "INVALID_JSON");
+    assert.equal(malformed.json.code, "INVALID_JSON");
+  }
+
+  // A bare controller code without an explicit status is request-shape too: it
+  // was mapped to 409 purely because the code contains "INVALID".
+  const unknownKey = await plainRequest(parts.handler, "/v0/enrollment-attempts", { method: "POST", body: { bogus: 1 } });
+  assert.equal(unknownKey.status, 400, unknownKey.text);
+  assert.equal(unknownKey.json.error, "CREATE_INPUT_INVALID");
+  assert.equal(unknownKey.json.code, "CREATE_INPUT_INVALID");
+  const badTtl = await plainRequest(parts.handler, "/v0/enrollment-attempts", { method: "POST", body: { ttl_seconds: 5 } });
+  assert.equal(badTtl.status, 400, badTtl.text);
+  assert.equal(badTtl.json.error, "TTL_INVALID");
+
+  // The node edge is untouched: a malformed node body is still a 400 request
+  // error, and a real result conflict is still the 409 retry class the Python
+  // client dispatches on (client.py _classify reads this status).
+  const nodeMalformed = await nodePost(parts.handler, "/v0/nodes/" + node_uid + "/heartbeat", {
+    token: credential.token, headerUid: node_uid, raw: "{broken",
+  });
+  assert.equal(nodeMalformed.status, 400);
+  assert.equal(nodeMalformed.json.error, "INVALID_JSON");
+  assert.equal(nodeMalformed.json.code, "INVALID_JSON");
+
+  parts.controller.createNodeTask(node_uid, { operation: "capability.inspect", params: {} });
+  const dispatched = await poll(parts.handler, parts.clock, node_uid, credential.token);
+  assert.equal(dispatched.status, 200, dispatched.text);
+  assert.equal(dispatched.json.tasks.length, 1);
+  const envelopeTask = dispatched.json.tasks[0];
+  const first = await sendResult(parts.handler, parts.clock, node_uid, credential.token, envelopeTask.task_id,
+    taskResult(envelopeTask, "SUCCEEDED", { data: { probe: "first" } }));
+  assert.equal(first.status, 200, first.text);
+  const conflict = await sendResult(parts.handler, parts.clock, node_uid, credential.token, envelopeTask.task_id,
+    taskResult(envelopeTask, "SUCCEEDED", { data: { probe: "second" } }));
+  assert.equal(conflict.status, 409, "a conflicting result is still a retry-class conflict");
+  assert.equal(conflict.json.error, "TASK_RESULT_CONFLICT");
+  assert.equal(conflict.json.code, "TASK_RESULT_CONFLICT");
 });

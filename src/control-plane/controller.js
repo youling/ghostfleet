@@ -13,7 +13,7 @@ import { assertPublicSafe, publicClone } from "../core/security.js";
 import { InvalidTransitionError, transitionAttempt } from "../core/state-machine.js";
 import { InMemoryStore } from "./store.js";
 import {
-  AGENT_SCHEMA, MAX_TASKS_PER_HEARTBEAT, MAX_TASKS_PER_POLL, NodeAgentError, TASK_LEASE_SECONDS,
+  AGENT_SCHEMA, CREDENTIAL_HANDOFF_MAX_DELIVERIES, MAX_TASKS_PER_HEARTBEAT, MAX_TASKS_PER_POLL, NodeAgentError, TASK_LEASE_SECONDS,
   applyHeartbeat, applyTaskResult, canonicalJson, createTask, credentialHandoffUsable,
   mintNodeCredential, normalizeAgentState, openCredentialHandoff, pollTasks, projectNode,
   publicTask, publicTaskSummary, sealCredentialHandoff, sha256Hex, validateTaskInput,
@@ -28,6 +28,13 @@ import {
 } from "./tickets.js";
 
 function required(value, message) { if (!value) throw new Error(message); return value; }
+
+// A refused state transition is a 409, not a malformed request: the body was well formed,
+// the stored attempt simply is not in a position to be accepted. The status must be
+// explicit now that the HTTP edge stopped guessing from the code text (it used to map any
+// "*_INVALID"/"*_MISSING" to 409, which also turned real input errors into conflicts and
+// made malformed JSON look retryable). The code stays the stable machine token.
+function stateConflict(code) { const error = new Error(code); error.status = 409; return error; }
 
 export class GhostFleetController {
   constructor({
@@ -405,9 +412,13 @@ export class GhostFleetController {
     const token = openCredentialHandoff({
       operatorSecret: this.credentialHandoffSecret, handoff, node_uid, ticket_id,
     });
+    // The record was authenticated and its budget was checked above, so the
+    // counter is a valid non-negative integer here; clamp anyway so a durable
+    // record can never grow past the fixed budget.
+    const deliveries = Math.min(CREDENTIAL_HANDOFF_MAX_DELIVERIES, handoff.deliveries + 1);
     this.store.putNodeAgent(node_uid, {
       ...node.agent,
-      credential_handoff: { ...handoff, deliveries: (handoff.deliveries ?? 1) + 1 },
+      credential_handoff: { ...handoff, deliveries },
     });
     return {
       node_credential: { token, node_uid, handoff_id: handoff.handoff_id },
@@ -430,16 +441,16 @@ export class GhostFleetController {
 
   #provisionalNode(attempt) {
     const node = attempt.node_uid && this.store.getNode(attempt.node_uid);
-    if (!node) throw new Error("PROVISIONAL_IDENTITY_MISSING");
+    if (!node) throw stateConflict("PROVISIONAL_IDENTITY_MISSING");
     if (node.node_uid !== attempt.node_uid || node.enrollment_attempt_id !== attempt.attempt_id || node.lifecycle !== NodeLifecycle.PROVISIONAL) {
-      throw new Error("PROVISIONAL_IDENTITY_MISMATCH");
+      throw stateConflict("PROVISIONAL_IDENTITY_MISMATCH");
     }
     return node;
   }
 
   #assertIdentityInput(node, { node_id, platform }) {
     if ((node_id !== undefined && node_id !== null && node_id !== node.node_id) ||
-        (platform !== undefined && platform !== node.platform)) throw new Error("NODE_IDENTITY_MISMATCH");
+        (platform !== undefined && platform !== node.platform)) throw stateConflict("NODE_IDENTITY_MISMATCH");
   }
 
   startMaterialization(id, input = {}) {
@@ -459,7 +470,7 @@ export class GhostFleetController {
       // A lost response must not remint an identity or append duplicate evidence/events.
       if (attempt.state === EnrollmentState.MATERIALIZING) return publicClone(attempt);
     } else {
-      if (attempt.state === EnrollmentState.MATERIALIZING) throw new Error("PROVISIONAL_IDENTITY_MISSING");
+      if (attempt.state === EnrollmentState.MATERIALIZING) throw stateConflict("PROVISIONAL_IDENTITY_MISSING");
       const node_uid = makeId("node");
       node = {
         node_uid, node_id: node_id || node_uid, platform,
@@ -479,7 +490,7 @@ export class GhostFleetController {
     const attempt = this.getEnrollmentAttempt(id);
     this.requireLiveAttempt(attempt);
     if (!Number.isInteger(ttl_seconds) || ttl_seconds < 30 || ttl_seconds > 3600) throw new Error("TTL_INVALID");
-    if (attempt.state !== EnrollmentState.PREPARING) throw new Error("HUMAN_GATE_STATE_INVALID");
+    if (attempt.state !== EnrollmentState.PREPARING) throw stateConflict("HUMAN_GATE_STATE_INVALID");
     const gate = {
       gate_id: makeId("gate"),
       gate_type,
@@ -508,7 +519,7 @@ export class GhostFleetController {
     if (!["APPROVE", "REJECT"].includes(decision)) throw new Error("HUMAN_GATE_DECISION_INVALID");
     const attempt = this.getEnrollmentAttempt(gate.subject_id);
     this.requireLiveAttempt(attempt);
-    if (attempt.state !== EnrollmentState.WAITING_HUMAN) throw new Error("HUMAN_GATE_STATE_INVALID");
+    if (attempt.state !== EnrollmentState.WAITING_HUMAN) throw stateConflict("HUMAN_GATE_STATE_INVALID");
     if (Date.parse(gate.expires_at) <= this.clock.now()) {
       gate.state = HumanGateState.EXPIRED;
       gate.resolved_at = this.now();
@@ -555,7 +566,7 @@ export class GhostFleetController {
 
   markReconcileRequired(id, reason = "ambiguous external outcome") {
     const attempt = this.getEnrollmentAttempt(id);
-    if (![EnrollmentState.CLAIMED, EnrollmentState.MATERIALIZING].includes(attempt.state)) throw new Error("RECONCILE_STATE_INVALID");
+    if (![EnrollmentState.CLAIMED, EnrollmentState.MATERIALIZING].includes(attempt.state)) throw stateConflict("RECONCILE_STATE_INVALID");
     return this.transitionAttempt(attempt, EnrollmentState.RECONCILE_REQUIRED, reason);
   }
 
@@ -568,17 +579,18 @@ export class GhostFleetController {
 
   acceptEnrollment(id, input = {}) {
     const attempt = this.requireLiveAttempt(this.getEnrollmentAttempt(id));
-    if (attempt.state !== EnrollmentState.MATERIALIZING) throw new Error("ACCEPT_STATE_INVALID");
+    // Replaying accept on a settled attempt is a state conflict, not a bad request.
+    if (attempt.state !== EnrollmentState.MATERIALIZING) throw stateConflict("ACCEPT_STATE_INVALID");
     if (Object.keys(input).some((key) => !["node_id", "platform"].includes(key))) throw new Error("ACCEPT_INPUT_INVALID");
     const provisional = this.#provisionalNode(attempt);
     this.#assertIdentityInput(provisional, input);
     for (const type of CORE_OWNED_EVIDENCE) {
       const proof = attempt.evidence.findLast((item) => item.type === type);
-      if (proof?.source !== "ghostfleet-core" || proof?.data.node_uid !== provisional.node_uid) throw new Error("CORE_EVIDENCE_INVALID");
+      if (proof?.source !== "ghostfleet-core" || proof?.data.node_uid !== provisional.node_uid) throw stateConflict("CORE_EVIDENCE_INVALID");
     }
     const missing = missingAcceptanceEvidence(attempt.evidence);
     if (missing.length) {
-      const error = new Error("ACCEPTANCE_EVIDENCE_MISSING");
+      const error = stateConflict("ACCEPTANCE_EVIDENCE_MISSING");
       error.missing = missing;
       throw error;
     }
@@ -725,11 +737,14 @@ export class GhostFleetController {
       last_seq: null,
       retired_boot_ids: [],
     });
+    // §5.1 defines node_credential as { token, node_uid, handoff_id }. Rotate
+    // clears the handoff, so handoff_id is null; the shape is identical to
+    // /v1/enroll/complete so an ADR-following client reads .token either way.
     return {
       ok: true,
       node_uid,
       rotated_at: this.now(),
-      node_credential: minted.token,
+      node_credential: { token: minted.token, node_uid, handoff_id: null },
     };
   }
 

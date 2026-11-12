@@ -73,7 +73,7 @@ mountinfo 读取上限 1 MiB（真实机器挂载项可能很多），超限按�
 
 | 字段 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `control_plane_origin` | 是 | — | `https://host[:port]`；loopback 明文 `http` 生产默认拒绝（`CONFIG_LOOPBACK_HTTP_FORBIDDEN`），仅 harness 环境变量 `GHOSTFLEET_AGENT_TEST_LOOPBACK_HTTP=1`（或显式 `allow_loopback_http=True`）放行并告警 |
+| `control_plane_origin` | 是 | — | `https://` + `host[:port]`；loopback 明文 `http` 生产默认拒绝（`CONFIG_LOOPBACK_HTTP_FORBIDDEN`），仅 harness 环境变量 `GHOSTFLEET_AGENT_TEST_LOOPBACK_HTTP=1`（或显式 `allow_loopback_http=True`）放行并告警 |
 | `heartbeat_interval_s` | 否 | 30 | 心跳/轮询周期，配置值钳制到 [15,300] 秒；客户端实际周期下限 30 秒（服务端下发更小值按 30 采用并记 warning，不 fatal） |
 | `heartbeat_interval_min_s` / `heartbeat_interval_max_s` | 否 | 15 / 300 | 进一步收窄服务端下发 interval 的接受区间 |
 | `jitter_ratio` | 否 | 0.1 | 抖动比例，钳制到 [0,0.5] |
@@ -110,7 +110,7 @@ python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz status --json
 `status --json` 示例（只读本地状态，单行 JSON）：
 
 ```json
-{"ok":true,"command":"status","agent_version":"0.1.0.dev0","node_uid":"node-...","state_dir":"/home/u/.local/state/ghostfleet-agent","initialised":true,"boot_id":"...","seq":42,"last_start":"...","last_stop":null,"last_heartbeat_at":"...","last_health":"OK","stopping":false,"consecutive_failures":0,"polls":42,"tasks_executed":3,"outbox_overflow":0,"outbox_depth":0,"ledger_entries":3}
+{"ok":true,"command":"status","agent_version":"0.1.0.dev0","node_uid":"node-...","state_dir":"%h/.local/state/ghostfleet-agent","initialised":true,"boot_id":"...","seq":42,"last_start":"...","last_stop":null,"last_heartbeat_at":"...","last_health":"OK","stopping":false,"consecutive_failures":0,"polls":42,"tasks_executed":3,"outbox_overflow":0,"outbox_depth":0,"ledger_entries":3}
 ```
 
 ## 退出码
@@ -171,11 +171,16 @@ boot 重放换新 boot_id 重试一次，`NODE_BOOT_ID_CAPACITY_REACHED` 无法�
 - outbox 上限 64 条，溢出时丢最旧并把丢弃记成 `RESULT_DROPPED` 与 `outbox_overflow` 计数；丢弃清单与 items
   **同一次原子写**持久化，重启 load 时重放为 `RESULT_DROPPED`；未发出的结果下次启动优先重发，同 task_id 同 `result_digest` 幂等。
 - 所有状态文件写入均为原子替换（文件 fsync → rename → 目录 fsync），损坏或目录 fsync 失败都 fail-closed 而非静默重置。
-- ledger 上限 512：只驱逐「已对账且 read_only」的终态（`RESULT_DROPPED` 最先），`MAY_HAVE_EXECUTED`、待对账条目、
-  `UNKNOWN` 与任何 `may_mutate` 终态**永不驱逐**；被驱逐的 task_id 写入独立有界墓碑文件（上限 4096），
+- ledger 上限 512：只驱逐已收敛的条目——`RESULT_DROPPED` 记录（含 task_id 根本不在账本里的丢弃事件，否则 512 个
+  不存在的 task 就能永久耗尽账本）最先，其次是「已对账且 read_only」的终态、以及 dispatch 前就产生的 `REFUSED`
+  （实现从未被调用，副作用可证明为零）。`MAY_HAVE_EXECUTED`、待对账条目、`UNKNOWN` 与任何 `may_mutate` 终态
+  **永不驱逐**；被驱逐的 task_id 写入独立有界墓碑文件（上限 4096），
   `begin()` 命中墓碑按 `DONE` 处理，绝不因驱逐而重跑。墓碑满或账本达上限且无可驱逐条目时 `begin()` 拒绝、
   停止 poll（heartbeat 继续，health=`DEGRADED`、`health_reason=AGENT_LEDGER_EXHAUSTED`），对账腾出空间后自动恢复取任务。
-- `SIGTERM` 收尾的 flush 预算固定 8 秒并计入下面的停机上界，超时不再阻塞退出。
+- `SIGTERM` 收尾的 flush 预算固定 8 秒并计入下面的停机上界；该预算**逐条检查**（每条 result POST 之前算一次剩余预算、单请求超时钳到剩余预算），耗尽即停，未发出的条目留在 outbox 下次启动优先重发。
+- 409 冲突（nonce/seq/boot 回放）的自动重试与第一次尝试**共用同一份超时预算**，且预算是 `send()` 入口处的**绝对截止点**：本地构包/序列化（`next_seq` + fsync）、transport 往返、`retry_hook` 的耗时全部从里面扣，每次 POST 之前都按截止点重算剩余超时。重试还要额外满足「剩余 ≥ `MIN_SEND_WINDOW_S` + 上一次的本地构包开销」，否则直接放弃重试、把第一次的 409 交给上层。因此一次 `send()` 的墙钟永远不超过它的预算：重试既不会拿到第二份预算，也不会用本地构包时间吃穿预算（回归测试 `test_local_build_cost_is_charged_before_the_first_attempt`、`test_every_attempt_fits_the_remaining_window`）。
+- 账本终态（result 摘要）没提交成功时，刚入队的结果会被**从 outbox 撤回**，绝不发送；撤回本身失败则 fail closed（记 `result_uncommitted_unsendable`，宁可不发）。发送前还有一道闸：outbox 条目的 `result_digest` 必须与账本已提交的终态摘要逐字相同，否则同样撤回不发送。已收敛并被有界驱逐的终态只在墓碑里留下 `result_digest`，墓碑摘要同样算「已提交」——否则账本压满时会把合法待发的结果误撤回，而墓碑只让 `begin()` 返回 `DONE`、不会补发，该 result 就永久丢了（回归测试 `test_evicted_terminal_result_is_still_sendable_via_its_tombstone`）。这样同一 task 只可能有一个会被发出的摘要（重启后是 `UNKNOWN`），不会出现"真实结果 + UNKNOWN"两条摘要被控制面判成 `TASK_RESULT_CONFLICT`。
+- 「dispatch 前就拒绝」的路径同样**先读账本历史再下结论**（`ledger.inspect()`，只读）：`MAY_HAVE_EXECUTED` → 按既有语义对账成 `UNKNOWN`；已有终态或只剩墓碑 → 记 `task_duplicate_skipped` 后跳过；只有完全没见过的 task_id 才写 `REFUSED`。否则同一 task_id 第二次到达（内容被改成未知 operation）会覆盖第一个摘要，甚至把已排队的 `UNKNOWN` 撤回。账本 `complete()` 自身也有 backstop：已有终态但 `result_digest` 不同时直接抛 `LedgerWriteError`（同摘要幂等）。回归测试 `test_known_terminal_task_is_not_refused_again`、`test_known_in_flight_task_is_reconciled_not_refused`、`test_tombstoned_task_is_skipped_not_refused`、`test_first_unknown_operation_is_still_refused`、`tests/test_ledger.py::test_complete_rejects_a_second_digest_for_a_terminal_task`。
 
 ### 停机预算（`TimeoutStopSec=30` 内，三段相加）
 
@@ -187,9 +192,29 @@ boot 重放换新 boot_id 重试一次，`NODE_BOOT_ID_CAPACITY_REACHED` 无法�
 | 余量 | `loop.SHUTDOWN_RESERVE_S` | 2 s | `STOPPING=1`、last_stop 落盘、进程退出 |
 | **合计** | — | **21 s** | **21 ≤ 30，余量 9 s** |
 
-不含余量的「信号 → 退出」上界是 1 + 10 + 8 = **19 s**。该算术由
-`tests/test_loop_fake_control_plane.py::test_stop_budget_arithmetic_fits_timeout_stop_sec` 静态断言，
-常量全部从模块导入：任何人改大其中一项、或 `TimeoutStopSec` 变小，测试立刻红。
+不含余量的「信号 → 退出」上界是 1 + 10 + 8 = **19 s**。
+
+这个上界是**运行时逐请求检查**的结果，不是常量相加的自我声明：`stop_event` 在心跳之前、poll 之前、以及
+`outbox.flush()` 的**每一条 send 之前**检查；停机路径只带 deadline（不带 `stop_event`，保证已完成的 result
+仍尝试发出），每条 send 的单请求超时被钳到「剩余预算」，`remaining < MIN_SEND_WINDOW_S` 立即停止并保留 pending。
+客户端在 `send()` 入口取一次绝对截止点，409 冲突重试只拿「截止点 − 现在」，且要求剩余 ≥ `MIN_SEND_WINDOW_S` +
+上一次的本地构包开销，否则**完全不重试**；每次 POST 的超时也被钳到当时的剩余时间（构包/序列化与
+`retry_hook` 花掉的本地时间同样计费）——表中「在途 HTTP 请求 10 s」因此是整次 send（含本地构包与重试）的
+上界，不是每次尝试的上界。
+测试：`test_stop_budget_is_a_runtime_deadline_not_a_constant_sum`
+（64 条 pending + 假时钟、每条 send 0.2 s，断言 elapsed ≤8 s + 一次 send 颗粒、逐条拿到递减的剩余预算、
+pending 可见）；`tests/test_outbox.py` 的 `test_flush_stops_before_any_send_when_stop_event_is_set`、
+`test_flush_checks_stop_event_before_every_send`、`test_flush_honours_deadline_and_passes_remaining_budget_as_timeout`；
+`test_shutdown_flush_never_doubles_the_retry_budget`（flush 预算 3 s 的对照装置：第一次 409 花 2.8 s → 不重试、
+只发 1 次；花 1.5 s → 重试只拿剩余 1.5 s），`tests/test_client.py` 的
+`test_conflict_retry_is_skipped_when_the_timeout_budget_is_spent`、
+`test_conflict_retry_gets_only_the_remaining_budget`、`test_local_build_cost_is_charged_before_the_first_attempt`、
+`test_every_attempt_fits_the_remaining_window`（假 transport + 假时钟，慢 body_builder / 慢 retry_hook，
+断言每次尝试的超时都不超过当时剩余窗口、单次 send 总耗时 ≤ 预算）。
+静态哨兵不是"总和 ≤30"了事：`test_stop_budget_is_a_runtime_deadline_not_a_constant_sum` 用模块常量逐段断言
+（`STOP_SLICE_S ≤ 1`、`DEFAULT_REQUEST_TIMEOUT_S ≤ 10`、`SHUTDOWN_FLUSH_BUDGET_S ≤ 8`、
+`SHUTDOWN_RESERVE_S ≥ 2`），并额外断言总和之外仍留出 ≥ `SHUTDOWN_RESERVE_S` 的余量——只把某一段偷偷
+改大（例如 `STOP_SLICE_S=9`）也会立刻红，而不是靠总和碰巧还 ≤30 混过去。
 注意：生产默认值满足上表；若运维显式把 `request_timeout_s` 调大，必须自行保持三段之和 + 2 s ≤ 30 s。
 
 ## 运行行为（真机取证）
@@ -210,8 +235,10 @@ boot 重放换新 boot_id 重试一次，`NODE_BOOT_ID_CAPACITY_REACHED` 无法�
   测试：`tests/test_observe.py` 的 `test_child_environment_strips_systemd_notification_keys`、
   `test_command_runner_child_cannot_see_notify_socket`、`test_command_runner_output_is_unchanged_by_environment_stripping`。
 - **SIGTERM 能打断睡眠，退出不撞 `TimeoutStopSec`**：主循环所有睡眠（poll 间隔、指数退避、Retry-After）都按
-  ≤1 s 的片等待 `stop_event`，因此信号到达后 ≤1 s 脱离睡眠；随后停止取新任务（同一批里尚未开始的 task 不进 ledger，
-  控制面可安全重投）、停喂狗线程、发 `STOPPING=1`、执行 ≤8 s 有界 flush、写 last_stop、以 0 退出。
+  ≤1 s 的片等待 `stop_event`，因此信号到达后 ≤1 s 脱离睡眠；随后**不再发起任何新请求**（心跳之前、poll 之前、
+  每条 result send 之前都查 stop：真机上曾出现 signal 之后又打一条 poll 的缺陷，已由 loop 级测试锁定）、停止取新任务
+  （同一批里尚未开始的 task 不进 ledger，控制面可安全重投）、停喂狗线程、发 `STOPPING=1`、执行 ≤8 s 有界 flush、
+  写 last_stop、以 0 退出。
   睡眠中的 `SIGTERM` 总时延 ≤1 s（+flush ≤9 s）；计入在途 HTTP 与余量的最坏上界见上一节「停机预算」= 21 s < 30 s。
   **不可中断的边界**（诚实声明）：阻塞中的 HTTP 请求由 `request_timeout_s`（默认 10 s）封顶；正在执行的只读任务在
   操作之间协作取消——剩余 unit 不再读取，结果报 `FAILED` + `AGENT_EXECUTION_INTERRUPTED`（只读、无副作用、可重投），

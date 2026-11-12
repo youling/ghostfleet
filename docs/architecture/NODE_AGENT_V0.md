@@ -61,7 +61,7 @@ systemd --user (control account, Linger=yes)
 | 路径 | 属主 / 权限 | 内容 |
 | --- | --- | --- |
 | `/usr/local/libexec/ghostfleet/node-agent.pyz` | `root:root` `0755` | Agent 载荷（单个 Python zipapp，作为被 pin 的 capability artifact 安装，逐字节校验） |
-| `/etc/ghostfleet/node-agent.json` | `root:root` `0644` | 非秘密配置：节点面桥 origin、心跳秒数与上下限（30/30/300）、允许观测的 unit 名列表；无 `schema`、无 `node_uid`、无凭据 |
+| `/etc/ghostfleet/node-agent.json` | `root:root` `0644` | 非秘密配置：控制面 URL、心跳区间上下限、允许观测的 unit 名列表。键集合由 agent 侧白名单裁定：`control_plane_origin`（必填，值来自交付的 `node_plane_origin`）+ 可选 `heartbeat_interval_s`/`heartbeat_interval_min_s`/`heartbeat_interval_max_s`（数字，30–300）/`allowed_units`；出现 `schema`、`node_uid` 等白名单外键即 `CONFIG_UNKNOWN_KEY` 拒绝启动，因此 courier 写的字节必须由**可执行**契约测试回放真 agent 的 `check-config` 验证 |
 | `%h/.config/ghostfleet/node-token` | `0600`（账户自身） | 注册时铸造的节点 token，仅本账户可读 |
 | `%h/.config/ghostfleet/node.json` | `0600` | `node_uid`、平台、注册时间（非秘密但按最小暴露存放） |
 | `%h/.local/state/ghostfleet-agent/state.json` | `0600` | 游标、序列号、退避状态、上次成功时间 |
@@ -80,7 +80,7 @@ systemd --user (control account, Linger=yes)
 
 ### 5.1 认证
 
-- 节点 token 在 `completeEnrollmentTicket` 成功时铸造（32 字节 CSPRNG → base64url），`node_credential: {token, node_uid, handoff_id}` **可从同一 resume capability 重取，直到节点首次认证成功**：控制面同时保存 `sha256(token)`（认证用）与 `AEAD(token)`（重投递用）。密钥由 `HKDF-SHA256(ikm=GHOSTFLEET_OPERATOR_TOKEN, info="ghostfleet/node-credential-handoff/v1")` 派生，AAD 绑定 `{node_uid, ticket_id, handoff_id}`；加密副本在**节点首次通过认证的请求**到达后立即销毁（不依赖 courier 回执），并另有 24 h / 20 次重投递上限。过期后 `complete` 返回 `credential_handoff: "EXPIRED"` 且不含 token——补救是退役节点重新签票，不放宽窗口。courier 用 `tmp`+`fsync`+`rename` 原子写入 control account 的 `~/.config/ghostfleet/node-token`（`0600`，目录 `0700`），token 不进日志/argv/状态行。
+- 节点 token 在 `completeEnrollmentTicket` 成功时铸造（32 字节 CSPRNG → base64url），`node_credential: {token, node_uid, handoff_id}` **可从同一 resume capability 重取，直到节点首次认证成功**：控制面同时保存 `sha256(token)`（认证用）与 `AEAD(token)`（重投递用）。密钥由 `HKDF-SHA256(ikm=GHOSTFLEET_OPERATOR_TOKEN, salt=空, info="ghostfleet/node-credential-handoff/v1", len=32)` 派生（不新增 secret；operator secret 轮换会使历史密文不可解，节点须重新签票，这是有意的 fail-closed），`AES-256-GCM`（12 字节随机 IV、16 字节认证标签，IV 与密文均以 base64url 存放），AAD 绑定 `{node_uid, ticket_id, handoff_id}`；加密副本在**节点首次通过认证的请求**到达后立即销毁（不依赖 courier 回执），并另有 24 h / 20 次重投递上限。内部状态机用 `credential_handoff_state` 表达 `SEALED`（可重取）/`CONSUMED`（节点已首次认证成功，`complete` 只回 `credential_handoff: "CONSUMED"`、不含 token）/`EXPIRED`（TTL 或投递预算耗尽）；该字段只是记录而不是认证边界——真正的边界是 AEAD 认证失败即拒绝，改写它拿不到 token。operator 轮换凭据（rotate）必须同时清空该状态与密文。过期后 `complete` 返回 `credential_handoff: "EXPIRED"` 且不含 token——补救是退役节点重新签票，不放宽窗口。courier 用 `tmp`+`fsync`+`rename` 原子写入 control account 的 `~/.config/ghostfleet/node-token`（`0600`，目录 `0700`），token 不进日志/argv/状态行。
 - 每个 agent 请求带：`Authorization: Bearer <token>`、`x-ghostfleet-node-uid: <node_uid>`、`x-ghostfleet-agent-version: <semver>`。
 - 请求体（canonical JSON）：`schema`、`node_uid`、`nonce`（≥16 字节 base64url）、`sent_at`（RFC 3339 Z）、`boot_id`、`seq`（本次启动内单调递增）。
 
@@ -88,32 +88,29 @@ systemd --user (control account, Linger=yes)
 
 1. body 大小上限（heartbeat ≤16 KiB、poll ≤4 KiB、result ≤64 KiB）→ `413`
 2. `content-type: application/json` → `415`
-3. token 摘要比对（常量时间）+ `node_uid` 与记录一致 → `401 NODE_AUTH_INVALID` / `403 NODE_SCOPE_MISMATCH`
+3. `x-ghostfleet-node-uid` 头必须存在且等于路径（缺失 → `401 NODE_AUTH_INVALID`，不一致 → `403 NODE_SCOPE_MISMATCH`）；随后 token 摘要比对（常量时间）+ `node_uid` 与记录一致 → `401 NODE_AUTH_INVALID` / `403 NODE_SCOPE_MISMATCH`
 4. 节点生命周期 ∈ {PROVISIONAL, ACTIVE} → `403 NODE_NOT_ADMITTED`
 5. `sent_at` 偏差 ≤300 s → `401 NODE_CLOCK_SKEW`
 6. 重放：同 `node_uid` 的 `nonce` 在 600 s 窗口内已出现 → `409 NODE_NONCE_REPLAY`（每节点环形保存，上限 256 条）
 7. 速率：每节点 token bucket——容量 24、补充 1 token / 10 s（≈360 请求/小时），`heartbeat`/`poll`/`result` 各计 1 → 超限 `429 NODE_RATE_LIMITED` 并带 `Retry-After`。节点周期下限 30 s ⇒ 基线 2 请求/30 s = 240/小时，另留 120/小时给结果与重试（ADR 修订前的「≤120/小时」与 30 s 心跳自相矛盾，此条取代之）。
-8. 序号：同 `boot_id` 内 `seq` 必须严格递增（允许乱序 ≤64）；`boot_id` 单调，旧 `boot_id` 重现 → `409 NODE_BOOT_REPLAY`；同 `boot_id` 内 `seq` 回退或跳跃 >64 → `409 NODE_SEQ_REGRESSION`。`(boot_id, seq)` 是唯一性单位，进程重启后新 `boot_id` + `seq` 从 0 开始。
+8. 序号：同 `boot_id` 内 `seq` 必须严格递增（允许乱序 ≤64）；`boot_id` 单调，旧 `boot_id` 重现 → `409 NODE_BOOT_REPLAY`；同 `boot_id` 内 `seq` 回退或跳跃 >64 → `409 NODE_SEQ_REGRESSION`。`(boot_id, seq)` 是唯一性单位，进程重启后新 `boot_id` + `seq` 从 0 开始。退役 `boot_id` 历史**不得静默驱逐**：达保存上限时新 `boot_id` fail closed（`409 NODE_BOOT_ID_CAPACITY_REACHED`）并要求 operator `rotate`，而不是让被驱逐的旧 `boot_id` 变成可重放、或把活跃 `boot_id` 锁死。
 
 ### 5.2 端点（挂在现有 `/v0` 路由表内，介于 `GET /v0/nodes` 与 `POST /v0/enrollment-attempts/{id}/{action}` 之间）
 
 | 方法 | 路径 | 语义 |
 | --- | --- | --- |
-| POST | `/v0/nodes/{node_uid}/heartbeat` | 上报健康与观测摘要；响应回传 `interval_s`（钳制 15–300）与最多 2 个任务信封 |
+| POST | `/v0/nodes/{node_uid}/heartbeat` | 上报健康与观测摘要；响应回传 `interval_s`（钳制到 30–300：30 s 是速率底线，即使配置写得更窄也不会低于它）与最多 2 个任务信封 |
 | POST | `/v0/nodes/{node_uid}/tasks/poll` | 取任务（≤4 个/次），带 300 s 租约 |
-| POST | `/v0/nodes/{node_uid}/tasks/{task_id}/result` | 回传结果；同 `task_id` 同摘要→幂等 200，不同摘要→`409 TASK_RESULT_CONFLICT` |
+| POST | `/v0/nodes/{node_uid}/tasks/{task_id}/result` | 回传结果；同 `task_id` 同摘要→幂等 200，不同摘要→`409 TASK_RESULT_CONFLICT`；`result.status` 必须是 `SUCCEEDED`/`REFUSED`/`FAILED`/`UNKNOWN`，其它值 fail-closed 为 `UNKNOWN` |
+| POST | `/v0/node-tasks` | **operator 写权限**；入参 `node_uid`/`operation`/`params`/`ttl_seconds`（字段名以此为准；未知键一律 `400 TASK_REQUEST_INVALID`），返回任务信封与 `task_id`；队列满（未过期非终态 ≥64）→ `409 TASK_QUEUE_FULL`，不得因已过期任务而永久 409 |
+| GET | `/v0/node-tasks?node_uid=` | **operator 读权限**；返回该节点任务投影（`status`/`result_outcome`/`result_digest`/`attempt`）。`result_outcome` 是 operator 侧字段名，取值必须就是节点上报的四值 `status` 词汇，不是第二套词汇；缺 `agent` 子树的历史记录必须先归一化，未知异常只回 `500 INTERNAL_ERROR`，不回显内部错误文本 |
+| POST | `/v0/node-credential/rotate` | **operator 写权限**；一次性返回明文 `node_credential: {token, node_uid, handoff_id}`——与 `/v1/enroll/complete` 同形，`rotate` 会清空 handoff，故 `handoff_id` 为 `null`（响应带 `cache-control: no-store`）；旧 token 立即失效并重置该节点 nonce/seq/boot 状态与 handoff 密文 |
+
+结果信封在写入前必须绑定：`schema` 等于 `ghostfleet-node-task/v0`（否则 `400 TASK_RESULT_SCHEMA_UNSUPPORTED`）、`result.task_id` 等于路径 `task_id`（`409 TASK_RESULT_SCOPE_MISMATCH`）、`result.operation` 等于任务 `operation`（`409 TASK_OPERATION_MISMATCH`）、`result.node_uid` 等于路径且等于 token 归属（`403 NODE_SCOPE_MISMATCH`）。这四个码都属「需人工」终态类，客户端不得自动重试。`result_digest` 由服务端对 result 做 canonical JSON 后计算，节点自报值只作咨询（跨语言浮点渲染差异），不得作为幂等键。`result` 的 canonical JSON 深度上限 64，超限 → `400 TASK_RESULT_INVALID`。
+
+结果提交的请求体形状固定为「顶层 `task_id` + 嵌套 `result`」：`task_id` 必须等于路径 `task_id`（否则 `400 NODE_REQUEST_INVALID`），`result` 必须是对象（否则 `400 TASK_RESULT_INVALID`）。摘要与幂等只按嵌套 `result` 计算，顶层不带其他语义字段；§5.1 的请求体字段（`schema`/`node_uid`/`nonce`/`sent_at`/`boot_id`/`seq`）在此之外一并必填。
 
 任务信封 `ghostfleet-node-task/v0`：`task_id`、`node_uid`、`operation`、`params`（只允许标量/列表，深度 ≤3，总长 ≤4 KiB）、`issued_at`、`expires_at`（≤ `issued_at`+600 s）、`lease_expires_at`（服务端按 300 s 租约计算）、`attempt`（1–3）。
-
-### 5.4 公网入口（严格桥，不是通用代理）
-
-控制面的 `/v0/*` 整体在 Cloudflare Access 之后（`authorizeApi()`），节点 token 无法也**不得**从公网打管理面。节点面新增一个独立的严格桥 Worker（`workers/node/`，产物名 `ghostfleet-node-plane`，挂在部署方自己的 zone，`workers_dev=false`、`preview_urls=false`、不新增任何 Access Bypass）：
-
-- 只接受三条精确 POST 路径（`/v0/nodes/{node_uid}/heartbeat`、`/v0/nodes/{node_uid}/tasks/poll`、`/v0/nodes/{node_uid}/tasks/{task_id}/result`，参数用严格字符类），其余一律 `404`；不代理任何其他 `/v0/*`、`/mcp`、`/v1/*`。
-- 转发 header 正向 allowlist：`authorization`、`content-type`、`x-ghostfleet-node-uid`、`x-ghostfleet-agent-version`；其余丢弃，不转发客户端 IP/UA。响应只回 `content-type`、`retry-after` 与固定安全头。
-- 桥在触碰 Service Binding **之前**做 body 上限（heartbeat ≤16 KiB、poll ≤4 KiB、result ≤64 KiB → `413`）与 `content-type` 校验（`415`）；限流 binding 仅作咨询性防滥用（缺失/抛错 fail open，显式 `success:false` → `429`），限流成功**不是**授权。
-- 通过 Service Binding `GHOSTFLEET_CONTROL_PLANE` 调用控制面；binding 缺失 → `503 NODE_PLANE_NOT_CONFIGURED`，绝不回退公网 URL。
-- 控制面二次校验不变：token 摘要、`node_uid`、生命周期、时钟、nonce、序号、速率全部在状态变更前完成。
 
 ### 5.3 v0 词汇表（只读）
 
@@ -121,10 +118,21 @@ systemd --user (control account, Linger=yes)
 | --- | --- | --- |
 | `node.observe` | 采集 `want` 指定的本地事实 | `want` ∈ {identity, os, uptime, disk, services, capability} |
 | `service.status.read` | 读指定 user unit 的 active 状态 | ≤8 个 unit，名必须匹配 `^[a-z][a-z0-9_.@-]{0,63}\.service$`；无 shell，`subprocess` 数组传参 |
-| `capability.inspect` | 读本地 capability state 摘要 | 只回 digest 与组件状态，不回文件内容 |
+| `capability.inspect` | 读本地 capability 摘要 | 只回 digest 与组件状态，不回文件内容；数据源是 bootstrap 写的 `/etc/ghostfleet/capability-status.json`（root `0644`，只含公开 artifact 名与 sha256、`release_pin`、`applied_at`），**不读** root `0600` 的 `/var/lib/fleet/capability-state.json`；文件缺失 → `UNKNOWN` |
 | `agent.self.test` | 端到端自检 | 回显 `nonce` 与 agent 版本 |
 
 其余 operation → `400 TASK_OPERATION_FORBIDDEN`。`params` 中出现禁用键（`command`/`cmd`/`script`/`shell`/`args`/`argv`/`exec`/`run`/`url` 等）→ `400 TASK_PARAMS_FORBIDDEN`。
+
+### 5.4 公网入口（严格桥，不是通用代理）
+
+控制面的 `/v0/*` 整体在 Cloudflare Access 之后（`authorizeApi()`），节点 token 无法也**不得**从公网打管理面。节点面新增一个独立的严格桥 Worker（`workers/node/`，产物名 `ghostfleet-node-plane`，挂在部署方自己的 zone，`workers_dev=false`、`preview_urls=false`、不新增任何 Access Bypass）：
+
+- 只接受三条精确 POST 路径（`/v0/nodes/{node_uid}/heartbeat`、`/v0/nodes/{node_uid}/tasks/poll`、`/v0/nodes/{node_uid}/tasks/{task_id}/result`，`node_uid` 必须匹配 `^node-[A-Za-z0-9-]{1,80}$`、`task_id` 必须匹配 `^[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}$`，与控制面同一字符类——桥不得比控制面更窄，否则控制面合法 id 在边缘 404），其余一律 `404`；不代理任何其他 `/v0/*`、`/mcp`、`/v1/*`。
+- 转发 header 正向 allowlist：`authorization`、`content-type`、`x-ghostfleet-node-uid`、`x-ghostfleet-agent-version`；其余丢弃，不转发客户端 IP/UA。响应只回 `content-type`、`retry-after` 与固定安全头。
+- 桥在触碰 Service Binding **之前**做 body 上限（heartbeat ≤16 KiB、poll ≤4 KiB、result ≤64 KiB → `413`）与 `content-type` 校验（`415`）；限流 binding 仅作咨询性防滥用（缺失/抛错 fail open，显式 `success:false` → `429`；binding 存在但抛错或返回非对象时必须记一条结构化告警 `rate_limiter_unavailable`，让「已启用但坏掉」可见），限流成功**不是**授权。
+- 通过 Service Binding `GHOSTFLEET_CONTROL_PLANE` 调用控制面；binding 缺失 → `503 NODE_PLANE_NOT_CONFIGURED`，绝不回退公网 URL。
+- 节点面源站是**交付期部署事实**，不是代码常量：交付命令（`createTicketDelivery`，协议 `ghostfleet-enrollment-delivery/v2`）显式导出 `GHOSTFLEET_NODE_PLANE_ORIGIN=<origin>`；courier 校验它是精确 HTTPS origin（无 path/query/userinfo/尾斜杠），且它的 host 与 `GHOSTFLEET_ASSETS_ORIGIN`、`GHOSTFLEET_ENROLLMENT_URL` 的 host **三者两两不同**（`CAPABILITY_NODE_PLANE_ORIGIN_REQUIRED` / `CAPABILITY_NODE_PLANE_ORIGIN_INVALID` / `CAPABILITY_NODE_PLANE_ORIGIN_NOT_SEPARATED`，全部在任何文件写入之前），然后写进 `/etc/ghostfleet/node-agent.json` 的 `control_plane_origin`。**agent 绝不使用 enrollment/broker origin**：那是 Access 保护的源站，节点面按裁决不设任何 Bypass，把两者混用只会让 agent 永远拿到 302/403 然后 FATAL。
+- 控制面二次校验不变：token 摘要、`node_uid`、生命周期、时钟、nonce、序号、速率全部在状态变更前完成。
 
 ## 6. 持续工作循环
 
@@ -133,16 +141,24 @@ systemd --user (control account, Linger=yes)
 1. **observe**：采集有界事实（CPU 负载、内存、磁盘使用率、uptime、允许的 user unit 状态、capability state 摘要、agent 版本）。
 2. **converge-report**：与上次成功上报的观测比对，产 `drift` 列表（例如 unit 从 active→failed、capability 摘要变化、磁盘越线）。**只报告，不擅自修改**：v0 的收敛动作就是把事实与差异讲清楚，变更仍由授权路径驱动。
 3. **heartbeat**：上报 `health`（`OK`/`DEGRADED`/`FAILING`）、`drift`、`agent_version`、`capability_digest`、`queue_depth`；读取 `interval_s`。
+   - **显式 `null` 是合法上报**：`capability_digest` 在节点还没有（或尚未重新投影）`/etc/ghostfleet/capability-status.json` 时就是 `null`，表示「能力投影未知」。控制面必须接受 `null` 并把记录写成 `null`（未知不可伪造成新鲜），只有「非 `null` 且非字符串」或「字符串不匹配 `sha256:<64hex>`」才算非法载荷。`health` 同理允许 `null`。**任何「未知态」字段都不许用 400 把节点锁在门外**——那会让 PROVISIONAL 节点永远进不了 poll/result 阶段。
+   - 这条契约必须由**真机抓到的字节**回归：控制面测试里放一份真实 agent 发出的 heartbeat 请求体 fixture（未投影态，`capability_digest: null`），断言穿过完整校验链返回 200 且落库为 `null`。分侧自造 fixture 会同时骗过两侧（本仓已经因此漏过一次：plane 单测、agent 单测都绿，真机首跳即 400）。
 4. **poll + execute**：逐个任务走 §7 的栅栏与 allowlist 分派，结果入 outbox。
-5. **flush**：按 `task_id` 幂等回传 outbox；失败按指数退避（1 s → 2 s → 4 s … 封顶 300 s，带抖动）重试。`429` 遵守 `Retry-After`，`401/403` 停止上报并进入 FATAL 等待人类修复，`409` 按码分派（`NODE_NONCE_REPLAY`/`NODE_SEQ_REGRESSION` 立即换新 `seq`/`nonce` 重试一次，`NODE_BOOT_REPLAY` 换新 `boot_id`），5xx 与网络错误只重试不当成功。控制面不可达时保持循环、不退出、不丢已执行事实。
+5. **flush**：按 `task_id` 幂等回传 outbox；失败按指数退避（1 s → 2 s → 4 s … 封顶 300 s，带抖动）重试。`429` 遵守 `Retry-After`（服务端对自己的限流节奏有最终权威：带 `Retry-After` 时按它睡眠、上限 3600 s，不受本地 300 s 退避封顶约束；只有本地指数退避封顶 300 s），`401/403` 停止上报并进入 FATAL 等待人类修复，`409` 按码分派（`NODE_NONCE_REPLAY`/`NODE_SEQ_REGRESSION` 立即换新 `seq`/`nonce` 重试一次，`NODE_BOOT_REPLAY` 换新 `boot_id`），5xx 与网络错误只重试不当成功。控制面不可达时保持循环、不退出、不丢已执行事实。
 
 这条循环满足"Agent 真正承担持续管理工作"：它持续采集、比对漂移、上报健康并执行控制面下发的有界管理工作；心跳只是循环的一个阶段，不是全部。
 
+**看门狗喂狗不依赖主线程推进（实测教训，2026-11-12）**：首版只在成功路径与分块睡眠的块间发 `WATCHDOG=1`。控制面不可达时，每轮都走失败分支并进入 1→2→4→8→16→32 s 退避（每段都短于 30 s 分块上限），`remaining` 归零，于是一次都不喂——真实 systemd 上表现为每约 60 s `Watchdog timeout (limit 1min)` → `SIGABRT` → 重启，`NRestarts` 无限增长（离线时最需要它保持运行，恰恰最先被自己杀掉）。因此喂狗由**独立常驻线程**负责：`sd_notify(READY=1)` 之后启动一个 daemon 线程，按 `WatchdogSec/3`（≈20 s）周期发送 `WATCHDOG=1`，用 `Event.wait(timeout)` 以便 `shutdown()` 能立即唤醒退出（`shutdown()` 先 set + `join(≤2 s)` 再发 `STOPPING=1`）；线程内异常只记 warning 不杀进程；`--once` 单次运行不启动该线程。成功路径上的喂狗点保留作冗余。`NotifyAccess=main` 保持不变：systemd 用 `SCM_CREDENTIALS` 判 PID，而其中携带的是 **TGID**，主进程创建的线程发送 `sd_notify` 会被识别为主进程（实测 tgid=411 / tid=412，收方看到 pid=411），不需要放宽成 `all`。
+
 ## 7. 耐用状态与崩溃语义
 
-任务执行前：`ledger[task_id] = {state: MAY_HAVE_EXECUTED, operation, started_at}` → `fsync` 目录项 → 才调用实现函数。完成后写 `{state: SUCCEEDED|FAILED, finished_at, result_digest}`。启动时扫描 ledger：任何 `MAY_HAVE_EXECUTED` 且无终态的任务，先补写一条 `UNKNOWN` 结果进 outbox（只报事实，不重跑），再标 `RECONCILED`。
+任务执行前：`ledger[task_id] = {state: MAY_HAVE_EXECUTED, operation, started_at}` → `fsync` 目录项 → 才调用实现函数。完成后写 `{state: SUCCEEDED|REFUSED|FAILED, finished_at, result_digest}`（`REFUSED` = 校验拒绝且**副作用为零**，`FAILED` = 尝试过但失败，`UNKNOWN` = 无法判定是否已执行；结果信封复用任务信封的 `schema` 并附加 `{task_id, operation, result, result_digest}`）。三者不可混用：**实现函数调用期间抛出的异常绝不报 `REFUSED`**——那等于向控制面承诺「可以安全重投」。规则由每个 operation 的显式声明决定：声明 `effect: none`（v0 的四个 operation 全部是只读观测/回显）→ 抛异常报 `FAILED` + 具体错误码；声明 `effect: may_mutate`（v0 不存在，预留给后续写操作）→ 抛异常一律报 `UNKNOWN`，宁可让控制面按未知副作用处理，也不猜。启动时扫描 ledger：任何 `MAY_HAVE_EXECUTED` 且无终态的任务，先补写一条 `UNKNOWN` 结果进 outbox（只报事实，不重跑），再标 `RECONCILED`。
 
-写盘一律 `tmp + os.replace` 并 `fsync` 文件与目录，避免半写状态。outbox 上限 64 条：溢出时保留最新 64 条并把被丢弃条目的 `task_id` 记入 ledger 的 `RESULT_DROPPED`（这是事实记录，不是静默丢弃）。
+有界驱逐绝不丢未对账条目：超过上限时只驱逐「可证明幂等」的条目——`RESULT_DROPPED` 记录优先（即使 ledger 里原本没有该 `task_id`，它也只是一条可驱逐的事实记录；驱逐时留墓碑，`begin()` 不会把同一 `task_id` 当 NEW 重执行），其次是 `read_only` operation 的**已对账**终态；**`FENCED`（`MAY_HAVE_EXECUTED`）、`UNKNOWN` 以及任何 `may_mutate` operation 的终态永不驱逐**（首版本文写过「最后才 `FENCED`」，与实现和安全语义矛盾，已按「永不驱逐」定稿）。库容因此仍可能被这类条目吃满：此时 agent 停止接收新任务并以 `AGENT_LEDGER_EXHAUSTED` fail closed（心跳继续、`health=DEGRADED`），直到下一次成功对账——`不重复执行` 优先于 `有界`，宁可停摆也不猜。为不让「实现从未被调用」的条目白占容量：operation 的 allowlist 校验必须在写栅栏**之前**完成（未知 operation 直接 `REFUSED`，不写栅栏），且批处理中途写账本失败（`AGENT_LEDGER_EXHAUSTED`）必须转成同一个「停止 poll、继续心跳、`health=DEGRADED`」状态，不许以脏退出收场。
+
+启动闸门：`run` 在进入循环前校验凭据文件是常规文件（非符号链接）、权限 `0600`、属主等于当前 euid，节点配置 `/etc/ghostfleet/node-agent.json` 为 root 拥有的 `0644`；任一不符 → 退出 3（不进入循环，不打印文件内容）。载荷完整性是**安装期**属性（root 拥有的 `/usr/local/libexec/ghostfleet` 路径 + bootstrap 逐字节校验 + unit `ProtectSystem=strict` 使其运行期不可写），运行期不做自哈希——能改写载荷的人同样能改写载荷里的常量，自哈希只增加仪式感。
+
+写盘一律 `tmp + os.replace` 并 `fsync` 文件与目录，避免半写状态。outbox 上限 64 条：溢出时保留最新 64 条并把被丢弃条目的 `task_id` 记入 ledger 的 `RESULT_DROPPED`（这是事实记录，不是静默丢弃）。顺序固定为**先写 ledger 的 `RESULT_DROPPED`、再清空 outbox 的 dropped 清单**：崩溃只会导致重复标记（幂等），绝不会在「清单已清空、账本还没写」的窗口里丢掉事实。
 
 ## 8. systemd 生命周期
 
@@ -166,7 +182,9 @@ PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=read-only
 StateDirectory=ghostfleet-agent
+StateDirectoryMode=0700
 ConfigurationDirectory=ghostfleet
+ConfigurationDirectoryMode=0700
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
@@ -188,22 +206,31 @@ WantedBy=default.target
 ```
 
 - **开机恢复**：`loginctl enable-linger <control_account>`（已在 #79 账户隔离里实现）+ `WantedBy=default.target` → 无人类登录也自动拉起。
-- **故障恢复**：`Restart=on-failure` + `RestartSec=5`（正常 `SIGTERM` 退出 0 不重启，异常退出/信号/看门狗超时才重启，语义边界明确）；`WatchdogSec=60` 由 Agent 每次循环 `sd_notify(WATCHDOG=1)` 喂狗，卡死则被杀重启。
+- **故障恢复**：`Restart=on-failure` + `RestartSec=5`（正常 `SIGTERM` 退出 0 不重启，异常退出/信号/看门狗超时才重启，语义边界明确）；`WatchdogSec=60` 由 Agent 的**常驻 watchdog 线程**每 `WatchdogSec/3`（≈20 s）发 `sd_notify(WATCHDOG=1)` 喂狗（不依赖主线程推进，见 §6），主线程卡死超过 60 s 才被杀重启。
 - **配置有效性必测**：unit 必须通过 `systemd-analyze --user verify`；`ProtectHome=read-only` 是合法取值（`read-write` 不是，旧稿已修），真实读写目录只经 `ReadWritePaths` 精确开放。
 - **目录必须先存在**（实测教训）：`ReadWritePaths` 指向不存在的目录会让服务在挂载命名空间阶段直接失败（`status=226/NAMESPACE`，且 `Restart=on-failure` 会无限重试）。因此 unit 用 `StateDirectory=ghostfleet-agent` + `ConfigurationDirectory=ghostfleet` 让 systemd 创建这两个目录（`verify` 与启动均通过），courier 安装时也要创建并把 `~/.config/ghostfleet` 收紧到 `0700`——两条路径互为自愈。
-- **安全停止**：`SIGTERM` → 停止取新任务、flush outbox（有界超时 10 s）、写 `last_stop` 事实、退出 0。
+- **user manager 的硬化会隐式启用 `PrivateUsers=`（实测，2026-11-12）**：`man systemd.exec` 明确写着，mount 类保护项（`PrivateTmp`/`PrivateDevices`/`ProtectSystem`/`ProtectHome` 等）在 per-user manager 里只有隐式开启 `PrivateUsers=` 才可用。实际效果：服务进程处在只映射自身 UID 的 user namespace（`/proc/self/uid_map` = `1002 1002 1`），**host root 拥有的文件在沙箱内一律显示为 overflow uid**（`/proc/sys/kernel/overflowuid`，默认 65534），同时 `/` 被以 `ro` 挂载。实测（Ubuntu 24.04 / systemd 255）：沙箱内 `stat /etc/ghostfleet/node-agent.json` 得到 `65534:65534 0644`、`/` 挂载选项 `ro,relatime`。因此在 unit 里用「`st_uid == 0`」判 host root 归属**必然失败**——首轮真机启动就是这么挂的：`AGENT_CONFIG_UNTRUSTED` / `CONFIG_OWNER_NOT_ROOT`，退出 3，`Restart=on-failure` 无限重启。
+- **host-root 信任判据（Agent 与能力投影共用同一实现）**：默认路径上的文件可信，当且仅当它是常规文件（`lstat`，非符号链接），且满足其一：(a) 把观测到的 `st_uid` 按 `/proc/self/uid_map` 的行（`inside outside length`，依次是「命名空间内 UID、host UID、长度」）**反查回 host uid**——存在 `inside <= st_uid < inside + length`（且 `length > 0`）的行时 `host_uid = outside + (st_uid - inside)`，反查结果恰好为 `0` 才可信；(b) 观测到的 `st_uid` 未被任何映射行覆盖（典型是只映射自身 UID 的沙箱里的 overflow uid）时，要求 `st_uid == overflowuid` **且** 该路径在 `/proc/self/mountinfo` 中按最长前缀匹配到的挂载带 `ro` **且** `os.access(path, W_OK)` 为假。配置文件另要求 `mode == 0644`；`/etc/ghostfleet/capability-status.json` 另要求 `mode & 0o022 == 0`。`/proc/self/uid_map` 或 `mountinfo` 读不到、行格式非法一律 fail closed（此时只接受 (b) 的只读证明）。
+  - **必须反查被观测的 uid，不能只看「uid 0 是否被映射」**：在 `0 1002 1` 这类嵌套命名空间里，host uid 1002 拥有的文件会以 uid `0` 出现在进程视野中；「只要映射里出现 0 就要求 `st_uid == 0`」会把托管账户自己的文件误判成 host root 拥有。反查映射（`outside + (st_uid - inside) == 0`）在两种命名空间形态下都成立。
+  - (b) 不是放宽：在只映射自身 UID 的命名空间里「host root 拥有」与「host 65534 拥有」在 uid 上无法区分，唯一的内核级等价不变量是只读挂载；`RestrictNamespaces=yes` 又阻止服务自己再建 mount namespace 造可写视图。门禁真正要保证的是「托管账户改不了这个文件」，`ro` 挂载由内核强制，等价成立。
+  - 负向臂必须证明：可写挂载上的 overflow uid 文件仍被拒；`W_OK` 为真被拒；mode 不是 0644 被拒；反查映射结果不是 0 被拒（含 `0 1002 1` + `st_uid == 0` 与 `1002 1002 1` + `st_uid == 1002` 两臂）；`uid_map` 畸形时只读证明之外的组合被拒。
+- **`ConfigurationDirectoryMode=0700`**：courier 为放 `node-token` 把 `~/.config/ghostfleet` 建成 `0700`，而 `ConfigurationDirectory=ghostfleet` 默认要求 `0755`，systemd 每次启动都告警 `ConfigurationDirectory 'ghostfleet' already exists but the mode is different (File system: 700 ConfigurationDirectoryMode: 755)`；若目录尚未存在，systemd 会按 0755 创建。unit 必须显式 `ConfigurationDirectoryMode=0700` 与 courier 口径对齐。
+- **`StateDirectoryMode=0700`**：`StateDirectory=ghostfleet-agent` 默认按 `0755` 创建，而 agent 自己的启动自检要求状态目录只有属主可写，于是每轮启动都会打出一条 `state_dir_permissions_loose mode 0o755` 的 warning（首轮真机一次启动出现 4–5 条），日志被自己的告警噪声淹没。unit 显式 `StateDirectoryMode=0700`，agent 侧对同一 path/mode 的 warning **每进程只打一次**（去重，不降级为静默）。
+- **子进程必须剥掉 notify 环境（实测教训，2026-11-12）**：`NOTIFY_SOCKET` 会随环境继承给每一个被调起的子进程；实测 `systemctl`、`loginctl`、`systemd-analyze` 这类 libsystemd CLI 在**退出时**会向 `NOTIFY_SOCKET` 发一条 `EXIT_STATUS=0`。`NotifyAccess=main` 下这些消息不被接受，journal 每轮刷 `Got notification message from PID <child>, but reception only permitted for main PID <main>`；一旦放宽成 `NotifyAccess=all`，这些伪 `EXIT_STATUS=0` 就会被当成主进程的退出状态，污染服务结果。因此 `CommandRunner.run()` 必须显式传 `env=`，在 `dict(os.environ)` 基础上删除 `NOTIFY_SOCKET`、`LISTEN_FDS`、`LISTEN_PID`、`WATCHDOG_USEC`、`WATCHDOG_PID`（保留 `PATH`/`HOME`/`LANG`/`XDG_RUNTIME_DIR`），并由单测断言 spawn 环境的键集合、以及 observe 输出不因剥离而改变。
+- **安全停止**：`SIGTERM` → 主循环停止取新任务、**不再发起新的 heartbeat/poll**、停止启动批次中尚未开工的任务；`shutdown()` 随后在预算内**只 flush 已经执行完成的结果**（停止路径上唯一允许发生的请求：这些是已承诺的事实，不是新决策），写 `last_stop` 事实后退出 0。预算不是常量相加的纸面算术，而是运行时逐请求生效：`stop_event` 在 heartbeat 前、poll 前、批次内每条任务开工前检查，`Outbox.flush` 接受 deadline 参数，单条请求的 socket 超时被钳制到剩余预算，且 **409 冲突重试共享同一 remaining**（重试前按已耗时扣减；剩余不足最小发送窗口就不再重试，直接返回首次结果）——否则一次发送可以吃掉两倍剩余预算，「8 s flush / 30 s 停机」就不是硬上界。最坏停机时延 ≈ 1 s（分块睡眠可打断）+ 剩余预算内的单请求 + 8 s（flush），必须显著小于 `TimeoutStopSec=30`，并由「64 条 pending + 慢控制面 + `SIGTERM`」的真实时限测试守护（只把常量相加的测试不算证据）。
 - **健康可见性**：`systemctl --user show` 的 `ActiveState`/`NRestarts`/`ExecMainStatus` 外加 Agent 自报的 `health`，构成独立消费者可观察的外部证据。
 
 ## 9. 安全边界与威胁模型
 
 | 攻击面 | 缓解 |
 | --- | --- |
-| 控制面被冒充 / 中间人 | 仅 HTTPS；控制面 URL 来自 root-owned 配置，不由任务下发；凭据不明文落日志 |
+| 控制面被冒充 / 中间人 | 仅 HTTPS（唯一例外是受控验收环境里显式开启的 loopback 明文：需要 `allow_loopback_http` 配置或测试专用环境变量，且 unit 永不设置；默认拒绝）；控制面 URL 来自 root-owned 配置，不由任务下发；凭据不明文落日志 |
 | 节点 token 泄漏 | `0600` 单账户可读；服务端只存摘要（AEAD 副本仅在首次认证前存在，首次认证即销毁）；绑定 `node_uid`；支持轮换（`POST /v0/node-credential/rotate`，旧 token 立即失效）与吊销（`revoked` → Agent 清凭据并停止上报） |
 | 重放已抓取请求 | 600 s `nonce` 窗口 + `sent_at` 偏差限制 |
 | 恶意任务（提权/命令注入） | 双端 allowlist、无 shell、数组传参、禁用键递归检查、参数长度与深度上限 |
 | 崩溃后重复执行 | `MAY_HAVE_EXECUTED` 栅栏 + 服务端按 `task_id` 幂等 |
 | Agent 越权 | 无 sudo、无特权组、无 Helper 访问；`NoNewPrivileges`、`ProtectSystem=strict`（`/var/lib/fleet`、`/etc/sudoers.d` 均不可写） |
+| 伪造 root-owned 配置/投影 | 信任判据是「host root 拥有」或（user namespace 内）「只读挂载 + overflow uid + 当前用户不可写」；`RestrictNamespaces=yes` 阻止自造挂载视图；判据解析失败 fail closed |
 | 日志泄密 | 字段白名单 + 脱敏 + 只写 stdout |
 | 资源耗尽 | `MemoryMax`、`TasksMax`、body 上限、队列表上限、退避封顶 |
 
@@ -221,7 +248,12 @@ WantedBy=default.target
 2. **user unit** 是第二个独立 pin 的 artifact，安装到 control account 的 `~/.config/systemd/user/ghostfleet-managed.service`，随后 `systemctl --user daemon-reload && systemctl --user enable --now ghostfleet-managed.service` + `loginctl enable-linger`。
 3. 三方一致由确定性测试断言：unit 的 `ExecStart` 路径 == pyz 安装路径；unit 的 `ReadWritePaths` 与凭证/状态路径 == courier 实际创建路径（`%h/.config/ghostfleet`、`%h/.local/state/ghostfleet-agent`）；selection 中 pyz 与 unit 的 `sha256` == 安装时校验值。
 4. 发布选择必须显式 `user_service_required=true` 且声明 `managed` 角色；缺 unit 或 pyz 制品 → `fail closed`（`CAPABILITY_MANAGED_ARTIFACTS_INCOMPLETE`），不再“没 unit 就当不需要”。
-5. unit 文本必须通过 `systemd-analyze --user verify`（CI 与 disposable 各一次），并断言不含 `sh -c`/`curl`/`wget`/`/bin/sh`、不写 `%h` 之外路径、不声明 `ProtectHome=read-write` 之类非法取值（`CAPABILITY_USER_UNIT_UNSAFE`）。
+5. unit 的 `ExecStart` 是**唯一**启动形态：必须精确等于 `/usr/bin/python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz run`，不得携带 `--config`/`--token`/`--url` 等参数。`--config` 只是测试与排障口子（信任规则仅要求属主为当前用户且组/其他不可写），生产路径固定读 root 拥有的 `/etc/ghostfleet/node-agent.json`；unit 是 pin 过的 root 安装制品，参数面不给攻击者留扩展位。
+6. 回滚必须与本 run 的写入对称：若 `/etc/ghostfleet/capability-status.json` 由本次安装写入，回滚要在同一原子序列里删除它（旧文件已存在则恢复原字节）。不许出现「已回滚但投影还写着新 SHA」的状态——那会让 agent 上报 READY 而实际跑的是旧制品。
+7. `/etc/ghostfleet/capability-status.json` 只能由一个产品内写入器产出（courier 与验收共用同一个函数/命令，禁止验收脚本手写 JSON 绕过），输入是已校验的 selection 与 artifact 实测摘要，写出用 tmp+fsync+rename 原子替换，schema `ghostfleet-capability-status/v1`。
+8. unit 文本必须通过 `systemd-analyze --user verify`（CI 与 disposable 各一次），并断言不含 `sh -c`/`curl`/`wget`/`/bin/sh`、不写 `%h` 之外路径、不声明 `ProtectHome=read-write` 之类非法取值（`CAPABILITY_USER_UNIT_UNSAFE`）。
+9. courier 生成的 `/etc/ghostfleet/node-agent.json` 字节必须由**可执行**契约测试回放真 agent：把 courier 写出的那段 body 落成临时文件，跑 `python3 -I <pyz> check-config --config <file>`（配 0600 token 与 `token_path`），断言退出 0；负向臂回放带 `schema`/`node_uid`/嵌套 `heartbeat_interval_s` 的旧形状，断言非 0（`CONFIG_UNKNOWN_KEY`/`CONFIG_TYPE_INVALID`）。理由：字段名靠人眼对齐已经出过一次事故（旧 body 会把托管服务打成 `exit 2` 崩溃循环），契约必须能被机器验证。
+10. 交付命令导出 `GHOSTFLEET_NODE_PLANE_ORIGIN` 是节点面唯一合法来源（见 §5.4）：courier 写配置前完成 origin 形态与三 host 互异校验，回滚时若配置由本次写入则删除、旧文件恢复原字节（与第 6 条同一原子序列）。
 
 ## 12. 验收矩阵
 
@@ -230,11 +262,20 @@ WantedBy=default.target
 | 生命周期 | disposable Linux 上 `systemctl --user is-active` 持续 `active`，`NRestarts` 稳定，超过一个心跳周期仍有新观测 | 真实 systemd |
 | 开机恢复 | `loginctl terminate-user` / 重启 user manager 后服务自动回来，无需人类登录 | 真实 systemd |
 | 故障恢复 | `kill -9` 主进程 → `Restart=on-failure` 拉回，`NRestarts` +1，心跳恢复；`SIGTERM` 干净退出 0 且**不**重启 | 真实 systemd |
+| 离线稳定 | 控制面置为不可达（`https://127.0.0.1:1` 或保留域名）持续 ≥180 s：全程 `ActiveState=active`、`NRestarts` 不增、journal 无 `Watchdog timeout`/`Failed with result 'watchdog'`/`SIGABRT`；恢复可达后心跳与任务处理自动继续。EVIDENCE 记录首尾 `NRestarts`、`ActiveEnterTimestamp`、`WatchdogTimestamp` | 真实 systemd |
+| 通知卫生 | 全量跑完后 journal `Got notification message from PID ..., but reception only permitted for main PID` 计数为 0（子进程未继承 `NOTIFY_SOCKET`）；且负向单测证明 CLI 的伪 `EXIT_STATUS=0` 不会进入服务结果 | 真实 systemd + 单元测试 |
 | 配置有效 | `systemd-analyze --user verify` 通过；保护项与实际读写路径一致（写入被拒的路径确实被拒） | 真实 systemd |
+| 沙箱信任判据 | 真实 systemd 下 unit `active` + `READY`（同时证明 `PrivateUsers` 里 `sd_notify` 可用）；EVIDENCE 记录沙箱内 `uid_map`、`overflowuid`、`/` 的 `ro` 挂载、配置文件的沙箱内 uid/mode；负向臂「rw 挂载 + overflow uid 文件」被拒、反查映射结果非 0 被拒。沙箱内视图**必须**用 `nsenter -t <MainPID> -U -m --preserve-credentials --` 采集：直接 `stat /proc/<pid>/root/...` 得到的是宿主 UID 视图（stat 的 u/g 由读者命名空间解释），不能作为沙箱证据 | 真实 systemd + 单元测试 |
 | 持续工作 | 控制面下发 `node.observe`/`service.status.read`，节点返回真实观测，且两次结果随时间变化 | 端到端 |
 | 身份安全 | 三账户隔离（Human / ops / managed）；managed 无 sudo、无 ops 组 | 真实 systemd + 断言 |
 | 权限安全 | managed 直接调用 Helper → 被 `dedicated_caller_identity` 拒；`sudo -n` 被拒 | 负向证明 |
 | 任务安全 | 重放 nonce → 409；重复 result → 幂等；崩溃在 `MAY_HAVE_EXECUTED` → 上报 UNKNOWN 且不重跑；越权 operation → 400 | 确定性测试 + 真机 |
+| 结果唯一性 | 同一 `task_id` 只允许出现一个结果摘要：`ledger.complete()` 写失败（磁盘满/fsync 失败）后该任务**不得**再发出实际结果，outbox 里那条必须变成不可发送（删除并留墓碑或持久化 not-sendable 标记），唯一允许的结果是重启对账产生的 UNKNOWN。测试注入 `LedgerWriteError`：shutdown 后该任务零发送，重启后恰好一条 UNKNOWN 且摘要唯一 | 确定性测试 |
+| 停止语义 | `SIGTERM` 后主循环零 heartbeat/poll；`shutdown()` 仅在预算内 flush 已完成结果；409 重试共享同一剩余预算（假 transport 两次 0.2 s、预算 0.25 s 时总耗时不超 0.25 s）；三段预算的**每一项**都有上限断言，改大任一项即红 | 确定性测试 + 真实 systemd |
+| 结果词汇不塌陷 | 真 agent + 真控制面：operator 读到的 `result_outcome` 必须等于 agent 上报的 `status`（四值词汇 `SUCCEEDED`/`REFUSED`/`FAILED`/`UNKNOWN`），禁止全部投影成 `UNKNOWN`；缺失/非法值才 fail-closed 到 `UNKNOWN`，且**读取投影时也要白名单**——durable 里被塞入历史/外来词汇的记录，`GET /v0/node-tasks` 必须归一化为 `UNKNOWN`，不得原样透出第二套词汇 | 端到端 + 契约测试 |
+| 入站鉴权完整性 | 缺 `x-ghostfleet-node-uid` → 401；节点 token 打 operator 路由 → 401；无 authorizer 直接构造 handler 调 operator 动作 → 全拒；`rotate` 与 `/v1/enroll/complete` 响应带 `cache-control: no-store`；明文 token 只在一次性响应里出现；`rotate` 与 `complete` 的 `node_credential` 同形（`{token, node_uid, handoff_id}`），按 ADR 读 `.token` 必须有效；凭据重投递预算必须**真的跑到 `EXPIRED`**（第 21 次取回不带 token，24 h TTL 到期同样），只断言常量不算证据 | 确定性测试 |
+| 队列与持久化有界 | 5 轮×64 任务后 durable 条目 ≤ `TASK_RETENTION_LIMIT`、快照字节有界；`COMPLETED` 与 `EXPIRED` 都参与修剪；64 个过期任务后（无任何 poll）operator `POST /v0/node-tasks` 仍返回 2xx，不得永久 409；历史记录缺 `agent` 子树时 `GET /v0/node-tasks` 返回 200 空列表 | 确定性测试 |
+| 重放与自锁防护 | 退役 `boot_id` 不静默驱逐（达上限 fail closed 且活跃 boot 不受影响）；深嵌套 result（>64 层）→ 400 契约码而非 JS 异常文本 | 确定性测试 |
 | 独立验收 | 外部消费者（只读 token）观察到真实 `ActiveState`、自报 health、任务结果时间线 | 端到端 |
 
 在以上全部通过前，REQ-01 保持 `NOT_PROVEN`。
@@ -254,3 +295,10 @@ WantedBy=default.target
 - v0 已提供轮换端点（`POST /v0/node-credential/rotate`，operator 鉴权，旧 token 立即失效并重置该节点 nonce/seq 状态）与吊销；节点侧非对称密钥对（可复用 `PRIVILEGE_LEASE_VALIDATOR_V0` 的签名风格）留给 v1。
 - 控制面 ↔ 节点的时间同步仅靠 ±300 s 窗口；真机上需要 chrony/systemd-timesyncd 在位（disposable 验收会断言）。
 - 日志目前只进 journald，不集中上传；跨节点日志聚合留给后续版本。
+- `AGENT_LEDGER_EXHAUSTED` 是有意选择的 fail-closed 停摆：控制面长期 5xx 导致对账永不成功时，节点会停止取新任务并持续 `DEGRADED`。这是**接受的**取舍（不重复执行优先于持续取任务），但代价是可用性面——控制面必须能看见 `health=DEGRADED`/`health_reason`，并由 operator 介入（修控制面或 `rotate` 后重启）。v1 再考虑「超时后允许丢弃最旧 `UNKNOWN`」的显式阈值。
+- `capability.inspect` 新鲜度由安装器契约保证（rollback 删投影），agent 只校验文件属主与权限、不判 `applied_at` 陈旧；真出现陈旧投影，上报的是「安装器说的事实」，责任在安装器而非 agent。
+- 常驻 watchdog 线程引入了进程内并发：它只做一件事（定时 `sd_notify(WATCHDOG=1)`），不读状态、不写文件、不加锁，异常自吞并记 warning，`shutdown()` 用 `Event` 立即唤醒并 `join(≤2 s)`；因此不会掩盖主线程卡死（不共享进度加锁是关键）。若未来需要把喂狗与「主线程确有推进」绑定，必须另加进度计数器，而不是把喂狗搬回主线程——首版这样就正是离线自杀的成因。
+- 子进程环境剥离 `NOTIFY_SOCKET`/`LISTEN_*`/`WATCHDOG_*` 只作用于 agent 调起的子进程；agent 自身仍从 systemd 收到的环境里读这些变量，二者不冲突（剥离只发生在 `CommandRunner.run()` 的 spawn 环境副本上）。
+- **先写者胜的任务结果幂等**是有意接受的：同一 `task_id` 首个被接受的结果生效，之后不同摘要只回 `409 TASK_RESULT_CONFLICT`、不回滚已存结果。因此持有节点 token 的一方可以记录一次伪造成功；唯一救济是 operator `rotate`（连带重置该节点 nonce/seq/boot 与 handoff 密文）。v0 不引入结果签名，非对称签名留给 v1。
+- **速率限制在 Durable Object 内按节点计**：突发 24 次仍会各写一次 blob；桥侧的 `NODE_PLANE_RATE_LIMITER` 只是咨询性防滥用（缺省 fail open）。认证前的全局/出口节流属部署面（Cloudflare 边缘限流 / Access 策略），不在本 ADR 的能力承诺内；v0 用 body 上限 + 单 blob 有界修剪把成本封住。
+- **handoff 是簿记不是鉴权边界**：`SEALED`/`CONSUMED`/`EXPIRED` 只决定能否再取回 token，token 在 `rotate` 之前始终有效；24h / 20 次窗口内持有 resume capability 的一方可以取回同一 token（这是为了「complete 响应丢失可恢复」付出的代价）。resume capability 因此必须按 bearer secret 处理（0400 输入、不进 argv/日志/history），首次认证成功即销毁密文。绑定客户端指纹/双向 TLS 留给 v1。

@@ -19,7 +19,7 @@ from ghostfleet_agent.config import (
     load_config,
 )
 
-HTTPS = "https://control.example.test"
+HTTPS = "https://control.example.invalid"
 
 
 def _sandbox(tmp_path) -> AgentSandbox:
@@ -125,14 +125,14 @@ def test_relative_paths_are_rejected(tmp_path, name):
 @pytest.mark.parametrize(
     "url",
     [
-        "ftp://control.example.test",
-        "http://control.example.test",
-        "https://user:pass@control.example.test",
-        "https://control.example.test/path?query=1",
-        "https://control.example.test/path#fragment",
+        "ftp://control.example.invalid",
+        "http://control.example.invalid",
+        "https://user:pass@control.example.invalid",
+        "https://control.example.invalid/path?query=1",
+        "https://control.example.invalid/path#fragment",
         "https://",
-        "https://control.example.test:0",
-        "https://control.example.test:70000",
+        "https://control.example.invalid:0",
+        "https://control.example.invalid:70000",
         "not-a-url",
     ],
 )
@@ -249,8 +249,8 @@ def test_allowed_units_fail_closed(tmp_path, units):
 
 
 def test_allowed_units_accepts_whitelist(tmp_path):
-    config = _load(tmp_path, _base_document(tmp_path, allowed_units=["ssh.service", "demo@1.service"]))
-    assert config.allowed_units == ("ssh.service", "demo@1.service")
+    config = _load(tmp_path, _base_document(tmp_path, allowed_units=["ssh.service", "serial-getty@tty1.service"]))
+    assert config.allowed_units == ("ssh.service", "serial-getty@tty1.service")
 
 
 def test_null_byte_is_rejected(tmp_path):
@@ -294,9 +294,9 @@ def test_origin_alias_is_accepted_and_collision_rejected(tmp_path):
     document["control_plane_origin"] = HTTPS
     config = _load(tmp_path, document)
     assert config.control_plane_url == HTTPS
-    assert config.control_plane_host == "control.example.test"
+    assert config.control_plane_host == "control.example.invalid"
 
-    document = _base_document(tmp_path, control_plane_origin="https://other.example.test")
+    document = _base_document(tmp_path, control_plane_origin="https://other.example.invalid")
     with pytest.raises(ConfigError) as error:
         _load(tmp_path, document)
     assert error.value.code in ("CONFIG_VALUE_INVALID", "CONFIG_UNKNOWN_KEY")

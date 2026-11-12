@@ -328,9 +328,30 @@ reset_negative_lane() {
   # and a stale authorized_keys is exactly the drift a REPAIR run must reconcile.
   # Removing it here keeps the positive ceremony starting from a host that never
   # held a lane, so its first run is a real NEW run.
-  rm -rf /home/ghostfleet-managed /home/ghostfleet-ops /var/lib/ghostfleet-managed /var/lib/ghostfleet-ops
-  rm -f /var/lib/systemd/linger/ghostfleet-managed /var/lib/systemd/linger/ghostfleet-ops
+  for account in "$control_account" "$privileged_account"; do
+    # userdel -r above removes the account and its home directory, so getent then
+    # reports the key as missing (status 2). Under this script's `set -Eeuo
+    # pipefail` that must not abort the reset: an abort here would exit 2 and skip
+    # the postcondition below, which is exactly how this reset once ended the run
+    # with every negative-arm assertion green. The lookup therefore only guards
+    # the home-directory rm; the account itself is asserted gone further down.
+    account_home="$(getent passwd "$account" | cut -d: -f6 || true)"
+    [[ -z "$account_home" ]] || rm -rf "$account_home"
+    rm -rf "/var/lib/$account"
+    rm -f "/var/lib/systemd/linger/$account"
+  done
   systemctl daemon-reload 2>/dev/null || true
+  # Postcondition: the positive ceremony must start from a host that never held a
+  # lane (NEW, not ADOPT). A half-finished reset has to fail here, at the reset,
+  # instead of quietly turning the positive arm into an adoption run.
+  for account in "$control_account" "$privileged_account"; do
+    if id "$account" >/dev/null 2>&1; then
+      fail_check "the negative lane reset left the $account account behind"
+    fi
+    if [[ -e "/var/lib/$account" ]]; then
+      fail_check "the negative lane reset left /var/lib/$account behind"
+    fi
+  done
 }
 
 section "negative arm: a completion response without a node credential fails closed"

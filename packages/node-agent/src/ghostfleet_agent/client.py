@@ -13,10 +13,12 @@ import http.client
 import json
 import socket
 import ssl
+import time
 import urllib.error
 import urllib.request
 
 from .logging import get_logger
+from .outbox import MIN_SEND_WINDOW_S
 from .protocol import (
     AGENT_CONTROL_PLANE_UNREACHABLE,
     AGENT_INVALID_RESPONSE,
@@ -322,6 +324,7 @@ class ControlPlaneClient:
         logger=None,
         transport=None,
         nonce_factory=new_nonce,
+        monotonic=None,
     ) -> None:
         if not base_url or base_url.endswith("/"):
             base_url = base_url.rstrip("/")
@@ -337,6 +340,8 @@ class ControlPlaneClient:
         self.logger = logger or get_logger()
         self.transport = transport or UrllibTransport()
         self._nonce_factory = nonce_factory
+        # 注入点：测试用假时钟验证 409 重试只花剩余预算，不引入真实睡眠。
+        self._monotonic = monotonic or time.monotonic
 
     # -- 请求 ---------------------------------------------------------------
     def _headers(self) -> dict:
@@ -356,50 +361,135 @@ class ControlPlaneClient:
         {OUTCOME_NONCE_REPLAY, OUTCOME_SEQ_REGRESSION, OUTCOME_BOOT_REPLAY}
     )
 
-    def send(self, path: str, body_builder, *, category: str, retry_hook=None) -> Response:
+    def send(self, path: str, body_builder, *, category: str, retry_hook=None, timeout_s=None) -> Response:
         """发送一次请求；409 按码分派，换新 nonce/seq/boot_id 重试一次。
 
         retry_hook(kind) 在重试前被调用：loop 用它轮换 boot_id（NODE_BOOT_REPLAY）。
         nonce 与 seq 由 body_builder 每次重新生成，因此天然换新。
+        timeout_s 是调用方给的剩余停机预算：只允许缩短、绝不允许超过配置值。
+
+        预算是**绝对截止点**，从 send() 入口起算：body_builder（next_seq + fsync）、
+        transport 往返、retry_hook 的本地耗时全部计入。每次 post 之前都按截止点重算
+        剩余超时；重试还要求剩余时间够「再跑一次同样的本地构包 + MIN_SEND_WINDOW_S」。
+        因此**一次 send 的墙钟不超过它的预算**，重试既不会拿到第二份预算、也不会用
+        本地构包时间吃穿预算——这是 TimeoutStopSec=30 下停机有界的依据。
         """
         limit = CATEGORY_LIMITS[category]
-        response = self._send_once(path, body_builder, category=category, limit=limit)
-        if response.kind in self.RETRYABLE_CONFLICTS:
-            self.logger.warning("request_conflict_retry", category=category, outcome=response.kind)
-            if retry_hook is not None:
-                retry_hook(response.kind)
-            response = self._send_once(path, body_builder, category=category, limit=limit)
+        deadline = self._deadline(timeout_s)
+        response, local_s = self._send_once(path, body_builder, category=category, limit=limit, deadline=deadline)
+        if response.kind not in self.RETRYABLE_CONFLICTS or deadline is None:
+            return response
+        if not self._retry_window(deadline, local_s, category=category, outcome=response.kind, stage="first-attempt"):
+            return response
+        self.logger.warning("request_conflict_retry", category=category, outcome=response.kind)
+        if retry_hook is not None:
+            retry_hook(response.kind)
+        # retry_hook 也是本地耗时（轮换 boot_id / 写状态），重算一次再决定要不要重试。
+        if not self._retry_window(deadline, local_s, category=category, outcome=response.kind, stage="retry-hook"):
+            return response
+        response, _ = self._send_once(path, body_builder, category=category, limit=limit, deadline=deadline)
         return response
 
-    def _send_once(self, path: str, body_builder, *, category: str, limit: int) -> Response:
+    def _deadline(self, timeout_s):
+        """预算 → 绝对截止点；预算不可解析或非正时返回 None（不设截止点）。"""
+        budget = self.timeout_s if timeout_s is None else timeout_s
+        try:
+            budget = float(budget)
+        except (TypeError, ValueError):
+            return None
+        if budget != budget or budget <= 0:  # NaN / 非正预算
+            return None
+        return self._monotonic() + budget
+
+    def _remaining(self, deadline) -> float | None:
+        if deadline is None:
+            return None
+        return deadline - self._monotonic()
+
+    def _retry_window(self, deadline, local_s, *, category, outcome, stage) -> bool:
+        """重试前必须剩「一次与上次相同的本地构包开销 + MIN_SEND_WINDOW_S」。
+
+        只检查 MIN_SEND_WINDOW_S 不够：body_builder（next_seq + fsync）本身是本地
+        耗时、无法中途打断，重试要再跑一遍，不预留就会吃穿预算。
+        """
+        remaining = self._remaining(deadline)
+        if remaining is None:
+            return True
+        need = MIN_SEND_WINDOW_S + max(0.0, float(local_s or 0.0))
+        if remaining >= need:
+            return True
+        self.logger.warning(
+            "request_conflict_retry_skipped",
+            category=category,
+            outcome=outcome,
+            stage=stage,
+            remaining_s=round(remaining, 3),
+            local_cost_s=round(float(local_s or 0.0), 3),
+        )
+        return False
+
+    def _request_timeout(self, timeout_s) -> float:
+        """剩余预算只能把请求超时调小：max(0.05, min(配置值, 剩余预算))。"""
+        if timeout_s is None:
+            return self.timeout_s
+        try:
+            budget = float(timeout_s)
+        except (TypeError, ValueError):
+            return self.timeout_s
+        if budget != budget or budget <= 0:  # NaN / 非正预算
+            return self.timeout_s
+        return max(0.05, min(self.timeout_s, budget))
+
+    def _send_once(self, path: str, body_builder, *, category: str, limit: int, deadline=None):
+        """构造 → 序列化 → POST；返回 (Response, 本次本地耗时秒)。
+
+        deadline 是绝对截止点：构包与序列化之后、POST 之前按它重算剩余超时；剩余不足
+        MIN_SEND_WINDOW_S 就根本不发（返回网络错误形态，交给上层退避重试），因此不会
+        出现"本地构包耗时 + 一个完整请求超时"越过预算的形态。
+        """
+        local_started = self._monotonic()
         nonce = self._nonce_factory()
         body = body_builder(nonce)
         try:
             encoded = canonical_bytes(body)
         except ProtocolError:
             self.logger.error("request_not_serialisable", category=category)
-            return Response(OUTCOME_INVALID_RESPONSE, None, AGENT_INVALID_RESPONSE)
+            return Response(OUTCOME_INVALID_RESPONSE, None, AGENT_INVALID_RESPONSE), self._local_cost(local_started)
         if len(encoded) > limit:
             raise ProtocolError(AGENT_PAYLOAD_TOO_LARGE, "request body exceeds endpoint limit")
+        remaining = self._remaining(deadline)
+        if remaining is not None and remaining <= 0.0:
+            # 本地构包已吃穿预算：连一次最小请求都发不出去，直接按网络错误交给上层
+            # 退避（绝不"再补一份预算"）。剩余>0 时仍然尝试，只是把超时钳到剩余值。
+            self.logger.warning(
+                "request_budget_exhausted_before_post",
+                category=category,
+                remaining_s=round(remaining, 3),
+            )
+            return Response(OUTCOME_NETWORK_ERROR, None, AGENT_NETWORK_ERROR), self._local_cost(local_started)
         try:
             transport_response = self.transport.post(
                 self._url(path),
                 headers=self._headers(),
                 body=encoded,
-                timeout_s=self.timeout_s,
+                timeout_s=self._request_timeout(remaining),
             )
         except TransportError as error:
             if error.kind == "REDIRECT_REFUSED":
                 self.logger.error("redirect_refused", category=category)
-                return Response(OUTCOME_TRANSPORT_REFUSED, None, AGENT_REDIRECT_REFUSED)
+                return Response(OUTCOME_TRANSPORT_REFUSED, None, AGENT_REDIRECT_REFUSED), self._local_cost(local_started)
             if error.kind == "TOO_LARGE":
                 self.logger.error("response_too_large", category=category)
-                return Response(OUTCOME_INVALID_RESPONSE, None, AGENT_INVALID_RESPONSE)
+                return Response(OUTCOME_INVALID_RESPONSE, None, AGENT_INVALID_RESPONSE), self._local_cost(local_started)
             self.logger.warning("transport_error", category=category, kind=error.kind)
-            return Response(OUTCOME_NETWORK_ERROR, None, AGENT_NETWORK_ERROR)
+            return Response(OUTCOME_NETWORK_ERROR, None, AGENT_NETWORK_ERROR), self._local_cost(local_started)
         document = _parse_document(transport_response.body)
         retry_after = parse_retry_after(transport_response.headers.get("retry-after"))
-        return self._classify(transport_response.status, document, category=category, retry_after_s=retry_after)
+        return self._classify(transport_response.status, document, category=category, retry_after_s=retry_after), self._local_cost(local_started)
+
+    def _local_cost(self, started: float) -> float:
+        """本地耗时（构包/序列化），用于给重试预留同样的时间。"""
+        return max(0.0, self._monotonic() - started)
 
     def _classify(self, status: int, document, *, category: str, retry_after_s: int | None = None) -> Response:
         code = _extract_error_code(document)
@@ -495,5 +585,11 @@ class ControlPlaneClient:
     def result_path(self, task_id: str) -> str:
         return f"/v0/nodes/{self.node_uid}/tasks/{task_id}/result"
 
-    def send_result_body(self, body_builder, task_id: str, *, retry_hook=None) -> Response:
-        return self.send(self.result_path(task_id), body_builder, category=CATEGORY_RESULT, retry_hook=retry_hook)
+    def send_result_body(self, body_builder, task_id: str, *, retry_hook=None, timeout_s=None) -> Response:
+        return self.send(
+            self.result_path(task_id),
+            body_builder,
+            category=CATEGORY_RESULT,
+            retry_hook=retry_hook,
+            timeout_s=timeout_s,
+        )

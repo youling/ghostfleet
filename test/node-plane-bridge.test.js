@@ -214,6 +214,67 @@ test("the bridge forwards the same node handle it matched and keeps its own caps
   assert.equal(RATE_LIMIT_RETRY_SECONDS, 10);
 });
 
+// P3-8: the bridge must match exactly the control-plane classes. A wider class
+// would forward a handle the control plane rejects; a narrower one would 404 a
+// handle the control plane accepts and silently become the stricter authority.
+test("the bridge matches exactly the control-plane node and task id classes", async () => {
+  const env = { GHOSTFLEET_CONTROL_PLANE: controlPlane() };
+  const wideUid = "node-AbC-123";
+  const wideTask = "task.AbC_1:0-9";
+  const accepted = await bridge.fetch(new Request(origin + "/v0/nodes/" + wideUid + "/tasks/" + wideTask + "/result", json(envelope)), env);
+  assert.equal(accepted.status, 200);
+  assert.equal(new URL(env.GHOSTFLEET_CONTROL_PLANE.calls[0].url).pathname,
+    "/v0/nodes/" + wideUid + "/tasks/" + wideTask + "/result");
+
+  for (const path of [
+    "/v0/nodes/alpha-123/heartbeat", // missing the node- prefix
+    "/v0/nodes/node-/heartbeat", // empty handle after the prefix
+    "/v0/nodes/node-" + "a".repeat(81) + "/heartbeat", // past the 80-character cap
+    "/v0/nodes/" + nodeUid + "/tasks/-task/result", // a task id cannot start with a delimiter
+    "/v0/nodes/" + nodeUid + "/tasks/" + "a".repeat(97) + "/result", // past the 96-character cap
+    "/v0/nodes/" + nodeUid + "/tasks/task%20one/result", // percent-encoded, never decoded
+  ]) {
+    const rejected = await bridge.fetch(new Request(origin + path, json(envelope)), env);
+    assert.equal(rejected.status, 404, path + " must not match");
+  }
+  assert.equal(env.GHOSTFLEET_CONTROL_PLANE.calls.length, 1, "only the accepted route reached the control plane");
+});
+
+// P3-11: an enabled-but-broken limiter stays fail-open, but the failure must be
+// visible; a missing binding is the documented disabled state and stays silent.
+test("a broken advisory limiter fails open with a structured warning", async () => {
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (...args) => warnings.push(args);
+  try {
+    for (const binding of [
+      { limit: () => { throw new Error("limiter down"); } },
+      { limit: async () => "junk" },
+      limiter(new Error("limiter down")),
+      // A present-but-misconfigured binding is the deployment mistake the
+      // warning exists for: it silently disables the limit if nobody reports it.
+      {},
+      { limit: "not-a-function" },
+    ]) {
+      const env = { GHOSTFLEET_CONTROL_PLANE: controlPlane(), NODE_PLANE_RATE_LIMITER: binding };
+      const response = await bridge.fetch(new Request(origin + pollPath, json(envelope)), env);
+      assert.equal(response.status, 200, "a broken limiter must fail open");
+      assert.equal(env.GHOSTFLEET_CONTROL_PLANE.calls.length, 1);
+    }
+    // No binding at all: limiter disabled, no warning.
+    const disabled = await bridge.fetch(new Request(origin + pollPath, json(envelope)), { GHOSTFLEET_CONTROL_PLANE: controlPlane() });
+    assert.equal(disabled.status, 200);
+  } finally {
+    console.warn = original;
+  }
+  assert.equal(warnings.length, 5);
+  const events = warnings.map(([line]) => JSON.parse(line));
+  assert.deepEqual(events.map((event) => event.reason).sort(),
+    ["limit_not_callable", "limit_not_callable", "limiter_threw", "limiter_threw", "malformed_answer"]);
+  for (const event of events) assert.equal(event.event, "rate_limiter_unavailable");
+  assert.equal(warnings.some(([line]) => line.includes(nodeUid)), false, "the warning never carries the raw node handle");
+});
+
 test("a bare query delimiter is a flat 404, not an empty accepted query", async () => {
   const env = { GHOSTFLEET_CONTROL_PLANE: controlPlane() };
   // url.search is empty for a bare "?", so a search-based check would accept it
