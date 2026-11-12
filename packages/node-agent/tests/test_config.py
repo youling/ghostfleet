@@ -249,8 +249,8 @@ def test_allowed_units_fail_closed(tmp_path, units):
 
 
 def test_allowed_units_accepts_whitelist(tmp_path):
-    config = _load(tmp_path, _base_document(tmp_path, allowed_units=["ssh.service", "serial-getty@ttyS0.service"]))
-    assert config.allowed_units == ("ssh.service", "serial-getty@ttyS0.service")
+    config = _load(tmp_path, _base_document(tmp_path, allowed_units=["ssh.service", "serial-getty@tty1.service"]))
+    assert config.allowed_units == ("ssh.service", "serial-getty@tty1.service")
 
 
 def test_null_byte_is_rejected(tmp_path):

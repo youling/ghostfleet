@@ -519,14 +519,14 @@
     {
       "path": "packages/node-agent/tests/test_config.py",
       "rule": "instance-email",
-      "line_sha256": "ef2ab85c50f0bd7cf7ed684c127856850e437dee82debc2ac20de6a32f941f16",
+      "line_sha256": "1d99f21f2f2233bdc08f1967dabae4fdeecae2996e53ca4a6cf04b129642fb05",
       "kind": "inert-fixture-or-detector",
       "reason": "systemd instance-unit fixture for the allowed_units whitelist test; it is a systemd unit name, not an email address."
     },
     {
       "path": "packages/node-agent/tests/test_config.py",
       "rule": "instance-email",
-      "line_sha256": "dcdc176a27124eec28ea7c7afee48e8e6f67f9c14e8af3229010ab302f76e817",
+      "line_sha256": "abd991a23d749d4d635f06051b7024b3e8005ae6dfb7ad9298e0a957946a29b2",
       "kind": "inert-fixture-or-detector",
       "reason": "systemd instance-unit fixture for the allowed_units whitelist test; it is a systemd unit name, not an email address."
     },
