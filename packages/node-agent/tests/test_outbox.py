@@ -229,3 +229,17 @@ def test_add_requires_task_id(tmp_path):
     box = _outbox(tmp_path)
     with pytest.raises(outbox_module.OutboxWriteError):
         box.add({"result": {}})
+
+
+def test_load_rejects_duplicate_task_ids(tmp_path):
+    """同一 task_id 两条条目会让重建 UNKNOWN 在两条 body 间反复判为不可验证 → 载入即失败。"""
+    box = _outbox(tmp_path)
+    box.add(_body("task-0001"))
+    path = tmp_path / "outbox.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["items"] = document["items"] + [dict(document["items"][0])]
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(OutboxCorruptError) as caught:
+        Outbox(str(path)).load()
+    assert "duplicate" in str(caught.value)

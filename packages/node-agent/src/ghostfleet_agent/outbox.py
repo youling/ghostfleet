@@ -157,6 +157,7 @@ class Outbox:
         if not isinstance(raw_items, list):
             raise OutboxCorruptError("outbox items must be a list", path=self.path)
         items: list[dict] = []
+        seen: set[str] = set()
         for item in raw_items:
             if not isinstance(item, dict):
                 raise OutboxCorruptError("outbox item must be an object", path=self.path)
@@ -165,6 +166,11 @@ class Outbox:
             body = item.get("body")
             if not isinstance(task_id, str) or not isinstance(digest, str) or not isinstance(body, dict):
                 raise OutboxCorruptError("outbox item has invalid shape", path=self.path)
+            if task_id in seen:
+                # 同一 task_id 两条排队条目不是"可修复"的状态：重建 UNKNOWN 只能换掉其中
+                # 一条，另一条永远与账本摘要不符，发送闸会在两条之间反复判为不可验证。
+                raise OutboxCorruptError("outbox has duplicate task_id entries", path=self.path)
+            seen.add(task_id)
             items.append(
                 {
                     "task_id": task_id,
@@ -304,6 +310,48 @@ class Outbox:
                     self.save()
                 except OutboxWriteError:
                     self._items.insert(index, removed)
+                    raise
+                return True
+        return False
+
+    def replace(self, task_id: str, body: dict) -> bool:
+        """用新 body 原子替换同一 task_id 的排队条目；条目不存在时返回 False。
+
+        重建 UNKNOWN 时**必须先写账本、再换 body**，而且换 body 必须在一次原子写里
+        同时换掉 `body` 与 `digest`（attempts 归零、last_error_code 清空）：任何时刻
+        这条 task 都至少有一条排队 body。账本先指向新摘要、body 稍后才换的窗口是安全的
+        ——进程若在这里崩溃，重启后发送闸发现摘要对不上会再走一轮重建（自愈收敛）；
+        反过来（先删 body 再写账本）一旦账本写失败就永久丢结果。
+
+        落盘失败时把旧条目放回原位置并抛 OutboxWriteError：调用方看到异常时必须当作
+        "什么都没换"（旧 body 仍在），下一轮重试。
+        """
+        if not isinstance(task_id, str) or not task_id:
+            raise OutboxWriteError("replace requires a task_id", path=self.path)
+        if not isinstance(body, dict) or body.get("task_id") != task_id:
+            raise OutboxWriteError("replacement body must carry the same task_id", path=self.path)
+        try:
+            encoded = canonical_bytes(body)
+        except Exception as error:  # noqa: BLE001 - ProtocolError 已在 canonical 内
+            raise OutboxWriteError(f"replacement body is not canonical JSON: {error}", path=self.path) from None
+        if len(encoded) > MAX_RESULT_BYTES:
+            raise OutboxWriteError("replacement body exceeds the result size limit", path=self.path)
+        digest = digest_of(body)
+        for index, item in enumerate(self._items):
+            if item["task_id"] == task_id:
+                replaced = {
+                    "task_id": task_id,
+                    "digest": digest,
+                    "body": body,
+                    "queued_at": item.get("queued_at"),
+                    "attempts": 0,
+                    "last_error_code": None,
+                }
+                self._items[index] = replaced
+                try:
+                    self.save()
+                except OutboxWriteError:
+                    self._items[index] = item
                     raise
                 return True
         return False

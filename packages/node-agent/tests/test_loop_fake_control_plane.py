@@ -30,7 +30,7 @@ from ghostfleet_agent.loop import (
     WatchdogThread,
 )
 from ghostfleet_agent.logging import Logger, clear_secrets
-from ghostfleet_agent.outbox import Outbox
+from ghostfleet_agent.outbox import Outbox, OutboxWriteError
 from ghostfleet_agent.protocol import (
     AGENT_EXECUTION_INTERRUPTED,
     AGENT_EXECUTION_UNKNOWN,
@@ -1549,3 +1549,251 @@ def test_failed_retract_is_reported_and_deletes_nothing(sandbox, control_plane, 
     assert loop.outbox.has(task_id) is True
     assert control_plane.requests_to("/result") == []
     assert "result_retract_failed" in stream.getvalue()
+
+def _install_legacy_unknown(sandbox, control_plane, *, task_id: str):
+    """落盘旧版本升级现场：账本 UNKNOWN(node.observe) + 队列里用错 operation 的 UNKNOWN body。
+
+    直接写 store 文件而不走 begin()/reconcile()，因为真实缺陷只出现在升级路径：
+    1df51b7 之前的 _reconcile_task 用重投信封的 operation 造 UNKNOWN body，账本记的
+    却是 begin() 时的 operation，两边摘要相同所以旧发送闸放行。
+    """
+    loop, _ = build_agent(sandbox, control_plane)
+    legacy = make_result(
+        task_id=task_id,
+        node_uid=sandbox.node_uid,
+        operation="capability.inspect",
+        status=RESULT_UNKNOWN,
+        code=AGENT_EXECUTION_UNKNOWN,
+    )
+    loop.outbox.add(
+        {
+            "task_id": task_id,
+            "operation": "capability.inspect",
+            "result": legacy,
+            "result_digest": digest_of(legacy),
+        }
+    )
+    loop.ledger.complete(
+        task_id,
+        RESULT_UNKNOWN,
+        result_digest=digest_of(legacy),
+        operation="node.observe",
+    )
+    return loop, legacy
+
+
+def test_rebuild_keeps_the_old_body_when_the_ledger_write_fails(sandbox, control_plane, monkeypatch):
+    """账本写失败 → DENIED，旧 body 原样保留；恢复后自愈成恰好一条账本 operation 的结果。"""
+    control_plane.respond = idle_responder(control_plane)
+    task_id = "task-rebuild-ledger-fails"
+    _, legacy = _install_legacy_unknown(sandbox, control_plane, task_id=task_id)
+    legacy_digest = digest_of(legacy)
+
+    loop, stream = build_agent(sandbox, control_plane)
+    failures = {"fail": True}
+    real_mark_unknown = loop.ledger.mark_unknown
+
+    def maybe_fail(task_id, **kwargs):
+        if failures["fail"]:
+            raise LedgerWriteError("ledger write failed", path=loop.ledger.path)
+        return real_mark_unknown(task_id, **kwargs)
+
+    monkeypatch.setattr(loop.ledger, "mark_unknown", maybe_fail)
+
+    # DENIED = 本地写盘失败，条目仍在队列 → 本轮按 retry 退避（run_once 非 0 是应有行为）。
+    assert loop.run_once() == 5
+    assert control_plane.requests_to("/result") == []
+    assert loop.outbox.depth() == 1
+    queued = loop.outbox.get(task_id)
+    assert queued["body"]["operation"] == "capability.inspect"
+    assert queued["body"]["result"]["operation"] == "capability.inspect"
+    assert queued["body"]["result_digest"] == legacy_digest
+    assert loop.ledger.get(task_id)["result_digest"] == legacy_digest
+    assert "result_body_rebuild_failed" in stream.getvalue()
+
+    failures["fail"] = False
+    assert loop.run_once() == 0
+    posts = control_plane.requests_to("/result")
+    assert len(posts) == 1
+    body = posts[0]["body"]
+    assert body["operation"] == "node.observe"
+    assert body["result"]["operation"] == "node.observe"
+    assert body["result"]["status"] == RESULT_UNKNOWN
+    assert body["result_digest"] == loop.ledger.get(task_id)["result_digest"]
+    assert loop.outbox.has(task_id) is False
+
+
+def test_interrupted_body_swap_heals_on_restart_with_exactly_one_post(sandbox, control_plane, monkeypatch):
+    """先账本后换 body：换 body 时崩溃 → 重启后重建恰好一条、摘要与账本一致。"""
+    control_plane.respond = idle_responder(control_plane)
+    task_id = "task-rebuild-interrupted"
+    _install_legacy_unknown(sandbox, control_plane, task_id=task_id)
+
+    first, _ = build_agent(sandbox, control_plane)
+
+    def interrupted(entry_task_id, body):
+        raise KeyboardInterrupt("crashed between the ledger write and the body swap")
+
+    monkeypatch.setattr(first.outbox, "replace", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        first.run_once()
+
+    assert control_plane.requests_to("/result") == []
+    swapped_digest = first.ledger.get(task_id)["result_digest"]
+    assert first.outbox.get(task_id)["digest"] != swapped_digest
+
+    restarted, _ = build_agent(sandbox, control_plane)
+    assert restarted.run_once() == 0
+    posts = control_plane.requests_to("/result")
+    assert len(posts) == 1
+    assert posts[0]["body"]["result_digest"] == restarted.ledger.get(task_id)["result_digest"]
+    assert posts[0]["body"]["operation"] == "node.observe"
+    assert restarted.outbox.has(task_id) is False
+
+
+def test_repeated_body_replace_failures_heal_into_exactly_one_post(sandbox, control_plane, monkeypatch):
+    """连续两次换 body 失败仍不丢事实：每次 DENIED、条目留着，第三次成功只发一条。"""
+    control_plane.respond = idle_responder(control_plane)
+    task_id = "task-rebuild-replace-fails"
+    _install_legacy_unknown(sandbox, control_plane, task_id=task_id)
+
+    loop, stream = build_agent(sandbox, control_plane)
+    real_replace = loop.outbox.replace
+    failures = {"left": 2, "calls": 0}
+
+    def flaky(entry_task_id, body):
+        failures["calls"] += 1
+        if failures["left"] > 0:
+            failures["left"] -= 1
+            raise OutboxWriteError("outbox write failed", path=loop.outbox.path)
+        return real_replace(entry_task_id, body)
+
+    monkeypatch.setattr(loop.outbox, "replace", flaky)
+
+    # 一轮里会 flush 两次（启动 + 心跳后），第一次失败的两次都落在同一轮。
+    assert loop.run_once() == 5
+    assert control_plane.requests_to("/result") == []
+    assert loop.outbox.has(task_id) is True
+    assert failures["calls"] == 2
+    # 第三次换 body 成功：同一次 flush 内发出恰好一条，摘要与账本一致。
+    assert loop.run_once() == 0
+
+    posts = control_plane.requests_to("/result")
+    assert len(posts) == 1
+    assert failures["calls"] == 3
+    assert posts[0]["body"]["result_digest"] == loop.ledger.get(task_id)["result_digest"]
+    assert loop.outbox.has(task_id) is False
+    assert "result_body_rebuild_failed" in stream.getvalue()
+
+
+def test_drop_keeps_the_body_when_the_ledger_write_fails(sandbox, control_plane, monkeypatch):
+    """先记 RESULT_DROPPED 再撤条目：记账失败 → DENIED 且 body 保留；恢复后零 POST 收敛。"""
+    control_plane.respond = idle_responder(control_plane)
+    task_id = "task-drop-ledger-fails"
+    loop, _ = build_agent(sandbox, control_plane)
+    good = make_result(
+        task_id=task_id,
+        node_uid=sandbox.node_uid,
+        operation="node.observe",
+        status=RESULT_SUCCEEDED,
+        data={"ok": True},
+    )
+    loop.ledger.complete(
+        task_id,
+        RESULT_SUCCEEDED,
+        result_digest=digest_of(good),
+        operation="node.observe",
+    )
+    bad = make_result(
+        task_id=task_id,
+        node_uid=sandbox.node_uid,
+        operation="capability.inspect",
+        status=RESULT_SUCCEEDED,
+        data={"ok": True},
+    )
+    loop.outbox.add(
+        {
+            "task_id": task_id,
+            "operation": "capability.inspect",
+            "result": bad,
+            "result_digest": digest_of(bad),
+        }
+    )
+
+    restarted, stream = build_agent(sandbox, control_plane)
+    failures = {"fail": True}
+    real_mark_dropped = restarted.ledger.mark_result_dropped
+
+    def maybe_fail(entry_task_id):
+        if failures["fail"]:
+            raise LedgerWriteError("ledger write failed", path=restarted.ledger.path)
+        return real_mark_dropped(entry_task_id)
+
+    monkeypatch.setattr(restarted.ledger, "mark_result_dropped", maybe_fail)
+
+    # 记账失败 → DENIED，body 与账本都没动，本轮 retry。
+    assert restarted.run_once() == 5
+    assert control_plane.requests_to("/result") == []
+    assert restarted.outbox.has(task_id) is True
+    assert restarted.ledger.get(task_id).get("result_state") is None
+    assert "result_body_drop_not_recorded" in stream.getvalue()
+
+    failures["fail"] = False
+    assert restarted.run_once() == 0
+    assert control_plane.requests_to("/result") == []
+    assert restarted.outbox.has(task_id) is False
+    entry = restarted.ledger.get(task_id)
+    assert entry["state"] == RESULT_SUCCEEDED
+    assert entry["result_digest"] == digest_of(good)
+    assert entry["result_state"] == RESULT_DROPPED
+
+
+@pytest.mark.parametrize("bad_status", [[], {}])
+def test_non_string_result_status_is_settled_without_a_type_error(sandbox, control_plane, bad_status):
+    """result.status 是 list/dict 时不得在 frozenset 判断上抛 TypeError 冲掉进程。"""
+    control_plane.respond = idle_responder(control_plane)
+    task_id = "task-status-" + type(bad_status).__name__
+    loop, _ = build_agent(sandbox, control_plane)
+    good = make_result(
+        task_id=task_id,
+        node_uid=sandbox.node_uid,
+        operation="node.observe",
+        status=RESULT_SUCCEEDED,
+        data={"ok": True},
+    )
+    loop.ledger.complete(
+        task_id,
+        RESULT_SUCCEEDED,
+        result_digest=digest_of(good),
+        operation="node.observe",
+    )
+    bad = {
+        "schema": SCHEMA_TASK,
+        "task_id": task_id,
+        "node_uid": sandbox.node_uid,
+        "operation": "node.observe",
+        "status": bad_status,
+    }
+    loop.outbox.add(
+        {
+            "task_id": task_id,
+            "operation": "node.observe",
+            "result": bad,
+            "result_digest": digest_of(bad),
+        }
+    )
+
+    restarted, stream = build_agent(sandbox, control_plane)
+    assert restarted.run_once() == 0
+    assert control_plane.requests_to("/result") == []
+    assert restarted.outbox.has(task_id) is False
+    entry = restarted.ledger.get(task_id)
+    assert entry["result_digest"] == digest_of(good)
+    assert entry["result_state"] == RESULT_DROPPED
+    assert "result-status-invalid" in stream.getvalue()
+
+    # 结局确定：重投也不补发。
+    restarted._process_task(make_task(node_uid=sandbox.node_uid, task_id=task_id))
+    assert restarted.run_once() == 0
+    assert control_plane.requests_to("/result") == []
+
