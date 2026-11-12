@@ -361,15 +361,38 @@ section "S0 preflight"
 # (measured: a foreign run removed the payload under a live agent and turned a
 # healthy unit into a restart loop). CI gives every job its own runner; locally the
 # box must be dedicated.
-FOREIGN_ACCOUNT_LIST="$(getent passwd | awk -F: '$1 ~ /^ghostfleet-/ { printf "%s(uid=%s) ", $1, $3 }' || true)"
+# Only the names this harness itself creates can collide. An inert foreign
+# account with an unrelated name is not a collision, so the gate keys on the
+# exact principals, paths and units this run is about to create, delete and
+# overwrite.
+FOREIGN_ACCOUNT_LIST=""
+for owned_account in "${ACCOUNT}" "${PRIVILEGED_ACCOUNT}"; do
+  if getent passwd "${owned_account}" >/dev/null 2>&1; then
+    FOREIGN_ACCOUNT_LIST="${FOREIGN_ACCOUNT_LIST}${owned_account}(uid=$(id -u "${owned_account}")) "
+  fi
+done
 if [[ -n "${FOREIGN_ACCOUNT_LIST// /}" ]]; then
-  fail_check "MISSING_ISOLATION: the machine already has ${FOREIGN_ACCOUNT_LIST}; this harness needs an exclusive machine. Another disposable run uses the same account, unit and payload names. Use a fresh runner, or remove the leftover accounts first."
+  fail_check "MISSING_ISOLATION: the machine already has ${FOREIGN_ACCOUNT_LIST}; this harness creates and deletes both accounts, so another run owns them. Use a fresh runner, or remove the leftover accounts first."
+fi
+for owned_path in "${PYZ_INSTALL_DIR}" "${SYSTEM_CONFIG_DIR}" "${CA_INSTALL_PATH}"; do
+  if [[ -e "${owned_path}" ]]; then
+    fail_check "MISSING_ISOLATION: ${owned_path} already exists; this harness installs and later deletes that exact path, so a foreign installation owns it. Use a fresh runner."
+  fi
+done
+LIVE_FOREIGN_UNITS="$(systemctl list-units --all --no-legend 'ghostfleet*' 2>/dev/null | awk '{print $1}' | tr '\n' ' ' || true)"
+for other_uid in $(getent passwd | awk -F: '$1 ~ /^ghostfleet-/ { print $3 }'); do
+  if command -v pgrep >/dev/null 2>&1 && pgrep -u "${other_uid}" -f "node-agent.pyz" >/dev/null 2>&1; then
+    LIVE_FOREIGN_UNITS="${LIVE_FOREIGN_UNITS}process(node-agent.pyz uid=${other_uid}) "
+  fi
+done
+if [[ -n "${LIVE_FOREIGN_UNITS// /}" ]]; then
+  fail_check "MISSING_ISOLATION: a ghostfleet agent is already running on this machine (${LIVE_FOREIGN_UNITS}); this harness stops, reinstalls and deletes ${UNIT_NAME} by name. Stop the other run first."
 fi
 FOREIGN_SYSTEM_UNITS="$(systemctl list-units --all --no-legend 'ghostfleet*' 2>/dev/null | awk '{print $1}' | tr '\n' ' ' || true)"
 if [[ -n "${FOREIGN_SYSTEM_UNITS// /}" ]]; then
   fail_check "MISSING_ISOLATION: system-scope units ${FOREIGN_SYSTEM_UNITS} already exist; this harness installs ghostfleet-managed.service into a user manager and needs a dedicated machine."
 fi
-record_ok "the machine is exclusive: no ghostfleet-* system account and no system-scope ghostfleet unit exists before this run"
+record_ok "the machine is exclusive: neither ${ACCOUNT} nor a running ghostfleet agent owns the account, payload, configuration or unit name this run creates"
 evidence "preflight.exclusive_machine=yes"
 if [[ -e /etc/openmediavault ]]; then fail_check "refusing to run on an OpenMediaVault host"; fi
 [[ -d "${REPO_ROOT}/src/control-plane" ]] || fail_check "MISSING_REPO_LAYOUT: ${REPO_ROOT}/src/control-plane is absent"
@@ -398,6 +421,14 @@ evidence "preflight.work_dir=${WORK}"
 evidence "preflight.network_mode=loopback-only"
 evidence "preflight.repo_root=${REPO_ROOT}"
 evidence "preflight.account=${ACCOUNT}"
+# The integration lane freezes one pyz, one unit asset and one control-plane
+# revision per batch. The values below are the requested freeze; the shas this
+# run actually measured are printed beside them so a reviewer can see whether
+# the bytes and the freeze agree instead of trusting a filename.
+evidence "frozen.na_core_head=${GHOSTFLEET_NA_CORE_HEAD:-not_provided}"
+evidence "frozen.na_plane_head=${GHOSTFLEET_NA_PLANE_HEAD:-not_provided}"
+evidence "frozen.requested_payload_sha256=${GHOSTFLEET_EXPECTED_PYZ_SHA256:-not_provided}"
+evidence "frozen.requested_unit_sha256=${GHOSTFLEET_EXPECTED_UNIT_SHA256:-not_provided}"
 
 # --- S1: control-plane harness ---------------------------------------------
 section "S1 local control plane that imports the real product modules"
@@ -2510,11 +2541,14 @@ evidence "summary.linger=${HOST_LINGER}"
 evidence "summary.ops_account_uid=${OPS_ACCOUNT_UID}"
 evidence "summary.install_line_capability_status=${CAPABILITY_STATUS_POSITIVE}"
 evidence "summary.unit_sha256=${INSTALLED_UNIT_SHA}"
+evidence "summary.na_core_head=${GHOSTFLEET_NA_CORE_HEAD:-not_provided}"
+evidence "summary.na_plane_head=${GHOSTFLEET_NA_PLANE_HEAD:-not_provided}"
 
 # The runbook template: REAL facts are measured above, STUB facts are the
 # synthetic seams, NOT_RUN facts are outside what a disposable cloud runner can
 # prove. Keeping them apart is the point of the runbook section.
-cat > "${WORK}/result-lines.txt" <<TXT
+RESULT_LINES="${WORK}/result-lines.txt"
+cat > "${RESULT_LINES}" <<TXT
 REAL: a deterministically built zipapp and the pinned systemd user unit were installed and verified (systemd-analyze --user verify exit ${VERIFY_STATUS})
 REAL: the resident control account ${ACCOUNT} (uid ${ACCOUNT_UID}) runs the agent with no login, no sudo and no privileged group
 REAL: the agent stayed ActiveState=active for more than two heartbeat cycles and kept observing (heartbeats ${HEARTBEATS_BEFORE} -> ${HEARTBEATS_AFTER})
@@ -2529,7 +2563,7 @@ REAL: a configuration the control account cannot read stops the agent with exit 
 REAL: with an unreachable control plane (${OFFLINE_ORIGIN}) the agent stayed active for ${OFFLINE_WINDOW_SECONDS}s across ${OFFLINE_SAMPLES} samples (NRestarts ${OFFLINE_N_RESTARTS_START} -> ${OFFLINE_N_RESTARTS_END}, no watchdog kill, WatchdogTimestamp advanced ${OFFLINE_WATCHDOG_ADVANCE}s) and heartbeated again ${OFFLINE_RECOVERY_SECONDS}s after the origin was restored
 REAL: with no capability projection in place the agent's heartbeat was still accepted and the control plane projected capability_digest as ${UNPROJECTED_DIGEST} (no NODE_REQUEST_INVALID refused heartbeats in the journal)
 REAL: child processes never inherited NOTIFY_SOCKET (${NOTIFY_REJECT_LINES} "reception only permitted for main PID" journal lines in ${NOTIFY_SOCKET_JOURNAL_LINES} lines of unit journal)
-REAL: the two artifacts measured end to end are the payload sha256 ${SECOND_SHA} (${PAYLOAD_BYTES} B) and the unit sha256 ${INSTALLED_UNIT_SHA} ($(stat -c %s "${ACCOUNT_HOME}/.config/systemd/user/${UNIT_NAME}") B); these are the bytes this run installed, not a filename claim, and the release pin that freezes them belongs to the integration lane
+  printf 'REAL: the two artifacts measured end to end are the payload sha256 %s (%s B) and the unit sha256 %s (%s B), measured by this run against na-core %s and na-plane %s; the freeze request is recorded in the frozen.* EVIDENCE lines and a deviation aborts at the FROZEN_ARTIFACT_MISMATCH gate above\n' "${SECOND_SHA}" "${PAYLOAD_BYTES}" "${INSTALLED_UNIT_SHA}" "$(stat -c %s "${ACCOUNT_HOME}/.config/systemd/user/${UNIT_NAME}")" "${GHOSTFLEET_NA_CORE_HEAD:-not_provided}" "${GHOSTFLEET_NA_PLANE_HEAD:-not_provided}" >>"${RESULT_LINES}"
 STUB: the control plane is the repository's own handler, store and node-plane verification served over loopback HTTPS with a synthetic node fixture (admitted through the real controller calls, no enrollment ticket, no public bridge); the operator/observer bearer split lives in this harness because src/control-plane/http.js deliberately owns no transport auth
 NOT_RUN: real tailnet reachability and a real remote operator hop
 NOT_RUN: a real Cloudflare Worker deployment of the node bridge or of the control plane

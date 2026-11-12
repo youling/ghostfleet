@@ -298,7 +298,14 @@ function taskIdFromPath(path) {
 
 // --- harness server -------------------------------------------------------
 function createHarnessServer(plane, fixture, options) {
-  const handleProductRequest = plane.http.createHttpHandler(fixture.controller);
+  // createHttpHandler takes the transport authorizer as an option: without it the
+  // product refuses to serve ANY operator route (503
+  // OPERATOR_AUTHORIZATION_UNAVAILABLE), which is its own fail-closed second line
+  // behind productRoute() below. The adapter is the only component that knows the
+  // operator bearer and the read-only consumer credential.
+  const handleProductRequest = plane.http.createHttpHandler(fixture.controller, {
+    authorizeOperator: (request) => adapterAuthorizeOperator(request),
+  });
   const journalPath = join(options.work, "node-plane-requests.jsonl");
   const state = {
     node_uid: fixture.node_uid,
@@ -337,6 +344,19 @@ function createHarnessServer(plane, fixture, options) {
 
   function isProductSurface(path) {
     return path === "/v0/node-tasks" || path === "/v0/nodes";
+  }
+
+  // The product's own operator gate. Allowed: null (the reference adapter's
+  // success value) or true. A read-only consumer may only GET; anything else is
+  // answered here with the same codes the shell asserts on.
+  function adapterAuthorizeOperator(request) {
+    const role = productRole(request);
+    if (role === "operator") return null;
+    if (role === "observer") {
+      if (request.method.toUpperCase() === "GET") return null;
+      return json({ ok: false, error: "OBSERVER_READ_ONLY" }, 403);
+    }
+    return json({ ok: false, error: "OPERATOR_AUTH_INVALID" }, 403);
   }
 
   async function productRoute(request, path) {
