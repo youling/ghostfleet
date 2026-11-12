@@ -8,7 +8,7 @@ import threading
 
 import pytest
 
-from agent_test_support import FakeControlPlane, make_task
+from agent_test_support import FakeControlPlane, make_task, unprivileged_owner
 from ghostfleet_agent import cli, protocol
 from ghostfleet_agent.cli import (
     EXIT_AUTH_FATAL,
@@ -324,11 +324,11 @@ def test_default_config_accepts_host_root_overflow_on_readonly_mount(sandbox, mo
     cli.verify_config_trust(str(path), default_path=str(path))  # 不抛即通过
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root 下普通用户文件同时也是 root 文件")
 def test_default_config_requires_root_owner(sandbox, monkeypatch, tmp_path):
     path = sandbox.write_config("https://control.example.invalid")
     path.chmod(0o644)
-    # uid 0 已映射 → 只认 st_uid == 0；文件属于当前用户 → 不可信。
+    # uid 0 已映射 → 只认 st_uid == 0；文件不属于 host root（root 跑时改成 4242）→ 不可信。
+    unprivileged_owner(path)
     install_config_trust(monkeypatch, tmp_path, uid_map="0 0 4294967295\n")
     with pytest.raises(CredentialError) as excinfo:
         cli.verify_config_trust(str(path), default_path=str(path))
@@ -391,6 +391,8 @@ def test_default_config_rejects_group_readable_0640(sandbox, monkeypatch, tmp_pa
 # -- 启动闸门在 main 路径上的行为：失败前不联网、不落 state -------------------
 def test_run_rejects_untrusted_default_config_before_network(sandbox, control_plane, monkeypatch, tmp_path):
     path = sandbox.write_config(control_plane.url)
+    # uid 0 已映射 + 文件非 root 拥有（root 跑时 chown 4242）→ UID_MISMATCH。
+    unprivileged_owner(path)
     install_config_trust(monkeypatch, tmp_path, uid_map="0 0 4294967295\n")
     monkeypatch.setattr(cli, "DEFAULT_CONFIG_PATH", str(path))
     assert main(["run", "--once", "--config", str(path)]) == EXIT_CREDENTIAL

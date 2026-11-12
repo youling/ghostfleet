@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import os
 import threading
 import uuid
 from datetime import timedelta
@@ -19,6 +20,19 @@ TEST_TOKEN = "test-token-0000000000000000000000000000"
 
 def make_node_uid() -> str:
     return "node-" + str(uuid.uuid4())
+
+
+def unprivileged_owner(path, *, uid: int = 4242, gid: int = 4242):
+    """让「文件不属于运行者」在 root 与非 root 两种环境下都成立。
+
+    信任闸门的负向臂需要 st_uid != 0（uid 0 已映射的场景）。以 root 跑测试时夹具文件
+    天然是 root 拥有，会把负向臂变成假绿；这里在 euid==0 时把属主改成 4242（一个必然
+    不是 root 的普通 uid），非 root 运行时文件本来就属于当前用户、无需改动。
+    只改属主不改 mode，断言语义与运行者身份无关。
+    """
+    if os.geteuid() == 0:
+        os.chown(path, uid, gid)
+    return path
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):

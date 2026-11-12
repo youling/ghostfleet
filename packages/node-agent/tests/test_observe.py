@@ -9,6 +9,7 @@ import sys
 
 import pytest
 
+from agent_test_support import unprivileged_owner
 from ghostfleet_agent.observe import (
     CHILD_ENV_STRIP_KEYS,
     DISK_FAILING_PCT,
@@ -331,7 +332,8 @@ def test_capability_writable_by_user_is_untrusted(tmp_path, monkeypatch):
 def test_capability_requires_uid_zero_when_namespace_maps_root(tmp_path, monkeypatch):
     install_sandbox_trust(monkeypatch, tmp_path / "mapped", uid_map="0 0 4294967295\n")
     observer = make_observer(tmp_path)
-    # uid 0 已映射时只认 st_uid == 0；属主是当前用户的文件不可信。
+    # uid 0 已映射时只认 st_uid == 0；属主不是 host root（root 跑时 chown 4242）→ 不可信。
+    unprivileged_owner(observer.capability_path)
     assert observer.capability() == {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
 
 
