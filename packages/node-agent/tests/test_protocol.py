@@ -166,7 +166,7 @@ def test_make_result_rejects_unknown_status_and_unsafe_data():
             task_id="task-0001",
             node_uid="node-00000000-0000-4000-8000-000000000000",
             operation="node.observe",
-            status="FAILED",
+            status="CRASHED",
         )
     with pytest.raises(ProtocolError):
         make_result(

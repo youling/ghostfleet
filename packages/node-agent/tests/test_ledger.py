@@ -78,7 +78,18 @@ def test_complete_records_terminal_facts(tmp_path):
 def test_complete_rejects_unknown_terminal_status(tmp_path):
     ledger = _ledger(tmp_path)
     with pytest.raises(ledger_module.LedgerWriteError):
-        ledger.complete("task-0001", "FAILED")
+        ledger.complete("task-0001", "CRASHED")
+
+
+def test_failed_is_a_valid_terminal_state(tmp_path):
+    ledger = _ledger(tmp_path)
+    ledger.begin("task-0001", "node.observe")
+    ledger.complete("task-0001", "FAILED", code="AGENT_EXECUTION_FAILED")
+    entry = ledger.get("task-0001")
+    assert entry["state"] == "FAILED"
+    assert entry["code"] == "AGENT_EXECUTION_FAILED"
+    assert entry["reconciled"] is True
+    assert ledger.pending_reconcile() == []
 
 
 def test_result_dropped_is_recorded_without_overwriting_terminal_state(tmp_path):
@@ -137,6 +148,29 @@ def test_reconciled_terminals_are_evictable_so_exhaustion_clears(tmp_path):
         ledger.complete(task_id, "SUCCEEDED")
     assert len(ledger.entries) == MAX_LEDGER_ENTRIES
     assert ledger.is_exhausted() is False
+
+
+def test_failed_evictable_but_unknown_and_fenced_are_not(tmp_path):
+    failed = _ledger(tmp_path / "failed")
+    failed.save = lambda: None
+    failed._prune = lambda: None  # 只观察可驱逐性，不在这里压缩
+    for index in range(MAX_LEDGER_ENTRIES):
+        task_id = f"task-failed-{index:05d}"
+        failed.begin(task_id, "node.observe")
+        failed.complete(task_id, "FAILED")
+    assert len(failed.entries) == MAX_LEDGER_ENTRIES
+    assert failed.is_exhausted() is False  # FAILED 是可驱逐的已对账终态
+
+    uncertain = _ledger(tmp_path / "uncertain")
+    uncertain.save = lambda: None
+    uncertain._prune = lambda: None
+    for index in range(MAX_LEDGER_ENTRIES):
+        task_id = f"task-unknown-{index:05d}"
+        uncertain.begin(task_id, "node.observe")
+        uncertain.mark_unknown(task_id)
+    assert uncertain.is_exhausted() is True  # 待对账 UNKNOWN 与栅栏一样不可驱逐
+    uncertain.mark_reconciled("task-unknown-00000")
+    assert uncertain.is_exhausted() is False
 
 
 @pytest.mark.parametrize(

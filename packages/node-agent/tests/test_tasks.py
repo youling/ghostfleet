@@ -9,9 +9,12 @@ from agent_test_support import make_task
 from ghostfleet_agent import protocol
 from ghostfleet_agent.protocol import (
     AGENT_EXECUTION_FAILED,
+    AGENT_EXECUTION_UNKNOWN,
     AGENT_UNIT_NOT_ALLOWED,
+    RESULT_FAILED,
     RESULT_REFUSED,
     RESULT_SUCCEEDED,
+    RESULT_UNKNOWN,
     TASK_ENVELOPE_INVALID,
     TASK_EXPIRED,
     TASK_OPERATION_UNKNOWN,
@@ -20,14 +23,18 @@ from ghostfleet_agent.protocol import (
     canonical_json,
 )
 from ghostfleet_agent.tasks import (
+    MAY_MUTATE,
     MAX_TASKS_PER_HEARTBEAT,
     MAX_TASKS_PER_POLL,
     MAX_UNITS_PER_TASK,
     OPERATION_CAPABILITY_INSPECT,
     OPERATION_OBSERVE,
+    OPERATION_SPECS,
     OPERATION_SELF_TEST,
     OPERATION_SERVICE_STATUS,
+    READ_ONLY,
     SUPPORTED_OPERATIONS,
+    OperationSpec,
     TaskExecutor,
     TaskRefused,
     ValidatedTask,
@@ -232,10 +239,50 @@ def test_handle_missing_task_id_uses_unknown_placeholders():
     assert result["status"] == RESULT_REFUSED
 
 
-def test_executor_converts_implementation_errors_to_refused():
+class MutatingExecutor(TaskExecutor):
+    """测试替身：显式声明一个 may_mutate operation，执行到一半抛异常。"""
+
+    def __init__(self, **kwargs):
+        operations = dict(OPERATION_SPECS)
+        operations["test.mutate"] = OperationSpec("test.mutate", MAY_MUTATE, "_mutate")
+        super().__init__(operations=operations, **kwargs)
+
+    def _mutate(self, task):
+        raise RuntimeError("side effect may have happened")
+
+
+def test_read_only_implementation_error_is_failed_not_refused():
     result = executor(observer=StubObserver(explode=True)).handle(make_task(node_uid=NODE_UID))
-    assert result["status"] == RESULT_REFUSED
+    assert result["status"] == RESULT_FAILED
+    assert result["status"] != RESULT_REFUSED
     assert result["code"] == AGENT_EXECUTION_FAILED
+
+
+def test_validation_refusal_never_calls_the_implementation():
+    observer = StubObserver()
+    result = executor(observer=observer).handle(
+        make_task(node_uid=NODE_UID, params={"want": ["not-a-fact"]})
+    )
+    assert result["status"] == RESULT_REFUSED
+    assert result["code"] == TASK_PARAMS_FORBIDDEN
+    assert observer.observed == []  # spy：实现函数 0 次调用
+
+
+def test_may_mutate_implementation_error_is_unknown_not_refused():
+    result = MutatingExecutor(node_uid=NODE_UID, agent_version=AGENT_VERSION).handle(
+        make_task(node_uid=NODE_UID, operation="test.mutate")
+    )
+    assert result["status"] == RESULT_UNKNOWN
+    assert result["status"] not in (RESULT_REFUSED, RESULT_FAILED)
+    assert result["code"] == AGENT_EXECUTION_UNKNOWN
+
+
+def test_v0_operations_are_declared_read_only_with_real_handlers():
+    assert set(OPERATION_SPECS) == SUPPORTED_OPERATIONS
+    assert {spec.effect for spec in OPERATION_SPECS.values()} == {READ_ONLY}
+    probe = TaskExecutor(node_uid=NODE_UID, agent_version=AGENT_VERSION, observer=StubObserver())
+    for spec in OPERATION_SPECS.values():
+        assert callable(getattr(probe, spec.handler))
 
 
 def test_supported_operations_is_the_read_only_vocabulary():

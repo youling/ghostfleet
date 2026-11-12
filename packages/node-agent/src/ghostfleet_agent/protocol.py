@@ -48,11 +48,17 @@ AGENT_UNEXPECTED_STATUS = "AGENT_UNEXPECTED_STATUS"
 AGENT_INTERNAL_ERROR = "AGENT_INTERNAL_ERROR"
 AGENT_CONTROL_PLANE_UNREACHABLE = "AGENT_CONTROL_PLANE_UNREACHABLE"
 
-# 任务结果状态。
+# 任务结果状态。语义区分是崩溃安全的核心（ADR §7）：
+# - SUCCEEDED：实现已执行成功；
+# - REFUSED：**只**用于执行前的校验拒绝，保证没有任何副作用，控制面可安全重投；
+# - FAILED：尝试执行只读 operation 但实现抛异常；只读保证无副作用，可安全重投；
+# - UNKNOWN：执行期间异常且 operation 可能已产生副作用（或崩溃窗口），副作用不可判定，
+#   控制面不得据此重投同一任务。
 RESULT_SUCCEEDED = "SUCCEEDED"
 RESULT_REFUSED = "REFUSED"
+RESULT_FAILED = "FAILED"
 RESULT_UNKNOWN = "UNKNOWN"
-RESULT_STATUSES = frozenset({RESULT_SUCCEEDED, RESULT_REFUSED, RESULT_UNKNOWN})
+RESULT_STATUSES = frozenset({RESULT_SUCCEEDED, RESULT_REFUSED, RESULT_FAILED, RESULT_UNKNOWN})
 
 # 节点身份：与仓库既有 node_uid 形态一致（node-<uuidv4> 小写）。
 NODE_UID_RE = re.compile(

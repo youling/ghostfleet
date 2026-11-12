@@ -117,6 +117,19 @@ boot 重放换新 boot_id 重试一次，结果冲突视为永久拒绝）；429
 `capability.inspect`（只回公开投影：整体 sha256、selection 摘要、artifact/user_unit 名+sha256、payload sha256、账户/release pin；不回文件原文，也不读 `/var/lib/fleet/capability-state.json`）、
 `agent.self.test`（回显 nonce 与版本）。未知 operation 返回 `TASK_OPERATION_UNKNOWN`。
 
+结果状态（控制面据此决定是否重投）：
+
+| 状态 | 含义 | 可安全重投 |
+|---|---|---|
+| `SUCCEEDED` | 实现执行成功，`data` 为结果 | 幂等，无需重投 |
+| `REFUSED` | **执行前的校验拒绝**（信封/参数/白名单/过期/未知 operation），实现函数从未被调用，**保证无副作用** | 是 |
+| `FAILED` | 只读 operation 的实现抛出异常；只读保证无副作用 | 是 |
+| `UNKNOWN` | 执行期间异常且该 operation 声明为 `may_mutate`，或崩溃窗口内的栅栏任务；副作用不可判定 | **否** |
+
+只读 / 可变更由 `tasks.py` 的 `OPERATION_SPECS` 逐 operation 显式声明（v0 四个 operation 全为
+`read_only`）；将来任何可能改变节点状态的 operation 必须显式声明 `may_mutate`，其执行期异常一律报
+`UNKNOWN`，绝不报 `REFUSED`——否则等于告诉控制面"随便重发，不会有副作用"。
+
 ## 崩溃安全与幂等
 
 - 执行前先把 `ledger[task_id] = MAY_HAVE_EXECUTED` 落盘（tmp+fsync+rename），然后才调用实现。

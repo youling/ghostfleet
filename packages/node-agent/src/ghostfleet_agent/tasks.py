@@ -6,10 +6,16 @@ ADR §5.3 / §7 的执行侧合同：
   TASK_OPERATION_FORBIDDEN，Agent 只是不认识）；
 - params 递归禁用键 → TASK_PARAMS_FORBIDDEN；
 - service.status.read 只允许配置里的 allowed_units 白名单，unit 名正则校验；
-- 任何实现层异常都收敛为 REFUSED + AGENT_EXECUTION_FAILED，绝不抛出循环。
+- 结果状态按"副作用是否可能已发生"分派（ADR §7）：
+  校验拒绝（调用实现之前）→ REFUSED（保证无副作用，可安全重投）；
+  只读 operation 的实现抛异常 → FAILED（只读保证无副作用，可安全重投）；
+  声明为 may_mutate 的 operation 实现抛异常 → UNKNOWN（副作用不可判定，绝不重投）；
+  以上异常都不允许穿透到循环。
 """
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .logging import get_logger
@@ -22,11 +28,14 @@ from .observe import (
 )
 from .protocol import (
     AGENT_EXECUTION_FAILED,
+    AGENT_EXECUTION_UNKNOWN,
     AGENT_UNIT_NOT_ALLOWED,
     MAX_PARAMS_DEPTH,
     NODE_UID_RE,
+    RESULT_FAILED,
     RESULT_REFUSED,
     RESULT_SUCCEEDED,
+    RESULT_UNKNOWN,
     SCHEMA_TASK,
     TASK_ENVELOPE_INVALID,
     TASK_EXPIRED,
@@ -47,9 +56,35 @@ OPERATION_OBSERVE = "node.observe"
 OPERATION_SERVICE_STATUS = "service.status.read"
 OPERATION_CAPABILITY_INSPECT = "capability.inspect"
 OPERATION_SELF_TEST = "agent.self.test"
-SUPPORTED_OPERATIONS = frozenset(
-    {OPERATION_OBSERVE, OPERATION_SERVICE_STATUS, OPERATION_CAPABILITY_INSPECT, OPERATION_SELF_TEST}
-)
+
+# 每个 operation 必须显式声明执行效果等级：不是隐含约定，而是分派表里的字段。
+# - read_only：实现不可能改变节点状态，异常可报 FAILED 并允许控制面重投；
+# - may_mutate：实现可能已产生副作用，异常必须报 UNKNOWN，控制面不得重投。
+# v0 词汇（ADR §5.3）全部只读；将来新增可变更 operation 必须显式写 may_mutate。
+READ_ONLY = "read_only"
+MAY_MUTATE = "may_mutate"
+EFFECTS = frozenset({READ_ONLY, MAY_MUTATE})
+
+
+@dataclass(frozen=True)
+class OperationSpec:
+    """单个 operation 的显式声明：执行效果等级 + 处理函数名。"""
+
+    operation: str
+    effect: str
+    handler: str
+
+
+OPERATION_SPECS = {
+    OPERATION_OBSERVE: OperationSpec(OPERATION_OBSERVE, READ_ONLY, "_observe"),
+    OPERATION_SERVICE_STATUS: OperationSpec(OPERATION_SERVICE_STATUS, READ_ONLY, "_service_status"),
+    OPERATION_CAPABILITY_INSPECT: OperationSpec(OPERATION_CAPABILITY_INSPECT, READ_ONLY, "_capability_inspect"),
+    OPERATION_SELF_TEST: OperationSpec(OPERATION_SELF_TEST, READ_ONLY, "_self_test"),
+}
+SUPPORTED_OPERATIONS = frozenset(OPERATION_SPECS)
+
+# 实现层异常的稳定错误码必须匹配该形态；否则退回通用码。
+EXECUTION_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{3,63}$")
 
 MAX_TASKS_PER_POLL = 4
 MAX_TASKS_PER_HEARTBEAT = 2
@@ -160,36 +195,44 @@ class TaskExecutor:
         observer: Observer | None = None,
         allowed_units=(),
         logger=None,
+        operations=OPERATION_SPECS,
     ) -> None:
         self.node_uid = node_uid
         self.agent_version = agent_version
         self.allowed_units = tuple(allowed_units)
+        self.operations = dict(operations)
         self.observer = observer or Observer(node_uid=node_uid, agent_version=agent_version, allowed_units=self.allowed_units)
         self.logger = logger or get_logger()
 
     # -- 入口 ---------------------------------------------------------------
     def handle(self, envelope) -> dict:
-        """校验并执行；永远返回结果 payload（SUCCEEDED 或 REFUSED）。"""
+        """校验并执行；永远返回结果 payload（SUCCEEDED/REFUSED/FAILED/UNKNOWN）。"""
         task_id = envelope.get("task_id") if isinstance(envelope, dict) else None
         operation = envelope.get("operation") if isinstance(envelope, dict) else None
         safe_task_id = task_id if isinstance(task_id, str) else "unknown"
         safe_operation = operation if isinstance(operation, str) else "unknown"
         try:
-            task = validate_envelope(envelope, node_uid=self.node_uid)
+            task = validate_envelope(
+                envelope,
+                node_uid=self.node_uid,
+                supported_operations=frozenset(self.operations),
+            )
         except TaskRefused as refusal:
+            # 校验发生在调用实现之前，保证无副作用 → REFUSED。
             return self._refused(safe_task_id, safe_operation, refusal.code)
+        spec = self.operations.get(task.operation)
+        if spec is None:  # 防御性兜底：validate_envelope 已按同一张表拒绝
+            return self._refused(task.task_id, task.operation, TASK_OPERATION_UNKNOWN)
         try:
-            data = self._dispatch(task)
+            data = self._dispatch(task, spec)
         except TaskRefused as refusal:
+            # 实现内的"调用真实动作之前"拒绝（参数语义 / 本地白名单）仍是 REFUSED；
+            # 对可能产生副作用的 operation 一律按不可判定处理。
+            if spec.effect == MAY_MUTATE:
+                return self._in_doubt(task, spec, refusal.code)
             return self._refused(task.task_id, task.operation, refusal.code)
         except Exception as error:  # noqa: BLE001 - 实现层异常不拖垮循环
-            self.logger.error(
-                "task_execution_failed",
-                task_id=task.task_id,
-                operation=task.operation,
-                error_type=type(error).__name__,
-            )
-            return self._refused(task.task_id, task.operation, AGENT_EXECUTION_FAILED)
+            return self._execution_failure(task, spec, error)
         return make_result(
             task_id=task.task_id,
             node_uid=self.node_uid,
@@ -207,18 +250,71 @@ class TaskExecutor:
             code=code,
         )
 
+    def _failed(self, task_id: str, operation: str, code: str) -> dict:
+        return make_result(
+            task_id=task_id,
+            node_uid=self.node_uid,
+            operation=operation,
+            status=RESULT_FAILED,
+            code=code,
+        )
+
+    def _unknown(self, task_id: str, operation: str, code: str) -> dict:
+        return make_result(
+            task_id=task_id,
+            node_uid=self.node_uid,
+            operation=operation,
+            status=RESULT_UNKNOWN,
+            code=code,
+        )
+
+    def _in_doubt(self, task: ValidatedTask, spec: OperationSpec, code: str) -> dict:
+        self.logger.error(
+            "task_execution_in_doubt",
+            task_id=task.task_id,
+            operation=task.operation,
+            code=code,
+            effect=spec.effect,
+        )
+        return self._unknown(task.task_id, task.operation, AGENT_EXECUTION_UNKNOWN)
+
+    def _execution_failure(self, task: ValidatedTask, spec: OperationSpec, error: Exception) -> dict:
+        """实现抛异常：只读 → FAILED（可重投）；may_mutate → UNKNOWN（绝不重投）。"""
+        if spec.effect == MAY_MUTATE:
+            self.logger.error(
+                "task_execution_failed",
+                task_id=task.task_id,
+                operation=task.operation,
+                status=RESULT_UNKNOWN,
+                code=AGENT_EXECUTION_UNKNOWN,
+                error_type=type(error).__name__,
+            )
+            return self._unknown(task.task_id, task.operation, AGENT_EXECUTION_UNKNOWN)
+        code = self._failure_code(error)
+        self.logger.error(
+            "task_execution_failed",
+            task_id=task.task_id,
+            operation=task.operation,
+            status=RESULT_FAILED,
+            code=code,
+            error_type=type(error).__name__,
+        )
+        return self._failed(task.task_id, task.operation, code)
+
+    @staticmethod
+    def _failure_code(error: Exception) -> str:
+        candidate = getattr(error, "code", None)
+        if isinstance(candidate, str) and EXECUTION_CODE_RE.fullmatch(candidate):
+            return candidate
+        return AGENT_EXECUTION_FAILED
+
     # -- 分派 ---------------------------------------------------------------
-    def _dispatch(self, task: ValidatedTask) -> dict:
-        if task.operation == OPERATION_OBSERVE:
-            return self._observe(task)
-        if task.operation == OPERATION_SERVICE_STATUS:
-            return self._service_status(task)
-        if task.operation == OPERATION_CAPABILITY_INSPECT:
-            return self._capability_inspect(task)
-        if task.operation == OPERATION_SELF_TEST:
-            return self._self_test(task)
-        # 防御性兜底：validate_envelope 已拒绝未知 operation。
-        raise TaskRefused(TASK_OPERATION_UNKNOWN, "operation is not dispatchable")
+    def _dispatch(self, task: ValidatedTask, spec: OperationSpec) -> dict:
+        handler = getattr(self, spec.handler, None)
+        if not callable(handler):
+            # 声明表与实现不一致属于本地实现缺陷：按执行失败处理（只读 → FAILED）。
+            raise RuntimeError("operation declaration has no handler")
+        return handler(task)
 
     def _observe(self, task: ValidatedTask) -> dict:
         _require_only_params(task.params, {"want"})

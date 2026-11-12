@@ -24,10 +24,13 @@ MAX_LEDGER_ENTRIES = 512
 FENCED = "MAY_HAVE_EXECUTED"
 STATE_SUCCEEDED = "SUCCEEDED"
 STATE_REFUSED = "REFUSED"
+STATE_FAILED = "FAILED"
 STATE_UNKNOWN = "UNKNOWN"
 RESULT_DROPPED = "RESULT_DROPPED"
-TERMINAL_STATES = frozenset({STATE_SUCCEEDED, STATE_REFUSED, STATE_UNKNOWN})
-RESULT_STATES = frozenset({STATE_SUCCEEDED, STATE_REFUSED, STATE_UNKNOWN})
+# FAILED 与 REFUSED 都是"已给出结论、可安全驱逐"的终态；UNKNOWN 只有在对账完成后
+# 才可驱逐，MAY_HAVE_EXECUTED 永不驱逐。
+TERMINAL_STATES = frozenset({STATE_SUCCEEDED, STATE_REFUSED, STATE_FAILED, STATE_UNKNOWN})
+RESULT_STATES = frozenset({STATE_SUCCEEDED, STATE_REFUSED, STATE_FAILED, STATE_UNKNOWN})
 
 BEGIN_NEW = "NEW"
 BEGIN_FENCED = "ALREADY_FENCED"
@@ -140,7 +143,7 @@ class Ledger:
 
     def complete(self, task_id: str, status: str, *, result_digest: str | None = None, code: str | None = None) -> None:
         if status not in RESULT_STATES:
-            raise LedgerWriteError("terminal status must be SUCCEEDED/REFUSED/UNKNOWN", path=self.path)
+            raise LedgerWriteError("terminal status must be SUCCEEDED/REFUSED/FAILED/UNKNOWN", path=self.path)
         entry = self._entries.get(task_id)
         if entry is None:
             entry = {
