@@ -314,8 +314,13 @@ What the job proves, measured on the host rather than read off a config:
 - identity and authority: `sudo -n true` fails for the control account, it
   holds no privileged group, and a privileged helper probe rejects it with a
   dedicated-caller code while accepting root;
-- task safety: nonce replay is `409 NODE_NONCE_REPLAY`, a duplicate result
-  is idempotent, a conflicting result is `409 TASK_RESULT_CONFLICT`,
+- task safety: replay is refused three ways — a byte-identical captured
+  heartbeat is `409 NODE_NONCE_REPLAY` (the plane checks the nonce ring before
+  the boot/sequence rule), a stale sequence carrying a fresh nonce is
+  `409 NODE_SEQ_REGRESSION`, and a reused nonce with an advancing sequence is
+  also `409 NODE_NONCE_REPLAY` — and none of them advances the heartbeat state;
+  a duplicate result is idempotent, a conflicting result is
+  `409 TASK_RESULT_CONFLICT`,
   `node.exec` and forbidden parameter keys are rejected, a wrongly shaped
   request is refused at submission rather than by the agent (a string `want`,
   a too-short nonce and an illegal task id are all 400 with a task-request

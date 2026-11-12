@@ -2306,15 +2306,30 @@ HEARTBEATS_BEFORE_REPLAY="$(health_json | json_value heartbeats)"
 HEARTBEAT_STATUS="$(plane_post "/v0/nodes/${SERVER_NODE_UID}/heartbeat" "${HEARTBEAT_BODY}")"
 assert_eq "${HEARTBEAT_STATUS}" "200" "a well-formed heartbeat from the harness is accepted"
 
-# A captured body replayed byte for byte cannot be replayed: the per-boot_id
-# sequence check refuses it before anything else is even considered.
+# The plane checks the nonce ring before the boot/sequence rule (its step-6
+# comment states that a byte-for-byte replay reports NODE_NONCE_REPLAY, not a
+# sequence regression), so the exact captured bytes are refused as a nonce
+# replay: the nonce is still inside the freshness window.
 CAPTURED_REPLAY_STATUS="$(plane_post "/v0/nodes/${SERVER_NODE_UID}/heartbeat" "${HEARTBEAT_BODY}")"
 CAPTURED_REPLAY_ERROR="$(response_error)"
 assert_eq "${CAPTURED_REPLAY_STATUS}" "409" "replaying a captured heartbeat body must be refused"
-assert_eq "${CAPTURED_REPLAY_ERROR}" "NODE_SEQ_REGRESSION" "captured-body replay refusal code"
+assert_eq "${CAPTURED_REPLAY_ERROR}" "NODE_NONCE_REPLAY" "captured-body replay refusal code"
 
-# The nonce ring is a second, independent guard: the same nonce with an
-# advancing sequence is still a replay.
+# The sequence rule is a second, independent guard: a body carrying a fresh
+# nonce can still not carry a sequence the plane has already moved past, so the
+# refusal cannot be dismissed as nonce bookkeeping.
+HB_NONCE_STALE_SEQ="$(head -c 24 /dev/urandom | base64 | tr -d '\n=+/' | cut -c1-22)"
+STALE_SEQ_BODY="${WORK}/body-heartbeat-stale-seq.json"
+node "${CONTROL_PLANE_TOOL}" request-body --kind heartbeat \
+  --node-uid "${SERVER_NODE_UID}" --agent-version "${AGENT_VERSION}" \
+  --boot-id "acceptance-harness" --seq 1 --nonce "${HB_NONCE_STALE_SEQ}" > "${STALE_SEQ_BODY}"
+STALE_SEQ_STATUS="$(plane_post "/v0/nodes/${SERVER_NODE_UID}/heartbeat" "${STALE_SEQ_BODY}")"
+STALE_SEQ_ERROR="$(response_error)"
+assert_eq "${STALE_SEQ_STATUS}" "409" "a heartbeat whose sequence is not ahead of the plane must be refused"
+assert_eq "${STALE_SEQ_ERROR}" "NODE_SEQ_REGRESSION" "stale-sequence refusal code"
+
+# The nonce ring also refuses the same nonce with an advancing sequence, so a
+# caller cannot resurrect a captured body by bumping its seq.
 HEARTBEAT_NONCE_REUSE_BODY="${WORK}/body-heartbeat-nonce-reuse.json"
 node "${CONTROL_PLANE_TOOL}" request-body --kind heartbeat \
   --node-uid "${SERVER_NODE_UID}" --agent-version "${AGENT_VERSION}" \
@@ -2326,11 +2341,13 @@ assert_eq "${REPLAY_ERROR}" "NODE_NONCE_REPLAY" "nonce reuse refusal code"
 assert_eq "$(json_value nonce <"${HEARTBEAT_NONCE_REUSE_BODY}")" "${HB_NONCE_FIXED}" "the nonce-reuse probe must carry the same nonce"
 HEARTBEATS_AFTER_REPLAY="$(health_json | json_value heartbeats)"
 assert_eq "${HEARTBEATS_AFTER_REPLAY}" "$((HEARTBEATS_BEFORE_REPLAY + 1))" "neither replay attempt may be counted (only the first heartbeat was)"
-record_ok "a captured heartbeat body is refused with 409 NODE_SEQ_REGRESSION and a reused nonce with 409 NODE_NONCE_REPLAY; neither advances the control-plane heartbeat state"
+record_ok "a captured heartbeat body is refused with 409 NODE_NONCE_REPLAY, a stale sequence with a fresh nonce with 409 NODE_SEQ_REGRESSION and a reused nonce with an advancing sequence with 409 NODE_NONCE_REPLAY; none advances the control-plane heartbeat state"
 evidence "task_safety.replay_status=${REPLAY_STATUS}"
 evidence "task_safety.replay_error=${REPLAY_ERROR}"
 evidence "task_safety.captured_replay_status=${CAPTURED_REPLAY_STATUS}"
 evidence "task_safety.captured_replay_error=${CAPTURED_REPLAY_ERROR}"
+evidence "task_safety.stale_seq_status=${STALE_SEQ_STATUS}"
+evidence "task_safety.stale_seq_error=${STALE_SEQ_ERROR}"
 evidence "task_safety.heartbeats_before_replay=${HEARTBEATS_BEFORE_REPLAY}"
 evidence "task_safety.heartbeats_after_replay=${HEARTBEATS_AFTER_REPLAY}"
 
@@ -2753,7 +2770,7 @@ REAL: the agent stayed ActiveState=active for more than two heartbeat cycles and
 REAL: after loginctl terminate-user the enabled service returned to active in ${RECOVERY_TOTAL_SECONDS}s from the user manager restart (boot_restore=user_manager_restart; a real kernel reboot is NOT_RUN below), with no login (pid ${PID_BEFORE_RECOVERY} -> ${PID_AFTER_RECOVERY})
 REAL: kill -9 returned the service to active in ${KILL_RECOVERY_SECONDS}s with NRestarts ${N_RESTARTS_BEFORE_KILL} -> ${N_RESTARTS_AFTER_KILL}; SIGTERM exited 0 and did not restart within ${WINDOW_OBSERVED}s
 REAL: two node.observe tasks returned different observations (${DIFF_COUNT} differing fields, ${UPTIME_DIFFS} uptime-like), agent.self.test echoed a fresh nonce, and service.status.read reported the agent-observed unit state ${SVC_OBSERVED_STATE}
-REAL: task safety held (byte-identical replay 409, nonce reuse 409 NODE_NONCE_REPLAY, idempotent result 200, conflicting result 409 TASK_RESULT_CONFLICT, forbidden operations and parameters refused, and malformed submissions refused at the operator surface with ${WANT_STRING_STATUS}/${SHORT_NONCE_STATUS}/${ILLEGAL_TASK_ID_STATUS})
+REAL: task safety held (byte-identical heartbeat replay 409 ${CAPTURED_REPLAY_ERROR}, stale sequence with a fresh nonce 409 ${STALE_SEQ_ERROR}, reused nonce with an advancing sequence 409 ${REPLAY_ERROR}, idempotent result 200, conflicting result 409 TASK_RESULT_CONFLICT, forbidden operations and parameters refused, and malformed submissions refused at the operator surface with ${WANT_STRING_STATUS}/${SHORT_NONCE_STATUS}/${ILLEGAL_TASK_ID_STATUS})
 REAL: the MAY_HAVE_EXECUTED fence produced exactly one UNKNOWN result and no re-execution (ledger RECONCILED, started_at kept)
 REAL: a read-only consumer with its own token read agent health ${OBSERVED_HEALTH}, version ${OBSERVED_AGENT_VERSION} and result digest ${CONSUMER_OBSERVE_DIGEST} through the product timeline, and could not mint tasks
 REAL: the unit runs inside an implicit PrivateUsers namespace (uid_map "${UID_MAP_FIRST}" from the host and "${SANDBOX_UID_MAP}" from inside it), sees the host configuration as uid ${SANDBOX_CONFIG_UID} mode ${SANDBOX_CONFIG_MODE} through nsenter --preserve-credentials, and has a read-only mount of / (${ROOT_MOUNT_FLAGS}) while staying active
