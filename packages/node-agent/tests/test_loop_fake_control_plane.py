@@ -52,6 +52,7 @@ from ghostfleet_agent.protocol import (
     SCHEMA_TASK,
     TASK_RESULT_CONFLICT,
     digest_of,
+    make_result,
 )
 from ghostfleet_agent.state import StateStore
 
@@ -1285,7 +1286,77 @@ def test_known_in_flight_task_is_reconciled_not_refused(sandbox, control_plane):
     assert len(posts) == 1
     assert posts[0]["body"]["result"]["status"] == RESULT_UNKNOWN
     assert posts[0]["body"]["result_digest"] == committed
+    # operation 必须来自账本（begin 时的 node.observe），不能是新 envelope 的 fleet.do.everything：
+    # 控制面按 ADR:109 校验 result.operation == 任务 operation，用新 operation 会被 409
+    # TASK_OPERATION_MISMATCH 永久丢弃，而账本已是终态、重投会被 inspect() 跳过。
+    assert posts[0]["body"]["operation"] == "node.observe"
+    assert posts[0]["body"]["result"]["operation"] == "node.observe"
     assert RESULT_REFUSED not in {post["body"]["result"]["status"] for post in posts}
+
+
+def test_reconciled_unknown_uses_the_operation_recorded_at_fence_time(sandbox, control_plane):
+    """合法但不同的 operation 重投：UNKNOWN 仍绑定账本里 begin() 记录的 operation。"""
+    control_plane.respond = idle_responder(control_plane)
+    loop, _ = build_agent(sandbox, control_plane)
+    task_id = "task-op-mismatch"
+    assert loop.ledger.begin(task_id, "node.observe") == "NEW"
+
+    loop._process_task(
+        make_task(node_uid=sandbox.node_uid, task_id=task_id, operation="capability.inspect")
+    )
+    entry = loop.ledger.get(task_id)
+    assert entry["state"] == RESULT_UNKNOWN
+    assert entry["operation"] == "node.observe"
+    assert entry["reconciled"] is True
+    committed = entry["result_digest"]
+    body = loop.outbox.get(task_id)["body"]
+    assert body["operation"] == "node.observe"
+    assert body["result"]["operation"] == "node.observe"
+    assert body["result_digest"] == committed
+
+    stats = loop.shutdown(reason="test")
+    assert stats["sent"] == 1
+    posts = control_plane.requests_to("/result")
+    assert len(posts) == 1
+    assert posts[0]["body"]["operation"] == "node.observe"
+    assert posts[0]["body"]["result"]["operation"] == "node.observe"
+    assert posts[0]["body"]["result"]["status"] == RESULT_UNKNOWN
+
+
+def test_queued_result_with_a_foreign_operation_is_rebuilt_not_sent(sandbox, control_plane):
+    """队列里的 body operation 与账本不一致：撤回重建 UNKNOWN，绝不原样发送。"""
+    control_plane.respond = idle_responder(control_plane)
+    loop, stream = build_agent(sandbox, control_plane)
+    task_id = "task-foreign-queued-op"
+    loop.ledger.begin(task_id, "node.observe")
+    foreign = make_result(
+        task_id=task_id,
+        node_uid=sandbox.node_uid,
+        operation="capability.inspect",
+        status=RESULT_SUCCEEDED,
+    )
+    loop._enqueue_result(foreign)
+    assert loop.outbox.has(task_id) is True
+
+    # 重投同一个 node.observe：begin() 返回 ALREADY_FENCED → 对账必须按账本 operation 重建。
+    loop._process_task(make_task(node_uid=sandbox.node_uid, task_id=task_id))
+    entry = loop.ledger.get(task_id)
+    assert entry["state"] == RESULT_UNKNOWN
+    assert entry["operation"] == "node.observe"
+    assert entry["reconciled"] is True
+    body = loop.outbox.get(task_id)["body"]
+    assert body["operation"] == "node.observe"
+    assert body["result"]["operation"] == "node.observe"
+    assert body["result"]["status"] == RESULT_UNKNOWN
+    assert body["result_digest"] == entry["result_digest"]
+
+    stats = loop.shutdown(reason="test")
+    assert stats["sent"] == 1
+    posts = control_plane.requests_to("/result")
+    assert len(posts) == 1
+    assert posts[0]["body"]["operation"] == "node.observe"
+    assert posts[0]["body"]["result"]["operation"] == "node.observe"
+    assert "queued_result_not_sendable" in stream.getvalue()
 
 
 def test_tombstoned_task_is_skipped_not_refused(sandbox, control_plane):
