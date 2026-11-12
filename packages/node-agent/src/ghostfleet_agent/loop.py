@@ -45,8 +45,12 @@ from . import protocol as protocol_mod
 BACKOFF_BASE_S = 1.0
 BACKOFF_CAP_S = 300.0
 RETRY_AFTER_CAP_S = 3600.0
-SHUTDOWN_FLUSH_BUDGET_S = 10.0  # ADR §8：SIGTERM 后 ≤10 s 完成有界 flush
+# ADR §8：SIGTERM 后 flush 有界。TimeoutStopSec=30，总停机预算按 ≤1/3 取 8 s，
+# 给"打断睡眠 + STOPPING + last_stop 落盘"留出余量。
+SHUTDOWN_FLUSH_BUDGET_S = 8.0
 SHUTDOWN_FLUSH_ATTEMPTS = 30
+# SIGTERM 睡眠可打断性：每片 ≤1 s 检查一次 stop_event，保证任意睡眠点被唤醒。
+STOP_SLICE_S = 1.0
 MIN_SLEEP_CHUNK_S = 0.2
 MAX_SLEEP_CHUNK_S = 30.0  # WatchdogSec=60：任何睡眠都必须切成 ≤30 s 的块并每块喂狗
 # 常驻喂狗线程周期 = WatchdogSec/3（ADR §8 的 60 s）。线程不依赖主线程推进，
@@ -153,6 +157,7 @@ class AgentLoop:
         clock=None,
         watchdog_interval_s: float = WATCHDOG_INTERVAL_S,
         watchdog_waiter=None,
+        stop_waiter=None,
     ) -> None:
         self.config = config
         self.node_uid = node_uid
@@ -176,6 +181,9 @@ class AgentLoop:
         self._watchdog_interval_s = float(watchdog_interval_s)
         self._watchdog_waiter = watchdog_waiter
         self._watchdog = None
+        # stop_event 与等待函数都可在构造期注入，便于用假时钟断言"信号→退出"时延。
+        self._stop_event = None
+        self._stop_waiter = stop_waiter or (lambda event, timeout: event.wait(timeout))
 
     # -- 事件日志（合同 E：固定字段，绝不写 nonce/params/token） -------------
     def _emit(self, event: str, detail=None) -> None:
@@ -348,6 +356,11 @@ class AgentLoop:
             self.logger.warning("task_batch_truncated", received=len(batch))
             batch = batch[: MAX_TASKS_PER_POLL + 2]
         for task in batch:
+            # SIGTERM 后绝不再开始新任务：未开始的 task 不进 ledger（控制面可安全重投）。
+            stop_event = self._stop_event
+            if stop_event is not None and stop_event.is_set():
+                self.logger.info("task_batch_aborted", pending=len(batch))
+                break
             self._process_task(task)
 
         report = self.outbox.flush(self._send_outbox_item)
@@ -469,7 +482,13 @@ class AgentLoop:
         )
 
     # -- 睡眠 ---------------------------------------------------------------
-    def _sleep_with_jitter(self, seconds: float, *, apply_jitter: bool = True) -> None:
+    def _sleep_with_jitter(self, seconds: float, *, apply_jitter: bool = True, stop_event=None) -> bool:
+        """睡眠；可被 stop_event 打断。返回 True 表示收到停止信号提前返回。
+
+        不传 stop_event 时保持旧行为（一次性调用注入的 self._sleep），便于假时钟测试。
+        传 stop_event 时按 ≤STOP_SLICE_S 的片等待，保证 SIGTERM 后 ≤1 s 脱离睡眠；
+        这正是 TimeoutStopSec=30 下"任意时刻 SIGTERM → 进程 ≤5 s 退出"的关键。
+        """
         # WatchdogSec=60：切成 ≤30 s 的块，每块前喂狗，保证长退避期间不被 systemd 杀掉。
         # 服务端 Retry-After 是权威时长，绝不乘抖动（否则会提前重试）。
         ratio = float(self.config.jitter_ratio)
@@ -477,17 +496,35 @@ class AgentLoop:
         remaining = adjusted
         while remaining > 0:
             chunk = min(remaining, MAX_SLEEP_CHUNK_S)
-            self._sleep(chunk)
+            if stop_event is None:
+                self._sleep(chunk)
+            elif self._wait_chunk(chunk, stop_event):
+                return True
             remaining -= chunk
-            if remaining > 0:
+            if remaining > 0 and stop_event is None:
                 self.notifier.watchdog()
+        return stop_event is not None and stop_event.is_set()
 
-    def _sleep_interval(self, stop_event=None) -> None:
-        self._sleep_with_jitter(self._interval_s)
+    def _wait_chunk(self, seconds: float, stop_event) -> bool:
+        """按 ≤STOP_SLICE_S 切片等待；返回 True 表示看到停止信号。"""
+        remaining = float(seconds)
+        while remaining > 0:
+            slice_s = min(remaining, STOP_SLICE_S)
+            try:
+                interrupted = bool(self._stop_waiter(stop_event, slice_s))
+            except Exception:  # noqa: BLE001 - 任何等待失败都不能拖住停机
+                interrupted = True
+            if interrupted or stop_event.is_set():
+                return True
+            remaining -= slice_s
+        return stop_event.is_set()
 
-    def _sleep_backoff(self, stop_event=None) -> None:
+    def _sleep_interval(self, stop_event=None) -> bool:
+        return self._sleep_with_jitter(self._interval_s, stop_event=stop_event)
+
+    def _sleep_backoff(self, stop_event=None) -> bool:
         backoff = max(0.5, float(self.state.next_backoff_s or 1))
-        self._sleep_with_jitter(min(backoff, BACKOFF_CAP_S))
+        return self._sleep_with_jitter(min(backoff, BACKOFF_CAP_S), stop_event=stop_event)
 
     def _retry_delay(self) -> float:
         """429 Retry-After 是服务端权威时长：不被本地 300 s 退避上限截断。"""
@@ -524,14 +561,26 @@ class AgentLoop:
             return 4
         return 0 if outcome == "ok" else 5
 
+    def bind_stop_event(self, stop_event) -> None:
+        """把 SIGTERM 事件同时交给睡眠等待与任务执行器（协作式取消）。"""
+        self._stop_event = stop_event
+        try:
+            self.executor.interrupt = stop_event
+        except AttributeError:
+            return
+
     def run_forever(self, *, stop_event=None, max_iterations: int | None = None) -> int:
+        if stop_event is not None:
+            self.bind_stop_event(stop_event)
+        # CLI 在信号处理器装好后调用 bind_stop_event；测试可直接传事件。
+        effective_stop = stop_event if stop_event is not None else self._stop_event
         self.notifier.ready()
         self._start_watchdog()
         iterations = 0
         stop_reason = "iteration_limit"
         try:
             while True:
-                if stop_event is not None and stop_event.is_set():
+                if effective_stop is not None and effective_stop.is_set():
                     stop_reason = "signal"
                     break
                 if max_iterations is not None and iterations >= max_iterations:
@@ -544,11 +593,17 @@ class AgentLoop:
                     self.logger.error("auth_fatal", code=error.code)
                     self.shutdown(reason="auth_fatal")
                     return 4
+                interrupted = False
                 if outcome == "ok":
-                    self._sleep_with_jitter(self._interval_s)
+                    interrupted = self._sleep_with_jitter(self._interval_s, stop_event=effective_stop)
                 else:
                     # 只有本地指数退避才抖动；服务端 Retry-After 必须原样遵守。
-                    self._sleep_with_jitter(self._retry_delay(), apply_jitter=self._retry_after_s <= 0)
+                    interrupted = self._sleep_with_jitter(
+                        self._retry_delay(), apply_jitter=self._retry_after_s <= 0, stop_event=effective_stop
+                    )
+                if interrupted:
+                    stop_reason = "signal"
+                    break
         finally:
             # 任何退出路径（含未预期异常）都先停线程，避免 STOPPING 之后还有 WATCHDOG。
             self._stop_watchdog()

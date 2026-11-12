@@ -487,6 +487,8 @@ def main(argv=None) -> int:
 
     stop_event = threading.Event()
     signals_installed = install_signal_handlers(stop_event, logger)
+    # 无论信号处理器是否装成，都把事件绑给睡眠/执行器：--once 与测试注入也能协作取消。
+    loop.bind_stop_event(stop_event)
     try:
         loop.reconcile()
         if args.once:
