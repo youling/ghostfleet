@@ -315,10 +315,14 @@ test("node credential material never reaches public responses, events or project
   const token = flow.token;
   const digest = parts.store.getNode(flow.node_uid).agent.credential_digest;
 
+  // The sealed handoff is durable, so the public surface must not leak it either.
+  const sealed = parts.store.getNode(flow.node_uid).agent.credential_handoff;
   const nodes = await parts.handler(new Request("https://ghostfleet.invalid/v0/nodes"));
   const nodesText = await nodes.text();
   assert.equal(nodes.status, 200);
   assertNoCredentialMaterial(nodesText, token, digest);
+  assert.equal(nodesText.includes(sealed.ciphertext), false, "the sealed handoff must not be public");
+  assert.equal(nodesText.includes(sealed.iv), false);
   assert.equal(nodesText.includes("credential_digest"), false);
   assert.equal(nodesText.includes("nonces"), false);
 
@@ -326,6 +330,7 @@ test("node credential material never reaches public responses, events or project
   const eventsText = await events.text();
   assert.equal(events.status, 200);
   assertNoCredentialMaterial(eventsText, token, digest);
+  assert.equal(eventsText.includes(sealed.ciphertext), false);
 
   assertNoCredentialMaterial(JSON.stringify(parts.controller.listNodes()), token, digest);
   assertNoCredentialMaterial(JSON.stringify(parts.controller.getNode(flow.node_uid)), token, digest);
