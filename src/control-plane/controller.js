@@ -490,7 +490,7 @@ export class GhostFleetController {
     const attempt = this.getEnrollmentAttempt(id);
     this.requireLiveAttempt(attempt);
     if (!Number.isInteger(ttl_seconds) || ttl_seconds < 30 || ttl_seconds > 3600) throw new Error("TTL_INVALID");
-    if (attempt.state !== EnrollmentState.PREPARING) throw new Error("HUMAN_GATE_STATE_INVALID");
+    if (attempt.state !== EnrollmentState.PREPARING) throw stateConflict("HUMAN_GATE_STATE_INVALID");
     const gate = {
       gate_id: makeId("gate"),
       gate_type,
@@ -519,7 +519,7 @@ export class GhostFleetController {
     if (!["APPROVE", "REJECT"].includes(decision)) throw new Error("HUMAN_GATE_DECISION_INVALID");
     const attempt = this.getEnrollmentAttempt(gate.subject_id);
     this.requireLiveAttempt(attempt);
-    if (attempt.state !== EnrollmentState.WAITING_HUMAN) throw new Error("HUMAN_GATE_STATE_INVALID");
+    if (attempt.state !== EnrollmentState.WAITING_HUMAN) throw stateConflict("HUMAN_GATE_STATE_INVALID");
     if (Date.parse(gate.expires_at) <= this.clock.now()) {
       gate.state = HumanGateState.EXPIRED;
       gate.resolved_at = this.now();
@@ -566,7 +566,7 @@ export class GhostFleetController {
 
   markReconcileRequired(id, reason = "ambiguous external outcome") {
     const attempt = this.getEnrollmentAttempt(id);
-    if (![EnrollmentState.CLAIMED, EnrollmentState.MATERIALIZING].includes(attempt.state)) throw new Error("RECONCILE_STATE_INVALID");
+    if (![EnrollmentState.CLAIMED, EnrollmentState.MATERIALIZING].includes(attempt.state)) throw stateConflict("RECONCILE_STATE_INVALID");
     return this.transitionAttempt(attempt, EnrollmentState.RECONCILE_REQUIRED, reason);
   }
 

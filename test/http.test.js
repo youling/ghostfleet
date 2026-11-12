@@ -133,6 +133,28 @@ test("a refused acceptance transition is a 409 while materialization shape error
   assert.equal((await replay.json()).error, "ACCEPT_STATE_INVALID");
 });
 
+test("a lifecycle transition refused by the stored state is a 409, not a malformed request", async () => {
+  const c = new GhostFleetController();
+  const handle = createHttpHandler(c, { authorizeOperator: () => true });
+  const attempt = c.createEnrollmentAttempt({ asset_hint: "synthetic-target" });
+  const path = (suffix) => "https://ghostfleet.invalid/v0/enrollment-attempts/" +
+    encodeURIComponent(attempt.attempt_id) + "/" + suffix;
+  const post = (suffix, body = "{}") => handle(new Request(path(suffix), {
+    method: "POST", headers: { "content-type": "application/json" }, body,
+  }));
+
+  // CREATED cannot go straight to materialization: the request is well formed, the state refuses.
+  const early = await post("materialize", JSON.stringify({ node_id: "synthetic-target", platform: "linux" }));
+  assert.equal(early.status, 409);
+  assert.equal((await early.json()).error, "INVALID_TRANSITION");
+
+  // Preparing twice is the same kind of refusal once the attempt has left CREATED.
+  assert.equal((await post("prepare")).status, 200);
+  const twice = await post("prepare");
+  assert.equal(twice.status, 409);
+  assert.equal((await twice.json()).error, "INVALID_TRANSITION");
+});
+
 test("SDK-side evidence remains a separate integration responsibility, not HTTP authority", async () => {
   const c = new GhostFleetController();
   const attempt = c.createEnrollmentAttempt();

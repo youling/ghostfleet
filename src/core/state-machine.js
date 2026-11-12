@@ -17,6 +17,9 @@ export class InvalidTransitionError extends Error {
     super("invalid enrollment transition: " + from + " -> " + to);
     this.name = "InvalidTransitionError";
     this.code = "INVALID_TRANSITION";
+    // The body was fine; the stored state refuses the transition. Keep the 409 explicit
+    // because the HTTP edge no longer guesses from the code text.
+    this.status = 409;
   }
 }
 
