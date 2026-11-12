@@ -171,6 +171,17 @@ test("the release unit asset pins the exact production launcher and passes the v
   assert.match(asset, /^Type=notify$/m);
   assert.match(asset, /^NotifyAccess=main$/m);
   assert.match(asset, /^WatchdogSec=60$/m);
+  // The unit process inherits the user manager's environment. A runner whose
+  // manager was started for a different account left XDG_RUNTIME_DIR pointing at
+  // /run/user/<other uid>, so every "systemctl --user" probe inside the agent
+  // addressed the wrong bus, failed, and observe.unit_state mapped that to
+  // "unknown" while the operator's systemctl said active. %t expands to the unit
+  // owner's /run/user/<uid>, so the shipped launcher pins its own bus path
+  // instead of depending on whatever the manager inherited.
+  assert.deepEqual(
+    asset.split(/\r?\n/).filter((line) => line.startsWith("Environment=")),
+    ["Environment=PYTHONDONTWRITEBYTECODE=1", "Environment=XDG_RUNTIME_DIR=%t"],
+  );
   assert.match(asset, /^ProtectSystem=strict$/m);
   assert.match(asset, /^ProtectHome=read-only$/m);
   assert.match(asset, /^StateDirectory=ghostfleet-agent$/m);
@@ -258,6 +269,9 @@ test("the courier installs the pinned payload, unit, credential and public proje
     assert.equal((await stat(PAYLOAD_PATH(host))).mode & 0o777, 0o755);
     const unit = await readFile(UNIT_PATH(host), "utf8");
     assert.ok(unit.includes("ExecStart=/usr/bin/python3 -I " + host.payloadPath + " run\n"), unit);
+    // A user unit that carries its own runtime directory cannot be steered onto
+    // another account's bus by the inherited manager environment.
+    assert.ok(unit.includes("Environment=XDG_RUNTIME_DIR=%t\n"), unit);
     assert.equal(await readFile(WANT_PATH(host), "utf8"), unit);
     assert.ok(await exists(LINGER(host)));
 
