@@ -466,6 +466,10 @@ grep -q 'CAPABILITY_STATUS_PROJECTION_FAILED' "$work/projection.log" || {
 cmp -s "$projection_sentinel" /etc/ghostfleet/capability-status.json ||
   fail_check "the previous capability projection was rewritten or removed by the failed lane"
 [[ ! -e /usr/local/libexec/ghostfleet/node-agent.pyz ]] || fail_check "the failed lane left its payload installed"
+! grep -q 'could not be removed' "$work/projection.log" || {
+  cat "$work/projection.log" >&2
+  fail_check "the failed lane reported a residual run account instead of removing the one it created"
+}
 ! id "$projection_arm_account" >/dev/null 2>&1 || fail_check "the failed lane left the run account it created"
 [[ ! -e "$projection_arm_unit" ]] || fail_check "the failed lane left the user unit installed"
 [[ ! -e "/var/lib/systemd/linger/$projection_arm_account" ]] || fail_check "the failed lane left Linger enabled"
@@ -724,6 +728,10 @@ fi
 grep -q 'selected Linger could not be enabled' "$work/rollback.log" || {
   cat "$work/rollback.log" >&2
   fail_check "the rollback run failed for an unexpected reason"
+}
+! grep -q 'could not be removed' "$work/rollback.log" || {
+  cat "$work/rollback.log" >&2
+  fail_check "the rollback reported a residual run account instead of removing the account it created"
 }
 ! id "$rollback_account" >/dev/null 2>&1 || fail_check "the run account this ceremony created survived its rollback"
 [[ ! -e "/home/$rollback_account" ]] || fail_check "the created run account home survived the rollback"
