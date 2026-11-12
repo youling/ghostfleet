@@ -17,7 +17,7 @@ import time
 from types import SimpleNamespace
 
 from .client import MIN_INTERVAL_S
-from .ledger import TERMINAL_STATES, LedgerWriteError
+from .ledger import FENCED, TERMINAL_STATES, LedgerWriteError
 from .logging import get_logger
 from .observe import HEALTH_DEGRADED, compute_drift
 from .outbox import CONFLICT, DUPLICATE, TOO_LARGE, OutboxWriteError
@@ -496,6 +496,18 @@ class AgentLoop:
             # 栅栏的语义是"实现可能已经跑过"，而这类任务根本不会进入 dispatch；
             # 先 fence 会留下一条 MAY_MUTATE 等级、不可驱逐的条目，512 个未知
             # operation 就能永久耗尽账本并停掉一切 poll。
+            # P1：pre-dispatch 分支也不能绕过账本历史——complete() 会写终态与摘要，
+            # 同一个 task_id 第二次到达就会留下第二个摘要（FENCED 情形更糟：队列里的
+            # UNKNOWN 会被发送闸撤回，而账本说 REFUSED）。因此先做只读查询：
+            # FENCED → 按既有语义补 UNKNOWN；已有终态/墓碑 → 跳过；从未见过 → REFUSED。
+            known = self.ledger.inspect(task_id)
+            if known == FENCED:
+                self._reconcile_task(task_id, safe_operation)
+                self.logger.info("task_duplicate_skipped", task_id=task_id, state=known)
+                return
+            if known is not None:
+                self.logger.info("task_duplicate_skipped", task_id=task_id, state=known)
+                return
             self._emit("task_start", {"task_id": task_id, "operation": safe_operation})
             result = self.executor.handle(envelope)
             self._deliver_result(task_id, safe_operation, result)

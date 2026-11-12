@@ -41,6 +41,8 @@ RESULT_STATES = frozenset({STATE_SUCCEEDED, STATE_REFUSED, STATE_FAILED, STATE_U
 BEGIN_NEW = "NEW"
 BEGIN_FENCED = "ALREADY_FENCED"
 BEGIN_DONE = "ALREADY_DONE"
+# inspect() 对"只剩墓碑"的 task_id 返回这个哨兵值（不是条目状态）。
+TOMBSTONE_STATE = "TOMBSTONE"
 
 
 class LedgerCorruptError(StoreError):
@@ -162,6 +164,23 @@ class Ledger:
         """该 task_id 是否已经进入"可能已执行"状态（含终态）。"""
         return task_id in self._entries
 
+    def inspect(self, task_id: str) -> str | None:
+        """只读查询该 task_id 的历史事实，绝不写任何文件。
+
+        返回值：终态字符串（SUCCEEDED/REFUSED/FAILED/UNKNOWN）、FENCED（可能已执行、
+        尚未收敛）、TOMBSTONE_STATE（曾被驱逐但已收敛）、None（从未见过）。
+
+        调用方（pre-dispatch 拒绝路径）用它决定"能不能再写一条新结论"：账本只允许
+        一个 task 一个终态摘要，覆盖会让控制面收到两个摘要（ADR §5.2/§7）。
+        """
+        entry = self._entries.get(task_id)
+        if entry is not None:
+            state = entry.get("state")
+            return state if isinstance(state, str) else FENCED
+        if task_id in self._tombstones:
+            return TOMBSTONE_STATE
+        return None
+
     def pending_reconcile(self) -> list[str]:
         """已栅栏但既无终态也未对账的 task_id（启动恢复用）。"""
         return sorted(
@@ -211,6 +230,14 @@ class Ledger:
         if status not in RESULT_STATES:
             raise LedgerWriteError("terminal status must be SUCCEEDED/REFUSED/FAILED/UNKNOWN", path=self.path)
         entry = self._entries.get(task_id)
+        if entry is not None and entry.get("state") in TERMINAL_STATES:
+            # 一个 task 只能有一个终态摘要（ADR §5.2/§7）：不同摘要是上层绕过了历史，
+            # 这里 fail closed 而不是静默覆盖——覆盖就会让控制面看到两个摘要。
+            if entry.get("result_digest") != result_digest:
+                raise LedgerWriteError(
+                    "terminal result digest already committed for this task",
+                    path=self.path,
+                )
         if entry is None:
             # pre-dispatch 拒绝（例如未知 operation）没有栅栏条目：按事实建最小条目，
             # 但保留真实 operation 名，便于审计为什么它没有进入实现函数。

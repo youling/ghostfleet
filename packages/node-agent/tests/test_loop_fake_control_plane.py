@@ -1229,3 +1229,106 @@ def test_evicted_terminal_result_is_still_sendable_via_its_tombstone(sandbox, co
     assert posts[0]["body"]["result_digest"] == digest
 
 
+# -- P1：pre-dispatch 拒绝路径绝不能覆盖/推翻已有的 task 事实 -------------------
+def test_known_terminal_task_is_not_refused_again(sandbox, control_plane):
+    """同一 task_id 已 SUCCEEDED，再来一次未知 operation：不许写第二个摘要。
+
+    旧实现在 pre-dispatch 分支直接 complete() 覆盖成 REFUSED + 新摘要，控制面会先
+    收到 SUCCEEDED、再收到 REFUSED（两个摘要 → TASK_RESULT_CONFLICT）。
+    """
+    control_plane.respond = idle_responder(control_plane)
+    loop, stream = build_agent(sandbox, control_plane)
+    task_id = "task-already-succeeded"
+    loop._process_task(make_task(node_uid=sandbox.node_uid, task_id=task_id))
+    entry = loop.ledger.get(task_id)
+    assert entry["state"] == RESULT_SUCCEEDED
+    committed = entry["result_digest"]
+
+    loop._process_task(
+        make_task(node_uid=sandbox.node_uid, task_id=task_id, operation="fleet.do.everything")
+    )
+    entry = loop.ledger.get(task_id)
+    assert entry["state"] == RESULT_SUCCEEDED
+    assert entry["result_digest"] == committed
+    assert "task_duplicate_skipped" in stream.getvalue()
+
+    loop.shutdown(reason="test")
+    posts = control_plane.requests_to("/result")
+    assert len(posts) == 1
+    assert posts[0]["body"]["result"]["status"] == RESULT_SUCCEEDED
+    assert posts[0]["body"]["result_digest"] == committed
+
+
+def test_known_in_flight_task_is_reconciled_not_refused(sandbox, control_plane):
+    """begin() 之后又来一次未知 operation：按既有语义对账成 UNKNOWN。
+
+    旧实现会写成 REFUSED，并让发送闸把已排队的 UNKNOWN 撤回 → 可能已执行的任务
+    变成"REFUSED 且零结果"。
+    """
+    control_plane.respond = idle_responder(control_plane)
+    loop, _ = build_agent(sandbox, control_plane)
+    task_id = "task-may-have-executed"
+    loop.ledger.begin(task_id, "node.observe")
+
+    loop._process_task(
+        make_task(node_uid=sandbox.node_uid, task_id=task_id, operation="fleet.do.everything")
+    )
+    entry = loop.ledger.get(task_id)
+    assert entry["state"] == RESULT_UNKNOWN
+    assert entry["reconciled"] is True
+    committed = entry["result_digest"]
+    assert loop.outbox.has(task_id) is True
+
+    stats = loop.shutdown(reason="test")
+    assert stats["sent"] == 1
+    posts = control_plane.requests_to("/result")
+    assert len(posts) == 1
+    assert posts[0]["body"]["result"]["status"] == RESULT_UNKNOWN
+    assert posts[0]["body"]["result_digest"] == committed
+    assert RESULT_REFUSED not in {post["body"]["result"]["status"] for post in posts}
+
+
+def test_tombstoned_task_is_skipped_not_refused(sandbox, control_plane):
+    """只剩墓碑（已收敛、已驱逐）的 task_id 再来未知 operation：跳过，不发送。"""
+    control_plane.respond = idle_responder(control_plane)
+    loop, _ = build_agent(sandbox, control_plane)
+    loop.ledger.save = lambda: None
+    loop.ledger.save_tombstones = lambda: None
+    task_id = "task-tombstone-only"
+    loop.ledger.begin(task_id, "node.observe")
+    loop.ledger.complete(task_id, RESULT_SUCCEEDED, result_digest="a" * 64, operation="node.observe")
+    for index in range(MAX_LEDGER_ENTRIES):
+        loop.ledger.begin(f"task-busy-{index:04d}", "node.observe")
+    loop.ledger.complete("task-prune-trigger", RESULT_SUCCEEDED, result_digest="0" * 64, operation="node.observe")
+    assert loop.ledger.get(task_id) is None
+    assert loop.ledger.tombstones[task_id]["result_digest"] == "a" * 64
+
+    loop._process_task(
+        make_task(node_uid=sandbox.node_uid, task_id=task_id, operation="fleet.do.everything")
+    )
+    assert loop.outbox.has(task_id) is False
+    assert loop.ledger.tombstones[task_id]["result_digest"] == "a" * 64
+    stats = loop.shutdown(reason="test")
+    assert stats["sent"] == 0
+    assert control_plane.requests_to("/result") == []
+
+
+def test_first_unknown_operation_is_still_refused(sandbox, control_plane):
+    """从未见过的 task_id + 未知 operation：仍然按口径拒绝一次（建终态条目）。"""
+    control_plane.respond = idle_responder(control_plane)
+    loop, _ = build_agent(sandbox, control_plane)
+    task_id = "task-fresh-unknown-op"
+    loop._process_task(
+        make_task(node_uid=sandbox.node_uid, task_id=task_id, operation="fleet.do.everything")
+    )
+    entry = loop.ledger.get(task_id)
+    assert entry["state"] == RESULT_REFUSED
+    assert entry["reconciled"] is True
+    assert loop.outbox.has(task_id) is True
+
+    stats = loop.shutdown(reason="test")
+    assert stats["sent"] == 1
+    posts = control_plane.requests_to("/result")
+    assert len(posts) == 1
+    assert posts[0]["body"]["result"]["status"] == RESULT_REFUSED
+    assert posts[0]["body"]["result_digest"] == entry["result_digest"]
