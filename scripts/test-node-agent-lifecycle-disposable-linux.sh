@@ -810,7 +810,9 @@ evidence "config.system_path=${SYSTEM_CONFIG_PATH}"
 evidence "config.user_path=${ACCOUNT_HOME}/.config/ghostfleet/node.json"
 # The control account's config directory must hold only what the install line put
 # there: a leftover probe file would otherwise hide a cleanup defect (m01782).
-CONFIG_DIR_ENTRIES="$(ls -A "${ACCOUNT_HOME}/.config/ghostfleet" | sort | tr '\n' ',')"
+# LC_ALL=C pins the collation: a locale-aware sort puts node.json before
+# node-token because it ignores the punctuation at the first comparison level.
+CONFIG_DIR_ENTRIES="$(ls -A "${ACCOUNT_HOME}/.config/ghostfleet" | LC_ALL=C sort | tr '\n' ',')"
 assert_eq "${CONFIG_DIR_ENTRIES}" "node-token,node.json," "the control account config directory must contain exactly the token and the node metadata"
 record_ok "the control account config directory holds exactly node-token and node.json, so no probe leftover is hiding a cleanup defect"
 evidence "config.dir_entries=${CONFIG_DIR_ENTRIES}"
@@ -1194,7 +1196,7 @@ evidence "privateusers.preserve_credentials_home_exit=${SANDBOX_ROOT_HOME_STATUS
 
 # The state directory must not accumulate probe leftovers: cleanup has to leave
 # nothing behind, so the acceptance pins what the agent's own directory contains.
-STATE_DIR_ENTRIES="$(ls -A "${HOME_STATE_DIR}" 2>/dev/null | sort | tr '\n' ',')"
+STATE_DIR_ENTRIES="$(ls -A "${HOME_STATE_DIR}" 2>/dev/null | LC_ALL=C sort | tr '\n' ',')"
 record_ok "the agent state directory holds only the agent's own files (${STATE_DIR_ENTRIES:-empty}), so no probe leftovers remain to hide a cleanup defect"
 evidence "privateusers.state_dir_entries=${STATE_DIR_ENTRIES:-empty}"
 

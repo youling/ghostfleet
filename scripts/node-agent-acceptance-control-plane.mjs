@@ -31,7 +31,7 @@
 //   node ... node   --base-url ... --ca ... --operator-token-file <file>
 //   node ... tasks  --base-url ... --ca ... --operator-token-file <file>
 //   node ... observe --base-url ... --ca ... --observer-token-file <file> [--json]
-//   node ... host-report --base-url ... --ca ... --operator-token-file <file> ...
+//   node ... observer-tasks --base-url ... --ca ... --observer-token-file <file>
 //   node ... health --base-url ... --ca ...
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -661,8 +661,10 @@ async function commandCreateTask(argv) {
 // given, keep only that node. projectNode() is the product's own public shape:
 // it carries agent.health / last_heartbeat_at / capability_digest and never a
 // credential digest, nonce ring or token.
-async function readNodeProjection(options, nodeUid) {
-  const result = await clientCall(options, "GET", "/v0/nodes");
+async function readNodeProjection(options, nodeUid, tokenKind) {
+  // The token kind is not optional: without it the request reaches the product
+  // handler unauthenticated and every projection read answers 403.
+  const result = await clientCall(options, "GET", "/v0/nodes", undefined, tokenKind);
   let parsed;
   try {
     parsed = JSON.parse(result.text);
@@ -680,7 +682,7 @@ async function readNodeProjection(options, nodeUid) {
 async function commandNode(argv) {
   const { flags } = parseArgv(argv);
   const options = clientOptions(flags, { tokenKind: "operator" });
-  emitClientResult(await readNodeProjection(options, optionalFlag(flags, "node-uid")));
+  emitClientResult(await readNodeProjection(options, optionalFlag(flags, "node-uid"), "operator"));
 }
 
 async function commandTasks(argv) {
@@ -694,7 +696,7 @@ async function commandObserve(argv) {
   const { flags } = parseArgv(argv);
   const options = clientOptions(flags, { tokenKind: "observer" });
   const pretty = flags.get("json") !== "false";
-  const result = await readNodeProjection(options, requiredFlag(flags, "node-uid"));
+  const result = await readNodeProjection(options, requiredFlag(flags, "node-uid"), "observer");
   let text = result.text;
   if (result.status < 400) text = JSON.stringify({ ...JSON.parse(text), read_only: true });
   emitClientResult({ ...result, text }, { pretty });
