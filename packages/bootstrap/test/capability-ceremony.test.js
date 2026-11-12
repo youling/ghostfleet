@@ -75,6 +75,9 @@ async function makeHost() {
     node_id: NODE_ID,
     node_uid: NODE_UID,
   }));
+  // The operating Human is modelled like every other account, so no test ever
+  // depends on the host's name service.
+  await seedAccount(host, OPERATING_USER, { uid: 2500, shell: "/bin/bash" });
   const dispatcher = await readFixture("fixture-tools.sh");
   for (const command of STUB_COMMANDS) {
     await writeFile(join(host.bin, command), dispatcher, { mode: 0o755 });
@@ -115,12 +118,14 @@ async function freshCheckpoint(host) {
 }
 
 async function buildSelection(overrides = {}) {
-  const [installer, key, helper, unit] = await Promise.all([
+  const { unitContent = null, unitName = "ghostfleet-managed.service", ...rest } = overrides;
+  const [installer, key, helper, defaultUnit] = await Promise.all([
     readFixture("capability-installer.sh"),
     readFixture("privileged-ops.pub"),
     readFixture("fleet-privctl.py"),
     readFixture("ghostfleet-managed.service"),
   ]);
+  const unit = unitContent ?? defaultUnit;
   const selection = {
     source: "template",
     template_digest: sha256("fixture-template"),
@@ -141,7 +146,7 @@ async function buildSelection(overrides = {}) {
       { name: "ghostfleet-managed.service", mode: "0644", content: unit },
       { name: "managed-linux-privileged-operations.sh", mode: "0750", content: installer },
     ],
-    ...overrides,
+    ...rest,
   };
   return selection;
 }
@@ -153,7 +158,8 @@ async function runCourier(host, selection, options = {}) {
     capabilitySelection: selection,
   });
   const replace = (needle, value) => { script = script.replace(needle, () => value); };
-  replace('PATH="/usr/sbin:/usr/bin:/sbin:/bin"', 'PATH="' + host.bin + ':/usr/sbin:/usr/bin:/sbin:/bin"');
+  const systemPath = options.systemPath ?? "/usr/sbin:/usr/bin:/sbin:/bin";
+  replace('PATH="/usr/sbin:/usr/bin:/sbin:/bin"', 'PATH="' + host.bin + ":" + systemPath + '"');
   script = script.replaceAll(". /etc/os-release", () => ". " + host.osRelease);
   script = script.replaceAll("[ -d /run/systemd/system ]", () => "[ -d " + host.systemdDir + " ]");
   script = script.replaceAll("[ -c /dev/tty ]", () => "[ -f " + host.tty + " ]");
@@ -218,7 +224,10 @@ async function seedAccount(host, name, {
 // A node that still records a v1 selection whose lane lives in the privileged
 // account. The unit is the reviewed artifact (so the hash gate passes) and the
 // fixture models the service state the stop proof has to observe.
-async function seedRecordedV1Lane(host, selection, { unitState = "inactive", stopIneffective = false, stopFails = false, processes = null } = {}) {
+async function seedRecordedV1Lane(host, selection, {
+  unitState = "inactive", stopIneffective = false, stopFails = false, processes = null,
+  pgrepFails = false, unitContent = null,
+} = {}) {
   const text = Buffer.from(encodeCapabilitySelection(selection), "base64").toString("utf8");
   const v1 = text
     .replace("schema=ghostfleet-selected-capability/v2", "schema=ghostfleet-selected-capability/v1")
@@ -231,7 +240,7 @@ async function seedRecordedV1Lane(host, selection, { unitState = "inactive", sto
   const unitPath = join(privilegedHome, ".config/systemd/user/ghostfleet-managed.service");
   const wantPath = join(privilegedHome, ".config/systemd/user/default.target.wants/ghostfleet-managed.service");
   await mkdir(join(privilegedHome, ".config/systemd/user/default.target.wants"), { recursive: true });
-  await writeFile(unitPath, await readFixture("ghostfleet-managed.service"));
+  await writeFile(unitPath, unitContent ?? await readFixture("ghostfleet-managed.service"));
   await symlink("../ghostfleet-managed.service", wantPath);
   await mkdir(join(host.fixtureState, "linger"), { recursive: true });
   await writeFile(join(host.fixtureState, "linger", PRIVILEGED_ACCOUNT), "yes\n");
@@ -240,6 +249,7 @@ async function seedRecordedV1Lane(host, selection, { unitState = "inactive", sto
   if (stopIneffective) await writeFile(join(host.fixtureState, "stop-ineffective"), "yes\n");
   if (stopFails) await writeFile(join(host.fixtureState, "stop-fails"), "yes\n");
   if (processes) await writeFile(join(host.fixtureState, "unit-procs"), processes);
+  if (pgrepFails) await writeFile(join(host.fixtureState, "pgrep-fails"), "yes\n");
   return { unitPath, wantPath };
 }
 
@@ -1389,13 +1399,17 @@ test("a failing group lookup is never read as 'no privileged group'", { skip: li
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
 
-test("a successful group lookup with no supplementary groups is accepted", { skip: linuxOnly }, async () => {
+test("an account whose only group is its primary group is accepted", { skip: linuxOnly }, async () => {
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
+    // A real account always lists its primary group; that is the shape accepted.
     await seedAccount(host, CONTROL_ACCOUNT);
-    await mkdir(join(host.fixtureState, "empty-groups"), { recursive: true });
-    await writeFile(join(host.fixtureState, "empty-groups", CONTROL_ACCOUNT), "none\n");
+    const groups = spawnSync(join(host.bin, "id"), ["-nG", CONTROL_ACCOUNT], {
+      env: { ...process.env, ...host.env },
+      encoding: "utf8",
+    });
+    assert.equal(groups.stdout.trim(), CONTROL_ACCOUNT, "the fixture answers with the real primary group");
     const result = await runCourier(host, await buildSelection());
     assert.equal(result.status, 0, result.stderr);
     assert.equal(await readFile(UNIT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
@@ -1458,5 +1472,112 @@ test("a v1 lane that is proved stopped is removed with its record", { skip: linu
     assert.equal(await exists(wantPath), false);
     assert.equal(await exists(join(host.fixtureState, "linger", PRIVILEGED_ACCOUNT)), false);
     assert.equal(await exists(join(host.checkpoint, "capability-selection.txt")), false);
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+async function systemPathWithout(host, command) {
+  const farm = join(host.root, "farm");
+  await mkdir(farm, { recursive: true });
+  const script = [
+    "for d in /usr/bin /bin /usr/sbin /sbin; do",
+    '  for entry in "$d"/*; do ln -sf "$entry" ' + farm + "/ 2>/dev/null || true; done",
+    "done",
+    'rm -f "' + farm + "/" + command + '"',
+  ].join("\n");
+  const built = spawnSync("bash", ["-c", script]);
+  if (built.status !== 0) throw new Error("could not build the PATH fixture: " + String(built.stderr));
+  // The fixture bin comes first on PATH, so its stub has to go too.
+  await rm(join(host.bin, command), { force: true });
+  return farm;
+}
+
+test("a group list that comes back empty is not accepted", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    await seedAccount(host, CONTROL_ACCOUNT);
+    await mkdir(join(host.fixtureState, "empty-groups"), { recursive: true });
+    await writeFile(join(host.fixtureState, "empty-groups", CONTROL_ACCOUNT), "none\n");
+    const result = await runCourier(host, await buildSelection());
+    assert.notEqual(result.status, 0, "id -nG always lists the primary group; empty output is not an answer");
+    assert.match(result.stderr, /CAPABILITY_RUN_ACCOUNT_UNPROVEN/);
+    assert.equal(await exists(UNIT_PATH(host)), false);
+    assert.equal(startingWith(await installerLog(host), "installer --apply").length, 0);
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a group list that does not contain the primary group is not accepted", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    // Parses cleanly but names some other group: the primary group is missing, so
+    // the answer was replaced or truncated and nothing about membership is proved.
+    await seedAccount(host, CONTROL_ACCOUNT, { groups: ["users"] });
+    const result = await runCourier(host, await buildSelection());
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /CAPABILITY_RUN_ACCOUNT_UNPROVEN/);
+    assert.equal(await exists(UNIT_PATH(host)), false);
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("an unparseable group token is not accepted", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    await seedAccount(host, CONTROL_ACCOUNT, { groups: [CONTROL_ACCOUNT, "bad!token"] });
+    const result = await runCourier(host, await buildSelection());
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /CAPABILITY_RUN_ACCOUNT_UNPROVEN/);
+    assert.equal(await exists(UNIT_PATH(host)), false);
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a pgrep query failure blocks deletion", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    assert.equal((await runCourier(host, selection)).status, 0);
+    const { unitPath } = await seedRecordedV1Lane(host, selection, { pgrepFails: true });
+    const second = await runCourier(host, null);
+    assert.notEqual(second.status, 0, "pgrep exit 3 is a failed query, not an empty process set");
+    assert.match(second.stderr, /could not be proved stopped/);
+    assert.match(second.stderr, /pgrep could not answer/);
+    assert.ok(await exists(unitPath));
+    assert.ok(await exists(join(host.checkpoint, "capability-selection.txt")));
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a missing pgrep blocks deletion", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    assert.equal((await runCourier(host, selection)).status, 0);
+    const { unitPath } = await seedRecordedV1Lane(host, selection);
+    const systemPath = await systemPathWithout(host, "pgrep");
+    const second = await runCourier(host, null, { systemPath });
+    assert.notEqual(second.status, 0, "without pgrep the absence of a process cannot be proved");
+    assert.match(second.stderr, /could not be proved stopped/);
+    assert.match(second.stderr, /pgrep is not installed/);
+    assert.ok(await exists(unitPath));
+    assert.ok(await exists(join(host.checkpoint, "capability-selection.txt")));
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a unit whose ExecStart is not an absolute binary blocks deletion", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const relativeUnit = "[Service]\nExecStart=sleep 300\n";
+    const selection = await buildSelection({ unitContent: relativeUnit });
+    assert.equal((await runCourier(host, selection)).status, 0);
+    const { unitPath } = await seedRecordedV1Lane(host, selection, { unitContent: relativeUnit });
+    const second = await runCourier(host, null);
+    assert.notEqual(second.status, 0, "a relative ExecStart cannot be attributed to a process set");
+    assert.match(second.stderr, /could not be proved stopped/);
+    assert.match(second.stderr, /does not name an absolute executable/);
+    assert.ok(await exists(unitPath));
+    assert.ok(await exists(join(host.checkpoint, "capability-selection.txt")));
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });

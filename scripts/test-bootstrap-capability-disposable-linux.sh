@@ -663,6 +663,27 @@ fi
 [[ "$(loginctl show-user "$privileged_account" -p Linger)" == "Linger=no" ]] || fail_check "Linger was not disabled for the privileged account"
 pgrep -u "$privileged_account" -f '/bin/sleep' >/dev/null 2>&1 && fail_check "a privileged process survived the decommission"
 record_ok "stopped v1 lane decommissioned: unit, enablement link and Linger removed"
+
+# (c) Without pgrep the absence of a process cannot be proved, so the lane is
+#     kept and the operator is told exactly why.
+min_bin="$work/min-bin"
+rm -rf "$min_bin"
+mkdir -p "$min_bin"
+for dir in /usr/bin /bin /usr/sbin /sbin; do
+  for entry in "$dir"/*; do ln -sf "$entry" "$min_bin/" 2>/dev/null || true; done
+done
+rm -f "$min_bin/pgrep"
+[[ -e "$min_bin/systemctl" && ! -e "$min_bin/pgrep" ]] || fail_check "the minimal PATH was not built"
+if PATH="$min_bin" run_decommission "unit enablement-link linger" 1 >"$work/decommission-nopgrep.log" 2>&1; then
+  fail_check "a missing pgrep was read as 'no process'"
+fi
+grep -q 'pgrep is not installed' "$work/decommission-nopgrep.log" || {
+  cat "$work/decommission-nopgrep.log" >&2
+  fail_check "the missing pgrep was refused for an unexpected reason"
+}
+[[ -e "$stale_unit" ]] || fail_check "the unit was deleted without proving its processes gone"
+record_ok "missing pgrep blocks deletion: $(grep -o 'pgrep is not installed[^;]*' "$work/decommission-nopgrep.log" | head -n1)"
+
 loginctl disable-linger "$privileged_account" 2>/dev/null || true
 rm -rf "$ops_home/.config"
 
@@ -671,4 +692,4 @@ evidence "privileged_account=$privileged_account sudo_rule=$(sudo -l -U "$privil
 evidence "negative=$run_account cannot sudo -n $helper_path; positive=$privileged_account ran it: $(cat "$work/ops-sudo.log")"
 evidence "claim selection_digest=$claim_digest"
 
-echo "PASS published selected-capability lane created the dedicated run account (nologin, locked, no sudo, no root-equivalent group), kept the privileged account separate, installed the real reviewed helper under fixed-pin digests, put the unit and Linger under the run account, refused the account collision and the missing run account without any effect, caught a root-equivalent group granted by the installer after it ran, cross-checked the declared privileged account against the installer record (and refused a compliant helper whose record is missing), refused a v1 lane left inside the privileged account (and refused to delete one whose privileged process still ran), rolled back only the account it created, adopted a pre-existing account without recreating it, and answered the claim channel through the published parser. Real OMV8 Linger/SSH admission and a real managed runtime NOT_RUN"
+echo "PASS published selected-capability lane created the dedicated run account (nologin, locked, no sudo, no root-equivalent group), kept the privileged account separate, installed the real reviewed helper under fixed-pin digests, put the unit and Linger under the run account, refused the account collision and the missing run account without any effect, caught a root-equivalent group granted by the installer after it ran, cross-checked the declared privileged account against the installer record (and refused a compliant helper whose record is missing), refused a v1 lane left inside the privileged account (and refused to delete one whose privileged process still ran or could not be proved gone), rolled back only the account it created, adopted a pre-existing account without recreating it, and answered the claim channel through the published parser. Real OMV8 Linger/SSH admission and a real managed runtime NOT_RUN"

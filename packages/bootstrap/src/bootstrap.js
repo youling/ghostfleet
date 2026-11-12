@@ -499,17 +499,17 @@ capability_account_criteria_state() {
     if [ "$capability_probe_lookup" -eq 2 ] && [ -z "$capability_probe_row" ]; then
       printf '%s' ABSENT
     else
-      printf '%s' LOOKUP_FAILED
+      printf '%s' LOOKUP_FAILED:passwd
     fi
     return 0
   fi
   if [ -z "$capability_probe_row" ]; then
-    printf '%s' LOOKUP_FAILED
+    printf '%s' LOOKUP_FAILED:passwd
     return 0
   fi
   capability_probe_uid="$(printf '%s' "$capability_probe_row" | cut -d ':' -f 3)"
   case "$capability_probe_uid" in
-    ''|*[!0-9]*) printf '%s' LOOKUP_FAILED; return 0 ;;
+    ''|*[!0-9]*) printf '%s' LOOKUP_FAILED:passwd; return 0 ;;
   esac
   [ "$capability_probe_uid" != 0 ] || { printf '%s' ROOT; return 0; }
   if [ "$capability_probe_uid" -lt 1000 ] || [ "$capability_probe_uid" -ge 60000 ]; then
@@ -520,7 +520,36 @@ capability_account_criteria_state() {
   # LIST first and check the exit status separately: a failing id (sssd/LDAP
   # outage, timeout) must never be read as "not a member".
   if ! capability_probe_groups="$(id -nG "$1" 2>/dev/null)"; then
-    printf '%s' LOOKUP_FAILED
+    printf '%s' LOOKUP_FAILED:id-groups
+    return 0
+  fi
+  # id -nG always lists the primary group, so an empty answer means the lookup
+  # was lost rather than that the account has no groups.
+  if [ -z "$capability_probe_groups" ]; then
+    printf '%s' LOOKUP_FAILED:groups-empty
+    return 0
+  fi
+  capability_probe_primary_gid="$(printf '%s' "$capability_probe_row" | cut -d ':' -f 4)"
+  capability_probe_primary_group="$(getent group "$capability_probe_primary_gid" 2>/dev/null | cut -d ':' -f 1)"
+  if [ -z "$capability_probe_primary_group" ]; then
+    printf '%s' LOOKUP_FAILED:primary-lookup
+    return 0
+  fi
+  capability_probe_primary_seen=0
+  capability_probe_members=0
+  for capability_probe_member in $capability_probe_groups; do
+    case "$capability_probe_member" in
+      ''|*[!A-Za-z0-9._@-]*) printf '%s' LOOKUP_FAILED:groups-parse; return 0 ;;
+    esac
+    if [ "$capability_probe_member" = "$capability_probe_primary_group" ]; then
+      capability_probe_primary_seen=1
+    fi
+    capability_probe_members=$((capability_probe_members + 1))
+  done
+  if [ "$capability_probe_members" -eq 0 ] || [ "$capability_probe_primary_seen" != 1 ]; then
+    # The primary group is always listed by id -nG; its absence means the output
+    # was truncated, replaced or rewritten, so nothing about membership is proved.
+    printf '%s' LOOKUP_FAILED:primary-missing
     return 0
   fi
   for capability_probe_group in $CAPABILITY_PRIVILEGED_GROUPS; do
@@ -551,7 +580,7 @@ capability_account_criteria_state() {
     return 0
   fi
   if [ "$capability_probe_group_lookup" -ne 0 ]; then
-    printf '%s' LOOKUP_FAILED
+    printf '%s' LOOKUP_FAILED:group
     return 0
   fi
   # A locked password field is the other half of "no credential": an empty or
@@ -559,13 +588,13 @@ capability_account_criteria_state() {
   # failed lookup cannot prove the lock, so it is UNKNOWN rather than UNLOCKED.
   capability_probe_shadow="$(getent shadow "$1" 2>/dev/null)" && capability_probe_shadow_status=0 || capability_probe_shadow_status=$?
   if [ "$capability_probe_shadow_status" -ne 0 ] || [ -z "$capability_probe_shadow" ]; then
-    printf '%s' LOOKUP_FAILED
+    printf '%s' LOOKUP_FAILED:shadow
     return 0
   fi
   capability_probe_password="$(printf '%s' "$capability_probe_shadow" | cut -d ':' -f 2)"
   case "$capability_probe_password" in
     '!'*|'*'*) ;;
-    '') printf '%s' LOOKUP_FAILED; return 0 ;;
+    '') printf '%s' LOOKUP_FAILED:shadow; return 0 ;;
     *) printf '%s' UNLOCKED; return 0 ;;
   esac
   # sudo's own evaluation resolves %group rules, User_Alias and sudoers.d order;
@@ -594,7 +623,22 @@ capability_account_criteria_fail() {
     UNLOCKED) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_NOT_DEDICATED] the password of the managed run account $CAPABILITY_CONTROL_ACCOUNT is not locked; lock it (passwd -l) so no login path exists for the identity that owns the unit" >&2 ;;
     NO_HOME) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_NOT_DEDICATED] the managed run account $CAPABILITY_CONTROL_ACCOUNT has no home directory; the user unit and Linger it owns need one" >&2 ;;
     NO_GROUP) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_NOT_DEDICATED] the managed run account $CAPABILITY_CONTROL_ACCOUNT has no group of the same name; the user unit directory is created $CAPABILITY_CONTROL_ACCOUNT:$CAPABILITY_CONTROL_ACCOUNT and cannot be owned otherwise" >&2 ;;
-    LOOKUP_FAILED) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_UNPROVEN] the account database could not be queried for the managed run account $CAPABILITY_CONTROL_ACCOUNT (getent/id failed: NSS outage, remote directory unreachable or timeout); an unreadable answer is never read as 'no privilege', so this run stops. Check getent passwd $CAPABILITY_CONTROL_ACCOUNT, id -nG $CAPABILITY_CONTROL_ACCOUNT and the NSS configuration, then re-run the authorized Console command" >&2 ;;
+    LOOKUP_FAILED:*)
+      capability_lookup_reason="$(printf '%s' "$1" | cut -d ':' -f 2)"
+      case "$capability_lookup_reason" in
+        passwd) capability_lookup_detail="getent passwd $CAPABILITY_CONTROL_ACCOUNT did not answer with a usable record" ;;
+        id-groups) capability_lookup_detail="id -nG $CAPABILITY_CONTROL_ACCOUNT failed" ;;
+        groups-empty) capability_lookup_detail="id -nG $CAPABILITY_CONTROL_ACCOUNT succeeded with an empty list, but it always includes the primary group" ;;
+        groups-parse) capability_lookup_detail="id -nG $CAPABILITY_CONTROL_ACCOUNT returned a token that is not a group name" ;;
+        primary-lookup) capability_lookup_detail="the primary group of $CAPABILITY_CONTROL_ACCOUNT could not be resolved from its gid" ;;
+        primary-missing) capability_lookup_detail="id -nG $CAPABILITY_CONTROL_ACCOUNT does not list the account's primary group, so the answer was replaced or truncated" ;;
+        group) capability_lookup_detail="getent group $CAPABILITY_CONTROL_ACCOUNT failed" ;;
+        shadow) capability_lookup_detail="getent shadow $CAPABILITY_CONTROL_ACCOUNT failed" ;;
+        *) capability_lookup_detail="a name-service query for $CAPABILITY_CONTROL_ACCOUNT failed" ;;
+      esac
+      printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_UNPROVEN] the account database could not be queried: $capability_lookup_detail (NSS outage, remote directory unreachable or timeout); an unreadable answer is never read as 'no privilege', so this run stops. Check getent passwd $CAPABILITY_CONTROL_ACCOUNT, id -nG $CAPABILITY_CONTROL_ACCOUNT and the NSS configuration, then re-run the authorized Console command" >&2
+      ;;
+    LOOKUP_FAILED) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_UNPROVEN] the account database could not be queried for $CAPABILITY_CONTROL_ACCOUNT; an unreadable answer is never read as 'no privilege', so this run stops" >&2 ;;
     GROUP:*)
       capability_privilege_group="$(printf '%s' "$1" | cut -d ':' -f 2)"
       printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_PRIVILEGED] the managed run account $CAPABILITY_CONTROL_ACCOUNT is a member of the root-equivalent group $capability_privilege_group; that group reaches root or device authority without the mediated path, so it cannot own the user unit" >&2
@@ -824,9 +868,25 @@ capability_declared_unit_digest() {
 # are verified BEFORE anything is touched, so a refusal never leaves the lane
 # half-removed. Order: enablement link, Linger, unit — a running instance is not
 # stopped by this courier.
+# systemd's ExecStart may carry the -/@/+/!: prefixes and arguments. Only an
+# absolute executable path can be attributed to a process set, so the rule is:
+# first whitespace-separated token of the first ExecStart line, leading prefix
+# characters stripped, and used only when the result is absolute. Anything else
+# (a relative name, an environment expansion, a %-specifier) returns empty and
+# the caller refuses to migrate instead of skipping the process check.
 capability_unit_exec_start() {
-  [ -r "$1" ] || return 0
-  sed -n 's/^ExecStart=//p' "$1" 2>/dev/null | head -n1 | awk '{print $1}' || true
+  capability_exec_line=
+  if [ -r "$1" ]; then
+    capability_exec_line="$(sed -n 's/^ExecStart=//p' "$1" 2>/dev/null | head -n1)"
+  fi
+  capability_exec_line="$(printf '%s' "$capability_exec_line" | sed 's/^[[:space:]]*//')"
+  [ -n "$capability_exec_line" ] || return 0
+  capability_exec_token="$(printf '%s' "$capability_exec_line" | awk '{print $1}')"
+  capability_exec_bin="$(printf '%s' "$capability_exec_token" | sed 's/^[-@+!:]*//')"
+  case "$capability_exec_bin" in
+    /*) printf '%s' "$capability_exec_bin" ;;
+    *) return 0 ;;
+  esac
 }
 
 # A unit file is not a process. Before the v1 lane is deleted it is stopped in
@@ -857,13 +917,36 @@ capability_stale_lane_stop_and_prove() {
       ;;
   esac
   capability_stale_exec="$(capability_unit_exec_start "$CAPABILITY_STALE_UNIT")"
-  if [ -n "$capability_stale_exec" ] && command -v pgrep >/dev/null 2>&1; then
-    if pgrep -u "$CAPABILITY_STALE_ACCOUNT" -f "$capability_stale_exec" >/dev/null 2>&1; then
+  if [ -z "$capability_stale_exec" ]; then
+    CAPABILITY_STALE_STOP_FAILED="the unit's ExecStart does not name an absolute executable, so no process can be attributed to it"
+    printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED; nothing is removed" >&2
+    return 1
+  fi
+  if ! command -v pgrep >/dev/null 2>&1; then
+    CAPABILITY_STALE_STOP_FAILED="pgrep is not installed, so the absence of the unit's processes cannot be proved"
+    printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED; nothing is removed" >&2
+    return 1
+  fi
+  # pgrep's contract: 0 = matched, 1 = no match, anything else = the query
+  # itself failed. Only "no match" may be read as "the process is gone".
+  if pgrep -u "$CAPABILITY_STALE_ACCOUNT" -f "$capability_stale_exec" >/dev/null 2>&1; then
+    capability_pgrep_status=0
+  else
+    capability_pgrep_status=$?
+  fi
+  case "$capability_pgrep_status" in
+    0)
       CAPABILITY_STALE_STOP_FAILED="processes of $capability_stale_exec still run as $CAPABILITY_STALE_ACCOUNT"
       printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED after stop; nothing is removed" >&2
       return 1
-    fi
-  fi
+      ;;
+    1) : ;;
+    *)
+      CAPABILITY_STALE_STOP_FAILED="pgrep could not answer for $CAPABILITY_STALE_ACCOUNT (exit $capability_pgrep_status), so the unit's processes cannot be proved gone"
+      printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED; nothing is removed" >&2
+      return 1
+      ;;
+  esac
   return 0
 }
 

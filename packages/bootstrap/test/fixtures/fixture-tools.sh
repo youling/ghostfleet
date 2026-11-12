@@ -15,7 +15,12 @@ record() { printf '%s\n' "$*" >> "$state/calls.log"; }
 account_exists() { [ -f "$state/accounts/$1" ]; }
 account_home() { cut -d'|' -f1 "$state/accounts/$1"; }
 account_shell() { cut -d'|' -f2 "$state/accounts/$1"; }
-account_uid() { if [ -f "$state/uids/$1" ]; then cat "$state/uids/$1"; else printf '1234\n'; fi; }
+# Deterministic per-name uid so distinct accounts never share a gid; an explicit
+# uids/<name> file wins (tests use it for the system-uid case).
+account_uid() {
+  if [ -f "$state/uids/$1" ]; then cat "$state/uids/$1"; return 0; fi
+  printf '%s\n' "$((1000 + $(printf '%s' "$1" | cksum | cut -d' ' -f1) % 500))"
+}
 
 case "$name" in
   id)
@@ -103,6 +108,8 @@ case "$name" in
 
   pgrep)
     record "pgrep $*"
+    # pgrep's contract: 0 matched, 1 no match, other = the query failed.
+    if [ -f "$state/pgrep-fails" ]; then exit 3; fi
     if [ -s "$state/unit-procs" ]; then cat "$state/unit-procs"; exit 0; fi
     exit 1
     ;;
@@ -220,12 +227,9 @@ case "$name" in
         if account_exists "${2:-}"; then
           printf '%s:x:%s:%s::%s:%s\n' "$2" "$(account_uid "$2")" "$(account_uid "$2")" "$(account_home "$2")" "$(account_shell "$2")"
         else
-          # Any other account (the operating Human) is resolved for real, so the
-          # strict name/uid/shell validation sees a genuine account.
-          for candidate in /usr/bin/getent /bin/getent; do
-            if [ -x "$candidate" ]; then exec "$candidate" "$@"; fi
-          done
-          exit 1
+          # Never fall back to the host's NSS: an unknown account is simply absent,
+          # and a wedged name service cannot make the suite hang.
+          exit 2
         fi
         ;;
       shadow)
@@ -242,6 +246,22 @@ case "$name" in
         ;;
       group)
         if [ -f "$state/nss-fail/group/${2:-}" ]; then exit 1; fi
+        case "${2:-}" in
+          ''|*[!0-9]*) ;;
+          *)
+            # Numeric gid: resolve to the same-name group of the account that owns
+            # it, so the courier can cross-check id -nG against the primary group.
+            for candidate in "$state"/accounts/*; do
+              [ -f "$candidate" ] || continue
+              account_name="$(basename "$candidate")"
+              if [ "$(account_uid "$account_name")" = "${2:-}" ]; then
+                printf '%s:x:%s:\n' "$account_name" "${2:-}"
+                exit 0
+              fi
+            done
+            exit 2
+            ;;
+        esac
         if [ -f "$state/no-group/${2:-}" ]; then
           # getent's own convention for "key not found".
           exit 2
