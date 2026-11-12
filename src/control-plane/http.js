@@ -60,6 +60,20 @@ const CREDENTIAL_RESPONSE_HEADERS = Object.freeze({ "cache-control": "no-store",
 // is a bug, not a protocol answer, so it is logged and answered as a generic 500.
 const CONTRACT_CODE_PATTERN = /^[A-Z][A-Z0-9_]{2,79}$/;
 
+// A path segment that is not valid percent-encoding is not an identifier. It is
+// decoded before any authentication runs, so a URIError must never surface as a
+// 500 with a stack: the route simply does not exist. Every captured segment goes
+// through this one decoder.
+function decodeSegment(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
+const flatNotFound = () => json({ ok: false, error: "NOT_FOUND" }, 404);
+
 function errorResponse(error) {
   const candidate =
     (typeof error?.code === "string" && error.code) ||
@@ -156,12 +170,23 @@ export function createHttpHandler(controller, options = {}) {
       // credential, never the operator bearer, so they are matched before the
       // operator route table and verify before touching any state.
       const heartbeatRoute = /^\/v0\/nodes\/([^/]+)\/heartbeat$/.exec(path);
-      if (request.method === "POST" && heartbeatRoute) return await nodeAgentRequest(request, decodeURIComponent(heartbeatRoute[1]), "heartbeat");
+      if (request.method === "POST" && heartbeatRoute) {
+        const node_uid = decodeSegment(heartbeatRoute[1]);
+        if (node_uid === null) return flatNotFound();
+        return await nodeAgentRequest(request, node_uid, "heartbeat");
+      }
       const pollRoute = /^\/v0\/nodes\/([^/]+)\/tasks\/poll$/.exec(path);
-      if (request.method === "POST" && pollRoute) return await nodeAgentRequest(request, decodeURIComponent(pollRoute[1]), "poll");
+      if (request.method === "POST" && pollRoute) {
+        const node_uid = decodeSegment(pollRoute[1]);
+        if (node_uid === null) return flatNotFound();
+        return await nodeAgentRequest(request, node_uid, "poll");
+      }
       const resultRoute = /^\/v0\/nodes\/([^/]+)\/tasks\/([^/]+)\/result$/.exec(path);
       if (request.method === "POST" && resultRoute) {
-        return await nodeAgentRequest(request, decodeURIComponent(resultRoute[1]), "result", decodeURIComponent(resultRoute[2]));
+        const node_uid = decodeSegment(resultRoute[1]);
+        const task_id = decodeSegment(resultRoute[2]);
+        if (node_uid === null || task_id === null) return flatNotFound();
+        return await nodeAgentRequest(request, node_uid, "result", task_id);
       }
 
       // Every remaining /v0 route is an operator action.
@@ -177,11 +202,13 @@ export function createHttpHandler(controller, options = {}) {
         const input = await body(request, BODY_LIMITS.node_task);
         for (const key of Object.keys(input ?? {})) {
           if (key !== "node_uid" && key !== "operation" && key !== "params" && key !== "ttl_seconds") {
-            throw new NodeAgentError("NODE_REQUEST_INVALID", 400);
+            // ADR §5.2 pins an unknown operator input key to the task vocabulary;
+            // NODE_REQUEST_INVALID belongs to the node-agent request body only.
+            throw new NodeAgentError("TASK_REQUEST_INVALID", 400);
           }
         }
         const node_uid = input?.node_uid;
-        if (typeof node_uid !== "string") throw new NodeAgentError("NODE_REQUEST_INVALID", 400);
+        if (typeof node_uid !== "string") throw new NodeAgentError("TASK_REQUEST_INVALID", 400);
         const task = controller.createNodeTask(node_uid, {
           operation: input.operation, params: input.params, ttl_seconds: input.ttl_seconds,
         });
@@ -192,13 +219,13 @@ export function createHttpHandler(controller, options = {}) {
       }
       if (request.method === "GET" && path === "/v0/node-tasks") {
         const node_uid = url.searchParams.get("node_uid");
-        if (typeof node_uid !== "string" || node_uid.length === 0) throw new NodeAgentError("NODE_REQUEST_INVALID", 400);
+        if (typeof node_uid !== "string" || node_uid.length === 0) throw new NodeAgentError("TASK_REQUEST_INVALID", 400);
         return json({ ok: true, node_uid, tasks: controller.listNodeTaskSummaries(node_uid) });
       }
       if (request.method === "POST" && path === "/v0/node-credential/rotate") {
         const input = await body(request, BODY_LIMITS.node_credential);
         const node_uid = input?.node_uid;
-        if (typeof node_uid !== "string") throw new NodeAgentError("NODE_REQUEST_INVALID", 400);
+        if (typeof node_uid !== "string") throw new NodeAgentError("TASK_REQUEST_INVALID", 400);
         return json(controller.rotateNodeCredential(node_uid), 200, CREDENTIAL_RESPONSE_HEADERS);
       }
       if (request.method === "GET" && path === "/v0/enrollment-attempts") return json({ ok: true, attempts: controller.listEnrollmentAttempts() });
@@ -228,7 +255,9 @@ export function createHttpHandler(controller, options = {}) {
       if (request.method === "POST" && match) {
         const short_code = (await readText(request, BODY_LIMITS.claim)).trim();
         const preflight_digest = request.headers.get("x-ghostfleet-preflight-digest") || "";
-        return json({ ok: true, ...(await controller.claimEnrollmentTicket({ ticket_id: decodeURIComponent(match[1]), short_code, preflight_digest })) });
+        const ticket_id = decodeSegment(match[1]);
+        if (ticket_id === null) return flatNotFound();
+        return json({ ok: true, ...(await controller.claimEnrollmentTicket({ ticket_id, short_code, preflight_digest })) });
       }
 
       if (request.method === "POST" && path === "/v1/enroll/complete") {

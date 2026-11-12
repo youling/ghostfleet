@@ -55,11 +55,11 @@ export class GhostFleetState {
       });
       const writes_before = store.writes;
       const response = await handler(request);
-      // §10: one blob, no CAS. Rewrite it whenever this request mutated state and
-      // answered 2xx. That is not the same as "no write for a rejected request":
-      // an accepted node request commits its nonce and rate token to the record
-      // before a later step can still fail (for example a task conflict), and
-      // that mutation is durable. A 5xx is never written back.
+      // §10: one blob, no CAS. Only a 2xx answer rewrites the durable blob; a
+      // rejected request is never persisted, even if a controller method wrote to
+      // the in-memory store before it failed (for example a 409
+      // TASK_RESULT_CONFLICT), because the transaction only puts on 2xx. A 5xx is
+      // therefore never written back either.
       const mutated = store.writes !== writes_before;
       if (mutated && response.status >= 200 && response.status < 300) {
         await txn.put("ghostfleet-state", store.snapshot());

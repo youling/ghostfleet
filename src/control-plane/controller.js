@@ -13,7 +13,7 @@ import { assertPublicSafe, publicClone } from "../core/security.js";
 import { InvalidTransitionError, transitionAttempt } from "../core/state-machine.js";
 import { InMemoryStore } from "./store.js";
 import {
-  AGENT_SCHEMA, MAX_TASKS_PER_HEARTBEAT, MAX_TASKS_PER_POLL, NodeAgentError, TASK_LEASE_SECONDS,
+  AGENT_SCHEMA, CREDENTIAL_HANDOFF_MAX_DELIVERIES, MAX_TASKS_PER_HEARTBEAT, MAX_TASKS_PER_POLL, NodeAgentError, TASK_LEASE_SECONDS,
   applyHeartbeat, applyTaskResult, canonicalJson, createTask, credentialHandoffUsable,
   mintNodeCredential, normalizeAgentState, openCredentialHandoff, pollTasks, projectNode,
   publicTask, publicTaskSummary, sealCredentialHandoff, sha256Hex, validateTaskInput,
@@ -405,9 +405,13 @@ export class GhostFleetController {
     const token = openCredentialHandoff({
       operatorSecret: this.credentialHandoffSecret, handoff, node_uid, ticket_id,
     });
+    // The record was authenticated and its budget was checked above, so the
+    // counter is a valid non-negative integer here; clamp anyway so a durable
+    // record can never grow past the fixed budget.
+    const deliveries = Math.min(CREDENTIAL_HANDOFF_MAX_DELIVERIES, handoff.deliveries + 1);
     this.store.putNodeAgent(node_uid, {
       ...node.agent,
-      credential_handoff: { ...handoff, deliveries: (handoff.deliveries ?? 1) + 1 },
+      credential_handoff: { ...handoff, deliveries },
     });
     return {
       node_credential: { token, node_uid, handoff_id: handoff.handoff_id },
@@ -725,11 +729,14 @@ export class GhostFleetController {
       last_seq: null,
       retired_boot_ids: [],
     });
+    // §5.1 defines node_credential as { token, node_uid, handoff_id }. Rotate
+    // clears the handoff, so handoff_id is null; the shape is identical to
+    // /v1/enroll/complete so an ADR-following client reads .token either way.
     return {
       ok: true,
       node_uid,
       rotated_at: this.now(),
-      node_credential: minted.token,
+      node_credential: { token: minted.token, node_uid, handoff_id: null },
     };
   }
 
