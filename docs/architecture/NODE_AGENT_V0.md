@@ -60,7 +60,7 @@ systemd --user (control account, Linger=yes)
 
 | 路径 | 属主 / 权限 | 内容 |
 | --- | --- | --- |
-| `/usr/local/libexec/ghostfleet/node-agent/` | `root:root` `0755` | Agent 代码（bootstrap 安装，随 bootstrap 摘要被 pin） |
+| `/usr/local/libexec/ghostfleet/node-agent.pyz` | `root:root` `0755` | Agent 载荷（单个 Python zipapp，作为被 pin 的 capability artifact 安装，逐字节校验） |
 | `/etc/ghostfleet/node-agent.json` | `root:root` `0644` | 非秘密配置：控制面 URL、心跳区间上下限、允许观测的 unit 名列表 |
 | `%h/.config/ghostfleet/node-token` | `0600`（账户自身） | 注册时铸造的节点 token，仅本账户可读 |
 | `%h/.config/ghostfleet/node.json` | `0600` | `node_uid`、平台、注册时间（非秘密但按最小暴露存放） |
@@ -74,7 +74,7 @@ systemd --user (control account, Linger=yes)
 
 ### 5.1 认证
 
-- 节点 token 在 `completeEnrollmentTicket` 成功时铸造并**只返回一次**；控制面存 `sha256(token)` 于 node 记录，与 `node_uid` 绑定。
+- 节点 token 在 `completeEnrollmentTicket` 成功时铸造并以 `node_credential: {token, node_uid}` **只返回一次**；控制面只存 `sha256(token)` 于 node 记录，与 `node_uid` 绑定。courier 随即把它写成 control account 的 `~/.config/ghostfleet/node-token`（`0600`，目录 `0700`），token 不进日志/argv/状态行。
 - 每个 agent 请求带：`Authorization: Bearer <token>`、`x-ghostfleet-node-uid: <node_uid>`、`x-ghostfleet-agent-version: <semver>`。
 - 请求体（canonical JSON）：`schema`、`node_uid`、`nonce`（≥16 字节 base64url）、`sent_at`（RFC 3339 Z）、`boot_id`、`seq`（本次启动内单调递增）。
 
@@ -136,8 +136,7 @@ After=network-online.target
 
 [Service]
 Type=notify
-ExecStart=/usr/bin/python3 -I -m ghostfleet_agent
-Environment=PYTHONPATH=/usr/local/libexec/ghostfleet/node-agent
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz
 Environment=PYTHONDONTWRITEBYTECODE=1
 Restart=always
 RestartSec=5
