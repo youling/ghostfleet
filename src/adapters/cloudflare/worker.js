@@ -35,11 +35,22 @@ export class GhostFleetState {
           bootstrap_sha256: this.env?.GHOSTFLEET_BOOTSTRAP_SHA256,
           enroll_origin: this.env?.GHOSTFLEET_ENROLL_ORIGIN,
         },
+        // §5.1: the recoverable one-time node credential is sealed with a key
+        // derived from the operator secret, so no new deployment secret exists.
+        credentialHandoffSecret: this.env?.GHOSTFLEET_OPERATOR_TOKEN ?? null,
       });
       if (new URL(request.url).pathname.replace(/\/+$/, "") === "/mcp") return handleMcpRequest(controller, request);
       const handler = createHttpHandler(controller);
+      const writes_before = store.writes;
       const response = await handler(request);
-      if (request.method !== "GET" && response.status < 500) await txn.put("ghostfleet-state", store.snapshot());
+      // §10: one blob, no CAS. Rewrite it only when this request actually
+      // mutated state and succeeded, so rejected node requests (401/403/409/413/
+      // 415/429), rate-limited polls and idempotent replays cost no write on the
+      // serialized object. A 5xx is never written back, even if it wrote first.
+      const mutated = store.writes !== writes_before;
+      if (mutated && response.status >= 200 && response.status < 300) {
+        await txn.put("ghostfleet-state", store.snapshot());
+      }
       return response;
     });
   }
@@ -51,6 +62,14 @@ export default {
     const isMcp = path.replace(/\/+$/, "") === "/mcp";
     const isEnrollmentClaim = request.method === "POST" && /^\/v1\/enrollment-tickets\/[^/]+\/claim$/.test(path);
     const isEnrollmentComplete = request.method === "POST" && path === "/v1/enroll/complete";
+    // The three node agent routes carry the node credential minted at enrollment
+    // completion, not the operator bearer. They are exempted by exact path so no
+    // other /v0 or /mcp route loses operator authorization.
+    const isNodeAgentRoute = request.method === "POST" && (
+      /^\/v0\/nodes\/[^/]+\/heartbeat$/.test(path) ||
+      /^\/v0\/nodes\/[^/]+\/tasks\/poll$/.test(path) ||
+      /^\/v0\/nodes\/[^/]+\/tasks\/[^/]+\/result$/.test(path)
+    );
     if (request.method === "GET" && path === "/v1/bootstrap.sh") {
       // Retired: this was an unpinned second entrance to the courier. The only
       // supported delivery is the Console-generated command, which pins the
@@ -77,7 +96,7 @@ export default {
       const result = await configureTailscaleProvider(env, body);
       return Response.json(result.payload, { status: result.status, headers: { "cache-control": "no-store" } });
     }
-    if (path.startsWith("/v0/") || isMcp) {
+    if ((path.startsWith("/v0/") || isMcp) && !isNodeAgentRoute) {
       const denial = await authorizeApi(request, env, { readOnly: isMcp });
       if (denial) return denial;
     }
