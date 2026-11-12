@@ -7,6 +7,10 @@ export PATH
 BROKER_ORIGIN="\${GHOSTFLEET_BROKER_ORIGIN:-}"
 ENROLLMENT_URL="\${GHOSTFLEET_ENROLLMENT_URL:-}"
 ASSETS_ORIGIN="\${GHOSTFLEET_ASSETS_ORIGIN:-}"
+# The managed agent's control plane is the node-plane bridge, a different host
+# from the Access-protected enrollment origin. The delivery command exports it;
+# this script never derives it from the ticket, the claim or the broker origin.
+NODE_PLANE_ORIGIN="\${GHOSTFLEET_NODE_PLANE_ORIGIN:-}"
 if [ -n "$ENROLLMENT_URL" ]; then
   printf '%s' "$ENROLLMENT_URL" | grep -Eq '^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?/v1/enrollment-tickets/[A-Za-z0-9._~%-]+$' || {
     printf '%s\\n' 'fleet-enroll: invalid one-time enrollment URL; an exact HTTPS ticket URL is required' >&2
@@ -100,7 +104,9 @@ CAPABILITY_STATUS_BACKUP=''
 CAPABILITY_NODE_CREDENTIAL_RECEIVED=no
 CAPABILITY_NODE_TOKEN_MODE=''
 CAPABILITY_CREDENTIAL_HANDOFF=''
+CAPABILITY_STATUS_APPLIED_AT=''
 CAPABILITY_COMPLETE_RESPONSE=
+# @@GHOSTFLEET_CAPABILITY_STATUS_FRAGMENT_ARTIFACT_ROW_BEGIN@@
 capability_artifact_row() {
   case "$1" in
     1) printf '%s' "$CAPABILITY_ARTIFACT_1" ;;
@@ -122,6 +128,7 @@ capability_artifact_row() {
     *) return 1 ;;
   esac
 }
+# @@GHOSTFLEET_CAPABILITY_STATUS_FRAGMENT_ARTIFACT_ROW_END@@
 CAPABILITY_HELPER_STATE=UNKNOWN
 CAPABILITY_USER_SERVICE_STATE=UNKNOWN
 CAPABILITY_LINGER_STATE=UNKNOWN
@@ -361,6 +368,22 @@ capability_validate_selection() {
   if [ "$CAPABILITY_LINGER_REQUIRED" = 1 ] || [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
     command -v loginctl >/dev/null 2>&1 || fail 'preflight failed: loginctl is required by the selected capability'
   fi
+  if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
+    # The managed agent talks to the node-plane bridge, never to the
+    # Access-protected enrollment origin: the broker answers a node request with
+    # a login wall, which the agent treats as fatal. The origin is delivered by
+    # the Console command and is never derived, joined or rewritten here.
+    [ -n "$NODE_PLANE_ORIGIN" ] || fail '[CAPABILITY_NODE_PLANE_ORIGIN_REQUIRED] the selected managed user service needs the node-plane origin, but GHOSTFLEET_NODE_PLANE_ORIGIN was not delivered; export the node-plane origin from the Console delivery command and re-run; nothing was installed'
+    printf '%s' "$NODE_PLANE_ORIGIN" | grep -Eq '^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$' ||
+      fail '[CAPABILITY_NODE_PLANE_ORIGIN_INVALID] GHOSTFLEET_NODE_PLANE_ORIGIN must be an exact HTTPS origin (scheme, host and optional port only; no path, query, userinfo or trailing slash); nothing was installed'
+    [ -n "$BROKER_ORIGIN" ] || fail '[CAPABILITY_NODE_PLANE_ORIGIN_NOT_SEPARATED] the enrollment origin is unknown, so the node-plane origin cannot be proved separate from it; nothing was installed'
+    capability_node_plane_host="\${NODE_PLANE_ORIGIN#https://}"
+    capability_node_plane_host="\${capability_node_plane_host%%:*}"
+    capability_enrollment_host="\${BROKER_ORIGIN#https://}"
+    capability_enrollment_host="\${capability_enrollment_host%%:*}"
+    [ "$capability_node_plane_host" != "$capability_enrollment_host" ] ||
+      fail '[CAPABILITY_NODE_PLANE_ORIGIN_NOT_SEPARATED] the node-plane origin must not be the Access-protected enrollment origin: the managed agent would receive a login wall instead of the node-plane bridge; deliver a distinct node-plane host; nothing was installed'
+  fi
   # The pinned bytes are a dependency, not a later step. On the rendered channel
   # this runs before any effect; on the claim channel the authorized claim has
   # already happened, but nothing is installed and no one-off credential is
@@ -586,10 +609,19 @@ capability_linger_apply() {
   loginctl enable-linger "$CAPABILITY_CONTROL_ACCOUNT" ||
     { printf '%s\\n' 'fleet-enroll: Linger could not be enabled for the dedicated control account' >&2; return 1; }
   CAPABILITY_ENABLED_LINGER=1
-  CAPABILITY_LINGER_STATE="$(capability_linger_state)"
-  [ "$CAPABILITY_LINGER_STATE" = COMPLIANT ] ||
-    { printf '%s\\n' 'fleet-enroll: Linger postcondition failed for the dedicated control account' >&2; return 1; }
-  return 0
+  # logind can answer this query from a user record it cached before the marker was
+  # written, for example when an account was deleted and recreated with the same uid
+  # while its old manager was still closing. The marker is the durable state, so
+  # re-read it a bounded number of times and fail closed when it never converges.
+  capability_linger_try=0
+  while [ "$capability_linger_try" -lt 10 ]; do
+    CAPABILITY_LINGER_STATE="$(capability_linger_state)"
+    if [ "$CAPABILITY_LINGER_STATE" = COMPLIANT ]; then return 0; fi
+    capability_linger_try=$((capability_linger_try + 1))
+    sleep 0.2
+  done
+  printf '%s\\n' 'fleet-enroll: Linger postcondition failed for the dedicated control account' >&2
+  return 1
 }
 
 # The group the control account uses for the files this courier installs into
@@ -854,20 +886,12 @@ capability_agent_config_write() {
     printf '%s\\n' 'fleet-enroll: the managed agent configuration directory could not be created' >&2
     return 1
   fi
-  # The node identity is non-secret and is already known on a repair run (the
-  # delivery that minted the credential is not repeated), so it is resolved from
-  # the delivered credential, the claim, or the stored node descriptor.
-  capability_config_uid="\${capability_credential_uid:-}"
-  if [ -z "$capability_config_uid" ] && [ -n "\${NODE_UID:-}" ]; then capability_config_uid="$NODE_UID"; fi
-  if [ -z "$capability_config_uid" ]; then
-    capability_config_home="$(capability_control_home)"
-    capability_config_uid="$(json_file_value "$capability_config_home/.config/ghostfleet/node.json" node_uid)"
-  fi
-  capability_config_body='{"schema":"ghostfleet-node-agent-config/v1","control_plane_origin":"'"$BROKER_ORIGIN"'","heartbeat_interval_s":{"lower":30,"upper":3600},"allowed_units":["'"$CAPABILITY_USER_UNIT"'"]'
-  if [ -n "$capability_config_uid" ]; then
-    capability_config_body="$capability_config_body"',"node_uid":"'"$capability_config_uid"'"'
-  fi
-  capability_config_body="$capability_config_body"'}'
+  # The body is exactly the documented production key set: the agent's parser
+  # rejects unknown top-level keys and requires numeric intervals, so an extra
+  # schema/node_uid field or a nested range would make the unit exit 2 forever.
+  # node_uid is non-secret but lives in ~/.config/ghostfleet/node.json; keeping
+  # it out of the root-owned file leaves one owner for that fact.
+  capability_config_body='{"control_plane_origin":"'"$NODE_PLANE_ORIGIN"'","heartbeat_interval_s":30,"heartbeat_interval_min_s":30,"heartbeat_interval_max_s":300,"allowed_units":["'"$CAPABILITY_USER_UNIT"'"]}'
   if [ -r "$CAPABILITY_AGENT_CONFIG_PATH" ] && [ ! -L "$CAPABILITY_AGENT_CONFIG_PATH" ] &&
      [ "$(cat "$CAPABILITY_AGENT_CONFIG_PATH" 2>/dev/null)" = "$capability_config_body" ] &&
      [ "$(stat -c '%U:%G' "$CAPABILITY_AGENT_CONFIG_PATH" 2>/dev/null)" = 'root:root' ] &&
@@ -1012,6 +1036,7 @@ capability_node_credential_write() {
 # validated selection, and never carries a token, a secret, a home path or any
 # 0600 data. A failed projection fails the lane: no half-written file, no
 # "installed but unrecorded" node.
+# @@GHOSTFLEET_CAPABILITY_STATUS_FRAGMENT_PROJECTION_BEGIN@@
 capability_status_projection() {
   if [ "$CAPABILITY_USER_SERVICE_REQUIRED" != 1 ]; then return 0; fi
   capability_status_dir="$CAPABILITY_AGENT_CONFIG_DIR"
@@ -1052,7 +1077,7 @@ capability_status_projection() {
     capability_status_index=$((capability_status_index + 1))
   done
   [ -n "$capability_status_unit_sha" ] || return 1
-  capability_status_body="{\\"schema\\":\\"ghostfleet-capability-status/v1\\",\\"selection_schema\\":\\"$CAPABILITY_SCHEMA\\",\\"release_pin\\":\\"$capability_status_pin\\",\\"applied_at\\":\\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\\",\\"control_account\\":\\"$CAPABILITY_CONTROL_ACCOUNT\\",\\"privileged_account\\":\\"$CAPABILITY_PRIVILEGED_ACCOUNT\\",\\"artifacts\\":[$capability_status_artifacts],\\"user_unit\\":{\\"name\\":\\"$CAPABILITY_USER_UNIT\\",\\"sha256\\":\\"$capability_status_unit_sha\\",\\"payload_sha256\\":\\"$CAPABILITY_AGENT_PAYLOAD_SHA256\\",\\"payload_path\\":\\"$CAPABILITY_AGENT_PAYLOAD_PATH\\"}}"
+  capability_status_body="{\\"schema\\":\\"ghostfleet-capability-status/v1\\",\\"selection_schema\\":\\"$CAPABILITY_SCHEMA\\",\\"release_pin\\":\\"$capability_status_pin\\",\\"applied_at\\":\\"\${CAPABILITY_STATUS_APPLIED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}\\",\\"control_account\\":\\"$CAPABILITY_CONTROL_ACCOUNT\\",\\"privileged_account\\":\\"$CAPABILITY_PRIVILEGED_ACCOUNT\\",\\"artifacts\\":[$capability_status_artifacts],\\"user_unit\\":{\\"name\\":\\"$CAPABILITY_USER_UNIT\\",\\"sha256\\":\\"$capability_status_unit_sha\\",\\"payload_sha256\\":\\"$CAPABILITY_AGENT_PAYLOAD_SHA256\\",\\"payload_path\\":\\"$CAPABILITY_AGENT_PAYLOAD_PATH\\"}}"
   [ -d "$capability_status_dir" ] || install -d -m 0755 -o root -g root "$capability_status_dir" || {
     printf '%s\\n' 'fleet-enroll: the public capability directory could not be created' >&2; return 1; }
   [ "$(stat -c '%U:%G' "$capability_status_dir" 2>/dev/null)" = 'root:root' ] || {
@@ -1099,6 +1124,7 @@ capability_status_projection() {
   fi
   return 0
 }
+# @@GHOSTFLEET_CAPABILITY_STATUS_FRAGMENT_PROJECTION_END@@
 
 # Machine-readable success evidence for the external consumer. Only non-secret
 # facts are emitted: the token never reaches this line, a log or a status report.
@@ -1111,6 +1137,9 @@ capability_evidence() {
   capability_evidence_dir_owner=''
   capability_evidence_dir_mode=''
   capability_evidence_dir_type=absent
+  capability_evidence_state_owner=''
+  capability_evidence_state_mode=''
+  capability_evidence_state_type=absent
   if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
     if [ -f "$CAPABILITY_AGENT_PAYLOAD_PATH" ] && [ ! -L "$CAPABILITY_AGENT_PAYLOAD_PATH" ]; then
       capability_evidence_payload_owner="$(stat -c '%U:%G' "$CAPABILITY_AGENT_PAYLOAD_PATH" 2>/dev/null)"
@@ -1124,6 +1153,12 @@ capability_evidence() {
         capability_evidence_dir_type=directory
         capability_evidence_dir_owner="$(stat -c '%U' "$capability_evidence_dir" 2>/dev/null)"
         capability_evidence_dir_mode="$(stat -c '%a' "$capability_evidence_dir" 2>/dev/null)"
+      fi
+      capability_evidence_state_dir="$capability_evidence_home/.local/state/ghostfleet-agent"
+      if [ -d "$capability_evidence_state_dir" ] && [ ! -L "$capability_evidence_state_dir" ]; then
+        capability_evidence_state_type=directory
+        capability_evidence_state_owner="$(stat -c '%U' "$capability_evidence_state_dir" 2>/dev/null)"
+        capability_evidence_state_mode="$(stat -c '%a' "$capability_evidence_state_dir" 2>/dev/null)"
       fi
       if [ -f "$capability_evidence_file" ] && [ ! -L "$capability_evidence_file" ]; then
         capability_evidence_token_type=regular
@@ -1147,7 +1182,10 @@ capability_evidence() {
     "capability_node_token_type=$capability_evidence_token_type" \\
     "capability_agent_config_dir_owner=$capability_evidence_dir_owner" \\
     "capability_agent_config_dir_mode=$capability_evidence_dir_mode" \\
-    "capability_agent_config_dir_type=$capability_evidence_dir_type"
+    "capability_agent_config_dir_type=$capability_evidence_dir_type" \\
+    "capability_agent_state_dir_owner=$capability_evidence_state_owner" \\
+    "capability_agent_state_dir_mode=$capability_evidence_state_mode" \\
+    "capability_agent_state_dir_type=$capability_evidence_state_type"
 }
 
 # After the control plane delivered the node credential, install the payload, the

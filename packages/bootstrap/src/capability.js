@@ -64,10 +64,20 @@ export function capabilityDigest(selection) {
 export function selectedCapabilitiesFromPosture(posture, { userUnit = null } = {}) {
   const value = posture && typeof posture === "object" && !Array.isArray(posture) ? posture : {};
   const helper_required = value.privilege?.helper_required === true;
-  const linger_required = Array.isArray(value.roles) && value.roles.includes("managed");
-  const user_service_required = userUnit !== null && userUnit !== undefined;
-  if (!helper_required && !linger_required && !user_service_required) return null;
-  return Object.freeze({ helper_required, linger_required, user_service_required });
+  const managed = Array.isArray(value.roles) && value.roles.includes("managed");
+  // The managed role decides the service, never the caller's data: a managed
+  // template always means a managed user service plus Linger. Linger with no
+  // service is not a managed lane - it only grants the account a permanent
+  // residency semantic with nothing to keep alive - so a caller that forgets the
+  // reviewed worker unit fails closed here instead of silently downgrading.
+  if (managed && (userUnit === null || userUnit === undefined)) {
+    throw invalid("CAPABILITY_MANAGED_ARTIFACTS_INCOMPLETE");
+  }
+  if (!managed && userUnit !== null && userUnit !== undefined) {
+    throw invalid("CAPABILITY_NOT_REQUESTED_BY_TEMPLATE");
+  }
+  if (!helper_required && !managed) return null;
+  return Object.freeze({ helper_required, linger_required: managed, user_service_required: managed });
 }
 
 // Artifacts are pinned twice: by the content address that travels with the
@@ -314,6 +324,11 @@ export function normalizeSelectedCapability(selection) {
   const helper_required = selection.helper_required === true;
   const linger_required = selection.linger_required === true;
   const user_service_required = selection.user_service_required === true;
+  // Linger exists only to keep the managed user service alive without a login
+  // session. A selection that asks for Linger but installs no service would open
+  // a permanent residency semantic for the account with nothing to hold alive -
+  // a downgraded managed lane, never a managed lane - so the shape is refused.
+  if (linger_required && !user_service_required) throw invalid("CAPABILITY_LINGER_REQUIRES_USER_SERVICE");
   const selected = helper_required || linger_required || user_service_required;
   const artifacts = normalizeArtifacts(selection.artifacts ?? []);
   if (artifacts.length > CAPABILITY_MAX_ARTIFACTS) throw invalid("CAPABILITY_TOO_MANY_ARTIFACTS");

@@ -1,0 +1,8 @@
+# Release artifacts and shell entry points are digest-pinned contract bytes.
+# A checkout that rewrites their line endings changes the reviewed sha256, so
+# every platform must materialize exactly the bytes that were committed.
+*.service text eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+# A zipapp payload is binary: it must never pass through eol conversion.
+*.pyz binary

