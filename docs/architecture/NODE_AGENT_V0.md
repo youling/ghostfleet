@@ -115,7 +115,7 @@ systemd --user (control account, Linger=yes)
 | --- | --- | --- |
 | `node.observe` | 采集 `want` 指定的本地事实 | `want` ∈ {identity, os, uptime, disk, services, capability} |
 | `service.status.read` | 读指定 user unit 的 active 状态 | ≤8 个 unit，名必须匹配 `^[a-z][a-z0-9_.@-]{0,63}\.service$`；无 shell，`subprocess` 数组传参 |
-| `capability.inspect` | 读本地 capability state 摘要 | 只回 digest 与组件状态，不回文件内容 |
+| `capability.inspect` | 读本地 capability 摘要 | 只回 digest 与组件状态，不回文件内容；数据源是 bootstrap 写的 `/etc/ghostfleet/capability-status.json`（root `0644`，只含公开 artifact 名与 sha256、`release_pin`、`applied_at`），**不读** root `0600` 的 `/var/lib/fleet/capability-state.json`；文件缺失 → `UNKNOWN` |
 | `agent.self.test` | 端到端自检 | 回显 `nonce` 与 agent 版本 |
 
 其余 operation → `400 TASK_OPERATION_FORBIDDEN`。`params` 中出现禁用键（`command`/`cmd`/`script`/`shell`/`args`/`argv`/`exec`/`run`/`url` 等）→ `400 TASK_PARAMS_FORBIDDEN`。
@@ -128,13 +128,17 @@ systemd --user (control account, Linger=yes)
 2. **converge-report**：与上次成功上报的观测比对，产 `drift` 列表（例如 unit 从 active→failed、capability 摘要变化、磁盘越线）。**只报告，不擅自修改**：v0 的收敛动作就是把事实与差异讲清楚，变更仍由授权路径驱动。
 3. **heartbeat**：上报 `health`（`OK`/`DEGRADED`/`FAILING`）、`drift`、`agent_version`、`capability_digest`、`queue_depth`；读取 `interval_s`。
 4. **poll + execute**：逐个任务走 §7 的栅栏与 allowlist 分派，结果入 outbox。
-5. **flush**：按 `task_id` 幂等回传 outbox；失败按指数退避（1 s → 2 s → 4 s … 封顶 300 s，带抖动）重试。`429` 遵守 `Retry-After`，`401/403` 停止上报并进入 FATAL 等待人类修复，`409` 按码分派（`NODE_NONCE_REPLAY`/`NODE_SEQ_REGRESSION` 立即换新 `seq`/`nonce` 重试一次，`NODE_BOOT_REPLAY` 换新 `boot_id`），5xx 与网络错误只重试不当成功。控制面不可达时保持循环、不退出、不丢已执行事实。
+5. **flush**：按 `task_id` 幂等回传 outbox；失败按指数退避（1 s → 2 s → 4 s … 封顶 300 s，带抖动）重试。`429` 遵守 `Retry-After`（服务端对自己的限流节奏有最终权威：带 `Retry-After` 时按它睡眠、上限 3600 s，不受本地 300 s 退避封顶约束；只有本地指数退避封顶 300 s），`401/403` 停止上报并进入 FATAL 等待人类修复，`409` 按码分派（`NODE_NONCE_REPLAY`/`NODE_SEQ_REGRESSION` 立即换新 `seq`/`nonce` 重试一次，`NODE_BOOT_REPLAY` 换新 `boot_id`），5xx 与网络错误只重试不当成功。控制面不可达时保持循环、不退出、不丢已执行事实。
 
 这条循环满足"Agent 真正承担持续管理工作"：它持续采集、比对漂移、上报健康并执行控制面下发的有界管理工作；心跳只是循环的一个阶段，不是全部。
 
 ## 7. 耐用状态与崩溃语义
 
-任务执行前：`ledger[task_id] = {state: MAY_HAVE_EXECUTED, operation, started_at}` → `fsync` 目录项 → 才调用实现函数。完成后写 `{state: SUCCEEDED|FAILED, finished_at, result_digest}`。启动时扫描 ledger：任何 `MAY_HAVE_EXECUTED` 且无终态的任务，先补写一条 `UNKNOWN` 结果进 outbox（只报事实，不重跑），再标 `RECONCILED`。
+任务执行前：`ledger[task_id] = {state: MAY_HAVE_EXECUTED, operation, started_at}` → `fsync` 目录项 → 才调用实现函数。完成后写 `{state: SUCCEEDED|REFUSED|FAILED, finished_at, result_digest}`（`REFUSED` = 校验拒绝且无副作用，`FAILED` = 尝试过但失败，`UNKNOWN` = 无法判定是否已执行；结果信封复用任务信封的 `schema` 并附加 `{task_id, operation, result, result_digest}`）。启动时扫描 ledger：任何 `MAY_HAVE_EXECUTED` 且无终态的任务，先补写一条 `UNKNOWN` 结果进 outbox（只报事实，不重跑），再标 `RECONCILED`。
+
+有界驱逐绝不丢未对账条目：超过上限时只驱逐已终态条目（`RESULT_DROPPED` 优先，其次其他终态，最后才 `FENCED`），`MAY_HAVE_EXECUTED` **永不驱逐**；若账本达上限且仍含未对账条目，agent 停止接收新任务并以 `AGENT_LEDGER_EXHAUSTED` fail closed，直到下一次成功对账——`不重复执行` 优先于 `有界`，宁可停摆也不猜。
+
+启动闸门：`run` 在进入循环前校验凭据文件是常规文件（非符号链接）、权限 `0600`、属主等于当前 euid，节点配置 `/etc/ghostfleet/node-agent.json` 为 root 拥有的 `0644`；任一不符 → 退出 3（不进入循环，不打印文件内容）。载荷完整性是**安装期**属性（root 拥有的 `/usr/local/libexec/ghostfleet` 路径 + bootstrap 逐字节校验 + unit `ProtectSystem=strict` 使其运行期不可写），运行期不做自哈希——能改写载荷的人同样能改写载荷里的常量，自哈希只增加仪式感。
 
 写盘一律 `tmp + os.replace` 并 `fsync` 文件与目录，避免半写状态。outbox 上限 64 条：溢出时保留最新 64 条并把被丢弃条目的 `task_id` 记入 ledger 的 `RESULT_DROPPED`（这是事实记录，不是静默丢弃）。
 
