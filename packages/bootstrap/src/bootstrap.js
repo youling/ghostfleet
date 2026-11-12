@@ -889,17 +889,36 @@ capability_unit_exec_start() {
   esac
 }
 
-# A unit file is not a process. Before the v1 lane is deleted it is stopped in
-# the privileged account's own session and proved stopped: the unit is inactive
-# or failed AND no process of its ExecStart binary still runs as that account.
-# A v2 lane running next to a live privileged instance is exactly the state this
-# ruling removes, so an unprovable stop deletes nothing.
+# A unit file is not a process. Before the v1 lane is deleted its service is
+# stopped in the privileged account's own session and proved stopped: the unit is
+# inactive or failed AND no process of its ExecStart binary still runs as that
+# account. A v2 lane running next to a live privileged instance is exactly the
+# state this ruling removes, so an unprovable stop deletes nothing.
+#
+# Everything that can be known WITHOUT touching the system is checked first —
+# the ExecStart the process set is attributed to, that sudo can enter the
+# account's session, and that pgrep exists. Only then is the unit stopped, so a
+# run that could never prove the outcome never changes the system, every refusal
+# names exactly one reason, and there is no "stopped but unprovable" state.
 capability_stale_lane_stop_and_prove() {
   CAPABILITY_STALE_STOP_FAILED=
   capability_stale_stop_cmd="sudo -iu $CAPABILITY_STALE_ACCOUNT systemctl --user stop $CAPABILITY_USER_UNIT"
+  if [ -n "$CAPABILITY_STALE_UNIT" ]; then
+    capability_stale_exec="$(capability_unit_exec_start "$CAPABILITY_STALE_UNIT")"
+    if [ -z "$capability_stale_exec" ]; then
+      CAPABILITY_STALE_STOP_FAILED="the unit's ExecStart does not name an absolute executable, so no process can be attributed to it"
+      printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED; nothing is removed and the unit is left running as it was" >&2
+      return 1
+    fi
+  fi
   if ! command -v sudo >/dev/null 2>&1; then
     CAPABILITY_STALE_STOP_FAILED="sudo is not available to enter the $CAPABILITY_STALE_ACCOUNT session"
-    printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED, so the v1 unit cannot be stopped and nothing is removed" >&2
+    printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED, so the v1 unit cannot be stopped; nothing is removed and the unit is left running as it was" >&2
+    return 1
+  fi
+  if ! command -v pgrep >/dev/null 2>&1; then
+    CAPABILITY_STALE_STOP_FAILED="pgrep is not installed, so the absence of the unit's processes cannot be proved"
+    printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED; nothing is removed and the unit is left running as it was" >&2
     return 1
   fi
   if ! $capability_stale_stop_cmd >/dev/null 2>&1; then
@@ -916,17 +935,6 @@ capability_stale_lane_stop_and_prove() {
       return 1
       ;;
   esac
-  capability_stale_exec="$(capability_unit_exec_start "$CAPABILITY_STALE_UNIT")"
-  if [ -z "$capability_stale_exec" ]; then
-    CAPABILITY_STALE_STOP_FAILED="the unit's ExecStart does not name an absolute executable, so no process can be attributed to it"
-    printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED; nothing is removed" >&2
-    return 1
-  fi
-  if ! command -v pgrep >/dev/null 2>&1; then
-    CAPABILITY_STALE_STOP_FAILED="pgrep is not installed, so the absence of the unit's processes cannot be proved"
-    printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED; nothing is removed" >&2
-    return 1
-  fi
   # pgrep's contract: 0 = matched, 1 = no match, anything else = the query
   # itself failed. Only "no match" may be read as "the process is gone".
   if pgrep -u "$CAPABILITY_STALE_ACCOUNT" -f "$capability_stale_exec" >/dev/null 2>&1; then

@@ -599,6 +599,7 @@ cat > "$work/decommission-harness.sh" <<'HARNESS'
 set -eu
 CHECKPOINT_DIR="$HARNESS_CHECKPOINT"
 fail() { printf '%s\n' "fleet-enroll: $*" >&2; exit 1; }
+printf '%s\n' "sentinel-v1-record" > "$CHECKPOINT_DIR/capability-selection.txt"
 . "$CAPABILITY_LIBRARY"
 . "$CAPABILITY_DATA"
 CAPABILITY_STALE_ACCOUNT="$STALE_ACCOUNT"
@@ -629,6 +630,29 @@ run_decommission() {
     sh "$work/decommission-harness.sh"
 }
 
+# The four things a refusal must leave exactly as they were: the unit bytes, the
+# enablement link target, Linger on the privileged account, and the provenance
+# record. A refusal that changed any of them would be a failure even if it exited
+# non-zero.
+lane_state() {
+  printf '%s|%s|%s|%s' \
+    "$(sha256sum "$stale_unit" 2>/dev/null | cut -d' ' -f1)" \
+    "$(readlink "$stale_want" 2>/dev/null || printf 'none')" \
+    "$(loginctl show-user "$privileged_account" -p Linger 2>/dev/null || printf 'none')" \
+    "$(sha256sum "$work/decommission-checkpoint/capability-selection.txt" 2>/dev/null | cut -d' ' -f1)"
+}
+assert_lane_present() {
+  local state
+  state="$(lane_state)"
+  [[ -n "${state%%|*}" ]] || fail_check "$1: the unit file is missing before the run"
+  [[ "$state" == *"|../ghostfleet-managed.service|"* ]] || fail_check "$1: the enablement link is missing before the run"
+  [[ "$state" == *"|Linger=yes|"* ]] || fail_check "$1: Linger is not enabled before the run"
+  [[ -n "${state##*|}" ]] || fail_check "$1: the provenance record is missing before the run"
+}
+assert_lane_unchanged() {
+  [[ "$(lane_state)" == "$2" ]] || fail_check "$1: the refused run changed the lane"
+}
+
 # (a) The unit is inactive but a process of its ExecStart binary still runs as
 #     the privileged account: the lane cannot be proved stopped, so nothing is
 #     deleted and the run refuses.
@@ -637,6 +661,9 @@ sudo -iu "$privileged_account" /bin/sh -c 'nohup /bin/sleep 300 >/dev/null 2>&1 
 }
 sleep 1
 pgrep -u "$privileged_account" -f '/bin/sleep' >/dev/null || fail_check "the stray privileged process is not running"
+run_decommission "unit enablement-link linger" 0 >"$work/decommission-arming.log" 2>&1 || true
+assert_lane_present "live process"
+lane_before="$(lane_state)"
 if run_decommission "unit enablement-link linger" 0 >"$work/decommission-live.log" 2>&1; then
   pkill -9 -u "$privileged_account" -f '/bin/sleep' 2>/dev/null || true
   fail_check "a v1 lane whose process still runs was removed"
@@ -645,8 +672,7 @@ grep -q 'still run as' "$work/decommission-live.log" || {
   cat "$work/decommission-live.log" >&2
   fail_check "the live process was not the reason for the refusal"
 }
-[[ -e "$stale_unit" ]] || fail_check "the unit was deleted while its process still ran"
-[[ -L "$stale_want" ]] || fail_check "the enablement link was deleted while its process still ran"
+assert_lane_unchanged "live process" "$lane_before"
 record_ok "running privileged process blocks deletion: $(grep -o 'processes of [^;]*' "$work/decommission-live.log" | head -n1)"
 pkill -9 -u "$privileged_account" -f '/bin/sleep' 2>/dev/null || true
 sleep 1
@@ -665,7 +691,8 @@ pgrep -u "$privileged_account" -f '/bin/sleep' >/dev/null 2>&1 && fail_check "a 
 record_ok "stopped v1 lane decommissioned: unit, enablement link and Linger removed"
 
 # (c) Without pgrep the absence of a process cannot be proved, so the lane is
-#     kept and the operator is told exactly why.
+#     kept and the operator is told exactly why. The pgrep check runs BEFORE the
+#     stop, so this case needs no user session at all - only a PATH without pgrep.
 min_bin="$work/min-bin"
 rm -rf "$min_bin"
 mkdir -p "$min_bin"
@@ -674,14 +701,22 @@ for dir in /usr/bin /bin /usr/sbin /sbin; do
 done
 rm -f "$min_bin/pgrep"
 [[ -e "$min_bin/systemctl" && ! -e "$min_bin/pgrep" ]] || fail_check "the minimal PATH was not built"
-if PATH="$min_bin" run_decommission "unit enablement-link linger" 1 >"$work/decommission-nopgrep.log" 2>&1; then
+# The decommission above turned Linger off, so the lane is put back first: the
+# four-way assertion below is about Linger still being on after the refusal. The
+# unit itself need not run - the pgrep check precedes the stop.
+loginctl enable-linger "$privileged_account" >/dev/null 2>&1 || true
+sleep 2
+PATH="$min_bin" run_decommission "unit enablement-link linger" 0 >"$work/decommission-arming.log" 2>&1 || true
+assert_lane_present "missing pgrep"
+lane_before="$(lane_state)"
+if PATH="$min_bin" run_decommission "unit enablement-link linger" 0 >"$work/decommission-nopgrep.log" 2>&1; then
   fail_check "a missing pgrep was read as 'no process'"
 fi
-grep -q 'pgrep is not installed' "$work/decommission-nopgrep.log" || {
+grep -q 'pgrep is not installed, so the absence of the unit.s processes cannot be proved' "$work/decommission-nopgrep.log" || {
   cat "$work/decommission-nopgrep.log" >&2
   fail_check "the missing pgrep was refused for an unexpected reason"
 }
-[[ -e "$stale_unit" ]] || fail_check "the unit was deleted without proving its processes gone"
+assert_lane_unchanged "missing pgrep" "$lane_before"
 record_ok "missing pgrep blocks deletion: $(grep -o 'pgrep is not installed[^;]*' "$work/decommission-nopgrep.log" | head -n1)"
 
 loginctl disable-linger "$privileged_account" 2>/dev/null || true

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, readFile, rm, stat, readdir, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm, stat, readdir, symlink, readlink } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { join, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -251,6 +251,33 @@ async function seedRecordedV1Lane(host, selection, {
   if (processes) await writeFile(join(host.fixtureState, "unit-procs"), processes);
   if (pgrepFails) await writeFile(join(host.fixtureState, "pgrep-fails"), "yes\n");
   return { unitPath, wantPath };
+}
+
+// A refusal deletes nothing: the unit, its enablement link, Linger and the
+// provenance record must be byte-for-byte what they were before the run.
+async function laneState(host, lane) {
+  const unit = await readFile(lane.unitPath);
+  const wantTarget = await readlink(lane.wantPath);
+  const linger = await exists(join(host.fixtureState, "linger", PRIVILEGED_ACCOUNT));
+  const record = await readFile(join(host.checkpoint, "capability-selection.txt"));
+  return { unit, wantTarget, linger, record };
+}
+
+function assertLaneUnchanged(actual, expected, label) {
+  assert.deepEqual(actual.unit, expected.unit, label + ": the unit file is unchanged");
+  assert.equal(actual.wantTarget, expected.wantTarget, label + ": the enablement link target is unchanged");
+  assert.equal(actual.linger, true, label + ": Linger is still enabled");
+  assert.equal(expected.linger, true, label + ": Linger was enabled before the run");
+  assert.deepEqual(actual.record, expected.record, label + ": the provenance record is unchanged");
+}
+
+// The account probe refuses before any lane exists, so the same four things must
+// still be absent afterwards.
+async function assertNoLane(host, label) {
+  assert.equal(await exists(UNIT_PATH(host)), false, label + ": no unit");
+  assert.equal(await exists(WANT_PATH(host)), false, label + ": no enablement link");
+  assert.equal(await exists(LINGER(host)), false, label + ": no Linger");
+  assert.equal(await exists(join(host.checkpoint, "capability-selection.txt")), false, label + ": no record");
 }
 
 async function accountExists(host, name) {
@@ -1424,19 +1451,17 @@ test("a v1 lane whose service will not stop is not removed", { skip: linuxOnly }
     await freshCheckpoint(host);
     const selection = await buildSelection();
     assert.equal((await runCourier(host, selection)).status, 0);
-    const { unitPath, wantPath } = await seedRecordedV1Lane(host, selection, {
+    const lane = await seedRecordedV1Lane(host, selection, {
       unitState: "active", stopIneffective: true,
     });
+    const before = await laneState(host, lane);
     const second = await runCourier(host, null);
     assert.notEqual(second.status, 0);
     assert.match(second.stderr, /CAPABILITY_STALE_PRIVILEGED_LANE/);
     assert.match(second.stderr, /still running and could not be proved stopped/);
     assert.match(second.stderr, /still reports 'active'/);
     // Nothing was removed and the record survives, so the operator can retry.
-    assert.ok(await exists(unitPath), "the unit is kept while the service runs");
-    assert.ok(await exists(wantPath), "the enablement link is kept");
-    assert.ok(await exists(join(host.fixtureState, "linger", PRIVILEGED_ACCOUNT)), "Linger is kept");
-    assert.ok(await exists(join(host.checkpoint, "capability-selection.txt")), "the record is kept");
+    assertLaneUnchanged(await laneState(host, lane), before, "stop not proved");
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
 
@@ -1446,13 +1471,13 @@ test("a v1 lane whose stop command fails is not removed", { skip: linuxOnly }, a
     await freshCheckpoint(host);
     const selection = await buildSelection();
     assert.equal((await runCourier(host, selection)).status, 0);
-    const { unitPath } = await seedRecordedV1Lane(host, selection, { unitState: "active", stopFails: true });
+    const lane = await seedRecordedV1Lane(host, selection, { unitState: "active", stopFails: true });
+    const before = await laneState(host, lane);
     const second = await runCourier(host, null);
     assert.notEqual(second.status, 0);
     assert.match(second.stderr, /could not be proved stopped/);
     assert.match(second.stderr, /stop it yourself: sudo -iu ghostfleet-ops systemctl --user stop/i);
-    assert.ok(await exists(unitPath));
-    assert.ok(await exists(join(host.checkpoint, "capability-selection.txt")));
+    assertLaneUnchanged(await laneState(host, lane), before, "refused");
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
 
@@ -1462,14 +1487,14 @@ test("a v1 lane that is proved stopped is removed with its record", { skip: linu
     await freshCheckpoint(host);
     const selection = await buildSelection();
     assert.equal((await runCourier(host, selection)).status, 0);
-    const { unitPath, wantPath } = await seedRecordedV1Lane(host, selection, { unitState: "active" });
+    const lane = await seedRecordedV1Lane(host, selection, { unitState: "active" });
     const second = await runCourier(host, null);
     assert.notEqual(second.status, 0);
     assert.match(second.stderr, /decommissioned the v1 managed lane/);
     assert.ok((await calls(host)).some((line) => line.startsWith("sudo -iu " + PRIVILEGED_ACCOUNT + " systemctl --user stop")),
       "the unit was stopped in the privileged account's session");
-    assert.equal(await exists(unitPath), false, "the stopped unit is removed");
-    assert.equal(await exists(wantPath), false);
+    assert.equal(await exists(lane.unitPath), false, "the stopped unit is removed");
+    assert.equal(await exists(lane.wantPath), false);
     assert.equal(await exists(join(host.fixtureState, "linger", PRIVILEGED_ACCOUNT)), false);
     assert.equal(await exists(join(host.checkpoint, "capability-selection.txt")), false);
   } finally { await rm(host.root, { recursive: true, force: true }); }
@@ -1501,8 +1526,8 @@ test("a group list that comes back empty is not accepted", { skip: linuxOnly }, 
     const result = await runCourier(host, await buildSelection());
     assert.notEqual(result.status, 0, "id -nG always lists the primary group; empty output is not an answer");
     assert.match(result.stderr, /CAPABILITY_RUN_ACCOUNT_UNPROVEN/);
-    assert.equal(await exists(UNIT_PATH(host)), false);
     assert.equal(startingWith(await installerLog(host), "installer --apply").length, 0);
+    await assertNoLane(host, "empty group list");
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
 
@@ -1516,7 +1541,7 @@ test("a group list that does not contain the primary group is not accepted", { s
     const result = await runCourier(host, await buildSelection());
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /CAPABILITY_RUN_ACCOUNT_UNPROVEN/);
-    assert.equal(await exists(UNIT_PATH(host)), false);
+    await assertNoLane(host, "missing primary group");
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
 
@@ -1528,7 +1553,7 @@ test("an unparseable group token is not accepted", { skip: linuxOnly }, async ()
     const result = await runCourier(host, await buildSelection());
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /CAPABILITY_RUN_ACCOUNT_UNPROVEN/);
-    assert.equal(await exists(UNIT_PATH(host)), false);
+    await assertNoLane(host, "unparseable group token");
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
 
@@ -1538,13 +1563,13 @@ test("a pgrep query failure blocks deletion", { skip: linuxOnly }, async () => {
     await freshCheckpoint(host);
     const selection = await buildSelection();
     assert.equal((await runCourier(host, selection)).status, 0);
-    const { unitPath } = await seedRecordedV1Lane(host, selection, { pgrepFails: true });
+    const lane = await seedRecordedV1Lane(host, selection, { pgrepFails: true });
+    const before = await laneState(host, lane);
     const second = await runCourier(host, null);
     assert.notEqual(second.status, 0, "pgrep exit 3 is a failed query, not an empty process set");
     assert.match(second.stderr, /could not be proved stopped/);
     assert.match(second.stderr, /pgrep could not answer/);
-    assert.ok(await exists(unitPath));
-    assert.ok(await exists(join(host.checkpoint, "capability-selection.txt")));
+    assertLaneUnchanged(await laneState(host, lane), before, "refused");
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
 
@@ -1554,14 +1579,15 @@ test("a missing pgrep blocks deletion", { skip: linuxOnly }, async () => {
     await freshCheckpoint(host);
     const selection = await buildSelection();
     assert.equal((await runCourier(host, selection)).status, 0);
-    const { unitPath } = await seedRecordedV1Lane(host, selection);
+    const lane = await seedRecordedV1Lane(host, selection);
+    const before = await laneState(host, lane);
     const systemPath = await systemPathWithout(host, "pgrep");
     const second = await runCourier(host, null, { systemPath });
     assert.notEqual(second.status, 0, "without pgrep the absence of a process cannot be proved");
     assert.match(second.stderr, /could not be proved stopped/);
-    assert.match(second.stderr, /pgrep is not installed/);
-    assert.ok(await exists(unitPath));
-    assert.ok(await exists(join(host.checkpoint, "capability-selection.txt")));
+    assert.match(second.stderr, /pgrep is not installed, so the absence of the unit's processes cannot be proved/);
+    assert.match(second.stderr, /nothing is removed and the unit is left running as it was/);
+    assertLaneUnchanged(await laneState(host, lane), before, "refused");
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
 
@@ -1572,12 +1598,15 @@ test("a unit whose ExecStart is not an absolute binary blocks deletion", { skip:
     const relativeUnit = "[Service]\nExecStart=sleep 300\n";
     const selection = await buildSelection({ unitContent: relativeUnit });
     assert.equal((await runCourier(host, selection)).status, 0);
-    const { unitPath } = await seedRecordedV1Lane(host, selection, { unitContent: relativeUnit });
+    const lane = await seedRecordedV1Lane(host, selection, { unitContent: relativeUnit });
+    const before = await laneState(host, lane);
     const second = await runCourier(host, null);
     assert.notEqual(second.status, 0, "a relative ExecStart cannot be attributed to a process set");
     assert.match(second.stderr, /could not be proved stopped/);
     assert.match(second.stderr, /does not name an absolute executable/);
-    assert.ok(await exists(unitPath));
-    assert.ok(await exists(join(host.checkpoint, "capability-selection.txt")));
+    assert.match(second.stderr, /nothing is removed and the unit is left running as it was/);
+    assert.equal((await calls(host)).some((line) => line.includes("systemctl --user stop")), false,
+      "the refusal happens before the only side effect");
+    assertLaneUnchanged(await laneState(host, lane), before, "refused");
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
