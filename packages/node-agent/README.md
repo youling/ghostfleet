@@ -129,6 +129,8 @@ boot 重放换新 boot_id 重试一次，结果冲突视为永久拒绝）；429
 只读 / 可变更由 `tasks.py` 的 `OPERATION_SPECS` 逐 operation 显式声明（v0 四个 operation 全为
 `read_only`）；将来任何可能改变节点状态的 operation 必须显式声明 `may_mutate`，其执行期异常一律报
 `UNKNOWN`，绝不报 `REFUSED`——否则等于告诉控制面"随便重发，不会有副作用"。
+`REFUSED` 是「实现从未被调用」的承诺：一旦进入实现函数，Agent 就没有资格替控制面断言零副作用，
+因此 `may_mutate` 实现内部抛出的 `TaskRefused` 也按 `UNKNOWN` 处理（v0 四个只读 operation 不受影响）。
 
 ## 崩溃安全与幂等
 
