@@ -185,7 +185,9 @@ async function nodePost(handler, path, options) {
 async function plainRequest(handler, path, options = {}) {
   const method = options.method ?? "POST";
   const headers = { "content-type": "application/json" };
-  const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
+  // `raw` keeps a deliberately malformed body unstringified.
+  const payload = options.raw !== undefined ? options.raw
+    : options.body === undefined ? undefined : JSON.stringify(options.body);
   const response = await handler(new Request("https://ghostfleet.invalid" + path, { method, headers, body: payload }));
   const text = await response.text();
   let parsed = null;
@@ -940,7 +942,16 @@ test("worker exempts only the three node routes from operator bearer auth", asyn
 
   for (const [method, path] of [["GET", "/v0/nodes"], ["GET", "/v0/events"], ["POST", "/v0/enrollment-attempts"], ["GET", "/mcp"]]) {
     const denied = await fixture.request(path, { method, headers: jsonHeaders });
-    assert.equal([401, 403].includes(denied.status), true, path + " must still require an operator credential");
+    assert.equal(denied.status, 401, path + " must still require an operator credential");
+    assert.equal((await denied.json()).error, "UNAUTHORIZED", path + " must name the missing credential");
+  }
+
+  // A read-only credential authenticates but cannot mutate, and it is not 401:
+  // the caller is known, so the answer names the authority, not the identity.
+  for (const path of ["/v0/enrollment-attempts", "/v0/node-tasks", "/v0/node-credential/rotate"]) {
+    const readOnly = await fixture.request(path, { method: "POST", headers: { ...jsonHeaders, authorization: "Bearer " + fixture.reader }, body: "{}" });
+    assert.equal(readOnly.status, 403, path + " must refuse a read-only credential");
+    assert.equal((await readOnly.json()).error, "READ_ONLY_CREDENTIAL");
   }
 
   const readerNodes = await fixture.request("/v0/nodes", { method: "GET", headers: { authorization: "Bearer " + fixture.reader } });
@@ -1107,13 +1118,28 @@ test("operator node task routes validate input and summarise without echoing par
 
 test("operator node routes still require the operator bearer", async () => {
   const fixture = workerFixture();
-  for (const [method, path] of [
-    ["POST", "/v0/node-tasks"],
-    ["GET", "/v0/node-tasks?node_uid=" + makeId("node")],
-    ["POST", "/v0/node-credential/rotate"],
-  ]) {
-    const denied = await fixture.request(path, { method, headers: { "content-type": "application/json" }, body: method === "POST" ? "{}" : undefined });
-    assert.equal([401, 403].includes(denied.status), true, path + " must stay operator-gated");
+  const routes = [
+    ["POST", "/v0/node-tasks", "{}"],
+    ["GET", "/v0/node-tasks?node_uid=" + makeId("node"), undefined],
+    ["POST", "/v0/node-credential/rotate", "{}"],
+  ];
+  for (const [method, path, body] of routes) {
+    const denied = await fixture.request(path, { method, headers: { "content-type": "application/json" }, body });
+    assert.equal(denied.status, 401, path + " must stay operator-gated");
+    assert.equal((await denied.json()).error, "UNAUTHORIZED", path + " must name the missing credential");
+  }
+  // A read-only credential authenticates but cannot mutate: the answer is 403
+  // READ_ONLY_CREDENTIAL, not 401. A GET is a read, so it passes the authority
+  // check and fails only on the unknown node it asked about.
+  for (const [method, path, body] of routes) {
+    const readOnly = await fixture.request(path, { method, headers: { "content-type": "application/json", authorization: "Bearer " + fixture.reader }, body });
+    if (method === "GET") {
+      assert.equal(readOnly.status, 404, "a read is authorized for a read-only credential: " + path);
+      assert.equal((await readOnly.json()).error, "NODE_NOT_FOUND");
+    } else {
+      assert.equal(readOnly.status, 403, path + " must refuse a read-only credential");
+      assert.equal((await readOnly.json()).error, "READ_ONLY_CREDENTIAL");
+    }
   }
 });
 
@@ -1825,4 +1851,55 @@ test("the sealed handoff decrypts with an independent HKDF and AES-256-GCM", () 
   // A different AAD must not authenticate, even with the right key and tag.
   assert.throws(() => openIndependently(sealed, JSON.stringify({ handoff_id, node_uid: "node-other-vector", ticket_id })));
   assert.throws(() => openIndependently(sealed, JSON.stringify({ handoff_id, node_uid, ticket_id: "ticket-other" })));
+});
+
+// P3-2: the operator edge answers a request-shape problem with 400. Only a code
+// that carries an explicit status, or the node edge's retry classes, may differ.
+test("the operator edge answers a malformed request with 400 while node conflicts stay 409", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "status-edge");
+  const credential = giveCredential(parts.controller, node_uid);
+
+  // Malformed JSON used to answer 409 INVALID_JSON because the code contains
+  // "INVALID"; an operator client read that as a state conflict and retried.
+  for (const path of ["/v0/node-tasks", "/v0/enrollment-attempts"]) {
+    const malformed = await plainRequest(parts.handler, path, { method: "POST", raw: "{broken" });
+    assert.equal(malformed.status, 400, path + " must answer malformed JSON with 400: " + malformed.text);
+    assert.equal(malformed.json.error, "INVALID_JSON");
+    assert.equal(malformed.json.code, "INVALID_JSON");
+  }
+
+  // A bare controller code without an explicit status is request-shape too: it
+  // was mapped to 409 purely because the code contains "INVALID".
+  const unknownKey = await plainRequest(parts.handler, "/v0/enrollment-attempts", { method: "POST", body: { bogus: 1 } });
+  assert.equal(unknownKey.status, 400, unknownKey.text);
+  assert.equal(unknownKey.json.error, "CREATE_INPUT_INVALID");
+  assert.equal(unknownKey.json.code, "CREATE_INPUT_INVALID");
+  const badTtl = await plainRequest(parts.handler, "/v0/enrollment-attempts", { method: "POST", body: { ttl_seconds: 5 } });
+  assert.equal(badTtl.status, 400, badTtl.text);
+  assert.equal(badTtl.json.error, "TTL_INVALID");
+
+  // The node edge is untouched: a malformed node body is still a 400 request
+  // error, and a real result conflict is still the 409 retry class the Python
+  // client dispatches on (client.py _classify reads this status).
+  const nodeMalformed = await nodePost(parts.handler, "/v0/nodes/" + node_uid + "/heartbeat", {
+    token: credential.token, headerUid: node_uid, raw: "{broken",
+  });
+  assert.equal(nodeMalformed.status, 400);
+  assert.equal(nodeMalformed.json.error, "INVALID_JSON");
+  assert.equal(nodeMalformed.json.code, "INVALID_JSON");
+
+  parts.controller.createNodeTask(node_uid, { operation: "capability.inspect", params: {} });
+  const dispatched = await poll(parts.handler, parts.clock, node_uid, credential.token);
+  assert.equal(dispatched.status, 200, dispatched.text);
+  assert.equal(dispatched.json.tasks.length, 1);
+  const envelopeTask = dispatched.json.tasks[0];
+  const first = await sendResult(parts.handler, parts.clock, node_uid, credential.token, envelopeTask.task_id,
+    taskResult(envelopeTask, "SUCCEEDED", { data: { probe: "first" } }));
+  assert.equal(first.status, 200, first.text);
+  const conflict = await sendResult(parts.handler, parts.clock, node_uid, credential.token, envelopeTask.task_id,
+    taskResult(envelopeTask, "SUCCEEDED", { data: { probe: "second" } }));
+  assert.equal(conflict.status, 409, "a conflicting result is still a retry-class conflict");
+  assert.equal(conflict.json.error, "TASK_RESULT_CONFLICT");
+  assert.equal(conflict.json.code, "TASK_RESULT_CONFLICT");
 });

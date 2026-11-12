@@ -83,7 +83,12 @@ function errorResponse(error) {
     return json({ ok: false, error: "INTERNAL_ERROR" }, 500);
   }
   const code = candidate;
-  const status = Number.isInteger(error?.status) ? error.status : code.includes("NOT_FOUND") ? 404 : code.includes("INVALID") || code.includes("MISSING") ? 409 : 400;
+  // The operator edge answers a request-shape problem with 400. Only a code that
+  // carries an explicit status (NodeAgentError, EnrollmentTicketError, the body
+  // cap, an auth denial) or a lookup that found nothing keeps another status.
+  // Mapping every "*_INVALID" to 409 told an operator client to re-read state
+  // instead of fixing the request, and made malformed JSON look like a conflict.
+  const status = Number.isInteger(error?.status) ? error.status : code.includes("NOT_FOUND") ? 404 : 400;
   // The operator plane follows the same double-field convention as the node
   // plane: `error` is this repo's convention and `code` is what a client that
   // dispatches on a stable code reads (na-core client.py _extract_error_code).
