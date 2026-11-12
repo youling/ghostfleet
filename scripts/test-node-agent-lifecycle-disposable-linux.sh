@@ -632,6 +632,13 @@ assert_contains "${UNIT_TEXT}" "NoNewPrivileges=yes" "unit must not gain privile
 assert_contains "${UNIT_TEXT}" "MemoryMax=" "unit must bound memory"
 assert_contains "${UNIT_TEXT}" "TasksMax=" "unit must bound tasks"
 assert_contains "${UNIT_TEXT}" "ReadWritePaths=%h/.config/ghostfleet %h/.local/state/ghostfleet-agent" "unit writes exactly the two home-scoped directories"
+# The unit must pin the account's own runtime directory. A user manager can be
+# started with an inherited XDG_RUNTIME_DIR; on the GitHub runner the agent ran
+# with /run/user/1001 (the runner user) while its bus lived in /run/user/1002, so
+# every `systemctl --user` call failed and every observed unit degraded to
+# "unknown". %t is the user unit's own runtime directory, so this is independent
+# of whatever the manager inherited.
+assert_contains "${UNIT_TEXT}" "Environment=XDG_RUNTIME_DIR=%t" "unit must pin XDG_RUNTIME_DIR=%t so the agent reaches its own user bus"
 # ADR e438231: systemd must create the directories itself, otherwise the mount
 # namespace step fails with 226/NAMESPACE on a fresh account.
 assert_contains "${UNIT_TEXT}" "StateDirectory=ghostfleet-agent" "unit must create its state directory (ADR section 8 / e438231)"
@@ -1082,6 +1089,22 @@ evidence "unit.sub_state=${SUB_STATE}"
 evidence "unit.main_pid=${MAIN_PID}"
 evidence "unit.main_pid_owner=${MAIN_PID_OWNER}"
 evidence "unit.n_restarts=$(unit_show NRestarts)"
+
+# Runtime half of the XDG_RUNTIME_DIR contract: whatever the user manager
+# inherited, this process must see the account's own runtime directory, because
+# that is where the user bus lives. Without this, service.status.read answers
+# "unknown" for every unit (observe.py normalises a failed probe) and nobody can
+# tell that apart from a unit that really is unknown.
+AGENT_ENV_XDG="$(tr '\0' '\n' < "/proc/${MAIN_PID}/environ" | sed -n 's/^XDG_RUNTIME_DIR=//p' | head -n 1)"
+if [[ "${AGENT_ENV_XDG}" != "/run/user/${ACCOUNT_UID}" ]]; then
+  MANAGER_ENV_XDG="$(run_as_account systemctl --user show-environment 2>/dev/null | sed -n 's/^XDG_RUNTIME_DIR=//p' | head -n 1 || true)"
+  evidence "runtime_env.manager_xdg=${MANAGER_ENV_XDG}"
+  evidence "runtime_env.agent_xdg=${AGENT_ENV_XDG}"
+  evidence "runtime_env.agent_main_pid=${MAIN_PID}"
+  fail_check "the agent process (pid ${MAIN_PID}) inherited XDG_RUNTIME_DIR=[${AGENT_ENV_XDG}] but the account's runtime directory is /run/user/${ACCOUNT_UID}; the unit pins Environment=XDG_RUNTIME_DIR=%t and a foreign value means the unit text lost that line, and every systemctl --user probe would answer unknown"
+fi
+evidence "runtime_env.agent_xdg=${AGENT_ENV_XDG}"
+record_ok "the agent process runs with XDG_RUNTIME_DIR=${AGENT_ENV_XDG}, so its systemctl --user probes reach the account's own bus"
 
 # m01969 items 2 and 6: the service manager's own view decides how the agent is
 # invoked, so read it back instead of trusting the file text alone.

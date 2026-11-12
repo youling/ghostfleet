@@ -280,6 +280,18 @@ is-system-running` exits non-zero for `degraded`. The script waits for the
 user *bus* (`systemctl --user show-environment`), then records the state and any
 failed unit names as evidence; it fails only when the state is neither `running`
 nor `degraded`, or when the installed agent unit itself is in the failed list.
+Third, a runner image hands the user manager an inherited environment. On this
+image the account's manager had `XDG_RUNTIME_DIR=/run/user/1001` (the runner
+user) while the account's own bus lived in `/run/user/1002/bus`, so every
+`systemctl --user` call the agent made failed to reach the bus; `observe.py`
+normalises a failed probe to `unknown`, and `service.status.read` answered
+`unknown` for a unit the operator measured as `active`. The unit therefore pins
+`Environment=XDG_RUNTIME_DIR=%t` (`%t` is the account's own runtime directory,
+independent of what the manager inherited), and the script asserts both halves:
+the unit text carries that line, and `/proc/<MainPID>/environ` of the running
+agent has `XDG_RUNTIME_DIR=/run/user/<uid>`. Neither assertion retries; a
+foreign value fails the job and records the manager's value, the agent's value
+and the MainPID as evidence.
 
 The script builds the artifacts the courier is supposed to install instead of
 trusting a checked-in copy: it discovers the agent's build entry, builds the
@@ -295,6 +307,7 @@ character-equal to the install path, `Type=notify`, `NotifyAccess=main`,
 `MemoryMax=` and `TasksMax=` present, `ProtectHome=read-only` present with
 `read-write` absent, no `sh -c`, `curl`, `wget` or `/bin/sh`,
 `ReadWritePaths` exactly the two home-scoped directories,
+`Environment=XDG_RUNTIME_DIR=%t`,
 `StateDirectory=ghostfleet-agent` and `ConfigurationDirectory=ghostfleet`
 with their `*DirectoryMode=0700` counterparts. It also runs
 `python3 -I <pyz> check-config` against both the missing-configuration and

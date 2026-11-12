@@ -172,6 +172,7 @@ Type=notify
 NotifyAccess=main
 ExecStart=/usr/bin/python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz run
 Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=XDG_RUNTIME_DIR=%t
 Restart=on-failure
 RestartSec=5
 WatchdogSec=60
@@ -217,6 +218,7 @@ WantedBy=default.target
 - **`ConfigurationDirectoryMode=0700`**：courier 为放 `node-token` 把 `~/.config/ghostfleet` 建成 `0700`，而 `ConfigurationDirectory=ghostfleet` 默认要求 `0755`，systemd 每次启动都告警 `ConfigurationDirectory 'ghostfleet' already exists but the mode is different (File system: 700 ConfigurationDirectoryMode: 755)`；若目录尚未存在，systemd 会按 0755 创建。unit 必须显式 `ConfigurationDirectoryMode=0700` 与 courier 口径对齐。
 - **`StateDirectoryMode=0700`**：`StateDirectory=ghostfleet-agent` 默认按 `0755` 创建，而 agent 自己的启动自检要求状态目录只有属主可写，于是每轮启动都会打出一条 `state_dir_permissions_loose mode 0o755` 的 warning（首轮真机一次启动出现 4–5 条），日志被自己的告警噪声淹没。unit 显式 `StateDirectoryMode=0700`，agent 侧对同一 path/mode 的 warning **每进程只打一次**（去重，不降级为静默）。
 - **子进程必须剥掉 notify 环境（实测教训，2026-11-12）**：`NOTIFY_SOCKET` 会随环境继承给每一个被调起的子进程；实测 `systemctl`、`loginctl`、`systemd-analyze` 这类 libsystemd CLI 在**退出时**会向 `NOTIFY_SOCKET` 发一条 `EXIT_STATUS=0`。`NotifyAccess=main` 下这些消息不被接受，journal 每轮刷 `Got notification message from PID <child>, but reception only permitted for main PID <main>`；一旦放宽成 `NotifyAccess=all`，这些伪 `EXIT_STATUS=0` 就会被当成主进程的退出状态，污染服务结果。因此 `CommandRunner.run()` 必须显式传 `env=`，在 `dict(os.environ)` 基础上删除 `NOTIFY_SOCKET`、`LISTEN_FDS`、`LISTEN_PID`、`WATCHDOG_USEC`、`WATCHDOG_PID`（保留 `PATH`/`HOME`/`LANG`/`XDG_RUNTIME_DIR`），并由单测断言 spawn 环境的键集合、以及 observe 输出不因剥离而改变。
+- **unit 必须钉住 `XDG_RUNTIME_DIR=%t`（实测教训，2026-11-13）**：user manager 的 `XDG_RUNTIME_DIR` 可能来自启动它的会话/服务管理器环境，而不是账号本身。GitHub Actions runner 上实测：托管账号 uid 1002 的 agent 继承了 `/run/user/1001`（runner 用户），而它的 user bus 在 `/run/user/1002/bus`，于是每一条 `systemctl --user show --property=ActiveState --value <unit>` 都连不上 bus → 非零退出 → 观测结果被归一并吞成 `unknown`（`service.status.read` 返回 `units.ghostfleet-managed.service=unknown`，operator 侧同一 unit 是 `active`）。沙箱与硬化不是原因：同款加固的 user unit 在 systemd 255 上跨 unit 查询正常（`show_rc=0`），WSL 里 `terminate-user` 后重建的 manager 也会自己修正继承值，所以这类污染只在特定 runner 上出现。`%t` 在 user unit 中展开为该账号自己的 runtime 目录（实测 `/run/user/<uid>`），因此 unit 里写 `Environment=XDG_RUNTIME_DIR=%t` 与「谁污染了 manager 环境」无关。验收必须同时断言两件事：unit 文本含该行，以及运行时 `/proc/<MainPID>/environ` 的 `XDG_RUNTIME_DIR` 恰为 `/run/user/<uid>`。agent 侧「`systemctl` 非零退出不记日志」仍是已知观测盲区（后续跟进），不是本条的替代品。
 - **安全停止**：`SIGTERM` → 主循环停止取新任务、**不再发起新的 heartbeat/poll**、停止启动批次中尚未开工的任务；`shutdown()` 随后在预算内**只 flush 已经执行完成的结果**（停止路径上唯一允许发生的请求：这些是已承诺的事实，不是新决策），写 `last_stop` 事实后退出 0。预算不是常量相加的纸面算术，而是运行时逐请求生效：`stop_event` 在 heartbeat 前、poll 前、批次内每条任务开工前检查，`Outbox.flush` 接受 deadline 参数，单条请求的 socket 超时被钳制到剩余预算，且 **409 冲突重试共享同一 remaining**（重试前按已耗时扣减；剩余不足最小发送窗口就不再重试，直接返回首次结果）——否则一次发送可以吃掉两倍剩余预算，「8 s flush / 30 s 停机」就不是硬上界。最坏停机时延 ≈ 1 s（分块睡眠可打断）+ 剩余预算内的单请求 + 8 s（flush），必须显著小于 `TimeoutStopSec=30`，并由「64 条 pending + 慢控制面 + `SIGTERM`」的真实时限测试守护（只把常量相加的测试不算证据）。
 - **健康可见性**：`systemctl --user show` 的 `ActiveState`/`NRestarts`/`ExecMainStatus` 外加 Agent 自报的 `health`，构成独立消费者可观察的外部证据。
 
