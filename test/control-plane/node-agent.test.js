@@ -18,6 +18,9 @@ const START_MS = Date.parse("2026-01-01T00:00:00.000Z");
 const AGENT_VERSION = "0.1.0-synthetic";
 const ADAPTER_EVIDENCE = DEFAULT_ACCEPTANCE_EVIDENCE.filter((type) => !CORE_OWNED_EVIDENCE.includes(type));
 const PREFLIGHT = "sha256:" + "a".repeat(64);
+// The AEAD handoff key is derived from the operator secret. Tests inject a
+// synthetic one so the recoverable credential round-trip is deterministic.
+const HANDOFF_SECRET = "synthetic-operator-handoff-material";
 const enrollmentDelivery = {
   assets_origin: "https://assets.example.invalid",
   enroll_origin: "https://enroll.example.invalid",
@@ -64,6 +67,7 @@ function makeController(options = {}) {
     enrollmentClaimMaterializer: syntheticMaterializer(),
     enrollmentDelivery,
     ticketCodeFactory: () => "12345678",
+    credentialHandoffSecret: HANDOFF_SECRET,
   });
   return { controller, store, clock, handler: createHttpHandler(controller) };
 }
@@ -82,7 +86,12 @@ async function completeEnrollmentFlow(parts) {
     os_id: "debian", os_version_id: "13", bootstrap_version: "synthetic-v1",
   };
   const completed = controller.completeEnrollmentTicket({ resume_session: claim.resume_session, report });
-  return { attempt, claim, report, completed, token: completed.node_credential, node_uid: completed.attempt.node_uid };
+  return {
+    attempt, claim, report, completed,
+    token: completed.node_credential.token,
+    handoff_id: completed.node_credential.handoff_id,
+    node_uid: completed.attempt.node_uid,
+  };
 }
 
 // A provisioned-but-not-yet-admitted node: PROVISIONAL is an agent-plane
@@ -111,16 +120,26 @@ function giveCredential(controller, node_uid) {
   return minted;
 }
 
-let sequence = 0;
+// The seq is scoped to one node and one boot: the control plane now rejects a
+// same-boot regression, so a shared global counter would make unrelated tests
+// interfere. Explicit options.seq always wins for the sequence-focused cases.
+const sequences = new Map();
+function nextSeq(node_uid, boot_id) {
+  const key = node_uid + "|" + boot_id;
+  const value = (sequences.get(key) ?? -1) + 1;
+  sequences.set(key, value);
+  return value;
+}
+
 function agentEnvelope(clock, node_uid, extra = {}, options = {}) {
-  sequence += 1;
+  const boot_id = options.boot_id ?? "boot-synthetic-1";
   return {
     schema: AGENT_SCHEMA,
     node_uid,
     nonce: options.nonce ?? randomBytes(18).toString("base64url"),
     sent_at: options.sent_at ?? new Date(clock.now()).toISOString(),
-    boot_id: options.boot_id ?? "boot-synthetic-1",
-    seq: options.seq ?? sequence,
+    boot_id,
+    seq: options.seq ?? nextSeq(node_uid, boot_id),
     ...extra,
   };
 }
@@ -135,6 +154,19 @@ async function nodePost(handler, path, options) {
   Object.assign(headers, options.headers ?? {});
   const payload = options.raw === undefined ? JSON.stringify(options.body ?? {}) : options.raw;
   const response = await handler(new Request("https://ghostfleet.invalid" + path, { method: "POST", headers, body: payload }));
+  const text = await response.text();
+  let parsed = null;
+  try { parsed = text ? JSON.parse(text) : null; } catch { parsed = null; }
+  return { response, status: response.status, json: parsed, text };
+}
+
+// Operator-facing JSON helper: the adapter injects the bearer, so the handler
+// itself is exercised without credentials here.
+async function plainRequest(handler, path, options = {}) {
+  const method = options.method ?? "POST";
+  const headers = { "content-type": "application/json" };
+  const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
+  const response = await handler(new Request("https://ghostfleet.invalid" + path, { method, headers, body: payload }));
   const text = await response.text();
   let parsed = null;
   try { parsed = text ? JSON.parse(text) : null; } catch { parsed = null; }
@@ -180,27 +212,101 @@ function suspendNode(store, node_uid) {
   store.putNode({ ...record, lifecycle: NodeLifecycle.SUSPENDED });
 }
 
-test("enrollment completion mints exactly one node credential", async () => {
+test("enrollment completion mints exactly one node credential, redelivered by the resume capability", async () => {
   const parts = makeController();
   const flow = await completeEnrollmentFlow(parts);
   const token = flow.token;
   assert.equal(typeof token, "string");
   assert.match(token, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(flow.completed.credential_handoff, "AVAILABLE");
+  assert.equal(typeof flow.handoff_id, "string");
   const record = parts.store.getNode(flow.node_uid);
   assert.equal(record.lifecycle, NodeLifecycle.PROVISIONAL);
   assert.equal(record.agent.credential_digest, sha256Hex(token));
   assert.equal(record.agent.credential_minted_at, new Date(parts.clock.now()).toISOString());
-  assert.equal(JSON.stringify(parts.store.snapshot()).includes(token), false);
+  // The plaintext token is never durable; only the digest and the sealed copy.
+  const durable = JSON.stringify(parts.store.snapshot());
+  assert.equal(durable.includes(token), false);
+  assert.equal(durable.includes(record.agent.credential_handoff.ciphertext), true, "the sealed handoff is durable");
 
   const replay = parts.controller.completeEnrollmentTicket({ resume_session: flow.claim.resume_session, report: flow.report });
   assert.equal(replay.ticket.state, "COMPLETED");
-  assert.equal(replay.node_credential, null, "a retried completion must not remint a credential");
+  assert.equal(replay.credential_handoff, "AVAILABLE");
+  assert.equal(replay.node_credential.token, token, "a retried completion returns the same token");
+  assert.equal(replay.node_credential.handoff_id, flow.handoff_id);
+  assert.equal(replay.node_credential.node_uid, flow.node_uid);
   assert.equal(parts.store.getNode(flow.node_uid).agent.credential_digest, record.agent.credential_digest);
   assert.throws(
     () => parts.controller.completeEnrollmentTicket({ resume_session: flow.claim.resume_session, report: { ...flow.report, node_id: "different-node" } }),
     /BOOTSTRAP_COMPLETION_CONFLICT/,
   );
   assert.equal(parts.store.getNode(flow.node_uid).agent.credential_digest, record.agent.credential_digest);
+});
+
+test("the recoverable handoff survives a durable snapshot and dies on first authenticated use", async () => {
+  const parts = makeController();
+  const flow = await completeEnrollmentFlow(parts);
+  const token = flow.token;
+
+  // §10: the Durable Object stores one blob. A reload must still be able to hand
+  // the same credential to a client whose completion response was lost.
+  const snapshot = parts.store.snapshot();
+  const reloadedStore = new InMemoryStore(snapshot);
+  const reloaded = new GhostFleetController({
+    store: reloadedStore,
+    clock: parts.clock.Clock,
+    credentialHandoffSecret: HANDOFF_SECRET,
+  });
+  const refetched = reloaded.completeEnrollmentTicket({ resume_session: flow.claim.resume_session, report: flow.report });
+  assert.equal(refetched.credential_handoff, "AVAILABLE");
+  assert.equal(refetched.node_credential.token, token);
+  assert.equal(refetched.node_credential.handoff_id, flow.handoff_id);
+
+  // The first authenticated node request consumes the handoff (§5.1).
+  const beat = await heartbeat(parts.handler, parts.clock, flow.node_uid, token);
+  assert.equal(beat.status, 200);
+  assert.equal(parts.store.getNode(flow.node_uid).agent.credential_handoff, null);
+  const afterUse = parts.controller.completeEnrollmentTicket({ resume_session: flow.claim.resume_session, report: flow.report });
+  assert.equal(afterUse.node_credential, null);
+  assert.equal(afterUse.credential_handoff, "EXPIRED");
+  assert.equal(JSON.stringify(afterUse).includes(token), false);
+});
+
+test("the handoff expires and refuses tampered ciphertext without leaking a token", async () => {
+  const expiredParts = makeController();
+  const expiredFlow = await completeEnrollmentFlow({ ...expiredParts });
+  expiredParts.clock.advance(86401);
+  const expired = expiredParts.controller.completeEnrollmentTicket({
+    resume_session: expiredFlow.claim.resume_session, report: expiredFlow.report,
+  });
+  assert.equal(expired.node_credential, null);
+  assert.equal(expired.credential_handoff, "EXPIRED");
+  assert.equal(expiredParts.store.getNode(expiredFlow.node_uid).agent.credential_handoff, null);
+
+  // A tampered sealed blob is an integrity failure: 500, never a wrong token.
+  const tamperedParts = makeController();
+  const tamperedFlow = await completeEnrollmentFlow(tamperedParts);
+  const record = tamperedParts.store.getNode(tamperedFlow.node_uid);
+  const sealed = record.agent.credential_handoff;
+  const flipped = Buffer.from(sealed.ciphertext, "base64url");
+  flipped[0] ^= 0xff;
+  tamperedParts.store.putNodeAgent(tamperedFlow.node_uid, {
+    ...record.agent,
+    credential_handoff: { ...sealed, ciphertext: flipped.toString("base64url") },
+  });
+  const before = tamperedParts.store.snapshot();
+  let failure = null;
+  try {
+    tamperedParts.controller.completeEnrollmentTicket({
+      resume_session: tamperedFlow.claim.resume_session, report: tamperedFlow.report,
+    });
+  } catch (error) {
+    failure = error;
+  }
+  assert.ok(failure, "tampered ciphertext must not produce a response");
+  assert.equal(failure.status, 500);
+  assert.equal(failure.code, "NODE_CREDENTIAL_HANDOFF_INVALID");
+  assert.deepEqual(tamperedParts.store.snapshot(), before, "an integrity failure writes nothing");
 });
 
 test("node credential material never reaches public responses, events or projections", async () => {
@@ -274,7 +380,7 @@ test("body caps are enforced before authentication and before any state change",
     token: credential.token, headerUid: node_uid, raw: "{}", headers: { "content-length": String(NODE_BODY_LIMITS.heartbeat + 1) },
   });
   assert.equal(declared.status, 413);
-  assert.equal(declared.json.error, "REQUEST_BODY_TOO_LARGE");
+  assert.equal(declared.json.error, "NODE_BODY_TOO_LARGE");
 
   for (const [path, limit] of [
     ["/v0/nodes/" + node_uid + "/heartbeat", NODE_BODY_LIMITS.heartbeat],
@@ -285,7 +391,7 @@ test("body caps are enforced before authentication and before any state change",
       token: credential.token, headerUid: node_uid, raw: oversized(limit + 64),
     });
     assert.equal(result.status, 413);
-    assert.equal(result.json.error, "REQUEST_BODY_TOO_LARGE");
+    assert.equal(result.json.error, "NODE_BODY_TOO_LARGE");
     assert.deepEqual(parts.store.snapshot(), before);
   }
 
@@ -294,7 +400,7 @@ test("body caps are enforced before authentication and before any state change",
     outcome: "OK", note: "y".repeat(NODE_BODY_LIMITS.result + 64),
   });
   assert.equal(result.status, 413);
-  assert.equal(result.json.error, "REQUEST_BODY_TOO_LARGE");
+  assert.equal(result.json.error, "NODE_BODY_TOO_LARGE");
 });
 
 test("clock skew, schema drift, bad nonces and rate limits are rejected without writes", async () => {
@@ -317,8 +423,17 @@ test("clock skew, schema drift, bad nonces and rate limits are rejected without 
   await expectRejection(parts, () => heartbeat(parts.handler, parts.clock, node_uid, credential.token, {}, { nonce: "short" }), 400, "NODE_REQUEST_INVALID");
 
   const record = parts.store.getNode(node_uid);
-  parts.store.putNodeAgent(node_uid, { ...record.agent, rate: { window_start_ms: parts.clock.now(), count: NODE_RATE_LIMIT.requests } });
-  await expectRejection(parts, () => poll(parts.handler, parts.clock, node_uid, credential.token), 429, "NODE_RATE_LIMITED");
+  parts.store.putNodeAgent(node_uid, {
+    ...record.agent, rate: { tokens: 0, updated_at_ms: parts.clock.now() },
+  });
+  const limited = await expectRejection(parts, () => poll(parts.handler, parts.clock, node_uid, credential.token), 429, "NODE_RATE_LIMITED");
+  assert.equal(limited.json.retry_after_s, NODE_RATE_LIMIT.refill_seconds);
+  assert.equal(limited.response.headers.get("retry-after"), String(NODE_RATE_LIMIT.refill_seconds));
+
+  // After one refill window the same node is served again.
+  parts.clock.advance(NODE_RATE_LIMIT.refill_seconds);
+  const refilled = await poll(parts.handler, parts.clock, node_uid, credential.token);
+  assert.equal(refilled.status, 200);
 });
 
 test("nonce replay is rejected and produces no additional side effect", async () => {
@@ -334,8 +449,17 @@ test("nonce replay is rejected and produces no additional side effect", async ()
   assert.equal(first.json.ok, true);
 
   const afterFirst = parts.store.snapshot();
-  const second = await nodePost(parts.handler, "/v0/nodes/" + node_uid + "/heartbeat", {
+  // A byte-for-byte replay is caught by the sequence rule before the nonce ring.
+  const exact = await nodePost(parts.handler, "/v0/nodes/" + node_uid + "/heartbeat", {
     token: credential.token, headerUid: node_uid, body,
+  });
+  assert.equal(exact.status, 409);
+  assert.equal(exact.json.error, "NODE_SEQ_REGRESSION");
+  assert.deepEqual(parts.store.snapshot(), afterFirst);
+
+  // The ring is the second line: a fresh seq cannot smuggle a used nonce back in.
+  const second = await nodePost(parts.handler, "/v0/nodes/" + node_uid + "/heartbeat", {
+    token: credential.token, headerUid: node_uid, body: { ...body, seq: body.seq + 1 },
   });
   assert.equal(second.status, 409);
   assert.equal(second.json.error, "NODE_NONCE_REPLAY");
@@ -634,4 +758,133 @@ test("worker keeps /v1 claim and completion behavior unchanged", async () => {
 
   const retired = await fixture.request("/v1/bootstrap.sh", { method: "GET" });
   assert.equal(retired.status, 410);
+});
+
+test("the token bucket tolerates a slow cadence and rejects a burst without writes", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "bucket-device");
+  const credential = giveCredential(parts.controller, node_uid);
+
+  // Steady state: two requests every 30s consumes 2 and refills 3 tokens.
+  for (let step = 0; step < 10; step += 1) {
+    const first = await heartbeat(parts.handler, parts.clock, node_uid, credential.token);
+    assert.equal(first.status, 200, first.text);
+    const second = await poll(parts.handler, parts.clock, node_uid, credential.token);
+    assert.equal(second.status, 200, second.text);
+    parts.clock.advance(30);
+  }
+
+  // Drain the full bucket at one instant, then the next request must be limited.
+  for (let request = 0; request < NODE_RATE_LIMIT.capacity; request += 1) {
+    const allowed = await poll(parts.handler, parts.clock, node_uid, credential.token);
+    assert.equal(allowed.status, 200, "request " + request + " should still be inside the bucket: " + allowed.text);
+  }
+  await expectRejection(parts, () => poll(parts.handler, parts.clock, node_uid, credential.token), 429, "NODE_RATE_LIMITED");
+  parts.clock.advance(NODE_RATE_LIMIT.refill_seconds);
+  const refilled = await poll(parts.handler, parts.clock, node_uid, credential.token);
+  assert.equal(refilled.status, 200);
+});
+
+test("rotation replaces the node credential and clears replay state", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "rotate-device");
+  const old = giveCredential(parts.controller, node_uid);
+  assert.equal((await heartbeat(parts.handler, parts.clock, node_uid, old.token)).status, 200);
+
+  const rotated = await plainRequest(parts.handler, "/v0/node-credential/rotate", {
+    body: { node_uid },
+  });
+  assert.equal(rotated.status, 200, rotated.text);
+  assert.equal(rotated.json.ok, true);
+  assert.equal(rotated.json.node_uid, node_uid);
+  assert.match(rotated.json.node_credential, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(JSON.stringify(parts.store.snapshot()).includes(rotated.json.node_credential), false);
+  assert.equal(parts.store.getNode(node_uid).agent.credential_digest, sha256Hex(rotated.json.node_credential));
+  assert.equal(parts.store.getNode(node_uid).agent.credential_handoff, null, "rotation kills any pending handoff");
+
+  // The old token is dead immediately: the digest was replaced.
+  await expectRejection(parts, () => heartbeat(parts.handler, parts.clock, node_uid, old.token), 401, "NODE_AUTH_INVALID");
+
+  // Rotated state restarts the replay window, so a fresh boot may begin at seq 0.
+  const newToken = rotated.json.node_credential;
+  const fresh = await nodePost(parts.handler, "/v0/nodes/" + node_uid + "/heartbeat", {
+    token: newToken, headerUid: node_uid, body: agentEnvelope(parts.clock, node_uid, {}, { boot_id: "boot-rotated", seq: 0 }),
+  });
+  assert.equal(fresh.status, 200, fresh.text);
+
+  const unknown = await plainRequest(parts.handler, "/v0/node-credential/rotate", { body: { node_uid: makeId("node") } });
+  assert.equal(unknown.status, 404);
+  assert.equal(unknown.json.error, "NODE_NOT_FOUND");
+  const missing = await plainRequest(parts.handler, "/v0/node-credential/rotate", { body: {} });
+  assert.equal(missing.status, 400);
+  assert.equal(missing.json.error, "NODE_REQUEST_INVALID");
+});
+
+test("operator node task routes validate input and summarise without echoing params", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "operator-task-device");
+
+  const forbiddenOperation = await plainRequest(parts.handler, "/v0/node-tasks", {
+    body: { node_uid, operation: "node.exec", params: {} },
+  });
+  assert.equal(forbiddenOperation.status, 400);
+  assert.equal(forbiddenOperation.json.error, "TASK_OPERATION_FORBIDDEN");
+
+  const forbiddenParam = await plainRequest(parts.handler, "/v0/node-tasks", {
+    body: { node_uid, operation: "node.observe", params: { nested: { shell: true } } },
+  });
+  assert.equal(forbiddenParam.status, 400);
+  assert.equal(forbiddenParam.json.error, "TASK_PARAMS_FORBIDDEN");
+
+  const tooLong = await plainRequest(parts.handler, "/v0/node-tasks", {
+    body: { node_uid, operation: "node.observe", params: { want: ["identity"] }, ttl_seconds: 601 },
+  });
+  assert.equal(tooLong.status, 400);
+  assert.equal(tooLong.json.error, "TASK_REQUEST_INVALID");
+
+  const extraKey = await plainRequest(parts.handler, "/v0/node-tasks", {
+    body: { node_uid, operation: "node.observe", params: { want: ["identity"] }, urgent: true },
+  });
+  assert.equal(extraKey.status, 400);
+  assert.equal(extraKey.json.error, "NODE_REQUEST_INVALID");
+
+  const unknownNode = await plainRequest(parts.handler, "/v0/node-tasks", {
+    body: { node_uid: makeId("node"), operation: "node.observe", params: { want: ["identity"] } },
+  });
+  assert.equal(unknownNode.status, 404);
+  assert.equal(unknownNode.json.error, "NODE_NOT_FOUND");
+
+  const created = await plainRequest(parts.handler, "/v0/node-tasks", {
+    body: { node_uid, operation: "service.status.read", params: { units: ["ssh.service"] }, ttl_seconds: 120 },
+  });
+  assert.equal(created.status, 201, created.text);
+  assert.equal(created.json.ok, true);
+  assert.equal(created.json.node_uid, node_uid);
+  assert.equal(created.json.operation, "service.status.read");
+  assert.match(created.json.task_id, /^task-/);
+
+  const listed = await plainRequest(parts.handler, "/v0/node-tasks?node_uid=" + encodeURIComponent(node_uid), { method: "GET" });
+  assert.equal(listed.status, 200, listed.text);
+  assert.equal(listed.json.tasks.length, 1);
+  const summary = listed.json.tasks[0];
+  assert.equal(summary.task_id, created.json.task_id);
+  assert.equal(summary.status, TASK_STATUS.PENDING);
+  assert.equal(Object.hasOwn(summary, "params"), false, "the operator view never echoes task params");
+  assert.equal(listed.text.includes("ssh.service"), false);
+
+  const missingUid = await plainRequest(parts.handler, "/v0/node-tasks", { method: "GET" });
+  assert.equal(missingUid.status, 400);
+  assert.equal(missingUid.json.error, "NODE_REQUEST_INVALID");
+});
+
+test("operator node routes still require the operator bearer", async () => {
+  const fixture = workerFixture();
+  for (const [method, path] of [
+    ["POST", "/v0/node-tasks"],
+    ["GET", "/v0/node-tasks?node_uid=" + makeId("node")],
+    ["POST", "/v0/node-credential/rotate"],
+  ]) {
+    const denied = await fixture.request(path, { method, headers: { "content-type": "application/json" }, body: method === "POST" ? "{}" : undefined });
+    assert.equal([401, 403].includes(denied.status), true, path + " must stay operator-gated");
+  }
 });

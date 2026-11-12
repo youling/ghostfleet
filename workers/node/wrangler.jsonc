@@ -1,0 +1,32 @@
+{
+  // The node agent ingress bridge (ADR NODE_AGENT_V0 §5.4). Unlike the enrollment
+  // bridge it does NOT sit behind Cloudflare Access: a resident node agent holds a
+  // node credential and no operator session. It exposes exactly three POST routes
+  // and forwards them to the private control plane through a service binding, so
+  // the control plane itself is never made public.
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "ghostfleet-node-plane",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "services": [
+    {
+      "binding": "GHOSTFLEET_CONTROL_PLANE",
+      "service": "ghostfleet-control-plane"
+    }
+  ],
+  // Optional advisory per-node rate limiting. Uncomment in the private deployment
+  // with its own namespace ID; the Worker fails open when the binding is absent.
+  // It is advisory only: a limiter success is never authorization, and the
+  // authoritative per-node token bucket lives in the control plane (§5.1).
+  //
+  // "unsafe": {
+  //   "bindings": [
+  //     { "type": "ratelimit", "name": "NODE_PLANE_RATE_LIMITER", "namespace_id": "<id>", "simple": { "limit": 60, "period": 60 } }
+  //   ]
+  // },
+  // Same bypass rule as the other public workers: the only public address is the
+  // deployment's own zone. No workers.dev, no preview hostname.
+  "workers_dev": false,
+  "preview_urls": false
+  // The custom domain/route belongs to the private deployment.
+}

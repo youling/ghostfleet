@@ -1,14 +1,19 @@
-import { NODE_BODY_LIMITS } from "./node-agent.js";
+import { NODE_BODY_LIMITS, NodeAgentError } from "./node-agent.js";
 
-function json(value, status = 200) {
-  return new Response(JSON.stringify(value, null, 2), { status, headers: { "content-type": "application/json; charset=utf-8" } });
+function json(value, status = 200, headers = {}) {
+  return new Response(JSON.stringify(value, null, 2), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8", ...headers },
+  });
 }
 
 // Public, unauthenticated routes share one global control-plane object, so an
 // anonymous oversized body must be refused before it is buffered or parsed.
 // The claim body is one short code; a completion report has its own controller
 // bound (128 KiB); everything else keeps a modest default.
-export const BODY_LIMITS = Object.freeze({ default: 1048576, claim: 1024, complete: 262144 });
+export const BODY_LIMITS = Object.freeze({
+  default: 1048576, claim: 1024, complete: 262144, node_task: 4096, node_credential: 1024,
+});
 
 export class RequestBodyTooLarge extends Error {
   constructor(limit) {
@@ -60,9 +65,24 @@ export function createHttpHandler(controller) {
   // an anonymous node token holder is not trusted with the buffer.
   async function nodeAgentRequest(request, node_uid, kind, task_id = null) {
     const limit = NODE_BODY_LIMITS[kind];
-    const text = await readText(request, limit);
+    let text;
+    try {
+      text = await readText(request, limit);
+    } catch (error) {
+      // One body-cap failure has one code, no matter which layer noticed it.
+      if (error instanceof RequestBodyTooLarge) return json({ ok: false, error: "NODE_BODY_TOO_LARGE" }, 413);
+      throw error;
+    }
     const verification = controller.verifyNodeRequest({ node_uid, headers: request.headers, body: text, limit });
-    if (!verification.ok) return json({ ok: false, error: verification.code }, verification.status);
+    if (!verification.ok) {
+      const payload = { ok: false, error: verification.code };
+      const headers = {};
+      if (Number.isInteger(verification.retry_after_s)) {
+        payload.retry_after_s = verification.retry_after_s;
+        headers["retry-after"] = String(verification.retry_after_s);
+      }
+      return json(payload, verification.status, headers);
+    }
     if (kind === "heartbeat") return json(controller.nodeHeartbeat(verification));
     if (kind === "poll") return json(controller.pollNodeTasks(verification));
     return json(controller.applyNodeTaskResult(verification, task_id));
@@ -85,6 +105,37 @@ export function createHttpHandler(controller) {
       const resultRoute = /^\/v0\/nodes\/([^/]+)\/tasks\/([^/]+)\/result$/.exec(path);
       if (request.method === "POST" && resultRoute) {
         return await nodeAgentRequest(request, decodeURIComponent(resultRoute[1]), "result", decodeURIComponent(resultRoute[2]));
+      }
+
+      // Operator task and credential routes. They reuse the global operator
+      // bearer enforced by the adapter, and they never expose a node token.
+      if (request.method === "POST" && path === "/v0/node-tasks") {
+        const input = await body(request, BODY_LIMITS.node_task);
+        for (const key of Object.keys(input ?? {})) {
+          if (key !== "node_uid" && key !== "operation" && key !== "params" && key !== "ttl_seconds") {
+            throw new NodeAgentError("NODE_REQUEST_INVALID", 400);
+          }
+        }
+        const node_uid = input?.node_uid;
+        if (typeof node_uid !== "string") throw new NodeAgentError("NODE_REQUEST_INVALID", 400);
+        const task = controller.createNodeTask(node_uid, {
+          operation: input.operation, params: input.params, ttl_seconds: input.ttl_seconds,
+        });
+        return json({
+          ok: true, node_uid: task.node_uid, task_id: task.task_id, operation: task.operation,
+          issued_at: task.issued_at, expires_at: task.expires_at,
+        }, 201);
+      }
+      if (request.method === "GET" && path === "/v0/node-tasks") {
+        const node_uid = url.searchParams.get("node_uid");
+        if (typeof node_uid !== "string" || node_uid.length === 0) throw new NodeAgentError("NODE_REQUEST_INVALID", 400);
+        return json({ ok: true, node_uid, tasks: controller.listNodeTaskSummaries(node_uid) });
+      }
+      if (request.method === "POST" && path === "/v0/node-credential/rotate") {
+        const input = await body(request, BODY_LIMITS.node_credential);
+        const node_uid = input?.node_uid;
+        if (typeof node_uid !== "string") throw new NodeAgentError("NODE_REQUEST_INVALID", 400);
+        return json(controller.rotateNodeCredential(node_uid));
       }
       if (request.method === "GET" && path === "/v0/enrollment-attempts") return json({ ok: true, attempts: controller.listEnrollmentAttempts() });
       if (request.method === "GET" && path === "/v0/enrollment-templates") return json({ ok: true, templates: controller.listEnrollmentTemplates() });

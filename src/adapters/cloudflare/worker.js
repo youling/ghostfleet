@@ -35,11 +35,22 @@ export class GhostFleetState {
           bootstrap_sha256: this.env?.GHOSTFLEET_BOOTSTRAP_SHA256,
           enroll_origin: this.env?.GHOSTFLEET_ENROLL_ORIGIN,
         },
+        // §5.1: the recoverable one-time node credential is sealed with a key
+        // derived from the operator secret, so no new deployment secret exists.
+        credentialHandoffSecret: this.env?.GHOSTFLEET_OPERATOR_TOKEN ?? null,
       });
       if (new URL(request.url).pathname.replace(/\/+$/, "") === "/mcp") return handleMcpRequest(controller, request);
       const handler = createHttpHandler(controller);
+      const writes_before = store.writes;
       const response = await handler(request);
-      if (request.method !== "GET" && response.status < 500) await txn.put("ghostfleet-state", store.snapshot());
+      // §10: one blob, no CAS. Rewrite it only when this request actually
+      // mutated state and succeeded, so rejected node requests (401/403/409/413/
+      // 415/429), rate-limited polls and idempotent replays cost no write on the
+      // serialized object. A 5xx is never written back, even if it wrote first.
+      const mutated = store.writes !== writes_before;
+      if (mutated && response.status >= 200 && response.status < 300) {
+        await txn.put("ghostfleet-state", store.snapshot());
+      }
       return response;
     });
   }

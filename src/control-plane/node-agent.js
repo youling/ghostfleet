@@ -7,7 +7,7 @@
 // state writes out of the request-verification path.
 //
 // Contract: docs/architecture/NODE_AGENT_V0.md §5 (protocol) and §10 (durability).
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
 import { publicClone } from "../core/security.js";
 
 export const AGENT_SCHEMA = "ghostfleet-node-agent/v0";
@@ -24,7 +24,10 @@ export const NODE_BODY_LIMITS = Object.freeze({
 export const NONCE_WINDOW_SECONDS = 600;
 export const SENT_AT_TOLERANCE_SECONDS = 300;
 export const NONCE_RING_LIMIT = 256;
-export const NODE_RATE_LIMIT = Object.freeze({ requests: 120, window_seconds: 3600 });
+// §5.1 (ADR 6a2ff5f): a per-node token bucket, not a fixed window. Capacity 24
+// with one token every 10 s is ~360 requests/hour, which leaves room above the
+// 30 s heartbeat cadence (2 requests per 30 s = 240/hour) for polls and results.
+export const NODE_RATE_LIMIT = Object.freeze({ capacity: 24, refill_tokens: 1, refill_seconds: 10 });
 
 // §5.2 task lease and lifetime limits.
 export const TASK_LEASE_SECONDS = 300;
@@ -72,6 +75,16 @@ export const NODE_AGENT_LIFECYCLES = Object.freeze(["PROVISIONAL", "ACTIVE"]);
 
 // §5.3: parameter keys that would turn the agent into a remote execution
 // surface. Checked case-insensitively at every depth before anything is queued.
+/**
+ * The credential handoff (§5.1). The node token is sealed with AEAD so the same
+ * resume capability can re-fetch it after a lost completion response, until the
+ * node authenticates once. The key is derived from the operator secret, so no
+ * new deployment secret exists; only the sealed copy is durable.
+ */
+export const CREDENTIAL_HANDOFF_TTL_SECONDS = 86400;
+export const CREDENTIAL_HANDOFF_MAX_DELIVERIES = 20;
+const CREDENTIAL_HANDOFF_INFO = "ghostfleet/node-credential-handoff/v1";
+
 export const TASK_FORBIDDEN_PARAM_KEYS = Object.freeze([
   "command",
   "commands",
@@ -110,6 +123,16 @@ export const TASK_FORBIDDEN_PARAM_KEYS = Object.freeze([
 export const PARAM_MAX_DEPTH = 3;
 export const PARAM_MAX_BYTES = 4096;
 
+/**
+ * (boot_id, seq) is the replay uniqueness unit, not the nonce alone. Within one
+ * boot a seq must strictly increase and may not jump more than SEQ_MAX_JUMP, so
+ * a handful of out-of-order retries still pass. A reboot restarts at zero under
+ * a fresh boot_id; a retired boot_id may never return.
+ */
+export const SEQ_MAX_JUMP = 64;
+export const BOOT_ID_HISTORY_LIMIT = 16;
+export const BOOT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
 const BEARER_PATTERN = /^Bearer +([A-Za-z0-9._~+/=-]{16,512})$/i;
 const RFC3339_UTC_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
@@ -123,8 +146,8 @@ export class NodeAgentError extends Error {
   }
 }
 
-function deny(code, status) {
-  return { ok: false, code, status };
+function deny(code, status, extra = {}) {
+  return { ok: false, code, status, ...extra };
 }
 
 export function sha256Hex(value) {
@@ -226,11 +249,123 @@ export function canonicalJson(value) {
   return walk(value);
 }
 
+
+/**
+ * Token-bucket repair. Rates are persisted as integer tokens plus the instant
+ * they were last refilled; a snapshot that predates the bucket shape starts full
+ * rather than locking a node out.
+ */
+function normalizeRateBucket(rate) {
+  const capacity = NODE_RATE_LIMIT.capacity;
+  if (!rate || typeof rate !== "object" || Array.isArray(rate)) {
+    return { tokens: capacity, updated_at_ms: null };
+  }
+  const tokens = Number.isFinite(rate.tokens) ? Math.max(0, Math.min(capacity, Math.floor(rate.tokens))) : capacity;
+  const updatedAt = Number.isFinite(rate.updated_at_ms) ? rate.updated_at_ms : null;
+  return { tokens, updated_at_ms: updatedAt };
+}
+
+/** Refills one token per refill window, capped at capacity. Pure. */
+export function refillRateBucket(rate, nowMs) {
+  const bucket = normalizeRateBucket(rate);
+  const capacity = NODE_RATE_LIMIT.capacity;
+  if (bucket.updated_at_ms === null || nowMs <= bucket.updated_at_ms) {
+    return { tokens: bucket.tokens, updated_at_ms: bucket.updated_at_ms ?? nowMs };
+  }
+  const elapsedMs = nowMs - bucket.updated_at_ms;
+  const refill = Math.floor(elapsedMs / (NODE_RATE_LIMIT.refill_seconds * 1000)) * NODE_RATE_LIMIT.refill_tokens;
+  return { tokens: Math.min(capacity, bucket.tokens + refill), updated_at_ms: bucket.updated_at_ms };
+}
+
+/** Seconds until the next token, at least one, for the Retry-After header. */
+export function rateLimitRetryAfterSeconds(rate, nowMs) {
+  const bucket = refillRateBucket(rate, nowMs);
+  if (bucket.updated_at_ms === null) return NODE_RATE_LIMIT.refill_seconds;
+  const elapsedMs = Math.max(0, nowMs - bucket.updated_at_ms);
+  const remainingMs = NODE_RATE_LIMIT.refill_seconds * 1000 - (elapsedMs % (NODE_RATE_LIMIT.refill_seconds * 1000));
+  return Math.max(1, Math.ceil(remainingMs / 1000));
+}
+
+/** HKDF-SHA256 over the operator secret. No salt is named by §5.1, so none is used. */
+export function deriveCredentialHandoffKey(operatorSecret) {
+  if (typeof operatorSecret !== "string" || operatorSecret.length === 0) return null;
+  const key = hkdfSync(
+    "sha256",
+    Buffer.from(operatorSecret, "utf8"),
+    Buffer.alloc(0),
+    Buffer.from(CREDENTIAL_HANDOFF_INFO, "utf8"),
+    32,
+  );
+  return Buffer.from(key);
+}
+
+function handoffAad({ node_uid, ticket_id, handoff_id }) {
+  return Buffer.from(canonicalJson({ node_uid, ticket_id, handoff_id }), "utf8");
+}
+
+/**
+ * Seals the one-time node token for the resume capability (§5.1). Returns null
+ * when the deployment has no operator secret, in which case the token is handed
+ * out exactly once and no recoverable copy exists.
+ */
+export function sealCredentialHandoff({ operatorSecret, token, node_uid, ticket_id, handoff_id, nowMs }) {
+  const key = deriveCredentialHandoffKey(operatorSecret);
+  if (!key) return null;
+  if (typeof token !== "string" || token.length === 0) throw new NodeAgentError("NODE_CREDENTIAL_HANDOFF_INVALID", 500);
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  cipher.setAAD(handoffAad({ node_uid, ticket_id, handoff_id }));
+  const sealed = Buffer.concat([cipher.update(token, "utf8"), cipher.final(), cipher.getAuthTag()]);
+  return {
+    handoff_id,
+    ticket_id,
+    iv: iv.toString("base64url"),
+    ciphertext: sealed.toString("base64url"),
+    created_at: new Date(nowMs).toISOString(),
+    expires_at: new Date(nowMs + CREDENTIAL_HANDOFF_TTL_SECONDS * 1000).toISOString(),
+    deliveries: 1,
+  };
+}
+
+/**
+ * Opens a sealed handoff. A record that cannot be authenticated (tampered bytes,
+ * rotated operator secret, mismatched node/ticket binding) is a server-side
+ * integrity failure: throw instead of returning a token.
+ */
+export function openCredentialHandoff({ operatorSecret, handoff, node_uid, ticket_id }) {
+  const key = deriveCredentialHandoffKey(operatorSecret);
+  if (!key) throw new NodeAgentError("NODE_CREDENTIAL_HANDOFF_INVALID", 500);
+  if (!handoff || typeof handoff !== "object") throw new NodeAgentError("NODE_CREDENTIAL_HANDOFF_INVALID", 500);
+  const sealed = Buffer.from(String(handoff.ciphertext ?? ""), "base64url");
+  const iv = Buffer.from(String(handoff.iv ?? ""), "base64url");
+  if (sealed.length <= 16 || iv.length !== 12) throw new NodeAgentError("NODE_CREDENTIAL_HANDOFF_INVALID", 500);
+  const tag = sealed.subarray(sealed.length - 16);
+  const body = sealed.subarray(0, sealed.length - 16);
+  try {
+    const decipher = createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAAD(handoffAad({ node_uid, ticket_id, handoff_id: handoff.handoff_id }));
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(body), decipher.final()]).toString("utf8");
+  } catch {
+    throw new NodeAgentError("NODE_CREDENTIAL_HANDOFF_INVALID", 500);
+  }
+}
+
+/** A handoff stops being usable after its TTL or its delivery budget (§5.1). */
+export function credentialHandoffUsable(handoff, nowMs) {
+  if (!handoff || typeof handoff !== "object") return false;
+  const expiresAt = Date.parse(handoff.expires_at);
+  if (!Number.isFinite(expiresAt) || nowMs >= expiresAt) return false;
+  const deliveries = Number.isInteger(handoff.deliveries) ? handoff.deliveries : 0;
+  return deliveries < CREDENTIAL_HANDOFF_MAX_DELIVERIES;
+}
+
 export function defaultAgentState() {
   return {
     credential_digest: null,
+    credential_handoff: null,
     nonces: [],
-    rate: { window_start_ms: null, count: 0 },
+    rate: { tokens: NODE_RATE_LIMIT.capacity, updated_at_ms: null },
     tasks: {},
     last_heartbeat_at: null,
     health: null,
@@ -238,6 +373,9 @@ export function defaultAgentState() {
     capability_digest: null,
     queue_depth: null,
     drift_count: 0,
+    last_boot_id: null,
+    last_seq: null,
+    retired_boot_ids: [],
   };
 }
 
@@ -248,16 +386,24 @@ export function defaultAgentState() {
 export function normalizeAgentState(agent) {
   const base = defaultAgentState();
   if (!agent || typeof agent !== "object" || Array.isArray(agent)) return base;
-  const rate =
-    agent.rate && typeof agent.rate === "object" && !Array.isArray(agent.rate) ? agent.rate : {};
   const tasks =
     agent.tasks && typeof agent.tasks === "object" && !Array.isArray(agent.tasks) ? agent.tasks : {};
   return {
     ...base,
     ...agent,
     nonces: Array.isArray(agent.nonces) ? agent.nonces : [],
-    rate: { ...base.rate, ...rate },
+
     tasks,
+    rate: normalizeRateBucket(agent.rate),
+    credential_handoff:
+      agent.credential_handoff && typeof agent.credential_handoff === "object" && !Array.isArray(agent.credential_handoff)
+        ? agent.credential_handoff
+        : null,
+    last_boot_id: typeof agent.last_boot_id === "string" ? agent.last_boot_id : null,
+    last_seq: Number.isInteger(agent.last_seq) ? agent.last_seq : null,
+    retired_boot_ids: Array.isArray(agent.retired_boot_ids)
+      ? agent.retired_boot_ids.filter((entry) => typeof entry === "string").slice(-BOOT_ID_HISTORY_LIMIT)
+      : [],
   };
 }
 
@@ -308,6 +454,14 @@ export function publicTask(task) {
     result_digest: task.result_digest ?? null,
     result_outcome: task.result_outcome ?? null,
   };
+}
+
+/** Operator-facing task status: the params payload is never echoed back. */
+export function publicTaskSummary(task) {
+  const projected = publicTask(task);
+  if (!projected) return null;
+  const { params, ...rest } = projected;
+  return rest;
 }
 
 export function taskEnvelope(task) {
@@ -431,11 +585,7 @@ export function verifyNodeRequest(state, input) {
   ) {
     return deny("NODE_REQUEST_INVALID", 400);
   }
-  if (
-    typeof payload.boot_id !== "string" ||
-    payload.boot_id.length === 0 ||
-    payload.boot_id.length > 128
-  ) {
+  if (typeof payload.boot_id !== "string" || !BOOT_ID_PATTERN.test(payload.boot_id)) {
     return deny("NODE_REQUEST_INVALID", 400);
   }
   if (!Number.isInteger(payload.seq) || payload.seq < 0) {
@@ -447,8 +597,25 @@ export function verifyNodeRequest(state, input) {
     return deny("NODE_CLOCK_SKEW", 401);
   }
 
-  // 6. Replay: a nonce is remembered for the freshness window, up to a fixed
-  //    ring size per node so durable state cannot grow without bound (§10).
+  // 6. Replay, first line: boot identity and sequence. A retried request inside
+  //    one boot must move the seq forward but not race ahead; a reboot may reset
+  //    the seq to zero only under a boot id that has never been retired.
+  const lastBootId = agent.last_boot_id;
+  const lastSeq = agent.last_seq;
+  let nextRetiredBootIds = agent.retired_boot_ids;
+  if (payload.boot_id === lastBootId) {
+    if (Number.isInteger(lastSeq) && (payload.seq <= lastSeq || payload.seq > lastSeq + SEQ_MAX_JUMP)) {
+      return deny("NODE_SEQ_REGRESSION", 409);
+    }
+  } else {
+    if (agent.retired_boot_ids.includes(payload.boot_id)) return deny("NODE_BOOT_REPLAY", 409);
+    nextRetiredBootIds = lastBootId
+      ? [...agent.retired_boot_ids, lastBootId].slice(-BOOT_ID_HISTORY_LIMIT)
+      : agent.retired_boot_ids;
+  }
+
+  // 7. Replay, second line: a nonce is remembered for the freshness window, up to
+  //    a fixed ring size per node so durable state cannot grow without bound (§10).
   const nonceWindowMs = NONCE_WINDOW_SECONDS * 1000;
   const liveNonces = agent.nonces.filter(
     (entry) =>
@@ -461,13 +628,14 @@ export function verifyNodeRequest(state, input) {
     return deny("NODE_NONCE_REPLAY", 409);
   }
 
-  // 7. Rate.
-  const rateWindowMs = NODE_RATE_LIMIT.window_seconds * 1000;
-  const windowStart = agent.rate.window_start_ms;
-  const staleWindow =
-    !Number.isFinite(windowStart) || nowMs < windowStart || nowMs - windowStart >= rateWindowMs;
-  const count = staleWindow ? 0 : Number(agent.rate.count) || 0;
-  if (count >= NODE_RATE_LIMIT.requests) return deny("NODE_RATE_LIMITED", 429);
+  // 8. Rate, per-node token bucket (§5.1 item 7): one token per request, refilled
+  //    on a fixed cadence. The refusal carries Retry-After so an agent can back off.
+  const rate = refillRateBucket(agent.rate, nowMs);
+  if (rate.tokens < 1) {
+    return deny("NODE_RATE_LIMITED", 429, {
+      retry_after_s: rateLimitRetryAfterSeconds(agent.rate, nowMs),
+    });
+  }
 
   const nextNonces = [...liveNonces, { nonce, at_ms: nowMs }].slice(-NONCE_RING_LIMIT);
   return {
@@ -478,7 +646,10 @@ export function verifyNodeRequest(state, input) {
     payload,
     commit: {
       nonces: nextNonces,
-      rate: { window_start_ms: staleWindow ? nowMs : windowStart, count: count + 1 },
+      rate: { tokens: rate.tokens - 1, updated_at_ms: nowMs },
+      last_boot_id: payload.boot_id,
+      last_seq: payload.seq,
+      retired_boot_ids: nextRetiredBootIds,
     },
   };
 }

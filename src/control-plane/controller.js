@@ -14,8 +14,9 @@ import { InvalidTransitionError, transitionAttempt } from "../core/state-machine
 import { InMemoryStore } from "./store.js";
 import {
   AGENT_SCHEMA, MAX_TASKS_PER_HEARTBEAT, MAX_TASKS_PER_POLL, NodeAgentError, TASK_LEASE_SECONDS,
-  applyHeartbeat, applyTaskResult, canonicalJson, createTask, mintNodeCredential, pollTasks,
-  projectNode, publicTask, sha256Hex, validateTaskInput, verifyNodeRequest,
+  applyHeartbeat, applyTaskResult, canonicalJson, createTask, credentialHandoffUsable,
+  mintNodeCredential, openCredentialHandoff, pollTasks, projectNode, publicTask,
+  publicTaskSummary, sealCredentialHandoff, sha256Hex, validateTaskInput, verifyNodeRequest,
 } from "./node-agent.js";
 import { createEnrollmentTemplateCatalog } from "./enrollment-templates.js";
 import { selectionMissingComponents, templateRequiresCapability } from "./capability-selection.js";
@@ -41,6 +42,10 @@ export class GhostFleetController {
     // delivery whose bootstrap has no verifiable content address.
     enrollmentDelivery = null,
     ticketCodeFactory = undefined,
+    // §5.1: the AEAD key for the recoverable one-time credential is derived from
+    // the operator secret. A deployment without one still mints a credential, but
+    // hands it out exactly once and stores no recoverable copy.
+    credentialHandoffSecret = null,
   } = {}) {
     this.store = store;
     this.clock = clock;
@@ -50,6 +55,7 @@ export class GhostFleetController {
     this.capabilitySelectionProvider = capabilitySelectionProvider;
     this.enrollmentDelivery = enrollmentDelivery;
     this.ticketCodeFactory = ticketCodeFactory;
+    this.credentialHandoffSecret = credentialHandoffSecret;
   }
 
   // Delivery coordinates come from deployment configuration only. The request
@@ -297,8 +303,13 @@ export class GhostFleetController {
     const digest = completionDigest(report);
     if (record.state === "COMPLETED") {
       if (record.completion_digest !== digest) throw new EnrollmentTicketError("BOOTSTRAP_COMPLETION_CONFLICT", 409);
-      // A retried completion must never mint a second agent credential.
-      return { ticket: publicTicketMetadata(record), attempt: this.getEnrollmentAttempt(record.attempt_id), node_credential: null };
+      // A retried completion never mints a second agent credential: it re-opens
+      // the handoff (same token) until the node authenticates once (§5.1).
+      return {
+        ticket: publicTicketMetadata(record),
+        attempt: this.getEnrollmentAttempt(record.attempt_id),
+        ...this.#recoverNodeCredential(record.attempt_id, record.ticket_id),
+      };
     }
     if (record.state !== "CONSUMED") throw new EnrollmentTicketError("TICKET_NOT_COMPLETABLE", 409);
     if (report.node_id !== record.node_id || (report.identity_kind && report.identity_kind !== record.identity_kind) ||
@@ -317,24 +328,77 @@ export class GhostFleetController {
       type: "BOOTSTRAP_COMPLETION", source: "ghostfleet-bootstrap",
       data: { status: "PASS", preflight_digest: record.preflight_digest, completion_digest: digest },
     });
-    const node_credential = this.#mintNodeAgentCredential(attempt.node_uid);
-    return { ticket: publicTicketMetadata(completed), attempt: this.getEnrollmentAttempt(record.attempt_id), node_credential };
+    const node_credential = this.#mintNodeAgentCredential(attempt.node_uid, record.ticket_id);
+    return {
+      ticket: publicTicketMetadata(completed),
+      attempt: this.getEnrollmentAttempt(record.attempt_id),
+      node_credential,
+      credential_handoff: node_credential ? "AVAILABLE" : "EXPIRED",
+    };
   }
 
   /**
    * Mints the node agent credential exactly once, at successful enrollment
-   * completion (§5.1). Only the digest is durable; the token is returned to the
-   * caller in this single response and is never stored or logged.
+   * completion (§5.1). The digest is durable, the token is sealed for the resume
+   * capability, and the plaintext leaves only in this response.
    */
-  #mintNodeAgentCredential(node_uid) {
+  #mintNodeAgentCredential(node_uid, ticket_id) {
     const node = node_uid ? this.store.getNode(node_uid) : null;
     if (!node) return null;
     if (node.agent?.credential_digest) return null;
     const minted = mintNodeCredential();
-    this.store.putNodeAgent(node_uid, {
-      ...node.agent, credential_digest: minted.digestHex, credential_minted_at: this.now(),
+    const handoff_id = makeId("handoff");
+    const handoff = sealCredentialHandoff({
+      operatorSecret: this.credentialHandoffSecret,
+      token: minted.token,
+      node_uid,
+      ticket_id,
+      handoff_id,
+      nowMs: this.clock.now(),
     });
-    return minted.token;
+    this.store.putNodeAgent(node_uid, {
+      ...node.agent,
+      credential_digest: minted.digestHex,
+      credential_minted_at: this.now(),
+      credential_handoff: handoff,
+    });
+    return { token: minted.token, node_uid, handoff_id };
+  }
+
+  /**
+   * Re-delivers the same credential to a retried completion, or reports EXPIRED
+   * when the handoff is gone (already used, too old, too many deliveries,
+   * tampered, or rotated away).
+   */
+  #recoverNodeCredential(attempt_id, ticket_id) {
+    const attempt = this.getEnrollmentAttempt(attempt_id);
+    const node_uid = attempt?.node_uid ?? null;
+    const node = node_uid ? this.store.getNode(node_uid) : null;
+    if (!node) return { node_credential: null, credential_handoff: "EXPIRED" };
+    if (!node.agent?.credential_digest) {
+      // A crash between ticket completion and minting leaves a recoverable gap:
+      // the retry mints the one credential that never existed.
+      const minted = this.#mintNodeAgentCredential(node_uid, ticket_id);
+      return minted
+        ? { node_credential: minted, credential_handoff: "AVAILABLE" }
+        : { node_credential: null, credential_handoff: "EXPIRED" };
+    }
+    const handoff = node.agent?.credential_handoff ?? null;
+    if (!credentialHandoffUsable(handoff, this.clock.now())) {
+      if (handoff) this.store.putNodeAgent(node_uid, { ...node.agent, credential_handoff: null });
+      return { node_credential: null, credential_handoff: "EXPIRED" };
+    }
+    const token = openCredentialHandoff({
+      operatorSecret: this.credentialHandoffSecret, handoff, node_uid, ticket_id,
+    });
+    this.store.putNodeAgent(node_uid, {
+      ...node.agent,
+      credential_handoff: { ...handoff, deliveries: (handoff.deliveries ?? 1) + 1 },
+    });
+    return {
+      node_credential: { token, node_uid, handoff_id: handoff.handoff_id },
+      credential_handoff: "AVAILABLE",
+    };
   }
   /**
    * The reviewed template — never a client argument — decides whether a node
@@ -534,7 +598,14 @@ export class GhostFleetController {
 
   #commitNodeAgent(verification, agent) {
     this.store.putNodeAgent(verification.node.node_uid, {
-      ...agent, nonces: verification.commit.nonces, rate: verification.commit.rate,
+      ...agent,
+      nonces: verification.commit.nonces,
+      rate: verification.commit.rate,
+      last_boot_id: verification.commit.last_boot_id,
+      last_seq: verification.commit.last_seq,
+      retired_boot_ids: verification.commit.retired_boot_ids,
+      // §5.1: the recoverable handoff dies on the first authenticated request.
+      credential_handoff: null,
     });
   }
 
@@ -595,6 +666,38 @@ export class GhostFleetController {
       (left, right) => String(left.issued_at).localeCompare(String(right.issued_at)) ||
         String(left.task_id).localeCompare(String(right.task_id)),
     );
+  }
+
+  /** Operator status view: task lifecycle only, never the params payload. */
+  listNodeTaskSummaries(node_uid) {
+    return this.listNodeTasks(node_uid).map(publicTaskSummary);
+  }
+
+  /**
+   * Replaces the node credential. The old token stops verifying immediately
+   * because only the new digest is durable; the replay state (nonce ring, boot
+   * history and seq) is cleared with it so a rotation cannot inherit a window.
+   */
+  rotateNodeCredential(node_uid) {
+    const node = required(this.store.getNode(node_uid), "NODE_NOT_FOUND");
+    if (node.lifecycle === NodeLifecycle.RETIRED) throw new NodeAgentError("NODE_NOT_ROTATABLE", 409);
+    const minted = mintNodeCredential();
+    this.store.putNodeAgent(node_uid, {
+      ...node.agent,
+      credential_digest: minted.digestHex,
+      credential_minted_at: this.now(),
+      credential_handoff: null,
+      nonces: [],
+      last_boot_id: null,
+      last_seq: null,
+      retired_boot_ids: [],
+    });
+    return {
+      ok: true,
+      node_uid,
+      rotated_at: this.now(),
+      node_credential: minted.token,
+    };
   }
 
   registerCapabilityDefinition(definition) {
