@@ -104,9 +104,11 @@ systemd --user (control account, Linger=yes)
 | POST | `/v0/nodes/{node_uid}/tasks/{task_id}/result` | 回传结果；同 `task_id` 同摘要→幂等 200，不同摘要→`409 TASK_RESULT_CONFLICT`；`result.status` 必须是 `SUCCEEDED`/`REFUSED`/`FAILED`/`UNKNOWN`，其它值 fail-closed 为 `UNKNOWN` |
 | POST | `/v0/node-tasks` | **operator 写权限**；入参 `node_uid`/`operation`/`params`/`ttl_seconds`（字段名以此为准；未知键一律 `400 TASK_REQUEST_INVALID`），返回任务信封与 `task_id`；队列满（未过期非终态 ≥64）→ `409 TASK_QUEUE_FULL`，不得因已过期任务而永久 409 |
 | GET | `/v0/node-tasks?node_uid=` | **operator 读权限**；返回该节点任务投影（`status`/`result_outcome`/`result_digest`/`attempt`）。`result_outcome` 是 operator 侧字段名，取值必须就是节点上报的四值 `status` 词汇，不是第二套词汇；缺 `agent` 子树的历史记录必须先归一化，未知异常只回 `500 INTERNAL_ERROR`，不回显内部错误文本 |
-| POST | `/v0/node-credential/rotate` | **operator 写权限**；一次性返回明文 `node_credential`（`cache-control: no-store`），旧 token 立即失效并重置该节点 nonce/seq/boot 状态与 handoff 密文 |
+| POST | `/v0/node-credential/rotate` | **operator 写权限**；一次性返回明文 `node_credential: {token, node_uid, handoff_id}`——与 `/v1/enroll/complete` 同形，`rotate` 会清空 handoff，故 `handoff_id` 为 `null`（响应带 `cache-control: no-store`）；旧 token 立即失效并重置该节点 nonce/seq/boot 状态与 handoff 密文 |
 
 结果信封在写入前必须绑定：`schema` 等于 `ghostfleet-node-task/v0`（否则 `400 TASK_RESULT_SCHEMA_UNSUPPORTED`）、`result.task_id` 等于路径 `task_id`（`409 TASK_RESULT_SCOPE_MISMATCH`）、`result.operation` 等于任务 `operation`（`409 TASK_OPERATION_MISMATCH`）、`result.node_uid` 等于路径且等于 token 归属（`403 NODE_SCOPE_MISMATCH`）。这四个码都属「需人工」终态类，客户端不得自动重试。`result_digest` 由服务端对 result 做 canonical JSON 后计算，节点自报值只作咨询（跨语言浮点渲染差异），不得作为幂等键。`result` 的 canonical JSON 深度上限 64，超限 → `400 TASK_RESULT_INVALID`。
+
+结果提交的请求体形状固定为「顶层 `task_id` + 嵌套 `result`」：`task_id` 必须等于路径 `task_id`（否则 `400 NODE_REQUEST_INVALID`），`result` 必须是对象（否则 `400 TASK_RESULT_INVALID`）。摘要与幂等只按嵌套 `result` 计算，顶层不带其他语义字段；§5.1 的请求体字段（`schema`/`node_uid`/`nonce`/`sent_at`/`boot_id`/`seq`）在此之外一并必填。
 
 任务信封 `ghostfleet-node-task/v0`：`task_id`、`node_uid`、`operation`、`params`（只允许标量/列表，深度 ≤3，总长 ≤4 KiB）、`issued_at`、`expires_at`（≤ `issued_at`+600 s）、`lease_expires_at`（服务端按 300 s 租约计算）、`attempt`（1–3）。
 
@@ -125,9 +127,9 @@ systemd --user (control account, Linger=yes)
 
 控制面的 `/v0/*` 整体在 Cloudflare Access 之后（`authorizeApi()`），节点 token 无法也**不得**从公网打管理面。节点面新增一个独立的严格桥 Worker（`workers/node/`，产物名 `ghostfleet-node-plane`，挂在部署方自己的 zone，`workers_dev=false`、`preview_urls=false`、不新增任何 Access Bypass）：
 
-- 只接受三条精确 POST 路径（`/v0/nodes/{node_uid}/heartbeat`、`/v0/nodes/{node_uid}/tasks/poll`、`/v0/nodes/{node_uid}/tasks/{task_id}/result`，参数用严格字符类），其余一律 `404`；不代理任何其他 `/v0/*`、`/mcp`、`/v1/*`。
+- 只接受三条精确 POST 路径（`/v0/nodes/{node_uid}/heartbeat`、`/v0/nodes/{node_uid}/tasks/poll`、`/v0/nodes/{node_uid}/tasks/{task_id}/result`，`node_uid` 必须匹配 `^node-[A-Za-z0-9-]{1,80}$`、`task_id` 必须匹配 `^[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}$`，与控制面同一字符类——桥不得比控制面更窄，否则控制面合法 id 在边缘 404），其余一律 `404`；不代理任何其他 `/v0/*`、`/mcp`、`/v1/*`。
 - 转发 header 正向 allowlist：`authorization`、`content-type`、`x-ghostfleet-node-uid`、`x-ghostfleet-agent-version`；其余丢弃，不转发客户端 IP/UA。响应只回 `content-type`、`retry-after` 与固定安全头。
-- 桥在触碰 Service Binding **之前**做 body 上限（heartbeat ≤16 KiB、poll ≤4 KiB、result ≤64 KiB → `413`）与 `content-type` 校验（`415`）；限流 binding 仅作咨询性防滥用（缺失/抛错 fail open，显式 `success:false` → `429`），限流成功**不是**授权。
+- 桥在触碰 Service Binding **之前**做 body 上限（heartbeat ≤16 KiB、poll ≤4 KiB、result ≤64 KiB → `413`）与 `content-type` 校验（`415`）；限流 binding 仅作咨询性防滥用（缺失/抛错 fail open，显式 `success:false` → `429`；binding 存在但抛错或返回非对象时必须记一条结构化告警 `rate_limiter_unavailable`，让「已启用但坏掉」可见），限流成功**不是**授权。
 - 通过 Service Binding `GHOSTFLEET_CONTROL_PLANE` 调用控制面；binding 缺失 → `503 NODE_PLANE_NOT_CONFIGURED`，绝不回退公网 URL。
 - 节点面源站是**交付期部署事实**，不是代码常量：交付命令（`createTicketDelivery`，协议 `ghostfleet-enrollment-delivery/v2`）显式导出 `GHOSTFLEET_NODE_PLANE_ORIGIN=<origin>`；courier 校验它是精确 HTTPS origin（无 path/query/userinfo/尾斜杠），且它的 host 与 `GHOSTFLEET_ASSETS_ORIGIN`、`GHOSTFLEET_ENROLLMENT_URL` 的 host **三者两两不同**（`CAPABILITY_NODE_PLANE_ORIGIN_REQUIRED` / `CAPABILITY_NODE_PLANE_ORIGIN_INVALID` / `CAPABILITY_NODE_PLANE_ORIGIN_NOT_SEPARATED`，全部在任何文件写入之前），然后写进 `/etc/ghostfleet/node-agent.json` 的 `control_plane_origin`。**agent 绝不使用 enrollment/broker origin**：那是 Access 保护的源站，节点面按裁决不设任何 Bypass，把两者混用只会让 agent 永远拿到 302/403 然后 FATAL。
 - 控制面二次校验不变：token 摘要、`node_uid`、生命周期、时钟、nonce、序号、速率全部在状态变更前完成。
@@ -268,8 +270,8 @@ WantedBy=default.target
 | 身份安全 | 三账户隔离（Human / ops / managed）；managed 无 sudo、无 ops 组 | 真实 systemd + 断言 |
 | 权限安全 | managed 直接调用 Helper → 被 `dedicated_caller_identity` 拒；`sudo -n` 被拒 | 负向证明 |
 | 任务安全 | 重放 nonce → 409；重复 result → 幂等；崩溃在 `MAY_HAVE_EXECUTED` → 上报 UNKNOWN 且不重跑；越权 operation → 400 | 确定性测试 + 真机 |
-| 结果词汇不塌陷 | 真 agent + 真控制面：operator 读到的 `result_outcome` 必须等于 agent 上报的 `status`（四值词汇 `SUCCEEDED`/`REFUSED`/`FAILED`/`UNKNOWN`），禁止全部投影成 `UNKNOWN`；缺失/非法值才 fail-closed 到 `UNKNOWN` | 端到端 + 契约测试 |
-| 入站鉴权完整性 | 缺 `x-ghostfleet-node-uid` → 401；节点 token 打 operator 路由 → 401；无 authorizer 直接构造 handler 调 operator 动作 → 全拒；`rotate` 与 `/v1/enroll/complete` 响应带 `cache-control: no-store`；明文 token 只在一次性响应里出现 | 确定性测试 |
+| 结果词汇不塌陷 | 真 agent + 真控制面：operator 读到的 `result_outcome` 必须等于 agent 上报的 `status`（四值词汇 `SUCCEEDED`/`REFUSED`/`FAILED`/`UNKNOWN`），禁止全部投影成 `UNKNOWN`；缺失/非法值才 fail-closed 到 `UNKNOWN`，且**读取投影时也要白名单**——durable 里被塞入历史/外来词汇的记录，`GET /v0/node-tasks` 必须归一化为 `UNKNOWN`，不得原样透出第二套词汇 | 端到端 + 契约测试 |
+| 入站鉴权完整性 | 缺 `x-ghostfleet-node-uid` → 401；节点 token 打 operator 路由 → 401；无 authorizer 直接构造 handler 调 operator 动作 → 全拒；`rotate` 与 `/v1/enroll/complete` 响应带 `cache-control: no-store`；明文 token 只在一次性响应里出现；`rotate` 与 `complete` 的 `node_credential` 同形（`{token, node_uid, handoff_id}`），按 ADR 读 `.token` 必须有效；凭据重投递预算必须**真的跑到 `EXPIRED`**（第 21 次取回不带 token，24 h TTL 到期同样），只断言常量不算证据 | 确定性测试 |
 | 队列与持久化有界 | 5 轮×64 任务后 durable 条目 ≤ `TASK_RETENTION_LIMIT`、快照字节有界；`COMPLETED` 与 `EXPIRED` 都参与修剪；64 个过期任务后（无任何 poll）operator `POST /v0/node-tasks` 仍返回 2xx，不得永久 409；历史记录缺 `agent` 子树时 `GET /v0/node-tasks` 返回 200 空列表 | 确定性测试 |
 | 重放与自锁防护 | 退役 `boot_id` 不静默驱逐（达上限 fail closed 且活跃 boot 不受影响）；深嵌套 result（>64 层）→ 400 契约码而非 JS 异常文本 | 确定性测试 |
 | 独立验收 | 外部消费者（只读 token）观察到真实 `ActiveState`、自报 health、任务结果时间线 | 端到端 |
