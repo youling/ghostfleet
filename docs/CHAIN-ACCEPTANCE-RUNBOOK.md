@@ -56,6 +56,8 @@ Decommission the old lane before rendering a v2 selection:
 
 ```sh
 sudo -iu ghostfleet-ops systemctl --user disable --now ghostfleet-managed.service
+sudo -iu ghostfleet-ops systemctl --user is-active ghostfleet-managed.service   # expect inactive or failed
+pgrep -u ghostfleet-ops -f '<ExecStart binary>'                                  # expect no output
 rm -f "<privileged home>/.config/systemd/user/default.target.wants/ghostfleet-managed.service"
 rm -f "<privileged home>/.config/systemd/user/ghostfleet-managed.service"
 loginctl disable-linger ghostfleet-ops

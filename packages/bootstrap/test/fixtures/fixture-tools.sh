@@ -31,6 +31,8 @@ case "$name" in
       -nG)
         if [ -n "${2:-}" ]; then
           account_exists "$2" || exit 1
+          if [ -f "$state/nss-fail/id-groups/$2" ]; then exit 1; fi
+          if [ -f "$state/empty-groups/$2" ]; then exit 0; fi
           if [ -f "$state/groups/$2" ]; then cat "$state/groups/$2"; else printf '%s\n' "$2"; fi
         else
           printf 'users\n'
@@ -73,7 +75,37 @@ case "$name" in
       *) record "tailscale-unexpected $*"; exit 9 ;;
     esac
     ;;
-  systemctl) record "systemctl $*" ;;
+  systemctl)
+    record "systemctl $*"
+    verb=
+    unit=
+    for argument in "$@"; do
+      case "$argument" in
+        -*) ;;
+        *) if [ -z "$verb" ]; then verb="$argument"; elif [ -z "$unit" ]; then unit="$argument"; fi ;;
+      esac
+    done
+    if [ "$verb" = stop ] || [ "$verb" = is-active ]; then
+      state_file="$state/unit-state/$unit"
+      current="$(cat "$state_file" 2>/dev/null || printf 'inactive')"
+      if [ "$verb" = stop ]; then
+        if [ -f "$state/stop-fails" ]; then printf 'Failed to stop %s\n' "$unit" >&2; exit 1; fi
+        if [ -f "$state/stop-ineffective" ]; then printf 'active\n'; exit 0; fi
+        mkdir -p "$state/unit-state"
+        printf 'inactive\n' > "$state_file"
+        printf 'inactive\n'
+        exit 0
+      fi
+      printf '%s\n' "$current"
+      case "$current" in active) exit 0 ;; *) exit 3 ;; esac
+    fi
+    ;;
+
+  pgrep)
+    record "pgrep $*"
+    if [ -s "$state/unit-procs" ]; then cat "$state/unit-procs"; exit 0; fi
+    exit 1
+    ;;
   apt-get)
     record "apt-get $*"
     case " $* " in
@@ -184,6 +216,7 @@ case "$name" in
   getent)
     case "${1:-}" in
       passwd)
+        if [ -f "$state/nss-fail/passwd/${2:-}" ]; then exit 1; fi
         if account_exists "${2:-}"; then
           printf '%s:x:%s:%s::%s:%s\n' "$2" "$(account_uid "$2")" "$(account_uid "$2")" "$(account_home "$2")" "$(account_shell "$2")"
         else
@@ -196,6 +229,7 @@ case "$name" in
         fi
         ;;
       shadow)
+        if [ -f "$state/nss-fail/shadow/${2:-}" ]; then exit 1; fi
         if account_exists "${2:-}"; then
           if [ -f "$state/unlocked/${2:-}" ]; then
             printf '%s:%s:19000:0:99999:7:::\n' "$2" '$6$fixture$synthetic'
@@ -207,15 +241,17 @@ case "$name" in
         fi
         ;;
       group)
+        if [ -f "$state/nss-fail/group/${2:-}" ]; then exit 1; fi
         if [ -f "$state/no-group/${2:-}" ]; then
-          exit 1
+          # getent's own convention for "key not found".
+          exit 2
         fi
         if [ -f "$state/groups/${2:-}" ] || account_exists "${2:-}"; then
           printf '%s:x:1234:\n' "$2"
         else
           # Groups are never resolved against the host: a group that exists on
           # the machine running the tests must not decide the fixture outcome.
-          exit 1
+          exit 2
         fi
         ;;
       *)
@@ -259,6 +295,11 @@ case "$name" in
       else
         printf 'User %s is not allowed to run sudo on fixture.\n' "$account"
       fi
+    elif [ "${1:-}" = "-iu" ]; then
+      record "sudo $*"
+      [ -n "${2:-}" ] || exit 1
+      shift 2
+      exec "$@"
     else
       record "sudo $*"
       printf 'sudo: a password is required\n' >&2

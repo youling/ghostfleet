@@ -490,25 +490,49 @@ CAPABILITY_PRIVILEGED_GROUPS='root sudo wheel admin docker lxd libvirt libvirtd 
 #   UNKNOWN     sudo's answer could not be interpreted
 #   SAFE        least privilege, usable as the run identity
 capability_account_criteria_state() {
-  capability_probe_uid="$(id -u "$1" 2>/dev/null)" || { printf '%s' ABSENT; return 0; }
-  [ -n "$capability_probe_uid" ] || { printf '%s' ABSENT; return 0; }
+  # One NSS query decides "no such account" from "the account database cannot be
+  # queried". Only getent's own exit 2 means the account does not exist; any
+  # other failure is UNKNOWN and the caller fails closed. Treating a broken NSS
+  # as "no such account" would let a lookup outage decide a security property.
+  capability_probe_row="$(getent passwd "$1" 2>/dev/null)" && capability_probe_lookup=0 || capability_probe_lookup=$?
+  if [ "$capability_probe_lookup" -ne 0 ]; then
+    if [ "$capability_probe_lookup" -eq 2 ] && [ -z "$capability_probe_row" ]; then
+      printf '%s' ABSENT
+    else
+      printf '%s' LOOKUP_FAILED
+    fi
+    return 0
+  fi
+  if [ -z "$capability_probe_row" ]; then
+    printf '%s' LOOKUP_FAILED
+    return 0
+  fi
+  capability_probe_uid="$(printf '%s' "$capability_probe_row" | cut -d ':' -f 3)"
   case "$capability_probe_uid" in
-    ''|*[!0-9]*) printf '%s' SYSTEM_UID; return 0 ;;
+    ''|*[!0-9]*) printf '%s' LOOKUP_FAILED; return 0 ;;
   esac
   [ "$capability_probe_uid" != 0 ] || { printf '%s' ROOT; return 0; }
   if [ "$capability_probe_uid" -lt 1000 ] || [ "$capability_probe_uid" -ge 60000 ]; then
     printf '%s' SYSTEM_UID
     return 0
   fi
+  # Group membership is the other half of "no privileged group". Capture the
+  # LIST first and check the exit status separately: a failing id (sssd/LDAP
+  # outage, timeout) must never be read as "not a member".
+  if ! capability_probe_groups="$(id -nG "$1" 2>/dev/null)"; then
+    printf '%s' LOOKUP_FAILED
+    return 0
+  fi
   for capability_probe_group in $CAPABILITY_PRIVILEGED_GROUPS; do
-    if id -nG "$1" 2>/dev/null | tr ' ' '\n' | grep -qx "$capability_probe_group"; then
-      printf 'GROUP:%s' "$capability_probe_group"
-      return 0
-    fi
+    for capability_probe_member in $capability_probe_groups; do
+      if [ "$capability_probe_member" = "$capability_probe_group" ]; then
+        printf 'GROUP:%s' "$capability_probe_group"
+        return 0
+      fi
+    done
   done
-  capability_probe_row="$(getent passwd "$1" 2>/dev/null || true)"
-  capability_probe_home="$(printf '%s' "$capability_probe_row" | cut -d ':' -f 6 || true)"
-  capability_probe_shell="$(printf '%s' "$capability_probe_row" | cut -d ':' -f 7 || true)"
+  capability_probe_home="$(printf '%s' "$capability_probe_row" | cut -d ':' -f 6)"
+  capability_probe_shell="$(printf '%s' "$capability_probe_row" | cut -d ':' -f 7)"
   case "$capability_probe_shell" in
     */nologin|*/false) ;;
     *) printf '%s' SHELL; return 0 ;;
@@ -517,15 +541,31 @@ capability_account_criteria_state() {
     printf '%s' NO_HOME
     return 0
   fi
-  if ! getent group "$1" >/dev/null 2>&1; then
+  if getent group "$1" >/dev/null 2>&1; then
+    capability_probe_group_lookup=0
+  else
+    capability_probe_group_lookup=$?
+  fi
+  if [ "$capability_probe_group_lookup" -eq 2 ]; then
     printf '%s' NO_GROUP
     return 0
   fi
+  if [ "$capability_probe_group_lookup" -ne 0 ]; then
+    printf '%s' LOOKUP_FAILED
+    return 0
+  fi
   # A locked password field is the other half of "no credential": an empty or
-  # hashed password would be a login identity the deployment never approved.
-  capability_probe_password="$(getent shadow "$1" 2>/dev/null | cut -d ':' -f 2 || true)"
+  # hashed password would be a login identity the deployment never approved. A
+  # failed lookup cannot prove the lock, so it is UNKNOWN rather than UNLOCKED.
+  capability_probe_shadow="$(getent shadow "$1" 2>/dev/null)" && capability_probe_shadow_status=0 || capability_probe_shadow_status=$?
+  if [ "$capability_probe_shadow_status" -ne 0 ] || [ -z "$capability_probe_shadow" ]; then
+    printf '%s' LOOKUP_FAILED
+    return 0
+  fi
+  capability_probe_password="$(printf '%s' "$capability_probe_shadow" | cut -d ':' -f 2)"
   case "$capability_probe_password" in
     '!'*|'*'*) ;;
+    '') printf '%s' LOOKUP_FAILED; return 0 ;;
     *) printf '%s' UNLOCKED; return 0 ;;
   esac
   # sudo's own evaluation resolves %group rules, User_Alias and sudoers.d order;
@@ -554,6 +594,7 @@ capability_account_criteria_fail() {
     UNLOCKED) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_NOT_DEDICATED] the password of the managed run account $CAPABILITY_CONTROL_ACCOUNT is not locked; lock it (passwd -l) so no login path exists for the identity that owns the unit" >&2 ;;
     NO_HOME) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_NOT_DEDICATED] the managed run account $CAPABILITY_CONTROL_ACCOUNT has no home directory; the user unit and Linger it owns need one" >&2 ;;
     NO_GROUP) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_NOT_DEDICATED] the managed run account $CAPABILITY_CONTROL_ACCOUNT has no group of the same name; the user unit directory is created $CAPABILITY_CONTROL_ACCOUNT:$CAPABILITY_CONTROL_ACCOUNT and cannot be owned otherwise" >&2 ;;
+    LOOKUP_FAILED) printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_UNPROVEN] the account database could not be queried for the managed run account $CAPABILITY_CONTROL_ACCOUNT (getent/id failed: NSS outage, remote directory unreachable or timeout); an unreadable answer is never read as 'no privilege', so this run stops. Check getent passwd $CAPABILITY_CONTROL_ACCOUNT, id -nG $CAPABILITY_CONTROL_ACCOUNT and the NSS configuration, then re-run the authorized Console command" >&2 ;;
     GROUP:*)
       capability_privilege_group="$(printf '%s' "$1" | cut -d ':' -f 2)"
       printf '%s\\n' "fleet-enroll: [CAPABILITY_RUN_ACCOUNT_PRIVILEGED] the managed run account $CAPABILITY_CONTROL_ACCOUNT is a member of the root-equivalent group $capability_privilege_group; that group reaches root or device authority without the mediated path, so it cannot own the user unit" >&2
@@ -783,6 +824,54 @@ capability_declared_unit_digest() {
 # are verified BEFORE anything is touched, so a refusal never leaves the lane
 # half-removed. Order: enablement link, Linger, unit — a running instance is not
 # stopped by this courier.
+capability_unit_exec_start() {
+  [ -r "$1" ] || return 0
+  sed -n 's/^ExecStart=//p' "$1" 2>/dev/null | head -n1 | awk '{print $1}' || true
+}
+
+# A unit file is not a process. Before the v1 lane is deleted it is stopped in
+# the privileged account's own session and proved stopped: the unit is inactive
+# or failed AND no process of its ExecStart binary still runs as that account.
+# A v2 lane running next to a live privileged instance is exactly the state this
+# ruling removes, so an unprovable stop deletes nothing.
+capability_stale_lane_stop_and_prove() {
+  CAPABILITY_STALE_STOP_FAILED=
+  capability_stale_stop_cmd="sudo -iu $CAPABILITY_STALE_ACCOUNT systemctl --user stop $CAPABILITY_USER_UNIT"
+  if ! command -v sudo >/dev/null 2>&1; then
+    CAPABILITY_STALE_STOP_FAILED="sudo is not available to enter the $CAPABILITY_STALE_ACCOUNT session"
+    printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED, so the v1 unit cannot be stopped and nothing is removed" >&2
+    return 1
+  fi
+  if ! $capability_stale_stop_cmd >/dev/null 2>&1; then
+    CAPABILITY_STALE_STOP_FAILED="stopping the unit in the $CAPABILITY_STALE_ACCOUNT session failed"
+    printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED (no live user manager for that account?); nothing is removed" >&2
+    return 1
+  fi
+  capability_stale_active="$(sudo -iu "$CAPABILITY_STALE_ACCOUNT" systemctl --user is-active "$CAPABILITY_USER_UNIT" 2>/dev/null || true)"
+  case "$capability_stale_active" in
+    inactive|failed) ;;
+    *)
+      CAPABILITY_STALE_STOP_FAILED="the unit still reports '$capability_stale_active' in the $CAPABILITY_STALE_ACCOUNT session after stop"
+      printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED; nothing is removed" >&2
+      return 1
+      ;;
+  esac
+  capability_stale_exec="$(capability_unit_exec_start "$CAPABILITY_STALE_UNIT")"
+  if [ -n "$capability_stale_exec" ] && command -v pgrep >/dev/null 2>&1; then
+    if pgrep -u "$CAPABILITY_STALE_ACCOUNT" -f "$capability_stale_exec" >/dev/null 2>&1; then
+      CAPABILITY_STALE_STOP_FAILED="processes of $capability_stale_exec still run as $CAPABILITY_STALE_ACCOUNT"
+      printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_STOP_FAILED after stop; nothing is removed" >&2
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# Deletes only bytes this product's own record reviewed: the enablement link must
+# point at this unit and the unit must hash to the pinned artifact digest, and the
+# service must be proved stopped. Every check happens BEFORE anything is touched,
+# so a refusal never leaves the lane half-removed. Order: prove stopped, delete
+# the enablement link, disable Linger, delete the unit.
 capability_decommission_stale_lane() {
   capability_stale_removed=
   capability_stale_warnings=
@@ -807,6 +896,11 @@ capability_decommission_stale_lane() {
       printf '%s\\n' "fleet-enroll: $CAPABILITY_STALE_WANT does not point at $CAPABILITY_USER_UNIT (target: $capability_want_target); left in place" >&2
       return 1
     fi
+  fi
+  if [ -n "$CAPABILITY_STALE_UNIT" ]; then
+    capability_stale_lane_stop_and_prove || return 1
+  fi
+  if [ -n "$CAPABILITY_STALE_WANT" ]; then
     if rm -f "$CAPABILITY_STALE_WANT"; then
       capability_stale_removed="$capability_stale_removed enablement-link"
     fi
@@ -847,6 +941,9 @@ capability_refuse_stale_privileged_lane() {
   # that merely finds the file never authorises a delete.
   if [ "$CAPABILITY_SELECTION_ORIGIN" = recorded ] && [ "$capability_recorded_owner" = "$CAPABILITY_STALE_ACCOUNT" ]; then
     if ! capability_decommission_stale_lane; then
+      if [ -n "$CAPABILITY_STALE_STOP_FAILED" ]; then
+        fail "[CAPABILITY_STALE_PRIVILEGED_LANE] the v1 privileged lane under $CAPABILITY_STALE_ACCOUNT is still running and could not be proved stopped ($CAPABILITY_STALE_STOP_FAILED), so nothing was removed and the record was kept. Stop it yourself: sudo -iu $CAPABILITY_STALE_ACCOUNT systemctl --user stop $CAPABILITY_USER_UNIT; confirm with sudo -iu $CAPABILITY_STALE_ACCOUNT systemctl --user is-active $CAPABILITY_USER_UNIT (expect inactive or failed) and pgrep -u $CAPABILITY_STALE_ACCOUNT -f '<ExecStart binary>' (expect no output); then re-run the authorized Console command"
+      fi
       fail "[CAPABILITY_STALE_PRIVILEGED_LANE] the recorded v1 lane under $CAPABILITY_STALE_ACCOUNT contains something this courier will not delete automatically (see the line above); review it, remove it by hand, then re-run the authorized Console command"
     fi
     rm -f "$CAPABILITY_RECORD_FILE"

@@ -27,7 +27,7 @@ const PRIVILEGED_ACCOUNT = "ghostfleet-ops";
 const STUB_COMMANDS = [
   "id", "uname", "dpkg-query", "systemctl", "apt-get", "curl", "ssh-keygen",
   "install", "chown", "getent", "loginctl", "useradd", "userdel", "usermod", "passwd",
-  "visudo", "sudo", "python3",
+  "visudo", "sudo", "python3", "pgrep",
 ];
 
 function sha256(value) {
@@ -215,6 +215,34 @@ async function seedAccount(host, name, {
   if (noGroup) await writeFile(join(host.fixtureState, "no-group", name), "yes\n");
   return accountHome;
 }
+// A node that still records a v1 selection whose lane lives in the privileged
+// account. The unit is the reviewed artifact (so the hash gate passes) and the
+// fixture models the service state the stop proof has to observe.
+async function seedRecordedV1Lane(host, selection, { unitState = "inactive", stopIneffective = false, stopFails = false, processes = null } = {}) {
+  const text = Buffer.from(encodeCapabilitySelection(selection), "base64").toString("utf8");
+  const v1 = text
+    .replace("schema=ghostfleet-selected-capability/v2", "schema=ghostfleet-selected-capability/v1")
+    .split("\n")
+    .filter((line) => !line.startsWith("privileged_account="))
+    .map((line) => (line.startsWith("control_account=") ? "control_account=" + PRIVILEGED_ACCOUNT : line))
+    .join("\n");
+  await writeFile(join(host.checkpoint, "capability-selection.txt"), Buffer.from(v1).toString("base64") + "\n");
+  const privilegedHome = await seedAccount(host, PRIVILEGED_ACCOUNT);
+  const unitPath = join(privilegedHome, ".config/systemd/user/ghostfleet-managed.service");
+  const wantPath = join(privilegedHome, ".config/systemd/user/default.target.wants/ghostfleet-managed.service");
+  await mkdir(join(privilegedHome, ".config/systemd/user/default.target.wants"), { recursive: true });
+  await writeFile(unitPath, await readFixture("ghostfleet-managed.service"));
+  await symlink("../ghostfleet-managed.service", wantPath);
+  await mkdir(join(host.fixtureState, "linger"), { recursive: true });
+  await writeFile(join(host.fixtureState, "linger", PRIVILEGED_ACCOUNT), "yes\n");
+  await mkdir(join(host.fixtureState, "unit-state"), { recursive: true });
+  await writeFile(join(host.fixtureState, "unit-state", "ghostfleet-managed.service"), unitState + "\n");
+  if (stopIneffective) await writeFile(join(host.fixtureState, "stop-ineffective"), "yes\n");
+  if (stopFails) await writeFile(join(host.fixtureState, "stop-fails"), "yes\n");
+  if (processes) await writeFile(join(host.fixtureState, "unit-procs"), processes);
+  return { unitPath, wantPath };
+}
+
 async function accountExists(host, name) {
   return exists(join(host.fixtureState, "accounts", name));
 }
@@ -1336,5 +1364,99 @@ test("a stale v1 record with no lane left is removed so the next claim is not bl
     assert.equal(third.status, 0, third.stderr);
     assert.doesNotMatch(third.stderr, /CAPABILITY_SCHEMA_V1_UNPROVEN/);
     assert.ok(await exists(UNIT_PATH(host)), "the claim-installed lane is present");
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------------------
+// NSS answers are never guessed, and a v1 lane is only deleted once its service
+// is proved stopped.
+// ---------------------------------------------------------------------------
+
+test("a failing group lookup is never read as 'no privileged group'", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    await seedAccount(host, CONTROL_ACCOUNT);
+    await mkdir(join(host.fixtureState, "nss-fail", "id-groups"), { recursive: true });
+    await writeFile(join(host.fixtureState, "nss-fail", "id-groups", CONTROL_ACCOUNT), "unavailable\n");
+    const result = await runCourier(host, await buildSelection());
+    assert.notEqual(result.status, 0, "a broken group lookup must not decide the boundary");
+    assert.match(result.stderr, /CAPABILITY_RUN_ACCOUNT_UNPROVEN/);
+    assert.match(result.stderr, /account database could not be queried/);
+    assert.equal(await exists(UNIT_PATH(host)), false);
+    assert.equal(startingWith(await installerLog(host), "installer --apply").length, 0);
+    assert.ok(await accountExists(host, CONTROL_ACCOUNT), "the account is left untouched");
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a successful group lookup with no supplementary groups is accepted", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    await seedAccount(host, CONTROL_ACCOUNT);
+    await mkdir(join(host.fixtureState, "empty-groups"), { recursive: true });
+    await writeFile(join(host.fixtureState, "empty-groups", CONTROL_ACCOUNT), "none\n");
+    const result = await runCourier(host, await buildSelection());
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(await readFile(UNIT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
+    const state = await readJson(join(host.checkpoint, "capability-state.json"));
+    assert.equal(state.control_account_state, "EXISTING");
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a v1 lane whose service will not stop is not removed", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    assert.equal((await runCourier(host, selection)).status, 0);
+    const { unitPath, wantPath } = await seedRecordedV1Lane(host, selection, {
+      unitState: "active", stopIneffective: true,
+    });
+    const second = await runCourier(host, null);
+    assert.notEqual(second.status, 0);
+    assert.match(second.stderr, /CAPABILITY_STALE_PRIVILEGED_LANE/);
+    assert.match(second.stderr, /still running and could not be proved stopped/);
+    assert.match(second.stderr, /still reports 'active'/);
+    // Nothing was removed and the record survives, so the operator can retry.
+    assert.ok(await exists(unitPath), "the unit is kept while the service runs");
+    assert.ok(await exists(wantPath), "the enablement link is kept");
+    assert.ok(await exists(join(host.fixtureState, "linger", PRIVILEGED_ACCOUNT)), "Linger is kept");
+    assert.ok(await exists(join(host.checkpoint, "capability-selection.txt")), "the record is kept");
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a v1 lane whose stop command fails is not removed", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    assert.equal((await runCourier(host, selection)).status, 0);
+    const { unitPath } = await seedRecordedV1Lane(host, selection, { unitState: "active", stopFails: true });
+    const second = await runCourier(host, null);
+    assert.notEqual(second.status, 0);
+    assert.match(second.stderr, /could not be proved stopped/);
+    assert.match(second.stderr, /stop it yourself: sudo -iu ghostfleet-ops systemctl --user stop/i);
+    assert.ok(await exists(unitPath));
+    assert.ok(await exists(join(host.checkpoint, "capability-selection.txt")));
+  } finally { await rm(host.root, { recursive: true, force: true }); }
+});
+
+test("a v1 lane that is proved stopped is removed with its record", { skip: linuxOnly }, async () => {
+  const host = await makeHost();
+  try {
+    await freshCheckpoint(host);
+    const selection = await buildSelection();
+    assert.equal((await runCourier(host, selection)).status, 0);
+    const { unitPath, wantPath } = await seedRecordedV1Lane(host, selection, { unitState: "active" });
+    const second = await runCourier(host, null);
+    assert.notEqual(second.status, 0);
+    assert.match(second.stderr, /decommissioned the v1 managed lane/);
+    assert.ok((await calls(host)).some((line) => line.startsWith("sudo -iu " + PRIVILEGED_ACCOUNT + " systemctl --user stop")),
+      "the unit was stopped in the privileged account's session");
+    assert.equal(await exists(unitPath), false, "the stopped unit is removed");
+    assert.equal(await exists(wantPath), false);
+    assert.equal(await exists(join(host.fixtureState, "linger", PRIVILEGED_ACCOUNT)), false);
+    assert.equal(await exists(join(host.checkpoint, "capability-selection.txt")), false);
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });

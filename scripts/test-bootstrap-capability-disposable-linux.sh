@@ -106,6 +106,24 @@ const selection = {
 };
 writeFileSync(join(work, "capability-data.sh"), module.renderCapabilityBlock(selection) + "\n");
 writeFileSync(join(work, "empty-data.sh"), module.renderCapabilityBlock(null) + "\n");
+// A second block whose unit is a real long-running service, so the decommission
+// stop proof can be exercised against a live user unit.
+const longRunningUnit = [
+  "[Unit]",
+  "Description=GhostFleet v1 privileged lane (disposable)",
+  "",
+  "[Service]",
+  "Type=simple",
+  "ExecStart=/bin/sleep 300",
+  "",
+  "[Install]",
+  "WantedBy=default.target",
+  "",
+].join("\n");
+const longRunning = { ...selection, user_unit: { name: "ghostfleet-managed.service", artifact: "ghostfleet-managed.service" } };
+longRunning.artifacts = selection.artifacts.map((item) =>
+  item.name === "ghostfleet-managed.service" ? { ...item, content: longRunningUnit } : item);
+writeFileSync(join(work, "stale-data.sh"), module.renderCapabilityBlock(longRunning) + "\n");
 // The claim channel: the same selection, base64-encoded exactly as the claim
 // response delivers it, so the published parser is what runs here.
 writeFileSync(join(work, "claim.json"), JSON.stringify({
@@ -566,9 +584,91 @@ grep -q 'admits ghostfleet-ops-alt' "$work/mismatch.log" || fail_check "the refu
 [[ -f "$unit" ]] || fail_check "the converged unit was disturbed by the mismatch refusal"
 record_ok "declared privileged account cross-checked: $(grep -o 'CAPABILITY_PRIVILEGED_ACCOUNT_MISMATCH[^;]*' "$work/mismatch.log" | head -n1)"
 
+# 12. The v1 lane is only deleted once its service is proved stopped. A real user
+#     unit runs as the privileged account on this disposable host.
+ops_home="$(getent passwd "$privileged_account" | cut -d: -f6)"
+stale_unit="$ops_home/.config/systemd/user/ghostfleet-managed.service"
+stale_want="$ops_home/.config/systemd/user/default.target.wants/ghostfleet-managed.service"
+install -d -m 0755 -o "$privileged_account" -g "$privileged_account" \
+  "$ops_home/.config" "$ops_home/.config/systemd" "$ops_home/.config/systemd/user" \
+  "$ops_home/.config/systemd/user/default.target.wants"
+loginctl enable-linger "$privileged_account"
+sleep 2
+cat > "$work/decommission-harness.sh" <<'HARNESS'
+#!/bin/sh
+set -eu
+CHECKPOINT_DIR="$HARNESS_CHECKPOINT"
+fail() { printf '%s\n' "fleet-enroll: $*" >&2; exit 1; }
+. "$CAPABILITY_LIBRARY"
+. "$CAPABILITY_DATA"
+CAPABILITY_STALE_ACCOUNT="$STALE_ACCOUNT"
+capability_stage
+cp "$CAPABILITY_STAGE_DIR/$CAPABILITY_USER_UNIT_ARTIFACT" "$STALE_UNIT"
+chmod 0644 "$STALE_UNIT"
+sudo -iu "$STALE_ACCOUNT" systemctl --user daemon-reload >/dev/null 2>&1 || true
+if [ "$STALE_START" = 1 ]; then
+  sudo -iu "$STALE_ACCOUNT" systemctl --user start "$CAPABILITY_USER_UNIT" || fail "could not start the v1 unit"
+  sleep 1
+fi
+ln -sfn "../$CAPABILITY_USER_UNIT" "$STALE_WANT"
+CAPABILITY_STALE_UNIT="$STALE_UNIT"
+CAPABILITY_STALE_WANT="$STALE_WANT"
+CAPABILITY_STALE_LANE_FOUND="$STALE_FOUND"
+capability_decommission_stale_lane
+HARNESS
+run_decommission() {
+  mkdir -p "$work/decommission-checkpoint"
+  HARNESS_CHECKPOINT="$work/decommission-checkpoint" \
+    CAPABILITY_LIBRARY="$work/capability-library.sh" \
+    CAPABILITY_DATA="$work/stale-data.sh" \
+    STALE_ACCOUNT="$privileged_account" \
+    STALE_UNIT="$stale_unit" \
+    STALE_WANT="$stale_want" \
+    STALE_FOUND="$1" \
+    STALE_START="$2" \
+    sh "$work/decommission-harness.sh"
+}
+
+# (a) The unit is inactive but a process of its ExecStart binary still runs as
+#     the privileged account: the lane cannot be proved stopped, so nothing is
+#     deleted and the run refuses.
+sudo -iu "$privileged_account" /bin/sh -c 'nohup /bin/sleep 300 >/dev/null 2>&1 &' || {
+  fail_check "could not start the stray privileged process"
+}
+sleep 1
+pgrep -u "$privileged_account" -f '/bin/sleep' >/dev/null || fail_check "the stray privileged process is not running"
+if run_decommission "unit enablement-link linger" 0 >"$work/decommission-live.log" 2>&1; then
+  pkill -9 -u "$privileged_account" -f '/bin/sleep' 2>/dev/null || true
+  fail_check "a v1 lane whose process still runs was removed"
+fi
+grep -q 'still run as' "$work/decommission-live.log" || {
+  cat "$work/decommission-live.log" >&2
+  fail_check "the live process was not the reason for the refusal"
+}
+[[ -e "$stale_unit" ]] || fail_check "the unit was deleted while its process still ran"
+[[ -L "$stale_want" ]] || fail_check "the enablement link was deleted while its process still ran"
+record_ok "running privileged process blocks deletion: $(grep -o 'processes of [^;]*' "$work/decommission-live.log" | head -n1)"
+pkill -9 -u "$privileged_account" -f '/bin/sleep' 2>/dev/null || true
+sleep 1
+
+# (b) A real user unit is started, then stopped and proved stopped by the
+#     courier before anything is deleted.
+pgrep -u "$privileged_account" -f '/bin/sleep' >/dev/null 2>&1 && fail_check "the stray process survived"
+if ! run_decommission "unit enablement-link linger" 1 >"$work/decommission-stopped.log" 2>&1; then
+  cat "$work/decommission-stopped.log" >&2
+  fail_check "a stopped v1 lane could not be decommissioned"
+fi
+[[ ! -e "$stale_unit" ]] || fail_check "the stopped unit was not removed"
+[[ ! -L "$stale_want" ]] || fail_check "the stopped enablement link was not removed"
+[[ "$(loginctl show-user "$privileged_account" -p Linger)" == "Linger=no" ]] || fail_check "Linger was not disabled for the privileged account"
+pgrep -u "$privileged_account" -f '/bin/sleep' >/dev/null 2>&1 && fail_check "a privileged process survived the decommission"
+record_ok "stopped v1 lane decommissioned: unit, enablement link and Linger removed"
+loginctl disable-linger "$privileged_account" 2>/dev/null || true
+rm -rf "$ops_home/.config"
+
 evidence "run_account=$run_account uid=$run_uid home=$run_home groups=$run_groups"
 evidence "privileged_account=$privileged_account sudo_rule=$(sudo -l -U "$privileged_account" 2>/dev/null | grep -o "$helper_path" | head -n1)"
 evidence "negative=$run_account cannot sudo -n $helper_path; positive=$privileged_account ran it: $(cat "$work/ops-sudo.log")"
 evidence "claim selection_digest=$claim_digest"
 
-echo "PASS published selected-capability lane created the dedicated run account (nologin, locked, no sudo, no root-equivalent group), kept the privileged account separate, installed the real reviewed helper under fixed-pin digests, put the unit and Linger under the run account, refused the account collision and the missing run account without any effect, caught a root-equivalent group granted by the installer after it ran, cross-checked the declared privileged account against the installer record (and refused a compliant helper whose record is missing), refused a v1 lane left inside the privileged account, rolled back only the account it created, adopted a pre-existing account without recreating it, and answered the claim channel through the published parser. Real OMV8 Linger/SSH admission and a real managed runtime NOT_RUN"
+echo "PASS published selected-capability lane created the dedicated run account (nologin, locked, no sudo, no root-equivalent group), kept the privileged account separate, installed the real reviewed helper under fixed-pin digests, put the unit and Linger under the run account, refused the account collision and the missing run account without any effect, caught a root-equivalent group granted by the installer after it ran, cross-checked the declared privileged account against the installer record (and refused a compliant helper whose record is missing), refused a v1 lane left inside the privileged account (and refused to delete one whose privileged process still ran), rolled back only the account it created, adopted a pre-existing account without recreating it, and answered the claim channel through the published parser. Real OMV8 Linger/SSH admission and a real managed runtime NOT_RUN"
