@@ -188,7 +188,7 @@ const OPERATING_USER_CAPTURE = [
 ].join("\n");
 
 
-function portableBootstrapCommand({ assets_origin, enroll_origin, bootstrap_sha256 }) {
+function portableBootstrapCommand({ assets_origin, enroll_origin, node_plane_origin, bootstrap_sha256 }) {
   const downloadUrl = assets_origin + "/sha256/" + bootstrap_sha256;
   // The download scheme is pinned by the validated origin. A redirect or a
   // scheme downgrade is a hard failure, never a silent second source.
@@ -296,6 +296,14 @@ function portableBootstrapCommand({ assets_origin, enroll_origin, bootstrap_sha2
     // never derived from the ticket URL or from the claim response.
     "GHOSTFLEET_ASSETS_ORIGIN=" + quoteShell(assets_origin),
     "export GHOSTFLEET_ASSETS_ORIGIN",
+    // The node plane is a third, separate surface: the enrolled agent talks to
+    // it after the ticket is consumed, so it cannot be the Access-protected
+    // enrollment origin (the courier would hand the agent a broker origin the
+    // node can never reach). It travels as an environment variable only (never
+    // argv, never a URL path, never a log line) and the bootstrap re-validates
+    // it before the node relies on it.
+    "GHOSTFLEET_NODE_PLANE_ORIGIN=" + quoteShell(node_plane_origin),
+    "export GHOSTFLEET_NODE_PLANE_ORIGIN",
     // The bootstrap validates this name again before anything becomes its owner.
     'GHOSTFLEET_OPERATING_USER="${1-}"',
     "export GHOSTFLEET_OPERATING_USER",
@@ -335,19 +343,32 @@ function validateDeliveryOrigin(value, code) {
 }
 
 /**
- * The immutable-material origin and the enrollment bridge are two different
- * public surfaces. They are validated independently and must not collapse into
- * one origin: otherwise the digest-checked bootstrap would be served by the
- * Access-protected console, or the one-time ticket would be minted on the
- * unauthenticated asset host.
+ * The delivery pins three public surfaces that must stay separate:
+ *   - assets_origin     public immutable, content-addressed material;
+ *   - enroll_origin     the Access-protected enrollment bridge (one-time ticket);
+ *   - node_plane_origin the plain broker/control-plane origin the enrolled agent
+ *                       polls afterwards.
+ *
+ * The node plane is mandatory: omitting it used to leave the agent without a
+ * reachable origin, and defaulting it to the enrollment origin hands the agent
+ * an Access-protected host it can never authenticate to. All three hosts must
+ * be pairwise different, so the digest-checked bootstrap cannot be served by the
+ * console, the ticket cannot be minted on the unauthenticated asset host, and
+ * the node plane cannot collapse into either.
  */
-export function validateDeliveryCoordinates({ assets_origin, enroll_origin, bootstrap_sha256 } = {}) {
+export function validateDeliveryCoordinates({ assets_origin, enroll_origin, node_plane_origin, bootstrap_sha256 } = {}) {
   const assets = validateDeliveryOrigin(assets_origin, "ASSETS_ORIGIN_INVALID");
   const enroll = validateDeliveryOrigin(enroll_origin, "ENROLL_ORIGIN_INVALID");
-  if (assets === enroll) throw new EnrollmentTicketError("DELIVERY_ORIGINS_NOT_SEPARATED");
+  if (typeof node_plane_origin !== "string" || node_plane_origin.trim() === "") {
+    throw new EnrollmentTicketError("DELIVERY_NODE_PLANE_ORIGIN_REQUIRED");
+  }
+  const nodePlane = validateDeliveryOrigin(node_plane_origin, "DELIVERY_NODE_PLANE_ORIGIN_INVALID");
+  const hosts = [assets, enroll, nodePlane].map((origin) => new URL(origin).host);
+  if (new Set(hosts).size !== hosts.length) throw new EnrollmentTicketError("DELIVERY_ORIGINS_NOT_SEPARATED");
   return Object.freeze({
     assets_origin: assets,
     enroll_origin: enroll,
+    node_plane_origin: nodePlane,
     bootstrap_sha256: validateBootstrapDigest(bootstrap_sha256),
   });
 }
@@ -356,7 +377,7 @@ export function validateDeliveryCoordinates({ assets_origin, enroll_origin, boot
  * Build the single authoritative one-click delivery.
  *
  * The caller supplies the deployment coordinates and the ticket identity:
- *   { assets_origin, enroll_origin, bootstrap_sha256, ticket_id | record }
+ *   { assets_origin, enroll_origin, node_plane_origin, bootstrap_sha256, ticket_id | record }
  *
  * `public_origin` is accepted only as a legacy alias for `enroll_origin` (the
  * bridge that owns the ticket URL). It is never the Console/Access origin: a
@@ -364,28 +385,33 @@ export function validateDeliveryCoordinates({ assets_origin, enroll_origin, boot
  * node that has not enrolled yet.
  *
  * The result exposes every input back (assets_origin, enroll_origin,
- * bootstrap_sha256) so a deployment can compare byte-for-byte in CI instead of
- * maintaining a second, hand-written command.
+ * node_plane_origin, bootstrap_sha256) so a deployment can compare byte-for-byte
+ * in CI instead of maintaining a second, hand-written command.
+ *
+ * v2 adds the mandatory node_plane_origin. That is a contract change: M4 vendors
+ * the whole delivery package, so bumping now is cheaper than after a pin.
  */
 export function createTicketDelivery({
   record = null, ticket_id = null, short_code, assets_origin,
-  enroll_origin = null, public_origin = null, bootstrap_sha256,
+  enroll_origin = null, public_origin = null, node_plane_origin, bootstrap_sha256,
 }) {
   const id = ticket_id ?? record?.ticket_id;
   if (!TICKET_ID_PATTERN.test(String(id ?? ""))) throw new EnrollmentTicketError("TICKET_ID_INVALID");
   const coordinates = validateDeliveryCoordinates({
     assets_origin,
     enroll_origin: enroll_origin ?? public_origin,
+    node_plane_origin,
     bootstrap_sha256,
   });
   const one_time_url = coordinates.enroll_origin + BROWSER_PREFIX + encodeURIComponent(id);
   return Object.freeze({
-    protocol: "ghostfleet-enrollment-delivery/v1",
+    protocol: "ghostfleet-enrollment-delivery/v2",
     one_time_url,
     short_code,
     expires_at: record?.expires_at ?? null,
     assets_origin: coordinates.assets_origin,
     enroll_origin: coordinates.enroll_origin,
+    node_plane_origin: coordinates.node_plane_origin,
     bootstrap_sha256: coordinates.bootstrap_sha256,
     command: portableBootstrapCommand(coordinates),
     warning: "ONE_TIME_ENROLLMENT_MATERIAL_EXECUTE_PROMPTLY",

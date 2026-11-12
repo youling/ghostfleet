@@ -1,0 +1,14 @@
+{
+  "agent_version": "0.1.0.dev0",
+  "boot_id": "30ebbcf1-4b7c-4e00-9a3d-8f3e6e1f2a01",
+  "capability_digest": null,
+  "drift": [],
+  "health": "FAILING",
+  "node_uid": "node-9271f998-0000-4000-8000-000000000000",
+  "nonce": "02WrKacgtbXxpK4onWvBAJAF",
+  "observation": {},
+  "queue_depth": 0,
+  "schema": "ghostfleet-node-agent/v0",
+  "sent_at": "2026-11-12T15:11:35Z",
+  "seq": 5
+}
