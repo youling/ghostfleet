@@ -5,17 +5,19 @@
 """
 from __future__ import annotations
 
+import os
+import sqlite3
 import time
 from types import SimpleNamespace
 
-from .loop import AgentLoop, SHUTDOWN_FLUSH_BUDGET_S
+from .loop import AgentLoop
 from .outbox import FlushReport, MIN_SEND_WINDOW_S
 from .protocol import (
-    AGENT_EXECUTION_UNKNOWN, AGENT_INTERNAL_ERROR, OUTCOME_AUTH_FATAL,
-    OUTCOME_OK, OUTCOME_RATE_LIMITED, OUTCOME_REJECTED,
-    ProtocolError, RESULT_UNKNOWN, TASK_ID_RE, make_result,
+    AGENT_EXECUTION_UNKNOWN, OUTCOME_AUTH_FATAL, OUTCOME_OK,
+    OUTCOME_RATE_LIMITED, OUTCOME_REJECTED, ProtocolError,
+    RESULT_UNKNOWN, TASK_ID_RE, make_result,
 )
-from .repository import TaskRepository, RepositoryError, Conflict, Capacity, FENCED
+from .repository import TaskRepository, RepositoryError, Conflict, Capacity
 
 
 class _LedgerView:
@@ -52,7 +54,6 @@ class _OutboxView:
             if remaining is not None and remaining < MIN_SEND_WINDOW_S:
                 report.deadline_hit = True
                 break
-            # Persist attempt before network; storage errors stop the loop.
             self.repository.record_attempt(row['task_id'])
             if stop_event is not None and stop_event.is_set():
                 report.stopped = True
@@ -82,20 +83,17 @@ class _OutboxView:
 
 
 class SqliteAgentLoop(AgentLoop):
-    """Reuse the reviewed observer/client/systemd loop, replacing persistence only.
+    """Reuse reviewed observer/client/systemd orchestration, not JSON persistence.
 
-    Legacy AgentLoop remains available for historical tests during this staged
-    change. The production factory selects only this class after integration;
-    there is no runtime backend switch and no dual-write path.
+    Existing entrypoint is not switched until independent review. This factory
+    has no backend fallback and never instantiates a JSON Ledger or Outbox.
     """
-
     def __init__(self, *, repository: TaskRepository, **kwargs):
         self.repository = repository
         super().__init__(ledger=_LedgerView(repository), outbox=_OutboxView(repository), **kwargs)
 
     def _replay_outbox_dropped(self):
-        # There is no automatic overflow drop in the SQLite repository.
-        return 0
+        return 0  # SQLite never evicts an unsent result.
 
     def reconcile(self):
         quarantined = self.repository.quarantine_foreign()
@@ -139,7 +137,6 @@ class SqliteAgentLoop(AgentLoop):
                                   'status': result['status'], 'code': result.get('code')})
 
     def _send_outbox_item(self, item, timeout_s=None):
-        # pending() validated body/digest/identity against one atomic row already.
         try:
             response = self.client.send_result_body(
                 lambda nonce: self._envelope(nonce, item['body']), item['task_id'],
@@ -151,16 +148,15 @@ class SqliteAgentLoop(AgentLoop):
                                retry_after_s=getattr(response, 'retry_after_s', None))
 
     def _storage_fatal(self, error):
-        # Never flush a poisoned store; only supervisor restart may reopen truth.
         self._stop_watchdog()
         self.notifier.stopping()
-        self.logger.error('task_storage_fatal', code=error.code)
+        self.logger.error('task_storage_fatal', code=getattr(error, 'code', 'TASK_REPOSITORY_FAILED'))
         return 5
 
     def run_forever(self, **kwargs):
         try:
             return super().run_forever(**kwargs)
-        except RepositoryError as error:
+        except (RepositoryError, sqlite3.Error) as error:
             return self._storage_fatal(error)
         finally:
             self.repository.close()
@@ -168,7 +164,42 @@ class SqliteAgentLoop(AgentLoop):
     def run_once(self):
         try:
             return super().run_once()
-        except RepositoryError as error:
+        except (RepositoryError, sqlite3.Error) as error:
             return self._storage_fatal(error)
         finally:
             self.repository.close()
+
+
+def build_loop(config, token: str, node_uid: str, *, logger=None):
+    """Candidate factory with the same inputs as cli.build_loop.
+
+    Credential/config trust checks remain the caller's existing CLI boundary.
+    Legacy task JSON beside the DB is refused until explicit offline import.
+    """
+    from .client import ControlPlaneClient
+    from .logging import get_logger
+    from .observe import Observer
+    from .sdnotify import Notifier
+    from .state import StateStore, ensure_state_dir
+    from .tasks import TaskExecutor
+
+    logger = logger or get_logger()
+    ensure_state_dir(config.state_dir, logger=logger)
+    repository = TaskRepository(os.path.join(config.state_dir, 'tasks.db'), node_uid)
+    try:
+        state_store = StateStore(os.path.join(config.state_dir, 'state.json'), logger=logger)
+        state_store.load()
+        observer = Observer(node_uid=node_uid, agent_version=config.agent_version,
+                            allowed_units=config.allowed_units, logger=logger)
+        executor = TaskExecutor(node_uid=node_uid, agent_version=config.agent_version,
+                                observer=observer, allowed_units=config.allowed_units, logger=logger)
+        client = ControlPlaneClient(base_url=config.control_plane_url, node_uid=node_uid,
+                                    agent_version=config.agent_version, token=token,
+                                    timeout_s=config.request_timeout_s, logger=logger)
+        return SqliteAgentLoop(config=config, node_uid=node_uid, token=token,
+                               repository=repository, state_store=state_store,
+                               observer=observer, executor=executor, client=client,
+                               notifier=Notifier(logger=logger), logger=logger)
+    except BaseException:
+        repository.close()
+        raise
