@@ -10,6 +10,7 @@ export {
   selectedCapabilitiesFromPosture, normalizeSelectedCapability, renderCapabilityBlock, capabilityDigest,
   encodeCapabilitySelection, decodeCapabilitySelection, CAPABILITY_MAX_ARTIFACTS,
   capabilitySelectionDigest, selectionCovers,
+  AGENT_PAYLOAD_PATH, AGENT_PAYLOAD_MODE, AGENT_USER_UNIT_NAME, AGENT_CONFIG_PATH,
 } from "./capability.js";
 export {createBootstrapSession, recordRootCeremony, attachPreflight, attachClaim, completeBootstrap, assertNoPostBootstrapPasswordPrompt, createBootstrapReceipt} from "./session.js";
 import {BOOTSTRAP_SH} from "./bootstrap.js";

@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+# Synthetic GhostFleet node agent payload fixture.
+# It stands in for the pinned Python zipapp so the courier can install, hash and
+# verify a payload without shipping executable agent code in this repository's
+# fixture set.
+"""GhostFleet node agent (synthetic payload fixture)."""

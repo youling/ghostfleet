@@ -8,7 +8,7 @@ import {
   renderBootstrap, encodeCapabilitySelection, capabilitySelectionDigest, normalizeSelectedCapability,
 } from "../src/index.js";
 import {
-  makeHost, freshCheckpoint, buildSelection, runCourier, calls, installerLog, exists, setClaim,
+  makeHost, freshCheckpoint, runCourier, calls, installerLog, exists, setClaim,
   linuxOnly, OPERATING_USER, sha256, readFixture, readJson, snapshot, resetProviderIdentity,
   CONTROL_ACCOUNT, PRIVILEGED_ACCOUNT, UNIT_PATH, WANT_PATH, LINGER, RUN_HOME,
   accountExists, seedAccount, startingWith, prettyRecord, laneState, assertLaneUnchanged, assertNoLane,
@@ -20,7 +20,7 @@ test("the template-selected privileged capability installs inside the same root 
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     const result = await runCourier(host, selection);
     assert.equal(result.status, 0, result.stderr);
 
@@ -41,9 +41,9 @@ test("the template-selected privileged capability installs inside the same root 
     const applyLine = installJournal.find((line) => line.startsWith("installer --apply"));
     assert.ok(applyLine.includes("user=" + OPERATING_USER + " "), applyLine);
     assert.ok(applyLine.includes("key=" + createHash("sha256").update(pinnedKey, "utf8").digest("hex")));
-    assert.equal(await readFile(UNIT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
+    assert.equal(await readFile(UNIT_PATH(host), "utf8"), await host.unitText());
     assert.equal((await stat(UNIT_PATH(host))).mode & 0o777, 0o644);
-    assert.equal(await readFile(WANT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
+    assert.equal(await readFile(WANT_PATH(host), "utf8"), await host.unitText());
     assert.ok(await exists(join(host.fixtureState, "linger")));
     assert.ok(journal.includes("loginctl-enable-linger ghostfleet-managed"));
 
@@ -92,7 +92,7 @@ test("repeated execution is zero delta and never reinstalls the selected capabil
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     const first = await runCourier(host, selection);
     assert.equal(first.status, 0, first.stderr);
     const watched = [
@@ -105,7 +105,15 @@ test("repeated execution is zero delta and never reinstalls the selected capabil
     // Artifact re-verification is NOT an effect: it re-fetches every pinned
     // digest from the immutable origin. Claims, joins, service mutations and
     // installs are the effects that must not repeat.
-    const effects = (journal) => journal.filter((line) => !line.startsWith("curl-"));
+    // Staging under the root-owned checkpoint re-verifies every pinned digest and
+    // is not an effect; snapshot() below proves those files are byte-identical.
+    // Re-verification is not an effect: the converged path re-fetches the pinned
+    // digests and re-probes the helper with the reviewed installer's --check. Only
+    // claims, joins, service mutations and installs must not repeat.
+    const effects = (journal) =>
+      journal.filter(
+        (line) => !line.startsWith("curl-") && !line.startsWith("installer --check") && !line.includes(host.checkpoint),
+      );
     const effectsBefore = effects(await calls(host));
     const appliesBefore = (await installerLog(host)).filter((line) => line.includes("--apply")).length;
 
@@ -114,6 +122,23 @@ test("repeated execution is zero delta and never reinstalls the selected capabil
     assert.match(second.stderr, /already converged/);
     assert.deepEqual(await snapshot(watched), before, "a converged host must not be rewritten");
     assert.deepEqual(effects(await calls(host)), effectsBefore, "no claim, join or Linger call on the zero-delta path");
+    const rerunEffects = effects(await calls(host));
+    const countEffects = (journal, needle) => journal.filter((line) => line.includes(needle)).length;
+    assert.equal(
+      countEffects(rerunEffects, host.payloadPath),
+      countEffects(effectsBefore, host.payloadPath),
+      "no second agent payload write on the zero-delta path",
+    );
+    assert.equal(
+      countEffects(rerunEffects, "loginctl-enable-linger"),
+      countEffects(effectsBefore, "loginctl-enable-linger"),
+      "no second Linger mutation on the zero-delta path",
+    );
+    assert.equal(
+      countEffects(rerunEffects, "/.config/systemd/user/"),
+      countEffects(effectsBefore, "/.config/systemd/user/"),
+      "no second user unit write on the zero-delta path",
+    );
     assert.equal(
       (await installerLog(host)).filter((line) => line.includes("--apply")).length,
       appliesBefore,
@@ -125,7 +150,7 @@ test("repeated execution is zero delta and never reinstalls the selected capabil
 test("NEW, ADOPT and REPAIR are distinguishable and only repair real drift", { skip: linuxOnly }, async () => {
   const host = await makeHost();
   try {
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     await freshCheckpoint(host);
     const fresh = await runCourier(host, selection);
     assert.equal(fresh.status, 0, fresh.stderr);
@@ -163,7 +188,7 @@ test("a partially applied capability is never reported as completion and repairs
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     const interrupted = await runCourier(host, selection, { env: { FAKE_INSTALLER_FAIL: "1" } });
     assert.notEqual(interrupted.status, 0);
     assert.match(interrupted.stderr, /selected privileged helper apply failed/);
@@ -191,7 +216,7 @@ test("a partially applied capability is never reported as completion and repairs
     assert.equal(installed.complete, true);
     assert.equal(installed.ordinary_user, OPERATING_USER);
     assert.equal(installed.applies, 2, "the retry repairs, it does not duplicate the account or key");
-    assert.equal(await readFile(UNIT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
+    assert.equal(await readFile(UNIT_PATH(host), "utf8"), await host.unitText());
     assert.ok(await exists(join(host.fixtureState, "linger")));
   } finally { await rm(host.root, { recursive: true, force: true }); }
 });
@@ -199,12 +224,12 @@ test("a partially applied capability is never reported as completion and repairs
 test("a missing or unverifiable capability dependency fails closed before any effect", { skip: linuxOnly }, async () => {
   const host = await makeHost();
   try {
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     const cases = [
       {
         name: "artifact missing from the payload",
-        tamper: (script) => script.replace("CAPABILITY_ARTIFACT_COUNT=4", () => "CAPABILITY_ARTIFACT_COUNT=5"),
-        expected: /selected-capability artifact 5 is missing/,
+        tamper: (script) => script.replace("CAPABILITY_ARTIFACT_COUNT=5", () => "CAPABILITY_ARTIFACT_COUNT=6"),
+        expected: /selected-capability artifact 6 is missing/,
       },
       {
         name: "privileged key not pinned",
@@ -237,7 +262,7 @@ test("a claim-delivered selection installs the capability without a rendered pay
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     await setClaim(host, {
       capability_required: true,
       capability_selection: encodeCapabilitySelection(selection),
@@ -249,7 +274,7 @@ test("a claim-delivered selection installs the capability without a rendered pay
     assert.equal(checkpoint.components.privileged_helper, "COMPLIANT");
     assert.equal(checkpoint.components.linger, "COMPLIANT");
     assert.equal((await readJson(join(host.checkpoint, "capability-state.json"))).mode, "NEW");
-    assert.equal(await readFile(UNIT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
+    assert.equal(await readFile(UNIT_PATH(host), "utf8"), await host.unitText());
     assert.ok(await exists(join(host.fixtureState, "linger")));
     // The recorded digest binds the installed bytes to the reviewed selection.
     const expected = capabilitySelectionDigest(normalizeSelectedCapability(selection));
@@ -302,20 +327,31 @@ test("the claim selection is verified after the claim and before the identity jo
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
     const result = await runCourier(host, null);
     assert.equal(result.status, 0, result.stderr);
     const journal = await calls(host);
     const claimAt = journal.indexOf("curl claim");
     const joinAt = journal.indexOf("tailscale-up");
-    const lingerAt = journal.indexOf("loginctl-enable-linger ghostfleet-managed");
+    const applyAt = journal.findIndex((line) => line.startsWith("installer --apply"));
     const completeAt = journal.indexOf("curl complete");
-    // Honest ordering: transport prerequisites precede the claim; the capability
-    // never installs before the claim, and never after the completion report.
+    const payloadInstallAt = journal.findIndex((line) => line.startsWith("install ") && line.includes(host.payloadDir));
+    const unitInstallAt = journal.findIndex(
+      (line) => line.startsWith("install ") && line.includes("/.config/systemd/user/") && line.includes("ghostfleet-managed.service"),
+    );
+    const lingerAt = journal.indexOf("loginctl-enable-linger ghostfleet-managed");
+    // Honest ordering under the recoverable-credential contract: transport
+    // prerequisites precede the claim, the privileged helper follows the join
+    // fence, and the agent payload/unit/Linger are only installed once the
+    // completion response carried the node credential. The capability can never
+    // install before the claim and never before the completion report.
     assert.ok(claimAt > 0 && joinAt > claimAt, "claim precedes the identity join");
-    assert.ok(lingerAt > joinAt, "capability effect follows the join fence");
-    assert.ok(completeAt > lingerAt, "completion follows the capability");
+    assert.ok(applyAt > joinAt, "the privileged helper follows the join fence");
+    assert.ok(completeAt > applyAt, "completion follows the privileged helper");
+    assert.ok(payloadInstallAt > completeAt, "the agent payload installs only after the node credential was delivered");
+    assert.ok(unitInstallAt > completeAt, "the user unit installs only after the node credential was delivered");
+    assert.ok(lingerAt > unitInstallAt, "Linger is enabled only after the unit exists");
     assert.deepEqual(await installerLog(host).then((lines) => lines.filter((line) => line.startsWith("installer --apply"))).then((lines) => lines.length), 1);
     const aptLines = journal.map((line, index) => [line, index]).filter(([line]) => line.startsWith("apt-get"));
     assert.ok(aptLines.length > 0 && aptLines.every(([, index]) => index < claimAt), "package prerequisites precede the claim");
@@ -326,7 +362,7 @@ test("the one-time ticket URL never enters curl argv, and the auth key stays 060
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
     const oneTimeUrl = "https://broker.fixture.invalid/v1/enrollment-tickets/ticket-fixture";
     const result = await runCourier(host, null, { env: { GHOSTFLEET_ENROLLMENT_URL: oneTimeUrl } });
@@ -354,7 +390,7 @@ test("the courier refuses an operating Human identity it cannot trust", { skip: 
     const host = await makeHost();
     try {
       await freshCheckpoint(host);
-      const selection = await buildSelection();
+      const selection = await host.buildSelection();
       await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
       const result = await runCourier(host, null, { env: item.env });
       assert.notEqual(result.status, 0, item.name + " must fail closed");
@@ -387,7 +423,7 @@ test("the managed run account may never be the privileged operations account", {
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     // The deployment-rendered channel: a colliding selection must stop before
     // any effect at all, so the journal is empty.
     const tampered = await runCourier(host, selection, {
@@ -430,7 +466,7 @@ test("the courier creates the dedicated run account once, inside the same ceremo
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     const result = await runCourier(host, selection);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stderr, /created the dedicated managed run account ghostfleet-managed/);
@@ -445,7 +481,7 @@ test("the courier creates the dedicated run account once, inside the same ceremo
     assert.equal(startingWith(journal, "usermod ").length, 0, "no group is added to the run account");
     assert.equal(journal.some((line) => line === "sudo -l -U " + CONTROL_ACCOUNT), false, "the check is read-only");
     assert.ok(await accountExists(host, CONTROL_ACCOUNT));
-    assert.equal(await readFile(UNIT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
+    assert.equal(await readFile(UNIT_PATH(host), "utf8"), await host.unitText());
     assert.ok(await exists(LINGER(host)));
     assert.ok(journal.includes("loginctl-enable-linger " + CONTROL_ACCOUNT));
     assert.equal(journal.some((line) => line.includes(PRIVILEGED_ACCOUNT) && line.startsWith("loginctl")), false);
@@ -486,7 +522,7 @@ test("a pre-existing run account with any sudo grant is refused with the concret
   try {
     await freshCheckpoint(host);
     await seedAccount(host, CONTROL_ACCOUNT, { sudo: true });
-    const result = await runCourier(host, await buildSelection());
+    const result = await runCourier(host, await host.buildSelection());
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /has a sudo grant/);
     assert.match(result.stderr, /bounded fleet-privctl entry exists to prevent/);
@@ -503,7 +539,7 @@ test("a pre-existing run account in a root-equivalent group is refused", { skip:
   try {
     await freshCheckpoint(host);
     await seedAccount(host, CONTROL_ACCOUNT, { groups: [CONTROL_ACCOUNT, "docker"] });
-    const result = await runCourier(host, await buildSelection());
+    const result = await runCourier(host, await host.buildSelection());
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /root-equivalent group docker/);
     assert.equal(startingWith(await installerLog(host), "installer --apply").length, 0);
@@ -517,7 +553,7 @@ test("rollback removes only the run account this ceremony created", { skip: linu
   try {
     await freshCheckpoint(host);
     // The run account is created, then the privileged helper fails.
-    const failed = await runCourier(host, await buildSelection(), { env: { FAKE_INSTALLER_FAIL: "1" } });
+    const failed = await runCourier(host, await host.buildSelection(), { env: { FAKE_INSTALLER_FAIL: "1" } });
     assert.notEqual(failed.status, 0);
     assert.match(failed.stderr, /selected privileged helper apply failed/);
     assert.equal(await accountExists(host, CONTROL_ACCOUNT), false, "the account this run created is gone");
@@ -533,7 +569,7 @@ test("rollback removes only the run account this ceremony created", { skip: linu
       await freshCheckpoint(preexisting);
       const home = await seedAccount(preexisting, CONTROL_ACCOUNT);
       await writeFile(join(home, "pre-existing-marker"), "deployment owned\n");
-      const second = await runCourier(preexisting, await buildSelection(), { env: { FAKE_INSTALLER_FAIL: "1" } });
+      const second = await runCourier(preexisting, await host.buildSelection(), { env: { FAKE_INSTALLER_FAIL: "1" } });
       assert.notEqual(second.status, 0);
       assert.ok(await accountExists(preexisting, CONTROL_ACCOUNT), "a pre-existing account survives");
       assert.equal(await readFile(join(home, "pre-existing-marker"), "utf8"), "deployment owned\n");
@@ -545,7 +581,7 @@ test("rollback removes only the run account this ceremony created", { skip: linu
 test("a selection that does not declare the privileged account is refused with an actionable error", { skip: linuxOnly }, async () => {
   const host = await makeHost();
   try {
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     const text = Buffer.from(encodeCapabilitySelection(selection), "base64").toString("utf8");
     const withoutField = (value) => Buffer.from(
       value.split("\n").filter((line) => !line.startsWith("privileged_account=")).join("\n"),
@@ -584,7 +620,7 @@ test("a run account that gains privilege while the installer runs is refused aft
     // The reviewed installer runs as root and hands the run account a
     // root-equivalent group. The proof taken before the installer must not be
     // the last one.
-    const result = await runCourier(host, await buildSelection(), {
+    const result = await runCourier(host, await host.buildSelection(), {
       env: { FAKE_INSTALLER_GRANT_ACCOUNT: CONTROL_ACCOUNT },
     });
     assert.notEqual(result.status, 0);
@@ -612,12 +648,12 @@ test("a managed lane left inside the privileged account is refused before any ef
     const staleUnit = join(privilegedHome, ".config/systemd/user/ghostfleet-managed.service");
     const staleWant = join(privilegedHome, ".config/systemd/user/default.target.wants/ghostfleet-managed.service");
     await mkdir(join(privilegedHome, ".config/systemd/user/default.target.wants"), { recursive: true });
-    await writeFile(staleUnit, await readFixture("ghostfleet-managed.service"));
+    await writeFile(staleUnit, await host.unitText());
     await symlink("../ghostfleet-managed.service", staleWant);
     await mkdir(join(host.fixtureState, "linger"), { recursive: true });
     await writeFile(join(host.fixtureState, "linger", PRIVILEGED_ACCOUNT), "yes\n");
 
-    const result = await runCourier(host, await buildSelection());
+    const result = await runCourier(host, await host.buildSelection());
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /CAPABILITY_STALE_PRIVILEGED_LANE/);
     assert.match(result.stderr, /Decommission it first/);
@@ -640,7 +676,7 @@ test("a privileged declaration the installer does not admit is refused after it 
     await freshCheckpoint(host);
     // Well-formed and distinct from the run account, but not the account the
     // installer actually admits: only the cross-check can catch this.
-    const result = await runCourier(host, await buildSelection({ privileged_account: "ghostfleet-ops-alt" }));
+    const result = await runCourier(host, await host.buildSelection({ privileged_account: "ghostfleet-ops-alt" }));
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /CAPABILITY_PRIVILEGED_ACCOUNT_MISMATCH/);
     assert.match(result.stderr, /admits ghostfleet-ops/);
@@ -664,7 +700,7 @@ test("an adopted run account must satisfy the same criteria as a created one", {
     try {
       await freshCheckpoint(host);
       await seedAccount(host, CONTROL_ACCOUNT, item.seed);
-      const result = await runCourier(host, await buildSelection());
+      const result = await runCourier(host, await host.buildSelection());
       assert.notEqual(result.status, 0, item.name);
       assert.match(result.stderr, item.expected, item.name);
       assert.equal(startingWith(await installerLog(host), "installer --apply").length, 0, item.name + ": no apply");
@@ -679,7 +715,7 @@ test("a helper-only template still cross-checks the declared privileged account"
   try {
     await freshCheckpoint(host);
     // No unit and no Linger lane at all: only the bounded helper is requested.
-    const result = await runCourier(host, await buildSelection({
+    const result = await runCourier(host, await host.buildSelection({
       ...HELPER_ONLY, privileged_account: "ghostfleet-ops-alt",
     }));
     assert.notEqual(result.status, 0, "a helper-only template must not accept a wrong declaration");
@@ -697,7 +733,7 @@ test("a failing group lookup is never read as 'no privileged group'", { skip: li
     await seedAccount(host, CONTROL_ACCOUNT);
     await mkdir(join(host.fixtureState, "nss-fail", "id-groups"), { recursive: true });
     await writeFile(join(host.fixtureState, "nss-fail", "id-groups", CONTROL_ACCOUNT), "unavailable\n");
-    const result = await runCourier(host, await buildSelection());
+    const result = await runCourier(host, await host.buildSelection());
     assert.notEqual(result.status, 0, "a broken group lookup must not decide the boundary");
     assert.match(result.stderr, /CAPABILITY_RUN_ACCOUNT_UNPROVEN/);
     assert.match(result.stderr, /account database could not be queried/);
@@ -718,9 +754,9 @@ test("an account whose only group is its primary group is accepted", { skip: lin
       encoding: "utf8",
     });
     assert.equal(groups.stdout.trim(), CONTROL_ACCOUNT, "the fixture answers with the real primary group");
-    const result = await runCourier(host, await buildSelection());
+    const result = await runCourier(host, await host.buildSelection());
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(await readFile(UNIT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
+    assert.equal(await readFile(UNIT_PATH(host), "utf8"), await host.unitText());
     const state = await readJson(join(host.checkpoint, "capability-state.json"));
     assert.equal(state.control_account_state, "EXISTING");
   } finally { await rm(host.root, { recursive: true, force: true }); }
@@ -733,7 +769,7 @@ test("a group list that comes back empty is not accepted", { skip: linuxOnly }, 
     await seedAccount(host, CONTROL_ACCOUNT);
     await mkdir(join(host.fixtureState, "empty-groups"), { recursive: true });
     await writeFile(join(host.fixtureState, "empty-groups", CONTROL_ACCOUNT), "none\n");
-    const result = await runCourier(host, await buildSelection());
+    const result = await runCourier(host, await host.buildSelection());
     assert.notEqual(result.status, 0, "id -nG always lists the primary group; empty output is not an answer");
     assert.match(result.stderr, /CAPABILITY_RUN_ACCOUNT_UNPROVEN/);
     assert.equal(startingWith(await installerLog(host), "installer --apply").length, 0);
@@ -748,7 +784,7 @@ test("a group list that does not contain the primary group is not accepted", { s
     // Parses cleanly but names some other group: the primary group is missing, so
     // the answer was replaced or truncated and nothing about membership is proved.
     await seedAccount(host, CONTROL_ACCOUNT, { groups: ["users"] });
-    const result = await runCourier(host, await buildSelection());
+    const result = await runCourier(host, await host.buildSelection());
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /CAPABILITY_RUN_ACCOUNT_UNPROVEN/);
     await assertNoLane(host, "missing primary group");
@@ -760,7 +796,7 @@ test("an unparseable group token is not accepted", { skip: linuxOnly }, async ()
   try {
     await freshCheckpoint(host);
     await seedAccount(host, CONTROL_ACCOUNT, { groups: [CONTROL_ACCOUNT, "bad!token"] });
-    const result = await runCourier(host, await buildSelection());
+    const result = await runCourier(host, await host.buildSelection());
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /CAPABILITY_RUN_ACCOUNT_UNPROVEN/);
     await assertNoLane(host, "unparseable group token");

@@ -4,7 +4,7 @@ import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { normalizeSelectedCapability } from "../src/index.js";
 import {
-  linuxOnly, makeHost, resetProviderIdentity, freshCheckpoint, buildSelection, runCourier,
+  linuxOnly, makeHost, resetProviderIdentity, freshCheckpoint, runCourier,
   calls, installerLog, exists, UNIT_PATH,
 } from "./support/capability-fixture.js";
 
@@ -52,7 +52,7 @@ for (const item of artifactGovernanceCases) {
   test("artifact governance: " + item.name, { skip: linuxOnly }, async () => {
     const host = await makeHost();
     try {
-      const selection = await buildSelection();
+      const selection = await host.buildSelection();
       await resetProviderIdentity(host);
       await freshCheckpoint(host);
       const result = await runCourier(host, selection, { assetTamper: item.assetTamper, env: item.env });
@@ -74,7 +74,7 @@ test("the pinned artifacts are fetched by digest from the asset origin, once eac
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     const normalized = normalizeSelectedCapability(selection);
     const result = await runCourier(host, selection);
     assert.equal(result.status, 0, result.stderr);

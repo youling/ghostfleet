@@ -4,7 +4,7 @@ import { readFile, rm, writeFile, mkdir, symlink, readlink } from "node:fs/promi
 import { join } from "node:path";
 import { encodeCapabilitySelection } from "../src/index.js";
 import {
-  makeHost, freshCheckpoint, buildSelection, runCourier, calls, installerLog, exists, setClaim,
+  makeHost, freshCheckpoint, runCourier, calls, installerLog, exists, setClaim,
   linuxOnly, OPERATING_USER, sha256, readFixture, readJson, snapshot, resetProviderIdentity, NODE_UID, NODE_ID,
   CONTROL_ACCOUNT, PRIVILEGED_ACCOUNT, UNIT_PATH, WANT_PATH, LINGER, RUN_HOME,
   accountExists, seedAccount, startingWith, prettyRecord, seedRecordedV1Lane, laneState,
@@ -37,7 +37,7 @@ test("a claim-delivered capability repeats as zero delta without a new claim", {
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
     const first = await runCourier(host, null);
     assert.equal(first.status, 0, first.stderr);
@@ -63,7 +63,7 @@ test("a drifted user service or Linger lane is repaired from the recorded select
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
     const first = await runCourier(host, null);
     assert.equal(first.status, 0, first.stderr);
@@ -81,7 +81,7 @@ test("a drifted user service or Linger lane is repaired from the recorded select
     assert.match(second.stderr, /repaired from the recorded reviewed selection/);
     assert.equal((await calls(host)).filter((line) => line === "curl claim").length, 1, "repair needs no new claim");
     assert.equal((await installerLog(host)).filter((line) => line.includes("--apply")).length, applies, "no helper reinstall");
-    assert.equal(await readFile(UNIT_PATH(host), "utf8"), await readFixture("ghostfleet-managed.service"));
+    assert.equal(await readFile(UNIT_PATH(host), "utf8"), await host.unitText());
     assert.ok(await exists(join(host.fixtureState, "linger")));
     const state = await readJson(join(host.checkpoint, "capability-state.json"));
     assert.equal(state.mode, "REPAIR");
@@ -96,7 +96,7 @@ test("a recorded capability that cannot be re-proved is never reported as zero d
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
     assert.equal((await runCourier(host, null)).status, 0);
     // Losing the reviewed selection removes the only way to re-prove the lane,
@@ -118,7 +118,7 @@ test("a selection delivered for a template that requires none is refused", { ski
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     await setClaim(host, { capability_required: false, capability_selection: encodeCapabilitySelection(selection) });
     const result = await runCourier(host, null);
     assert.notEqual(result.status, 0);
@@ -132,7 +132,7 @@ test("a legacy checkpoint without a reviewed record converges through the next c
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
     assert.equal((await runCourier(host, null)).status, 0);
     // A checkpoint written by an older courier: components recorded, no record.
@@ -156,7 +156,7 @@ test("a capability record from another node is refused when this checkpoint reco
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
     assert.equal((await runCourier(host, null)).status, 0);
     // Simulate a record that belongs to another node: the checkpoint is rewritten
@@ -179,7 +179,7 @@ test("a capability record from another node is refused when this checkpoint reco
 test("a claim selection with a non-normalised mode or a root control account is refused", { skip: linuxOnly }, async () => {
   const host = await makeHost();
   try {
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     const text = Buffer.from(encodeCapabilitySelection(selection), "base64").toString("utf8");
     const cases = [
       {
@@ -207,7 +207,7 @@ test("a legacy node cannot be downgraded by a claim that delivers no capability"
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
     assert.equal((await runCourier(host, null)).status, 0);
     const stateBefore = await readJson(join(host.checkpoint, "capability-state.json"));
@@ -233,7 +233,7 @@ test("a legacy reconcile refuses a claim for a different node identity", { skip:
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     await setClaim(host, { capability_required: true, capability_selection: encodeCapabilitySelection(selection) });
     assert.equal((await runCourier(host, null)).status, 0);
     await rm(join(host.checkpoint, "capability-selection.txt"), { force: true });
@@ -257,7 +257,7 @@ test("a converged node stops reporting zero delta when the run account gains sud
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     assert.equal((await runCourier(host, selection)).status, 0);
 
     // The account gains a sudo grant after the ceremony. That is drift against
@@ -277,7 +277,7 @@ test("a v1 lane this node recorded is decommissioned before the v2 selection is 
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     assert.equal((await runCourier(host, selection)).status, 0);
 
     // Rewrite the recorded selection exactly as a v1 node would have written it:
@@ -295,7 +295,7 @@ test("a v1 lane this node recorded is decommissioned before the v2 selection is 
     const staleUnit = join(privilegedHome, ".config/systemd/user/ghostfleet-managed.service");
     const staleWant = join(privilegedHome, ".config/systemd/user/default.target.wants/ghostfleet-managed.service");
     await mkdir(join(privilegedHome, ".config/systemd/user/default.target.wants"), { recursive: true });
-    await writeFile(staleUnit, await readFixture("ghostfleet-managed.service"));
+    await writeFile(staleUnit, await host.unitText());
     await symlink("../ghostfleet-managed.service", staleWant);
     await mkdir(join(host.fixtureState, "linger"), { recursive: true });
     await writeFile(join(host.fixtureState, "linger", PRIVILEGED_ACCOUNT), "yes\n");
@@ -332,7 +332,7 @@ test("a recorded lane whose unit bytes are not the reviewed artifact is not dele
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     assert.equal((await runCourier(host, selection)).status, 0);
 
     // A v1 record claims the lane, but the file at that path is something else.
@@ -370,7 +370,7 @@ test("a helper-only node that reports compliant but records another account is n
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection(HELPER_ONLY);
+    const selection = await host.buildSelection(HELPER_ONLY);
     const first = await runCourier(host, selection);
     assert.equal(first.status, 0, first.stderr);
     // The installer now records a different ops account than the one declared.
@@ -386,7 +386,7 @@ test("a compliant helper with no readable record is refused on the zero-delta pa
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     const first = await runCourier(host, selection);
     assert.equal(first.status, 0, first.stderr);
     // The helper still reports COMPLIANT (its --check never reads control.json),
@@ -404,7 +404,7 @@ test("the installer record is parsed, not pattern-matched", { skip: linuxOnly },
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     assert.equal((await runCourier(host, selection)).status, 0);
     // A reformatted record that names another account is still a mismatch.
     await writeFile(host.installerState, prettyRecord("ghostfleet-ops-alt"));
@@ -429,7 +429,7 @@ test("a stale v1 record with no lane left is removed so the next claim is not bl
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     assert.equal((await runCourier(host, selection)).status, 0);
 
     // A v1 record whose lane was already cleaned up by hand: nothing left to
@@ -469,7 +469,7 @@ test("a v1 lane whose service will not stop is not removed", { skip: linuxOnly }
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     assert.equal((await runCourier(host, selection)).status, 0);
     const lane = await seedRecordedV1Lane(host, selection, {
       unitState: "active", stopIneffective: true,
@@ -489,7 +489,7 @@ test("a v1 lane whose stop command fails is not removed", { skip: linuxOnly }, a
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     assert.equal((await runCourier(host, selection)).status, 0);
     const lane = await seedRecordedV1Lane(host, selection, { unitState: "active", stopFails: true });
     const before = await laneState(host, lane);
@@ -505,7 +505,7 @@ test("a v1 lane that is proved stopped is removed with its record", { skip: linu
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     assert.equal((await runCourier(host, selection)).status, 0);
     const lane = await seedRecordedV1Lane(host, selection, { unitState: "active" });
     const second = await runCourier(host, null);
@@ -525,7 +525,7 @@ test("a pgrep query failure blocks deletion", { skip: linuxOnly }, async () => {
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     assert.equal((await runCourier(host, selection)).status, 0);
     const lane = await seedRecordedV1Lane(host, selection, { pgrepFails: true });
     const before = await laneState(host, lane);
@@ -541,7 +541,7 @@ test("a missing pgrep blocks deletion", { skip: linuxOnly }, async () => {
   const host = await makeHost();
   try {
     await freshCheckpoint(host);
-    const selection = await buildSelection();
+    const selection = await host.buildSelection();
     assert.equal((await runCourier(host, selection)).status, 0);
     const lane = await seedRecordedV1Lane(host, selection);
     const before = await laneState(host, lane);
@@ -560,8 +560,11 @@ test("a unit whose ExecStart is not an absolute binary blocks deletion", { skip:
   try {
     await freshCheckpoint(host);
     const relativeUnit = "[Service]\nExecStart=sleep 300\n";
-    const selection = await buildSelection({ unitContent: relativeUnit });
+    const selection = await host.buildSelection();
     assert.equal((await runCourier(host, selection)).status, 0);
+    // The rendered selection is safe; only the recorded v1 lane pins a unit whose
+    // ExecStart is relative, which is exactly what the decommission guard must
+    // refuse before any effect.
     const lane = await seedRecordedV1Lane(host, selection, { unitContent: relativeUnit });
     const before = await laneState(host, lane);
     const second = await runCourier(host, null);

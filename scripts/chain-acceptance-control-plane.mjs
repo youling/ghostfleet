@@ -49,14 +49,34 @@ const readArtifact = (name) => readFileSync(join(privilegedRoot, name), "utf8");
 // proves installation, ownership, enablement and Linger, not a managed runtime.
 const unitText = [
   "[Unit]",
-  "Description=GhostFleet managed runtime (disposable chained acceptance)",
+  "Description=GhostFleet Node Agent (disposable chained acceptance)",
+  "After=network-online.target",
   "",
   "[Service]",
-  "Type=oneshot",
-  "ExecStart=/bin/true",
+  "Type=notify",
+  "NotifyAccess=main",
+  "ExecStart=/usr/bin/python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz run",
+  "Restart=on-failure",
+  "NoNewPrivileges=yes",
+  "ProtectSystem=strict",
+  "ProtectHome=read-only",
+  "StateDirectory=ghostfleet-agent",
+  "ConfigurationDirectory=ghostfleet",
+  "ReadWritePaths=%h/.config/ghostfleet %h/.local/state/ghostfleet-agent",
   "",
   "[Install]",
   "WantedBy=default.target",
+  "",
+].join("\n");
+
+// The pinned payload bytes are synthetic in this fixture job; only the digest,
+// the mode and the ExecStart binding matter to the chained acceptance.
+const payloadText = [
+  "#!/usr/bin/env python3",
+  "# Synthetic node-agent payload for the disposable chained acceptance job.",
+  "",
+  "if __name__ == '__main__':",
+  "    raise SystemExit(0)",
   "",
 ].join("\n");
 
@@ -77,7 +97,13 @@ const selection = {
   privileged_account: "ghostfleet-ops",
   installer: "managed-linux-privileged-operations.sh",
   privileged_key: "privileged-ops.pub",
-  user_unit: { name: "ghostfleet-managed.service", artifact: "ghostfleet-managed.service" },
+  user_unit: {
+    name: "ghostfleet-managed.service",
+    artifact: "ghostfleet-managed.service",
+    payload_artifact: "node-agent.pyz",
+    payload_path: "/usr/local/libexec/ghostfleet/node-agent.pyz",
+    payload_mode: "0755",
+  },
   artifacts: [
     { name: "managed-linux-privileged-operations.sh", mode: "0750", content: readArtifact("managed-linux-privileged-operations.sh") },
     { name: "fleet_privctl.py", mode: "0755", content: readArtifact("fleet_privctl.py") },
@@ -85,6 +111,7 @@ const selection = {
     { name: "fleet_admin_command.py", mode: "0755", content: readArtifact("fleet_admin_command.py") },
     { name: "privileged-ops.pub", mode: "0644", content: readFileSync(privilegedKeyFile, "utf8") },
     { name: "ghostfleet-managed.service", mode: "0644", content: unitText },
+    { name: "node-agent.pyz", mode: "0755", content: payloadText },
   ],
 };
 const shape = normalizeSelectedCapability(selection);

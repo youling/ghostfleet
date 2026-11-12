@@ -11,6 +11,9 @@ record() { printf '%s\n' "$*" >> "$state/installer.log"; }
 [ -r "${FLEET_CONTROL_PRIVILEGED_SSH_PUBLIC_KEY_FILE:-/nonexistent}" ] || { printf 'missing privileged key\n' >&2; exit 12; }
 key_sha="$(sha256sum "$FLEET_CONTROL_PRIVILEGED_SSH_PUBLIC_KEY_FILE" | awk '{print $1}')"
 record "installer $mode user=$FLEET_CONTROL_ORDINARY_USER key=$key_sha"
+# The courier journal records the helper invocation too, so ordering assertions
+# can prove it follows the identity join and precedes the completion report.
+printf 'installer %s user=%s key=%s\n' "$mode" "$FLEET_CONTROL_ORDINARY_USER" "$key_sha" >> "$state/calls.log"
 
 print_state() {
   printf 'ORDINARY_USER=%s\n' "$FLEET_CONTROL_ORDINARY_USER"
