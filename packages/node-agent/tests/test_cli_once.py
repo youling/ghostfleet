@@ -377,6 +377,59 @@ def test_config_symlink_is_rejected(sandbox):
     assert excinfo.value.detail == "CONFIG_NOT_REGULAR_FILE"
 
 
+def test_default_config_rejects_group_readable_0640(sandbox, monkeypatch, tmp_path):
+    # 0640（组可读）也不符合 ADR §4 的 0644 契约：默认路径分支必须拒绝。
+    install_config_trust(monkeypatch, tmp_path)
+    path = sandbox.write_config("https://control.example.invalid")
+    path.chmod(0o640)
+    with pytest.raises(CredentialError) as excinfo:
+        cli.verify_config_trust(str(path), default_path=str(path))
+    assert excinfo.value.code == "AGENT_CONFIG_UNTRUSTED"
+    assert excinfo.value.detail == "CONFIG_MODE_NOT_0644"
+
+
+# -- 启动闸门在 main 路径上的行为：失败前不联网、不落 state -------------------
+def test_run_rejects_untrusted_default_config_before_network(sandbox, control_plane, monkeypatch, tmp_path):
+    path = sandbox.write_config(control_plane.url)
+    install_config_trust(monkeypatch, tmp_path, uid_map="0 0 4294967295\n")
+    monkeypatch.setattr(cli, "DEFAULT_CONFIG_PATH", str(path))
+    assert main(["run", "--once", "--config", str(path)]) == EXIT_CREDENTIAL
+    assert control_plane.records == []
+    assert not sandbox.state_paths()["state"].exists()
+
+
+def test_run_rejects_wrong_mode_default_config_before_network(sandbox, control_plane, monkeypatch, tmp_path):
+    path = sandbox.write_config(control_plane.url)
+    path.chmod(0o640)
+    install_config_trust(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "DEFAULT_CONFIG_PATH", str(path))
+    assert main(["run", "--once", "--config", str(path)]) == EXIT_CREDENTIAL
+    assert control_plane.records == []
+    assert not sandbox.state_paths()["state"].exists()
+
+
+def test_run_with_permissive_token_has_no_side_effects(sandbox, control_plane):
+    sandbox.write_config(control_plane.url)
+    sandbox.token_path.chmod(0o666)
+    assert main(["run", "--once", "--config", str(sandbox.config_path)]) == EXIT_CREDENTIAL
+    assert control_plane.records == []
+    assert not sandbox.state_paths()["state"].exists()
+
+
+def test_check_config_applies_startup_trust_gates(sandbox, control_plane, capsys):
+    sandbox.write_config(control_plane.url)
+    sandbox.token_path.chmod(0o644)
+    assert main(["check-config", "--config", str(sandbox.config_path)]) == EXIT_CREDENTIAL
+    output = capsys.readouterr().out
+    document = json.loads([line for line in output.splitlines() if line.strip()][-1])
+    assert document["ok"] is False
+    assert document["command"] == "check-config"
+    assert document["code"] == "AGENT_CREDENTIAL_PERMISSIVE"
+    assert "test-token" not in output
+    assert control_plane.records == []
+    assert not sandbox.state_paths()["state"].exists()
+
+
 # -- 信号处理 --------------------------------------------------------------
 def test_signal_handlers_are_main_thread_only():
     event = threading.Event()

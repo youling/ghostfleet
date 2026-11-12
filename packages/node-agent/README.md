@@ -21,6 +21,7 @@ The package is stdlib-only and ships as a deterministic zipapp for `python3 -I`.
 | 启动信任闸门 | `run` 前校验 token 为常规文件、属主本人、mode 0600；默认配置必须 host root 拥有（user namespace 内按只读挂载判据）且 0644；不符退出 3 且不联网 |
 | 公开投影 | `capability.inspect` 只读 `/etc/ghostfleet/capability-status.json` 的白名单字段，属主判据与配置相同，绝不读 root-only 私有 state |
 | 凭据不落日志 | 日志与结构化事件只写固定字段，token/nonce/完整 params 绝不出现在 stdout |
+| 运行期状态 fail-closed | state 目录必须 0700 且属主为当前用户，`state.json`/`ledger.json`/`outbox.json` 必须 0600 且属主为当前用户；不符拒绝启动/写入（`STATE_DIR_UNTRUSTED`） |
 
 ## 文件布局（与 ADR §4 一致）
 
@@ -34,6 +35,9 @@ The package is stdlib-only and ships as a deterministic zipapp for `python3 -I`.
 | `~/.local/state/ghostfleet-agent/` | 0700 | `state.json` / `ledger.json` / `outbox.json`（均 0600） |
 
 控制面 origin 只能由 root-owned 配置给出，普通用户无法把 Agent 指向攻击者端点。
+运行期状态文件同样按 fail-closed 校验：`ensure_state_dir` 要求目录属主 `== os.geteuid()` 且 mode `0700`，
+三个状态文件读/写前要求属主 `== os.geteuid()` 且 mode `0600`；目录过宽时先记一次 `state_dir_permissions_loose`
+告警再以 `StateWriteError` 拒绝（不静默放宽）。
 
 启动信任闸门（任一不符即退出码 3，只报稳定错误码，不打印文件内容）：
 
@@ -69,8 +73,8 @@ mountinfo 读取上限 1 MiB（真实机器挂载项可能很多），超限按�
 
 | 字段 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `control_plane_origin` | 是 | — | `https://host[:port]`；仅测试/验收允许 loopback 的明文 `http`（会告警） |
-| `heartbeat_interval_s` | 否 | 30 | 心跳/轮询周期，钳制到 [15,300] 秒 |
+| `control_plane_origin` | 是 | — | `https://host[:port]`；loopback 明文 `http` 生产默认拒绝（`CONFIG_LOOPBACK_HTTP_FORBIDDEN`），仅 harness 环境变量 `GHOSTFLEET_AGENT_TEST_LOOPBACK_HTTP=1`（或显式 `allow_loopback_http=True`）放行并告警 |
+| `heartbeat_interval_s` | 否 | 30 | 心跳/轮询周期，配置值钳制到 [15,300] 秒；客户端实际周期下限 30 秒（服务端下发更小值按 30 采用并记 warning，不 fatal） |
 | `heartbeat_interval_min_s` / `heartbeat_interval_max_s` | 否 | 15 / 300 | 进一步收窄服务端下发 interval 的接受区间 |
 | `jitter_ratio` | 否 | 0.1 | 抖动比例，钳制到 [0,0.5] |
 | `request_timeout_s` | 否 | 10 | 单请求超时，范围 (0,300] |
@@ -89,7 +93,7 @@ mountinfo 读取上限 1 MiB（真实机器挂载项可能很多），超限按�
 # 确定性构建（固定条目顺序/时间戳/权限，字节可复现）
 python3 packages/node-agent/tools/build_pyz.py --out packages/node-agent/dist/node-agent.pyz
 
-# 校验配置与凭据（不联网、不写盘）
+# 校验配置、凭据与启动信任闸门（不联网、不写盘；闸门失败退出 3）
 python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz check-config
 
 # 常驻运行（systemd Type=notify 下由 unit 调用；前台运行也可直接调试）
@@ -129,10 +133,12 @@ python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz status --json
 端点：`POST /v0/nodes/{node_uid}/heartbeat`、`POST /v0/nodes/{node_uid}/tasks/poll`、
 `POST /v0/nodes/{node_uid}/tasks/{task_id}/result`。
 
-错误分派：401/403 → FATAL；409 按码处理（nonce 重放/seq 回退换新 nonce 与 seq 重试一次，
-boot 重放换新 boot_id 重试一次，结果冲突视为永久拒绝）；429 读取并遵守 `Retry-After`，
-带该头时等待时长以服务端为准（上限 3600s，不被本地 300s 退避封顶截断），无该头才用本地指数退避；
-5xx 与网络错误只退避重试，绝不当成功。
+错误分派：401/403 → FATAL（停止上报，等人工修复）；409 按码处理：nonce 重放/seq 回退换新 nonce 与 seq 重试一次、
+boot 重放换新 boot_id 重试一次，`NODE_BOOT_ID_CAPACITY_REACHED` 无法自愈故按 FATAL（只能 operator rotate），
+结果回传的 `TASK_RESULT_CONFLICT` / `TASK_RESULT_SCHEMA_UNSUPPORTED` / `TASK_RESULT_SCOPE_MISMATCH` / `TASK_OPERATION_MISMATCH`
+视为永久拒绝（丢件 + warning，绝不重投）；429 读取并遵守 `Retry-After`，带该头时等待时长以服务端为准
+（上限 3600s，超出按 3600 钳制，不被本地 300s 退避封顶截断、也不乘抖动），无该头才用本地指数退避；
+5xx 与网络错误只退避重试，绝不当成功。结果回传（outbox flush）的 429 与心跳/轮询同规则：保留 outbox 条目并遵守 Retry-After。
 
 任务词汇：`node.observe`（want ⊆ identity/os/uptime/disk/services/capability）、
 `service.status.read`（≤8 个 unit，必须在 `allowed_units` 白名单内）、
@@ -158,10 +164,14 @@ boot 重放换新 boot_id 重试一次，结果冲突视为永久拒绝）；429
 
 - 执行前先把 `ledger[task_id] = MAY_HAVE_EXECUTED` 落盘（tmp+fsync+rename），然后才调用实现。
 - 进程重启后只对栅栏任务上报 `UNKNOWN`，绝不重跑；已有 outbox 结果则按已有结果补账。
-- outbox 上限 64 条，溢出时丢最旧并把丢弃记成 `RESULT_DROPPED` 与 `outbox_overflow` 计数；
-  未发出的结果下次启动优先重发，同 task_id 同 `result_digest` 幂等。
-- 所有状态文件写入均为原子替换；损坏时 fail-closed 而非静默重置。
-- ledger 上限 512：只驱逐已对账终态（`RESULT_DROPPED` 最先），`MAY_HAVE_EXECUTED` 与待对账条目永不驱逐；账本达到上限且无可驱逐条目时停止 poll（heartbeat 继续，health=`DEGRADED`、`health_reason=AGENT_LEDGER_EXHAUSTED`），对账腾出空间后自动恢复取任务。
+- outbox 上限 64 条，溢出时丢最旧并把丢弃记成 `RESULT_DROPPED` 与 `outbox_overflow` 计数；丢弃清单与 items
+  **同一次原子写**持久化，重启 load 时重放为 `RESULT_DROPPED`；未发出的结果下次启动优先重发，同 task_id 同 `result_digest` 幂等。
+- 所有状态文件写入均为原子替换（文件 fsync → rename → 目录 fsync），损坏或目录 fsync 失败都 fail-closed 而非静默重置。
+- ledger 上限 512：只驱逐「已对账且 read_only」的终态（`RESULT_DROPPED` 最先），`MAY_HAVE_EXECUTED`、待对账条目、
+  `UNKNOWN` 与任何 `may_mutate` 终态**永不驱逐**；被驱逐的 task_id 写入独立有界墓碑文件（上限 4096），
+  `begin()` 命中墓碑按 `DONE` 处理，绝不因驱逐而重跑。墓碑满或账本达上限且无可驱逐条目时 `begin()` 拒绝、
+  停止 poll（heartbeat 继续，health=`DEGRADED`、`health_reason=AGENT_LEDGER_EXHAUSTED`），对账腾出空间后自动恢复取任务。
+- `SIGTERM` 收尾的 flush 预算固定 10 秒（与 unit 的 `WatchdogSec=60` 一致），超时不再阻塞退出。
 
 ## 运行行为（真机取证）
 
@@ -180,11 +190,12 @@ boot 重放换新 boot_id 重试一次，结果冲突视为永久拒绝）；429
   "Got notification message from PID <child>, but reception only permitted for main PID <main>" 拒绝日志。
   测试：`tests/test_observe.py` 的 `test_child_environment_strips_systemd_notification_keys`、
   `test_command_runner_child_cannot_see_notify_socket`、`test_command_runner_output_is_unchanged_by_environment_stripping`。
-- **state 目录权限告警只打一次**：state 目录（默认 `~/.local/state/ghostfleet-agent`，期望 `0700`）若对 group/other 开放，
-  记一条 `state_dir_permissions_loose` warning（只告警、不 fail-closed）；同一 `path`+`mode` 组合每进程生命周期只记一次。
+- **state 目录权限告警只打一次，但仍 fail-closed**：state 目录（默认 `~/.local/state/ghostfleet-agent`，期望 `0700`）若对 group/other 开放，
+  先记一条 `state_dir_permissions_loose` warning（同一 `path`+`mode` 组合每进程生命周期只记一次），随后**每次**都以
+  `StateWriteError` 拒绝（不静默放宽、也不继续运行）。
   告警字段 `writable_by_group`/`writable_by_other` 直接说明是否需要 `chmod 0700`。
   **过宽定义**：`mode & 0o077 != 0`，即除属主之外任何人拥有任何权限；其中 group/other 的写位（`0o022`）风险最高，必须收紧。
-  测试：`tests/test_state.py` 的 `test_state_dir_loose_permission_warning_is_emitted_once`。
+  测试：`tests/test_state.py` 的 `test_state_dir_loose_permission_warns_once_then_fails_closed`。
 
 ## 结构化事件
 

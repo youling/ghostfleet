@@ -26,6 +26,7 @@ from ghostfleet_agent.protocol import (
     AGENT_PAYLOAD_TOO_LARGE,
     AGENT_REDIRECT_REFUSED,
     NODE_AUTH_INVALID,
+    NODE_BOOT_ID_CAPACITY_REACHED,
     NODE_BOOT_REPLAY,
     NODE_CLOCK_SKEW,
     NODE_NONCE_REPLAY,
@@ -44,7 +45,10 @@ from ghostfleet_agent.protocol import (
     OUTCOME_SERVER_ERROR,
     OUTCOME_SEQ_REGRESSION,
     OUTCOME_TRANSPORT_REFUSED,
+    TASK_OPERATION_MISMATCH,
     TASK_RESULT_CONFLICT,
+    TASK_RESULT_SCHEMA_UNSUPPORTED,
+    TASK_RESULT_SCOPE_MISMATCH,
     ProtocolError,
 )
 
@@ -142,7 +146,17 @@ def test_build_envelope_rejects_field_collision():
 # -- 成功响应 ---------------------------------------------------------------
 @pytest.mark.parametrize(
     "value, expected",
-    [(5, 15.0), (15, 15.0), (300, 300.0), (1000, 300.0), ("30", None), (True, None), (None, None)],
+    [
+        (5, 30.0),
+        (15, 30.0),
+        (0, 30.0),
+        (-30, 30.0),
+        (300, 300.0),
+        (1000, 300.0),
+        ("30", None),
+        (True, None),
+        (None, None),
+    ],
 )
 def test_heartbeat_interval_is_clamped(value, expected):
     transport = FakeTransport([json_response(200, {"interval_s": value, "tasks": []})])
@@ -314,7 +328,8 @@ def test_real_transport_sends_headers_and_parses_heartbeat(control_plane):
     client = make_client(UrllibTransport(), base_url=control_plane.url)
     response = heartbeat(client)
     assert response.ok
-    assert response.interval_s == 15.0
+    # 服务端回 15s，但客户端下限是 30s（ADR §5.1 速率预算）。
+    assert response.interval_s == 30.0
     record = control_plane.requests_to("/heartbeat")[0]
     assert record["headers"]["authorization"] == f"Bearer {TEST_TOKEN}"
     assert record["headers"]["x-ghostfleet-node-uid"] == NODE_UID
@@ -334,6 +349,43 @@ def test_real_transport_refuses_redirect_without_following(control_plane):
 
 
 # -- 合同 3：429 Retry-After 与 409 seq/boot 分派 ---------------------------
+def test_boot_id_capacity_409_is_fatal_with_server_code():
+    # 服务端 boot 历史已满：node 侧无法自愈，必须 FATAL 而不是无限退避。
+    transport = FakeTransport(
+        [TransportResponse(409, json.dumps({"code": NODE_BOOT_ID_CAPACITY_REACHED}).encode(), {})]
+    )
+    response = heartbeat(make_client(transport))
+    assert response.kind == OUTCOME_AUTH_FATAL
+    assert response.code == NODE_BOOT_ID_CAPACITY_REACHED
+
+
+@pytest.mark.parametrize(
+    "status, code",
+    [
+        (400, TASK_RESULT_SCHEMA_UNSUPPORTED),
+        (409, TASK_RESULT_SCOPE_MISMATCH),
+        (409, TASK_OPERATION_MISMATCH),
+        (409, TASK_RESULT_CONFLICT),
+    ],
+)
+def test_result_rejections_are_permanent_not_retryable(status, code):
+    # 控制面已判定这条结果永远不可接受：只能丢件，不能当 DENIED 无限重投。
+    transport = FakeTransport([TransportResponse(status, json.dumps({"code": code}).encode(), {})])
+    client = make_client(transport)
+    response = client.send_result_body(lambda nonce: {"nonce": nonce}, "task-1")
+    assert response.kind == OUTCOME_REJECTED
+    assert response.code == code
+
+
+def test_same_code_outside_result_category_stays_denied():
+    transport = FakeTransport(
+        [TransportResponse(409, json.dumps({"code": TASK_RESULT_SCOPE_MISMATCH}).encode(), {})]
+    )
+    response = heartbeat(make_client(transport))
+    assert response.kind == OUTCOME_DENIED
+    assert response.code == TASK_RESULT_SCOPE_MISMATCH
+
+
 def test_rate_limit_carries_retry_after_seconds():
     transport = FakeTransport(
         [TransportResponse(429, json.dumps({"code": NODE_RATE_LIMITED}).encode(), {"retry-after": "42"})]
@@ -352,7 +404,7 @@ def test_rate_limit_carries_retry_after_seconds():
         ([30], 30),
         ("Wed, 21 Oct 2015 07:28:00 GMT", None),
         ("0", None),
-        ("99999", None),
+        ("99999", 3600),
         (True, None),
         (None, None),
     ],

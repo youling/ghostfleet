@@ -28,11 +28,15 @@ from .state import StoreError, atomic_write_json, ensure_state_dir, load_json_do
 OUTBOX_SCHEMA = "ghostfleet-node-agent-outbox/v0"
 MAX_OUTBOX_ITEMS = 64
 MAX_OUTBOX_BYTES = 8 * 1024 * 1024
+# 溢出丢弃事实只需保留到下次启动记账；有界保存，避免 outbox.json 无界增长。
+MAX_DROPPED_ITEMS = 256
 
 ADDED = "ADDED"
 DUPLICATE = "DUPLICATE"
 CONFLICT = "CONFLICT"
 TOO_LARGE = "TOO_LARGE"
+
+RETRY_AFTER_CAP_S = 3600.0
 
 RETRYABLE_OUTCOMES = frozenset(
     {
@@ -69,9 +73,13 @@ class OutboxAddResult:
 
 
 class FlushReport:
-    """一次 flush 的结果分类（供循环决定退避与是否致命）。"""
+    """一次 flush 的结果分类（供循环决定退避与是否致命）。
 
-    __slots__ = ("sent", "rejected", "remaining", "fatal", "stop_outcome", "stop_code")
+    retry_after_s 是服务端在 429 里给出的权威等待时长（秒，已钳制）：循环必须
+    使用它而不是本地指数退避，否则会在服务端明确要求等待时继续按秒猛打。
+    """
+
+    __slots__ = ("sent", "rejected", "remaining", "fatal", "stop_outcome", "stop_code", "retry_after_s")
 
     def __init__(self) -> None:
         self.sent: list[str] = []
@@ -80,6 +88,7 @@ class FlushReport:
         self.fatal = False
         self.stop_outcome: str | None = None
         self.stop_code: str | None = None
+        self.retry_after_s: float | None = None
 
     @property
     def progressed(self) -> bool:
@@ -100,6 +109,9 @@ class Outbox:
         self.directory = os.path.dirname(self.path) or "."
         self.logger = logger or get_logger()
         self._items: list[dict] = []
+        # 溢出丢弃事实与 items 在同一份文档、同一次原子写里：否则进程在
+        # add() 与 ledger.mark_result_dropped() 之间崩溃，丢弃事件会永久消失。
+        self._dropped: list[str] = []
 
     def load(self) -> list[dict]:
         ensure_state_dir(self.directory, logger=self.logger)
@@ -112,8 +124,17 @@ class Outbox:
         )
         if document is None:
             self._items = []
+            self._dropped = []
             self.save()
             return []
+        raw_dropped = document.get("dropped", [])
+        if not isinstance(raw_dropped, list):
+            raise OutboxCorruptError("outbox dropped ledger must be a list", path=self.path)
+        dropped: list[str] = []
+        for task_id in raw_dropped[-MAX_DROPPED_ITEMS:]:
+            if not isinstance(task_id, str) or not task_id:
+                raise OutboxCorruptError("outbox dropped ledger has invalid shape", path=self.path)
+            dropped.append(task_id)
         raw_items = document.get("items")
         if not isinstance(raw_items, list):
             raise OutboxCorruptError("outbox items must be a list", path=self.path)
@@ -139,13 +160,14 @@ class Outbox:
         if len(items) > MAX_OUTBOX_ITEMS:
             raise OutboxCorruptError("outbox exceeds 64 items", path=self.path)
         self._items = items
+        self._dropped = dropped
         return self.pending()
 
     def save(self) -> None:
         try:
             atomic_write_json(
                 self.path,
-                {"schema": OUTBOX_SCHEMA, "items": self._items},
+                {"schema": OUTBOX_SCHEMA, "items": self._items, "dropped": self._dropped},
                 logger=self.logger,
             )
         except StoreError as error:
@@ -209,8 +231,25 @@ class Outbox:
             oldest = self._items.pop(0)
             dropped.append(str(oldest["task_id"]))
             self.logger.warning("outbox_overflow_dropped", task_id=oldest["task_id"])
+        if dropped:
+            # 同一份原子写同时保存"队列少了谁"和"谁被丢了"：崩溃后 load() 能把
+            # 丢弃事实重放给 ledger，不会出现"结果消失但没人记账"。
+            self._dropped = (self._dropped + dropped)[-MAX_DROPPED_ITEMS:]
         self.save()
         return OutboxAddResult(ADDED, dropped=dropped, size=len(self._items))
+
+    def pending_dropped(self) -> list[str]:
+        """尚未交给 ledger 记账的溢出丢弃 task_id（跨重启保留）。"""
+        return list(self._dropped)
+
+    def drain_dropped(self) -> list[str]:
+        """取出并清空丢弃事实；调用方负责写 ledger 的 RESULT_DROPPED。"""
+        dropped = list(self._dropped)
+        if not dropped:
+            return []
+        self._dropped = []
+        self.save()
+        return dropped
 
     # -- 出队 ---------------------------------------------------------------
     def record_attempt(self, task_id: str, error_code: str | None = None) -> None:
@@ -251,6 +290,12 @@ class Outbox:
             changed = True
             report.stop_outcome = kind
             report.stop_code = code
+            if kind == OUTCOME_RATE_LIMITED:
+                retry_after = getattr(outcome, "retry_after_s", None)
+                if isinstance(retry_after, (int, float)) and not isinstance(retry_after, bool) and retry_after > 0:
+                    value = min(max(float(retry_after), 1.0), RETRY_AFTER_CAP_S)
+                    current = report.retry_after_s or 0.0
+                    report.retry_after_s = max(current, value)
             if kind == OUTCOME_AUTH_FATAL:
                 report.fatal = True
             break

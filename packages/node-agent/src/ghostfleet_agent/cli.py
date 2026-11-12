@@ -183,7 +183,7 @@ def verify_config_trust(
     path: str,
     *,
     euid: int | None = None,
-    default_path: str = DEFAULT_CONFIG_PATH,
+    default_path: str | None = None,
 ) -> None:
     """配置信任闸门：默认 /etc 配置必须是 host root 拥有的 0644 常规文件。
 
@@ -195,6 +195,8 @@ def verify_config_trust(
     两种形态都必须是常规文件（拒绝符号链接）。只回稳定 detail 码，不回文件内容。
     """
     expected_uid = os.geteuid() if euid is None else int(euid)
+    # 运行期解析默认路径，便于验收/测试用 monkeypatch 替换（模块导入后仍生效）。
+    resolved_default = DEFAULT_CONFIG_PATH if default_path is None else default_path
     try:
         info = os.lstat(path)
     except OSError:
@@ -202,7 +204,7 @@ def verify_config_trust(
     if not stat.S_ISREG(info.st_mode):
         raise CredentialError(AGENT_CONFIG_UNTRUSTED, "config", "CONFIG_NOT_REGULAR_FILE")
     mode = stat.S_IMODE(info.st_mode)
-    if os.path.abspath(path) == os.path.abspath(default_path):
+    if os.path.abspath(path) == os.path.abspath(resolved_default):
         if mode != 0o644:
             raise CredentialError(AGENT_CONFIG_UNTRUSTED, "config", "CONFIG_MODE_NOT_0644")
         trusted, reason = host_root_owned(path, info)
@@ -276,11 +278,18 @@ def _load_json_file(path: str):
     return document
 
 
-def check_config(config) -> dict:
-    """只读校验：配置 + token + node.json；不建状态目录、不联网、不写盘。"""
+def check_config(config, *, config_path: str | None = None) -> dict:
+    """只读校验：配置 + token + node.json + 启动信任闸门。
+
+    与 run 走完全相同的信任判据（P2-3）：0600 token、root-owned /etc 配置或
+    当前用户拥有的 --config 覆盖文件。不合规抛 CredentialError，退出码 3。
+    不建状态目录、不联网、不写盘。
+    """
     token = load_token(config.token_path)
     node_uid = load_node_uid(config.node_meta_path)
     register_secret(token)
+    verify_token_trust(config.token_path)
+    verify_config_trust(config_path if config_path is not None else config.source_path)
     return {
         "ok": True,
         "command": COMMAND_CHECK_CONFIG,
@@ -443,7 +452,7 @@ def main(argv=None) -> int:
 
     if command == COMMAND_CHECK_CONFIG:
         try:
-            report = check_config(config)
+            report = check_config(config, config_path=args.config)
         except CredentialError as error:
             logger.error("credential_rejected", code=error.code, field=error.field, detail=error.detail)
             _print_json({"ok": False, "command": COMMAND_CHECK_CONFIG, "code": error.code, "field": error.field})

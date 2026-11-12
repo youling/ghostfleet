@@ -19,8 +19,11 @@ harness 需要用 token_path/node_meta_path/state_dir 覆盖，因此保留为"�
 
 旧字段 control_plane_url / interval_s 作为兼容别名接受（同一份文件里二者互斥）。
 
-唯一允许的 http 例外是 loopback（127.0.0.1 / ::1 / localhost），用于本地与
-disposable 验收，并且必须留下一条 "测试例外" 日志。
+loopback 的明文 http（127.0.0.1 / ::1 / localhost）默认在生产配置里被拒绝
+（CONFIG_LOOPBACK_HTTP_FORBIDDEN）：否则一个被改写的控制面 origin 可以把 Bearer
+token 明文发到本机监听者。只有测试/验收 harness 通过环境变量
+GHOSTFLEET_AGENT_TEST_LOOPBACK_HTTP=1（或显式 allow_loopback_http=True）才放行，
+并留下一条 "测试例外" 日志。
 """
 from __future__ import annotations
 
@@ -45,6 +48,7 @@ CONFIG_TYPE_INVALID = "CONFIG_TYPE_INVALID"
 CONFIG_VALUE_INVALID = "CONFIG_VALUE_INVALID"
 CONFIG_URL_INVALID = "CONFIG_URL_INVALID"
 CONFIG_UNIT_INVALID = "CONFIG_UNIT_INVALID"
+CONFIG_LOOPBACK_HTTP_FORBIDDEN = "CONFIG_LOOPBACK_HTTP_FORBIDDEN"
 
 DEFAULT_CONFIG_PATH = "/etc/ghostfleet/node-agent.json"
 DEFAULT_INTERVAL_S = 30.0
@@ -58,6 +62,7 @@ MAX_ALLOWED_UNITS = 16
 MAX_CONFIG_BYTES = 64 * 1024
 
 UNIT_RE = re.compile(r"^[a-z][a-z0-9_.@-]{0,63}\.service$")
+LOOPBACK_HTTP_TEST_ENV = "GHOSTFLEET_AGENT_TEST_LOOPBACK_HTTP"
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 AGENT_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$")
 
@@ -303,11 +308,20 @@ def _warn_permissions(path, log: Logger) -> None:
         log.warning("config_file_permissions_loose", mode=oct(mode), note="group/other writable configuration file")
 
 
-def load_config(path, *, logger: Logger | None = None, home: str | None = None) -> NodeAgentConfig:
+def load_config(
+    path,
+    *,
+    logger: Logger | None = None,
+    home: str | None = None,
+    allow_loopback_http: bool | None = None,
+) -> NodeAgentConfig:
     """读取并严格校验配置；任何不符即抛 ConfigError。
 
     origin 必填，其余字段有界默认值；token/meta/state 路径缺省使用 ADR §4 固定位置，
     测试/验收可覆盖，但覆盖值同样必须是绝对路径。
+
+    loopback 明文 http 默认被拒绝；仅当 allow_loopback_http=True 或 harness 注入
+    GHOSTFLEET_AGENT_TEST_LOOPBACK_HTTP=1 时作为测试例外接受。
     """
     log = logger or get_logger()
     document = _read_document(path)
@@ -384,6 +398,14 @@ def load_config(path, *, logger: Logger | None = None, home: str | None = None) 
     else:
         agent_version = PACKAGE_VERSION
 
+    if loopback_http and allow_loopback_http is None:
+        allow_loopback_http = os.environ.get(LOOPBACK_HTTP_TEST_ENV) == "1"
+    if loopback_http and not allow_loopback_http:
+        raise _fail(
+            CONFIG_LOOPBACK_HTTP_FORBIDDEN,
+            origin_key,
+            f"plain http is only allowed for acceptance harnesses ({LOOPBACK_HTTP_TEST_ENV}=1); production requires https",
+        )
     if loopback_http:
         log.warning(
             "config_loopback_http_exception",

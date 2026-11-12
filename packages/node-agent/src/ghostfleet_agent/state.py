@@ -38,6 +38,15 @@ def new_boot_id() -> str:
     """进程启动周期标识：每次启动都是新的随机 UUID（合同 A）。"""
     return str(uuid.uuid4())
 
+
+def normalize_boot_id(value) -> str | None:
+    """统一 boot_id 规范化：唯一正则、唯一入口（带横线的小写 UUID）。"""
+    if not isinstance(value, str):
+        return None
+    if BOOT_ID_RE.fullmatch(value):
+        return value
+    return None
+
 STATE_DIR_MODE = 0o700
 STATE_FILE_MODE = 0o600
 
@@ -85,7 +94,12 @@ def _warn_loose_permissions(log, directory: str, mode: int) -> None:
 
 
 def ensure_state_dir(path: str, *, logger=None) -> str:
-    """创建并校验状态目录：必须是真实目录（非符号链接），权限 0700。"""
+    """创建并校验状态目录：真实目录、属于当前用户、权限 0700（或更严）。
+
+    状态目录是"不重跑"事实的唯一家园：本地同账户之外的进程若能替换 ledger.json，
+    就能抹掉 MAY_HAVE_EXECUTED。因此属主或权限不符一律 fail closed（StoreError），
+    而不是只告警。放宽的权限仍会先记录一条告警，便于运维定位是谁改的。
+    """
     log = logger or get_logger()
     directory = os.path.abspath(path)
     try:
@@ -100,21 +114,30 @@ def ensure_state_dir(path: str, *, logger=None) -> str:
         raise StateWriteError("state directory is not a directory", path=directory)
     if stat.S_ISLNK(info.st_mode):
         raise StateWriteError("state directory must not be a symlink", path=directory)
+    expected_uid = os.geteuid()
+    if info.st_uid != expected_uid:
+        raise StateWriteError("state directory owner is not the agent user (STATE_DIR_UNTRUSTED)", path=directory)
     actual = stat.S_IMODE(info.st_mode)
     if actual & 0o077:
         _warn_loose_permissions(log, directory, actual)
+        raise StateWriteError("state directory permissions are too broad (STATE_DIR_UNTRUSTED)", path=directory)
     return directory
 
 
 def _fsync_directory(directory: str) -> None:
+    """目录 fsync：rename 之后必须落盘，失败必须传播（不允许"假提交"）。
+
+    目录 fsync 失败意味着 rename 可能未持久化：调用方必须看到写失败，而不是
+    继续把内存状态当成已提交。打开目录失败同样按写失败处理。
+    """
     try:
         fd = os.open(directory, os.O_RDONLY)
-    except OSError:
-        return
+    except OSError as error:
+        raise StateWriteError(f"cannot open state directory for fsync: {error.strerror}", path=directory) from None
     try:
         os.fsync(fd)
-    except OSError:
-        pass
+    except OSError as error:
+        raise StateWriteError(f"cannot fsync state directory: {error.strerror}", path=directory) from None
     finally:
         os.close(fd)
 
@@ -199,8 +222,15 @@ def load_json_document(
         raise corrupt_error("state file must not be a symlink", path=path)
     if not stat.S_ISREG(info.st_mode):
         raise corrupt_error("state file is not a regular file", path=path)
-    if require_mode and stat.S_IMODE(info.st_mode) & 0o077:
-        log.warning("state_file_permissions_loose", path=path, mode=oct(stat.S_IMODE(info.st_mode)))
+    if require_mode:
+        # 状态文件是"不重跑"事实：属主或权限不符无法证明未被本地同账户外的进程改写，
+        # 一律 fail closed（损坏语义），绝不继续按可能被篡改的内容执行。
+        if info.st_uid != os.geteuid():
+            raise corrupt_error("state file owner is not the agent user (STATE_FILE_UNTRUSTED)", path=path)
+        actual_mode = stat.S_IMODE(info.st_mode)
+        if actual_mode != STATE_FILE_MODE:
+            log.warning("state_file_permissions_loose", path=path, mode=oct(actual_mode))
+            raise corrupt_error("state file permissions are not 0600 (STATE_FILE_UNTRUSTED)", path=path)
     try:
         with open(path, "rb") as handle:
             raw = handle.read(max_bytes + 1)
@@ -300,8 +330,7 @@ class AgentState:
     @classmethod
     def from_document(cls, document: dict) -> "AgentState":
         state = cls()
-        boot_id = document.get("boot_id")
-        state.boot_id = boot_id if isinstance(boot_id, str) and BOOT_ID_RE.fullmatch(boot_id.replace("-", "")) else UNKNOWN_BOOT_ID
+        state.boot_id = normalize_boot_id(document.get("boot_id")) or UNKNOWN_BOOT_ID
         seq = document.get("seq")
         state.seq = seq if isinstance(seq, int) and not isinstance(seq, bool) and 0 <= seq < 2**53 else 0
         for name in ("last_start", "last_stop", "last_heartbeat_at", "last_success_at", "last_health"):

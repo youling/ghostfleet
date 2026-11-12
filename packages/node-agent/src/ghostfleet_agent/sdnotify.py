@@ -1,4 +1,4 @@
-"""最小 sd_notify 实现（systemd Type=notify + WatchdogSec=120）。
+"""最小 sd_notify 实现（systemd Type=notify + WatchdogSec=60）。
 
 只用 AF_UNIX 数据报，支持路径 socket 与抽象 socket（"@name" 形态）；
 NOTIFY_SOCKET 未设置时静默禁用（本地直接运行时不是错误）。发送失败只记一次

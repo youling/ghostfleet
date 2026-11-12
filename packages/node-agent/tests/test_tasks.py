@@ -268,6 +268,40 @@ def test_validation_refusal_never_calls_the_implementation():
     assert observer.observed == []  # spy：实现函数 0 次调用
 
 
+class RecordingObserver(StubObserver):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.unit_calls: list[str] = []
+
+    def unit_state(self, unit):
+        self.unit_calls.append(unit)
+        return super().unit_state(unit)
+
+
+def test_disallowed_unit_is_refused_before_any_observer_call():
+    observer = RecordingObserver()
+    result = executor(observer=observer, allowed_units=("agent.service",)).handle(
+        make_task(node_uid=NODE_UID, operation=OPERATION_SERVICE_STATUS, params={"units": ["other.service"]})
+    )
+    assert result["status"] == RESULT_REFUSED
+    assert result["code"] == AGENT_UNIT_NOT_ALLOWED
+    assert observer.unit_calls == []  # 白名单校验在 validate 阶段，实现/子进程 0 次调用
+
+
+def test_invalid_units_are_refused_before_any_observer_call():
+    observer = RecordingObserver()
+    result = executor(observer=observer, allowed_units=("agent.service",)).handle(
+        make_task(
+            node_uid=NODE_UID,
+            operation=OPERATION_SERVICE_STATUS,
+            params={"units": ["agent.service", "agent.service"]},
+        )
+    )
+    assert result["status"] == RESULT_REFUSED
+    assert result["code"] == TASK_PARAMS_FORBIDDEN
+    assert observer.unit_calls == []
+
+
 def test_may_mutate_implementation_error_is_unknown_not_refused():
     result = MutatingExecutor(node_uid=NODE_UID, agent_version=AGENT_VERSION).handle(
         make_task(node_uid=NODE_UID, operation="test.mutate")

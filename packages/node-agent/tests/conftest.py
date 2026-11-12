@@ -6,6 +6,12 @@ import pytest
 from agent_test_support import FakeControlPlane
 
 
+@pytest.fixture(autouse=True)
+def allow_loopback_http(monkeypatch):
+    """测试/验收专用的 loopback http 例外；生产配置默认拒绝（P2-8）。"""
+    monkeypatch.setenv("GHOSTFLEET_AGENT_TEST_LOOPBACK_HTTP", "1")
+
+
 @pytest.fixture()
 def control_plane():
     plane = FakeControlPlane()
