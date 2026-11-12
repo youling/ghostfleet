@@ -316,7 +316,10 @@ What the job proves, measured on the host rather than read off a config:
   dedicated-caller code while accepting root;
 - task safety: nonce replay is `409 NODE_NONCE_REPLAY`, a duplicate result
   is idempotent, a conflicting result is `409 TASK_RESULT_CONFLICT`,
-  `node.exec` and forbidden parameter keys are rejected, and a task left at
+  `node.exec` and forbidden parameter keys are rejected, a wrongly shaped
+  request is refused at submission rather than by the agent (a string `want`,
+  a too-short nonce and an illegal task id are all 400 with a task-request
+  code, and nothing is queued), and a task left at
   `MAY_HAVE_EXECUTED` by a crash is reported as `UNKNOWN` exactly once
   and never re-run;
 - an independent read-only consumer, holding a token that is neither the
@@ -336,13 +339,82 @@ no enrollment ticket and no public bridge). The `ActiveState` the timeline
 carries is the agent's own `service.status.read` observation, not a
 control-plane measurement.
 
+Two install-line facts this job refuses to fake. First, the capability
+projection at `/etc/ghostfleet/capability-status.json` must be produced by
+calling the product entrypoint `scripts/emit-capability-status.mjs`; if that
+entrypoint is missing the job stops with
+`INSTALL_LINE_MISSING_CAPABILITY_STATUS_ENTRYPOINT` instead of writing the JSON
+itself, because a hand-written projection only proves the script can write JSON.
+The emitter takes paired arguments (`--artifact name=sha256:<64 hex>:<octal
+mode>` per pinned row, `--template-digest`, `--installer`, `--privileged-key`,
+`--unit`, `--unit-artifact`, `--payload-artifact`, `--control-account`,
+`--privileged-account`, `--output`, `--payload-path`), and a legitimate
+projection pins rows this lifecycle job does not install (the privileged helper
+`fleet_privctl.py`, the release `privileged-ops.pub` key and the reviewed
+installer script) plus a real template digest. So the job calls the real CLI
+with only the two rows it owns (the unit and the payload) and requires exit
+`2` with `EMIT_CAPABILITY_STATUS_INPUT_INVALID`, which proves the product
+writer refuses a partial projection; the positive projection is printed as
+`NOT_RUN` with that reason rather than faked. Second, the unit asset must carry
+`ConfigurationDirectoryMode=0700` and `StateDirectoryMode=0700`; the job fails
+closed when either line is absent, since the systemd defaults (`0755`) leave the
+agent configuration and state directories readable beyond the control account.
+
+The job also records the mount-hardening facts a naive agent gets wrong: the
+unit runs in an implicit `PrivateUsers` namespace (`/proc/<pid>/uid_map` is the
+single self-mapping of the control account), the host configuration appears
+inside that namespace as the overflow uid at mode `0644`, `/` is mounted
+read-only, and the unit still reaches `READY` under `Type=notify` with a first
+heartbeat. The namespace values are measured from inside it with
+`nsenter -t <MainPID> -U -m --preserve-credentials`, not by statting
+`/proc/<pid>/root`: a host-side `stat` reports the uid the reader resolves, and
+`nsenter` without `--preserve-credentials` fails with `setgid failed: Invalid
+argument`. A negative arm then makes the configuration unreadable for the
+control account and requires the agent to exit `3` with a configuration code
+instead of running degraded, and restoring the mode must return the unit to
+`active`. The same namespace has no mapping for host root, so the per-account
+files cannot be read with `--preserve-credentials`; the job measures them as the
+service uid instead (`nsenter -t <MainPID> -U -m --setuid <uid> --setgid <gid> --
+stat`) and requires the token at `0600` and the state directory at `0700`, both
+owned by the service uid, and requires the `--preserve-credentials` read of the
+account home to be refused. Arms that only ran against a fixture payload (any
+build entry other than `packages/node-agent/tools/build_pyz.py`) are printed as
+`STUB` and are never counted as product evidence.
+
+One arm exists because the protocol once got it wrong: a node whose capability
+projection has not been materialized yet legitimately reports
+`capability_digest: null`, so with no `capability-status.json` in place the
+heartbeat must still be accepted. The job asserts the unit journal contains no
+`NODE_REQUEST_INVALID` and that the control plane projects
+`capability_digest` as `null`; when the plane refused the explicit null every
+heartbeat was rejected and no later arm was measurable.
+
+Two more arms cover the ways a systemd agent fails without ever reporting it.
+The offline arm points `control_plane_origin` at an unreachable origin,
+restarts the unit, samples `ActiveState` every ten seconds for four minutes and
+requires every sample to be `active`, `NRestarts` unchanged,
+`ActiveEnterTimestamp` unchanged, `WatchdogTimestamp` advancing, and no
+`Watchdog timeout`, `watchdog` result or `SIGABRT` in the journal; a broken
+agent under `WatchdogSec=60` is killed and restarted in a loop there, which is
+why the arm measures restarts instead of trusting the unit text. It then
+restores the configuration and requires a fresh heartbeat, so a passing offline
+arm cannot be a dead agent. The notification arm counts
+`reception only permitted for main PID` in the unit journal and requires zero:
+`NOTIFY_SOCKET` must be cleared for child processes, because libsystemd tools
+such as `systemctl` and `systemd-analyze` send `EXIT_STATUS=0` at exit and would
+otherwise masquerade as the agent. The helpers that talk to the user manager run
+with `env -u DBUS_SESSION_BUS_ADDRESS -u DBUS_SYSTEM_BUS_ADDRESS`, since a
+superuser environment leaks a root session bus path and makes `systemctl --user`
+fail with `Failed to connect to bus: Permission denied`.
 The job needs an exclusive machine. It creates and deletes
 `ghostfleet-managed`/`ghostfleet-ops`, `/etc/ghostfleet`,
 `/usr/local/libexec/ghostfleet`, a trusted CA and a lingering user manager, so
 a second acceptance run on the same box will collide with it on every one of
 those paths: shared hosts and shared WSL distros produce false red (measured:
 another disposable run deleting `/usr/local/libexec/ghostfleet` mid-flight
-turned a healthy agent into a restart loop). Use a one-use VM or a dedicated
+turned a healthy agent into a restart loop; the script watches `ActiveState` while it
+waits for a heartbeat and fails with `ENVIRONMENT_INTERFERENCE` naming the stopped unit
+instead of timing out). Use a one-use VM or a dedicated
 distro. It also needs node 19 or newer (the control-plane modules use the global
 Web Crypto object; CI pins node 22) and refuses to start otherwise instead of
 failing later with a module error.

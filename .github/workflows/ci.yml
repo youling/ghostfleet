@@ -170,7 +170,9 @@ jobs:
     # root-level code.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 240s offline stability window plus four heartbeat cycles, a boot/session
+    # recovery, a crash/reconcile arm and the consumer arm.
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -180,6 +182,28 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+      # The order matters (m01969): the deterministic payload and the pinned unit
+      # are verified before the lifecycle harness installs them, so a bad artifact
+      # fails fast with its own name instead of as an obscure lifecycle failure.
+      - name: Verify the deterministic node agent payload
+        shell: bash
+        run: |
+          if [ ! -f scripts/verify-node-agent-pyz.mjs ]; then
+            echo "::error::MISSING_VERIFY_SCRIPT: scripts/verify-node-agent-pyz.mjs ships with the node agent implementation (na-core tools/build_pyz.py + the committed dist artifact)."
+            exit 1
+          fi
+          npm run --silent verify:node-agent-pyz
+
+      - name: Verify the pinned systemd user unit
+        shell: bash
+        run: |
+          if [ ! -f packages/bootstrap/assets/ghostfleet-managed.service ]; then
+            echo "::error::MISSING_UNIT_ASSET: packages/bootstrap/assets/ghostfleet-managed.service ships with the courier install line."
+            exit 1
+          fi
+          sha256sum packages/bootstrap/assets/ghostfleet-managed.service
+          systemd-analyze verify packages/bootstrap/assets/ghostfleet-managed.service
+
       - name: Node agent lifecycle acceptance (artifact, linger, recovery, tasks)
         shell: bash
         run: |

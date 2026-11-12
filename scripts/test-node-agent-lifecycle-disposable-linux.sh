@@ -163,8 +163,12 @@ wait_until() {
   shift 2
   local started="$SECONDS"
   local elapsed=0
+  local log="${WORK}/wait-${label//[^A-Za-z0-9._-]/_}.log"
+  local last=""
   while true; do
-    if "$@" >/dev/null 2>&1; then
+    # The condition output is kept: a timeout is far easier to diagnose with the
+    # last thing the condition actually said than with a bare timestamp.
+    if "$@" >"${log}" 2>&1; then
       elapsed=$((SECONDS - started))
       evidence "wait.${label}.seconds=${elapsed}"
       return 0
@@ -172,7 +176,8 @@ wait_until() {
     elapsed=$((SECONDS - started))
     if ((elapsed >= timeout)); then
       evidence "wait.${label}.seconds=${elapsed}"
-      fail_check "timed out after ${elapsed}s waiting for ${label}"
+      last="$(tail -5 "${log}" 2>/dev/null | tr '\n' '|' | cut -c1-500)"
+      fail_check "timed out after ${elapsed}s waiting for ${label} (last output: ${last:-<empty>})"
     fi
     sleep 0.2
   done
@@ -218,7 +223,11 @@ run_as_account() {
   local uid home
   uid="$(account_uid)"
   home="$(account_home)"
+  # A stale DBUS_SESSION_BUS_ADDRESS inherited from root makes systemctl --user
+  # fail with "Failed to connect to bus: Permission denied"; unset both.
   runuser -u "${ACCOUNT}" -- env \
+    -u DBUS_SESSION_BUS_ADDRESS \
+    -u DBUS_SYSTEM_BUS_ADDRESS \
     HOME="${home}" \
     XDG_RUNTIME_DIR="/run/user/${uid}" \
     XDG_CONFIG_HOME="${home}/.config" \
@@ -231,6 +240,12 @@ account_systemctl() { run_as_account systemctl --user "$@"; }
 
 unit_show() { account_systemctl show -p "$1" --value "${UNIT_NAME}"; }
 unit_show_for() { account_systemctl show -p "$2" --value "$1"; }
+
+# Control-plane liveness reads. They are declared with the other helpers because
+# S3c waits for the first heartbeat; the variables they use (BASE_URL, WORK) are
+# assigned in S1 before any call site runs.
+health_json() { node "${CONTROL_PLANE_TOOL}" health --base-url "${BASE_URL}" --ca "${WORK}/tls/ca.crt" 2>/dev/null; }
+health_at_least_heartbeats() { local count; count="$(health_json | json_value heartbeats)"; ((count >= $1)); }
 
 account_journal_tail() {
   local lines="$1"
@@ -339,6 +354,23 @@ section "S0 preflight"
 [[ "${RUNNER_ENVIRONMENT:-}" == "github-hosted" ]] || fail_check "RUNNER_ENVIRONMENT must be github-hosted"
 [[ "${GHOSTFLEET_DISPOSABLE_TEST_CONFIRMED:-}" == "1" ]] || fail_check "GHOSTFLEET_DISPOSABLE_TEST_CONFIRMED must be 1"
 [[ -n "${GITHUB_WORKSPACE:-}" ]] || fail_check "GITHUB_WORKSPACE must be set"
+
+# Exclusivity gate: this harness creates system accounts, a trusted CA, a lingering
+# user manager and the installed payload. The bootstrap disposable lane uses the
+# same names, so two runs on one machine delete each other's files mid-flight
+# (measured: a foreign run removed the payload under a live agent and turned a
+# healthy unit into a restart loop). CI gives every job its own runner; locally the
+# box must be dedicated.
+FOREIGN_ACCOUNT_LIST="$(getent passwd | awk -F: '$1 ~ /^ghostfleet-/ { printf "%s(uid=%s) ", $1, $3 }' || true)"
+if [[ -n "${FOREIGN_ACCOUNT_LIST// /}" ]]; then
+  fail_check "MISSING_ISOLATION: the machine already has ${FOREIGN_ACCOUNT_LIST}; this harness needs an exclusive machine. Another disposable run uses the same account, unit and payload names. Use a fresh runner, or remove the leftover accounts first."
+fi
+FOREIGN_SYSTEM_UNITS="$(systemctl list-units --all --no-legend 'ghostfleet*' 2>/dev/null | awk '{print $1}' | tr '\n' ' ' || true)"
+if [[ -n "${FOREIGN_SYSTEM_UNITS// /}" ]]; then
+  fail_check "MISSING_ISOLATION: system-scope units ${FOREIGN_SYSTEM_UNITS} already exist; this harness installs ghostfleet-managed.service into a user manager and needs a dedicated machine."
+fi
+record_ok "the machine is exclusive: no ghostfleet-* system account and no system-scope ghostfleet unit exists before this run"
+evidence "preflight.exclusive_machine=yes"
 if [[ -e /etc/openmediavault ]]; then fail_check "refusing to run on an OpenMediaVault host"; fi
 [[ -d "${REPO_ROOT}/src/control-plane" ]] || fail_check "MISSING_REPO_LAYOUT: ${REPO_ROOT}/src/control-plane is absent"
 [[ -f "${CONTROL_PLANE_TOOL}" ]] || fail_check "MISSING_HARNESS: ${CONTROL_PLANE_TOOL} is absent"
@@ -508,6 +540,12 @@ if ((${#BUILDER[@]} == 0)); then
   fail_check "MISSING_ARTIFACT_BUILD_ENTRY: $PYZ_BUILD_PATH cannot be rebuilt (no tools/build_pyz.py, build.sh, build.py, build.mjs or package.json script build:node-agent)"
 fi
 evidence "artifacts.build_entry=$BUILD_ENTRY_LABEL"
+if [[ "${BUILD_ENTRY_LABEL}" == "packages/node-agent/tools/build_pyz.py" ]]; then
+  PAYLOAD_IS_PRODUCT=yes
+else
+  PAYLOAD_IS_PRODUCT=no
+fi
+evidence "artifacts.payload_is_product_agent=${PAYLOAD_IS_PRODUCT}"
 
 build_payload() {
   (cd "$REPO_ROOT" && "$@") >/dev/null || fail_check "building the zipapp payload failed: $BUILD_ENTRY_LABEL"
@@ -521,6 +559,19 @@ rm -f "${PYZ_BUILD_PATH}"
 build_payload "${BUILDER[@]}"
 SECOND_SHA="$(sha256sum "${PYZ_BUILD_PATH}" | awk '{print $1}')"
 assert_eq "${SECOND_SHA}" "${FIRST_SHA}" "zipapp build is byte-deterministic across two clean builds"
+# A frozen release names the exact payload bytes the run must exercise. When the
+# caller supplies that expectation, a different build is a hard stop: the run
+# would otherwise measure some other agent and still print PASS.
+if [[ -n "${GHOSTFLEET_EXPECTED_PYZ_SHA256:-}" ]]; then
+  if [[ "${SECOND_SHA}" != "${GHOSTFLEET_EXPECTED_PYZ_SHA256}" ]]; then
+    fail_check "FROZEN_ARTIFACT_MISMATCH: the payload built from source is sha256 ${SECOND_SHA}, but the frozen release is ${GHOSTFLEET_EXPECTED_PYZ_SHA256}. Refusing to continue: every arm below would measure bytes that are not the release."
+  fi
+  record_ok "the built payload is exactly the frozen release bytes (sha256 ${SECOND_SHA})"
+  evidence "artifacts.frozen_payload_sha256=${GHOSTFLEET_EXPECTED_PYZ_SHA256}"
+  evidence "artifacts.frozen_payload_matched=yes"
+else
+  evidence "artifacts.frozen_payload_sha256=not_requested"
+fi
 PAYLOAD_BYTES="$(stat -c '%s' "${PYZ_BUILD_PATH}")"
 # The pre-implementation placeholder in this repository is 782 bytes; a payload
 # that actually carries the delivery loop is far larger than that. Anything this
@@ -558,6 +609,22 @@ STATE_DIR_LINE="$(printf '%s\n' "${UNIT_TEXT}" | grep -E '^StateDirectory=' || t
 CONFIG_DIR_LINE="$(printf '%s\n' "${UNIT_TEXT}" | grep -E '^ConfigurationDirectory=' || true)"
 assert_eq "${STATE_DIR_LINE}" "StateDirectory=ghostfleet-agent" "StateDirectory value"
 assert_eq "${CONFIG_DIR_LINE}" "ConfigurationDirectory=ghostfleet" "ConfigurationDirectory value"
+# na-install adds ConfigurationDirectoryMode=0700 (the default is 0755, which
+# would leave the agent configuration directory group/world readable). The
+# assertion is fail-closed so this job cannot pass against older unit bytes.
+CONFIG_DIR_MODE_LINE="$(printf '%s\n' "${UNIT_TEXT}" | grep -E '^ConfigurationDirectoryMode=' || true)"
+if [[ -z "${CONFIG_DIR_MODE_LINE}" ]]; then
+  fail_check "MISSING_UNIT_CONFIGURATION_DIRECTORY_MODE: the unit asset does not set ConfigurationDirectoryMode. systemd defaults ConfigurationDirectory to 0755, but the agent configuration directory is private state and must be 0700. packages/bootstrap/assets/ghostfleet-managed.service adds ConfigurationDirectoryMode=0700 and changes its sha256; re-run this acceptance after that asset lands."
+fi
+assert_eq "${CONFIG_DIR_MODE_LINE}" "ConfigurationDirectoryMode=0700" "ConfigurationDirectoryMode value"
+# StateDirectoryMode= is the second half of the same contract: without it systemd
+# creates ~/.local/state/ghostfleet-agent world-traversable, which the ADR forbids.
+STATE_DIR_MODE_LINE="$(printf '%s\n' "${UNIT_TEXT}" | grep -E '^StateDirectoryMode=' || true)"
+if [[ -z "${STATE_DIR_MODE_LINE}" ]]; then
+  fail_check "MISSING_UNIT_STATE_DIRECTORY_MODE: the unit asset does not set StateDirectoryMode, so the agent state directory (ledger, outbox, state) is created with the systemd default mode instead of 0700. packages/bootstrap/assets/ghostfleet-managed.service sets StateDirectoryMode=0700; re-run this acceptance after that asset lands."
+fi
+assert_eq "${STATE_DIR_MODE_LINE}" "StateDirectoryMode=0700" "StateDirectoryMode value"
+evidence "artifacts.unit_state_dir_mode=${STATE_DIR_MODE_LINE}"
 record_ok "the unit text satisfies ADR section 8: notify type, on-failure restart, watchdog, no shell, home-scoped writes, systemd-created directories"
 evidence "artifacts.unit_exec_start=$(printf '%s\n' "${UNIT_TEXT}" | grep -E '^ExecStart=')"
 evidence "artifacts.unit_restart_sec=$(printf '%s\n' "${UNIT_TEXT}" | grep -E '^RestartSec=')"
@@ -573,6 +640,23 @@ assert_eq "$(sha256sum "${PYZ_INSTALL_PATH}" | awk '{print $1}')" "${SECOND_SHA}
 EXEC_START_PATH="$(printf '%s\n' "${UNIT_TEXT}" | grep -E '^ExecStart=' | sed -E 's#^ExecStart=[^ ]+ -I ([^ ]+) run$#\1#')"
 assert_eq "${EXEC_START_PATH}" "${PYZ_INSTALL_PATH}" "ExecStart payload path equals the install path character for character"
 record_ok "the payload is installed root:root 0755 at ${PYZ_INSTALL_PATH} and ExecStart references exactly that path"
+
+# The installed bytes must be executable, not just present: run the payload the
+# unit runs, record its version line and re-hash the installed file. This is the
+# evidence that the frozen payload is what the service executes.
+INSTALLED_PAYLOAD_SHA="$(sha256sum "${PYZ_INSTALL_PATH}" | awk '{print $1}')"
+set +e
+PAYLOAD_VERSION_LINE="$(/usr/bin/python3 -I "${PYZ_INSTALL_PATH}" --version 2>&1 | head -1)"
+PAYLOAD_VERSION_STATUS=${PIPESTATUS[0]}
+set -e
+[[ -n "${PAYLOAD_VERSION_LINE}" ]] || fail_check "the installed payload printed no version line (python3 -I ${PYZ_INSTALL_PATH} --version)"
+assert_absent "${PAYLOAD_VERSION_LINE}" "Traceback" "the installed payload must not crash on --version"
+assert_eq "${PAYLOAD_VERSION_STATUS}" "0" "python3 -I ${PYZ_INSTALL_PATH} --version must exit 0"
+record_ok "the installed payload answers --version with '${PAYLOAD_VERSION_LINE}' and hashes to ${INSTALLED_PAYLOAD_SHA}"
+evidence "artifacts.installed_payload_sha256=${INSTALLED_PAYLOAD_SHA}"
+evidence "artifacts.installed_payload_bytes=$(stat -c '%s' "${PYZ_INSTALL_PATH}")"
+evidence "artifacts.installed_payload_version_line=${PAYLOAD_VERSION_LINE}"
+evidence "artifacts.installed_payload_version_exit=${PAYLOAD_VERSION_STATUS}"
 
 # The agent must be runnable out of the payload without importing anything from
 # the checkout, so the smoke check runs with -I (isolated mode). No configuration
@@ -634,31 +718,31 @@ elif [[ -f "${AGENT_DIR}/dist/acceptance-config.json" ]]; then
   AGENT_CONFIG_SOURCE="${AGENT_DIR}/dist/acceptance-config.json"
 fi
 
-# The shape is the real one from packages/node-agent/src/ghostfleet_agent/config.py:
-# only control_plane_origin is required, every other key is an optional override,
-# and an unknown key is refused (CONFIG_UNKNOWN_KEY). TLS works because the agent
-# verifies the loopback origin against the system CA store this script installed.
-python3 - "${BASE_URL}" "${ACCOUNT_HOME}" "${AGENT_CONFIG_SOURCE}" <<'PY' || fail_check "could not write the agent configuration"
+# The shape is the PRODUCT one (the same bytes the courier installs, m01969):
+# control_plane_origin plus the heartbeat bounds and the allowed units. The
+# token, node metadata and state paths are the agent's own defaults under the
+# account's HOME, so there is no test-only key here and check-config has to run
+# as the account, exactly like the unit does at run time.
+python3 - "${BASE_URL}" "${AGENT_CONFIG_SOURCE}" <<'PY' || fail_check "could not write the agent configuration"
 import json
 import sys
 
-base_url, account_home, source = sys.argv[1:4]
-# The system file is shared by root and by the control account, so the three
-# per-account paths are absolute in it: root runs check-config against the same
-# files the user manager will use at run time.
+base_url, source = sys.argv[1:3]
 config = {
     "control_plane_origin": base_url,
-    "heartbeat_interval_s": 15,
-    "jitter_ratio": 0.0,
-    "request_timeout_s": 10,
+    "heartbeat_interval_s": 30,
+    "heartbeat_interval_min_s": 30,
+    "heartbeat_interval_max_s": 300,
     "allowed_units": ["ghostfleet-managed.service"],
-    "token_path": account_home + "/.config/ghostfleet/node-token",
-    "node_meta_path": account_home + "/.config/ghostfleet/node.json",
-    "state_dir": account_home + "/.local/state/ghostfleet-agent",
 }
 if source:
     with open(source, "r", encoding="utf-8") as handle:
         config.update(json.load(handle))
+# A shape the agent would refuse (CONFIG_UNKNOWN_KEY) must fail here, not as a
+# restart loop on the runner.
+for forbidden in ("schema", "node_uid", "node_id", "token_path", "node_meta_path", "state_dir", "ca_bundle"):
+    if forbidden in config:
+        raise SystemExit("refusing to install a non-product configuration key: " + forbidden)
 with open("/etc/ghostfleet/node-agent.json", "w", encoding="utf-8") as handle:
     json.dump(config, handle, indent=2, sort_keys=True)
     handle.write("\n")
@@ -693,6 +777,12 @@ assert_eq "$(stat -c '%U:%G:%a' "${ACCOUNT_HOME}/.config/ghostfleet/node-token")
 record_ok "installed the agent configuration like the courier would: 0644 root:root system file, 0600 token inside a 0700 per-user directory"
 evidence "config.system_path=${SYSTEM_CONFIG_PATH}"
 evidence "config.user_path=${ACCOUNT_HOME}/.config/ghostfleet/node.json"
+# The control account's config directory must hold only what the install line put
+# there: a leftover probe file would otherwise hide a cleanup defect (m01782).
+CONFIG_DIR_ENTRIES="$(ls -A "${ACCOUNT_HOME}/.config/ghostfleet" | sort | tr '\n' ',')"
+assert_eq "${CONFIG_DIR_ENTRIES}" "node-token,node.json," "the control account config directory must contain exactly the token and the node metadata"
+record_ok "the control account config directory holds exactly node-token and node.json, so no probe leftover is hiding a cleanup defect"
+evidence "config.dir_entries=${CONFIG_DIR_ENTRIES}"
 evidence "config.ca_pem=${SYSTEM_CONFIG_DIR}/ca.pem"
 assert_eq "$(stat -c '%U:%G:%a' "${SYSTEM_CONFIG_PATH}")" "root:root:644" "system agent configuration is root-owned and readable"
 
@@ -700,11 +790,11 @@ assert_eq "$(stat -c '%U:%G:%a' "${SYSTEM_CONFIG_PATH}")" "root:root:644" "syste
 # courier would install, the same isolated command must exit 0. A payload that
 # cannot validate the real install shape would start and fail in a restart loop.
 set +e
-CHECK_CONFIG_OUTPUT="$(python3 -I "${PYZ_INSTALL_PATH}" check-config 2>&1)"
+CHECK_CONFIG_OUTPUT="$(run_as_account python3 -I "${PYZ_INSTALL_PATH}" check-config 2>&1)"
 CHECK_CONFIG_STATUS=$?
 set -e
 if ((CHECK_CONFIG_STATUS != 0)); then
-  fail_check "python3 -I ${PYZ_INSTALL_PATH} check-config exited ${CHECK_CONFIG_STATUS} after the configuration was installed: ${CHECK_CONFIG_OUTPUT}"
+  fail_check "python3 -I ${PYZ_INSTALL_PATH} check-config exited ${CHECK_CONFIG_STATUS} as ${ACCOUNT} after the configuration was installed: ${CHECK_CONFIG_OUTPUT}"
 fi
 assert_contains "${CHECK_CONFIG_OUTPUT}" "${SERVER_NODE_UID}" "check-config must echo the configured node uid"
 record_ok "python3 -I <payload> check-config exits 0 against the installed configuration and reports node uid ${SERVER_NODE_UID}"
@@ -712,32 +802,103 @@ evidence "artifacts.check_config_exit=${CHECK_CONFIG_STATUS}"
 evidence "artifacts.check_config_output_bytes=$(printf '%s' "${CHECK_CONFIG_OUTPUT}" | wc -c)"
 record_ok "the payload validates the installed configuration, so ExecStart cannot enter a restart loop on a shape error"
 
+ASSET_UNIT_SHA="$(sha256sum "${UNIT_SOURCE}" | awk '{print $1}')"
 install -m 0644 -o "${ACCOUNT}" -g "${ACCOUNT}" "${UNIT_SOURCE}" "${ACCOUNT_HOME}/.config/systemd/user/${UNIT_NAME}"
 assert_eq "$(stat -c '%U:%G:%a' "${ACCOUNT_HOME}/.config/systemd/user/${UNIT_NAME}")" "${ACCOUNT}:${ACCOUNT}:644" "installed unit ownership and mode"
 record_ok "installed the pinned unit into the control account user manager directory"
+INSTALLED_UNIT_SHA="$(sha256sum "${ACCOUNT_HOME}/.config/systemd/user/${UNIT_NAME}" | awk '{print $1}')"
+# m01969 item 6: the unit under test must be the pinned asset bytes, not a copy
+# written by this script.
+assert_eq "${INSTALLED_UNIT_SHA}" "${ASSET_UNIT_SHA}" "the installed unit must be byte-identical to ${UNIT_SOURCE}"
+if [[ -n "${GHOSTFLEET_EXPECTED_UNIT_SHA256:-}" ]]; then
+  if [[ "${INSTALLED_UNIT_SHA}" != "${GHOSTFLEET_EXPECTED_UNIT_SHA256}" ]]; then
+    fail_check "FROZEN_ARTIFACT_MISMATCH: the installed unit is sha256 ${INSTALLED_UNIT_SHA}, but the frozen release unit is ${GHOSTFLEET_EXPECTED_UNIT_SHA256}. Refusing to continue: the arms below would measure different unit bytes than the release."
+  fi
+  record_ok "the installed unit is exactly the frozen release unit (sha256 ${INSTALLED_UNIT_SHA})"
+  evidence "artifacts.frozen_unit_sha256=${GHOSTFLEET_EXPECTED_UNIT_SHA256}"
+  evidence "artifacts.frozen_unit_matched=yes"
+else
+  evidence "artifacts.frozen_unit_sha256=not_requested"
+fi
+evidence "artifacts.unit_sha256=${INSTALLED_UNIT_SHA}"
+evidence "artifacts.unit_bytes=$(stat -c %s "${ACCOUNT_HOME}/.config/systemd/user/${UNIT_NAME}")"
+record_ok "the installed unit is the pinned asset bytes sha256 ${INSTALLED_UNIT_SHA}, the second artifact this run measures end to end"
 
 # The install line publishes a public capability projection next to the unit so a
 # read-only consumer can see what this node is allowed to do. The payload's
 # capability.inspect must read this public file, never the 0600 state file.
+# m01148/m01782: the projection is produced by CALLING the product install-line
+# entrypoint (na-install scripts/emit-capability-status.mjs), never by writing JSON
+# here. Its documented CLI pins every release artifact row plus the reviewed
+# template digest, so it refuses a partial projection. This lifecycle job installs
+# two of the release artifacts (the unit and the payload); fleet_privctl.py,
+# privileged-ops.pub, the privileged installer and the reviewed template digest
+# belong to the courier lane. The arm therefore proves the property this job can
+# own -- the published writer runs and REFUSES to project an incomplete capability
+# set -- and the positive projection is reported NOT_RUN with that reason.
 CAPABILITY_STATUS_PATH="/etc/ghostfleet/capability-status.json"
-if [[ ! -f "${CAPABILITY_STATUS_PATH}" ]]; then
-  fail_check "INSTALL_LINE_MISSING_CAPABILITY_STATUS: ${CAPABILITY_STATUS_PATH} does not exist. The bootstrap install line writes it (packages/bootstrap/src/bootstrap.js capability_status_projection, schema ghostfleet-capability-status/v1) only inside the courier lane, and this job installs the payload by hand to isolate lifecycle mechanics. Either materialize the projection in this job or ship a runnable projection entry; the acceptance fails closed instead of skipping it."
+CAPABILITY_STATUS_EMITTER="scripts/emit-capability-status.mjs"
+CAPABILITY_STATUS_POSITIVE="no"
+if [[ ! -f "${REPO_ROOT}/${CAPABILITY_STATUS_EMITTER}" ]]; then
+  fail_check "INSTALL_LINE_MISSING_CAPABILITY_STATUS_ENTRYPOINT: ${CAPABILITY_STATUS_EMITTER} does not exist, so ${CAPABILITY_STATUS_PATH} cannot be produced by the product install line, and this job refuses to hand-write it. na-install extracts the courier projection into that entrypoint; wire this call to its documented arguments and re-run."
 fi
-assert_eq "$(stat -c '%U:%G:%a' "${CAPABILITY_STATUS_PATH}")" "root:root:644" "capability projection ownership and mode"
-CAPABILITY_STATUS_SCHEMA="$(json_value schema <"${CAPABILITY_STATUS_PATH}")"
-assert_eq "${CAPABILITY_STATUS_SCHEMA}" "ghostfleet-capability-status/v1" "capability projection schema name"
-assert_eq "$(json_value control_account <"${CAPABILITY_STATUS_PATH}")" "${ACCOUNT}" "the projection must name the control account that runs the unit"
-assert_eq "$(json_value user_unit.name <"${CAPABILITY_STATUS_PATH}")" "${UNIT_NAME}" "the projection must name the installed unit"
-INSTALLED_UNIT_SHA="$(sha256sum "${ACCOUNT_HOME}/.config/systemd/user/${UNIT_NAME}" | awk '{print $1}')"
-assert_eq "$(json_value user_unit.sha256 <"${CAPABILITY_STATUS_PATH}")" "${INSTALLED_UNIT_SHA}" "the capability projection must pin the sha256 of the installed unit"
-CAPABILITY_STATUS_BODY="$(cat "${CAPABILITY_STATUS_PATH}")"
-assert_absent "${CAPABILITY_STATUS_BODY}" "${NODE_TOKEN}" "the public projection must never carry the node token"
-assert_absent "${CAPABILITY_STATUS_BODY}" "${ACCOUNT_HOME}" "the public projection must never carry a home path"
-assert_absent "${CAPABILITY_STATUS_BODY}" "credential" "the public projection must never carry credential material"
-record_ok "the capability projection ${CAPABILITY_STATUS_PATH} is root:root 644, schema ${CAPABILITY_STATUS_SCHEMA}, and pins user_unit.sha256=${INSTALLED_UNIT_SHA} of the installed unit"
-evidence "capability_status.path=${CAPABILITY_STATUS_PATH}"
-evidence "capability_status.schema=${CAPABILITY_STATUS_SCHEMA}"
-evidence "capability_status.user_unit_sha256=${INSTALLED_UNIT_SHA}"
+EMITTER_SHA="$(sha256sum "${REPO_ROOT}/${CAPABILITY_STATUS_EMITTER}" | awk '{print $1}')"
+# The template digest only seeds release_pin and the call below is refused before
+# any file is written, so it is a measured digest here, never a fabricated pin.
+EMITTER_TEMPLATE_DIGEST="sha256:${INSTALLED_UNIT_SHA}"
+set +e
+EMITTER_OUTPUT="$(cd "${REPO_ROOT}" && node "${CAPABILITY_STATUS_EMITTER}" \
+  --artifact "${UNIT_NAME}=sha256:${INSTALLED_UNIT_SHA}:0644" \
+  --artifact "node-agent.pyz=sha256:${SECOND_SHA}:0755" \
+  --template-digest "${EMITTER_TEMPLATE_DIGEST}" \
+  --installer "managed-linux-privileged-operations.sh" \
+  --privileged-key "privileged-ops.pub" \
+  --unit "${UNIT_NAME}" \
+  --unit-artifact "${UNIT_NAME}" \
+  --payload-artifact "node-agent.pyz" \
+  --control-account "${ACCOUNT}" \
+  --privileged-account "${PRIVILEGED_ACCOUNT}" \
+  --output "/etc/ghostfleet" \
+  --applied-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 2>&1)"
+EMITTER_STATUS=$?
+set -e
+evidence "capability_status.emitter=${CAPABILITY_STATUS_EMITTER}"
+evidence "capability_status.emitter_sha256=${EMITTER_SHA}"
+evidence "capability_status.emitter_exit=${EMITTER_STATUS}"
+evidence "capability_status.emitter_artifacts=unit:0644,payload:0755"
+if ((EMITTER_STATUS == 0)); then
+  # A release lane that ships the complete pinned row set makes the positive
+  # projection reachable; then it is asserted like any other product output.
+  CAPABILITY_STATUS_POSITIVE="yes"
+  record_ok "the product install-line entrypoint ${CAPABILITY_STATUS_EMITTER} (sha256 ${EMITTER_SHA}) produced ${CAPABILITY_STATUS_PATH} from its pinned artifact rows"
+  if [[ ! -f "${CAPABILITY_STATUS_PATH}" ]]; then
+    fail_check "INSTALL_LINE_EMITTER_NO_OUTPUT: node ${CAPABILITY_STATUS_EMITTER} exited 0 but did not write ${CAPABILITY_STATUS_PATH}"
+  fi
+  assert_eq "$(stat -c '%U:%G:%a' "${CAPABILITY_STATUS_PATH}")" "root:root:644" "capability projection ownership and mode"
+else
+  assert_eq "${EMITTER_STATUS}" "2" "the published capability writer must fail closed with exit 2 on an incomplete artifact set (output: ${EMITTER_OUTPUT})"
+  assert_contains "${EMITTER_OUTPUT}" "EMIT_CAPABILITY_STATUS_INPUT_INVALID" "the refusal must carry the published input code"
+  assert_contains "${EMITTER_OUTPUT}" "not one of the pinned --artifact rows" "the refusal must name the artifact rows this job does not own"
+  assert_file_absent "${CAPABILITY_STATUS_PATH}" "a refused projection must not leave ${CAPABILITY_STATUS_PATH} behind"
+  record_ok "the published capability writer is wired and refuses a partial projection (exit ${EMITTER_STATUS}, EMIT_CAPABILITY_STATUS_INPUT_INVALID), so this script never hand-writes ${CAPABILITY_STATUS_PATH}"
+  note "NOT_RUN: a positive projection needs the courier lane's pinned rows (fleet_privctl.py 0755, privileged-ops.pub 0644, managed-linux-privileged-operations.sh 0750) and its reviewed template digest"
+  evidence "capability_status.projection=NOT_RUN_courier_artifacts_not_materialized_here"
+fi
+if [[ "${CAPABILITY_STATUS_POSITIVE}" == "yes" ]]; then
+  CAPABILITY_STATUS_SCHEMA="$(json_value schema <"${CAPABILITY_STATUS_PATH}")"
+  assert_eq "${CAPABILITY_STATUS_SCHEMA}" "ghostfleet-capability-status/v1" "capability projection schema name"
+  assert_eq "$(json_value control_account <"${CAPABILITY_STATUS_PATH}")" "${ACCOUNT}" "the projection must name the control account that runs the unit"
+  assert_eq "$(json_value user_unit.name <"${CAPABILITY_STATUS_PATH}")" "${UNIT_NAME}" "the projection must name the installed unit"
+  assert_eq "$(json_value user_unit.sha256 <"${CAPABILITY_STATUS_PATH}")" "${INSTALLED_UNIT_SHA}" "the capability projection must pin the sha256 of the installed unit"
+  CAPABILITY_STATUS_BODY="$(cat "${CAPABILITY_STATUS_PATH}")"
+  assert_absent "${CAPABILITY_STATUS_BODY}" "${NODE_TOKEN}" "the public projection must never carry the node token"
+  assert_absent "${CAPABILITY_STATUS_BODY}" "${ACCOUNT_HOME}" "the public projection must never carry a home path"
+  assert_absent "${CAPABILITY_STATUS_BODY}" "credential" "the public projection must never carry credential material"
+  record_ok "the capability projection ${CAPABILITY_STATUS_PATH} is root:root 644, schema ${CAPABILITY_STATUS_SCHEMA}, and pins user_unit.sha256=${INSTALLED_UNIT_SHA} of the installed unit"
+  evidence "capability_status.path=${CAPABILITY_STATUS_PATH}"
+  evidence "capability_status.schema=${CAPABILITY_STATUS_SCHEMA}"
+  evidence "capability_status.user_unit_sha256=${INSTALLED_UNIT_SHA}"
+fi
 
 loginctl enable-linger "${ACCOUNT}" || fail_check "could not enable lingering for the control account"
 LINGER_ENABLED=1
@@ -833,10 +994,7 @@ assert_eq "${HEAL_START_STATUS}" "0" "start exit status on a fresh account with 
 wait_value 60 "self-heal-active" "active" unit_show ActiveState
 assert_eq "$(stat -c '%U' "${ACCOUNT_HOME}/.local/state/ghostfleet-agent")" "${ACCOUNT}" "the recreated state directory belongs to the control account"
 STATE_DIR_MODE="$(stat -c '%a' "${ACCOUNT_HOME}/.local/state/ghostfleet-agent")"
-case "${STATE_DIR_MODE}" in
-  700|755) : ;;
-  *) fail_check "recreated state directory has unexpected mode ${STATE_DIR_MODE}" ;;
-esac
+assert_eq "${STATE_DIR_MODE}" "700" "the recreated state directory must keep the unit's StateDirectoryMode=0700, not the systemd 0755 default"
 record_ok "with the state directory deleted, the pinned unit still starts (systemd self-heals it as ${ACCOUNT}:${STATE_DIR_MODE}) and the service reaches active"
 evidence "unit.self_heal_start_exit=${HEAL_START_STATUS}"
 evidence "unit.state_dir_mode=${STATE_DIR_MODE}"
@@ -865,6 +1023,217 @@ evidence "unit.sub_state=${SUB_STATE}"
 evidence "unit.main_pid=${MAIN_PID}"
 evidence "unit.main_pid_owner=${MAIN_PID_OWNER}"
 evidence "unit.n_restarts=$(unit_show NRestarts)"
+
+# m01969 items 2 and 6: the service manager's own view decides how the agent is
+# invoked, so read it back instead of trusting the file text alone.
+UNIT_SHOW_TYPE="$(run_as_account systemctl --user show -p Type --value "${UNIT_NAME}")"
+UNIT_SHOW_NOTIFY="$(run_as_account systemctl --user show -p NotifyAccess --value "${UNIT_NAME}")"
+assert_eq "${UNIT_SHOW_TYPE}" "notify" "systemd must type the unit as notify, or the READY handshake is not a readiness proof"
+assert_eq "${UNIT_SHOW_NOTIFY}" "main" "NotifyAccess must be main so only the agent process can report readiness"
+UNIT_SHOW_EXECSTART="$(run_as_account systemctl --user show -p ExecStart --value "${UNIT_NAME}")"
+UNIT_SHOW_ARGV="$(printf '%s' "${UNIT_SHOW_EXECSTART}" | python3 -c 'import re, sys
+text = sys.stdin.read()
+match = re.search(r"argv\[\]=([^;]*?)\s*;", text)
+print(match.group(1).strip() if match else "")')"
+assert_eq "${UNIT_SHOW_ARGV}" "/usr/bin/python3 -I ${PYZ_INSTALL_PATH} run" "ExecStart must be exactly the isolated payload invocation with no extra flag"
+record_ok "systemctl show confirms Type=notify, NotifyAccess=main and ExecStart argv exactly /usr/bin/python3 -I ${PYZ_INSTALL_PATH} run"
+evidence "unit.show_type=${UNIT_SHOW_TYPE}"
+evidence "unit.show_notify_access=${UNIT_SHOW_NOTIFY}"
+evidence "unit.show_execstart_argv=${UNIT_SHOW_ARGV}"
+# The same unit name may exist in another user manager: prove the property read
+# above belongs to the unit file this run installed.
+UNIT_FRAGMENT_PATH="$(run_as_account systemctl --user show -p FragmentPath --value "${UNIT_NAME}")"
+assert_eq "${UNIT_FRAGMENT_PATH}" "${ACCOUNT_HOME}/.config/systemd/user/${UNIT_NAME}" "FragmentPath must point at the unit this run installed, not at another unit with the same name"
+evidence "unit.fragment_path=${UNIT_FRAGMENT_PATH}"
+
+# --- S3c: mount hardening, implicit PrivateUsers, and configuration trust ---
+section "S3c implicit PrivateUsers, sandboxed configuration, and configuration trust"
+
+# Type=notify only counts when the payload reaches the notify socket before the
+# startup timeout, so READY is observable as an active unit whose first heartbeat
+# already reached the control plane.
+wait_until 90 "first-heartbeat-after-enable" health_at_least_heartbeats 1
+READY_SUB_STATE="$(unit_show SubState)"
+assert_eq "${READY_SUB_STATE}" "running" "SubState of a READY Type=notify unit"
+record_ok "the unit reached READY under Type=notify (ActiveState=${ACTIVE_STATE}, SubState=${READY_SUB_STATE}) and its first heartbeat already arrived, so sd_notify works from inside the unit's mount namespace"
+evidence "privateusers.ready_sub_state=${READY_SUB_STATE}"
+
+# Mount hardening (PrivateTmp/ProtectSystem/ProtectHome) can implicitly enable a
+# user namespace. Inside it the agent sees itself as uid 0-mapped or as a mapped
+# account uid, and host root files appear as the overflow uid. Record what the
+# real kernel does: this is the fact that made a st_uid==0 root check unusable.
+MAIN_PID="$(unit_show MainPID)"
+UID_MAP_PATH="/proc/${MAIN_PID}/uid_map"
+[[ -r "${UID_MAP_PATH}" ]] || fail_check "cannot read ${UID_MAP_PATH}, so the private-users arm cannot be measured"
+UID_MAP_RAW="$(cat "${UID_MAP_PATH}")"
+UID_MAP_LINES="$(printf '%s\n' "${UID_MAP_RAW}" | grep -c '[0-9]')"
+UID_MAP_FIRST="$(printf '%s\n' "${UID_MAP_RAW}" | awk 'NF { print $1 " " $2 " " $3; exit }')"
+assert_eq "${UID_MAP_LINES}" "1" "a map with more than one line means the unit did NOT get a private user namespace"
+assert_eq "${UID_MAP_FIRST}" "${ACCOUNT_UID} ${ACCOUNT_UID} 1" "the private uid map must map exactly the control account uid"
+PRIVATEUSERS_ENABLED=yes
+record_ok "the unit really runs inside an implicit PrivateUsers namespace: ${UID_MAP_PATH} is the single line '${UID_MAP_FIRST}'"
+evidence "privateusers.uid_map=${UID_MAP_FIRST}"
+evidence "privateusers.uid_map_lines=${UID_MAP_LINES}"
+
+# The host-owned configuration appears inside that namespace with a translated
+# owner, so a naive st_uid == 0 trust check rejects a perfectly good install.
+#
+# The probe must run INSIDE the namespace: stat's uid/gid are interpreted by the
+# READER's user namespace, so reading /proc/<pid>/root/... from the host reports
+# the real 0:0:644 and hides the 65534:65534 the agent actually sees. nsenter
+# --preserve-credentials is the measured-correct form (without the flag nsenter
+# fails with "setgid failed: Invalid argument").
+command -v nsenter >/dev/null 2>&1 || fail_check "MISSING_NSENTER: util-linux nsenter is required to measure the sandbox-internal view"
+nsenter_sandbox() {
+  nsenter -t "${MAIN_PID}" -U -m --preserve-credentials -- "$@"
+}
+SANDBOX_UID_MAP="$(nsenter_sandbox cat /proc/self/uid_map 2>&1 | awk 'NF { print $1 " " $2 " " $3; exit }')"
+assert_eq "${SANDBOX_UID_MAP}" "${UID_MAP_FIRST}" "the sandbox-internal uid map must equal the host-side view of the same namespace"
+SANDBOX_CONFIG_VIEW="$(nsenter_sandbox stat -c '%u:%g:%a' "${SYSTEM_CONFIG_PATH}" 2>&1)"
+[[ "${SANDBOX_CONFIG_VIEW}" =~ ^[0-9]+:[0-9]+:[0-7]+$ ]] || fail_check "cannot stat ${SYSTEM_CONFIG_PATH} inside the unit namespace: ${SANDBOX_CONFIG_VIEW}"
+SANDBOX_CONFIG_UID="${SANDBOX_CONFIG_VIEW%%:*}"
+SANDBOX_CONFIG_REST="${SANDBOX_CONFIG_VIEW#*:}"
+SANDBOX_CONFIG_MODE="${SANDBOX_CONFIG_REST##*:}"
+assert_eq "${SANDBOX_CONFIG_MODE}" "644" "mode of the system configuration as the unit sees it"
+# The agent's trust criterion is namespace-aware (m01782/m01969): when uid 0 is
+# inside the mapping the file must look like host root; when only the service uid
+# is mapped, host root becomes the overflow uid and the read-only mount is what
+# proves it cannot be replaced by the service user.
+OVERFLOW_UID="$(cat /proc/sys/kernel/overflowuid 2>/dev/null || echo 65534)"
+if awk 'NR==1 && $1 == 0 { found = 1 } END { exit found ? 0 : 1 }' <<<"${SANDBOX_UID_MAP}"; then
+  ROOT_IS_MAPPED=yes
+  assert_eq "${SANDBOX_CONFIG_UID}" "0" "uid 0 is inside the unit mapping, so the configuration must appear as host root"
+else
+  ROOT_IS_MAPPED=no
+  assert_eq "${SANDBOX_CONFIG_UID}" "${OVERFLOW_UID}" "uid 0 is unmapped inside the unit, so host root must appear as the overflow uid"
+fi
+record_ok "inside the unit's namespace ${SYSTEM_CONFIG_PATH} is owned by uid ${SANDBOX_CONFIG_UID} with mode 0644 (measured with nsenter --preserve-credentials), so the agent must trust host root through the mapping instead of comparing st_uid to 0"
+evidence "privateusers.sandbox_view=nsenter-preserve-credentials"
+evidence "privateusers.uid_map_sandbox=${SANDBOX_UID_MAP}"
+evidence "privateusers.config_view=${SANDBOX_CONFIG_VIEW}"
+evidence "privateusers.config_view_uid=${SANDBOX_CONFIG_UID}"
+evidence "privateusers.root_is_mapped=${ROOT_IS_MAPPED}"
+evidence "privateusers.overflow_uid=${OVERFLOW_UID}"
+
+# Regression arm: a node whose capability projection has not been materialized yet
+# legitimately reports capability_digest = null, and the plane must accept that
+# heartbeat. Rejecting it produced NODE_REQUEST_INVALID on every heartbeat and
+# locked the agent into backoff, which also made every later arm unmeasurable.
+# This arm is the one that caught it, so it stays whether or not the plane is
+# already fixed.
+assert_file_absent "${CAPABILITY_STATUS_PATH}" "the capability projection must not exist yet when this arm runs, or the node would not be unprojected"
+UNIT_JOURNAL_EARLY="$(run_as_account journalctl --user -u "${UNIT_NAME}" --no-pager -o cat 2>/dev/null || true)"
+NODE_REQUEST_INVALID_LINES="$(printf '%s\n' "${UNIT_JOURNAL_EARLY}" | grep -c "NODE_REQUEST_INVALID" || true)"
+assert_eq "${NODE_REQUEST_INVALID_LINES}" "0" "an unprojected node must not have its heartbeat refused: the unit journal names NODE_REQUEST_INVALID $(printf '%s\n' "${UNIT_JOURNAL_EARLY}" | grep "NODE_REQUEST_INVALID" | head -2 | tr '\n' '|')"
+UNPROJECTED_NODE_JSON="$(node "${CONTROL_PLANE_TOOL}" node --base-url "${BASE_URL}" --ca "${WORK}/tls/ca.crt" --node-uid "${SERVER_NODE_UID}" --operator-token-file "${OPERATOR_TOKEN_FILE}" 2>"${WORK}/unprojected-node.err")" || fail_check "the operator could not read the node projection: $(head -3 "${WORK}/unprojected-node.err")"
+UNPROJECTED_DIGEST="$(printf '%s' "${UNPROJECTED_NODE_JSON}" | json_pick 'doc["node"]["agent"]["capability_digest"]')"
+assert_eq "${UNPROJECTED_DIGEST}" "null" "the control plane must project an unprojected node's capability_digest as null, not as a synthesized value"
+assert_eq "${UNPROJECTED_NODE_JSON:+yes}" "yes" "the projection must not be empty"
+record_ok "an unprojected node's heartbeat is accepted (no NODE_REQUEST_INVALID in the journal) and the control plane projects capability_digest as null"
+evidence "privateusers.unprojected_capability_digest=${UNPROJECTED_DIGEST}"
+evidence "privateusers.unprojected_heartbeat_refusals=${NODE_REQUEST_INVALID_LINES}"
+
+# The home directory is 0700 and this namespace maps only the service uid, so host
+# root is unmapped there (it becomes the overflow uid 65534) and cannot traverse it:
+# a --preserve-credentials nsenter is refused with Permission denied (m01782). The
+# correct form switches to the service uid/gid INSIDE the same namespaces -- the exact
+# identity the agent runs as -- in a second call, because the two forms are mutually
+# exclusive.
+SERVICE_UID="$(id -u "${ACCOUNT}")"
+SERVICE_GID="$(id -g "${ACCOUNT}")"
+nsenter_as_service() {
+  nsenter -t "${MAIN_PID}" -U -m --setuid "${SERVICE_UID}" --setgid "${SERVICE_GID}" -- "$@"
+}
+HOME_TOKEN_PATH="${ACCOUNT_HOME}/.config/ghostfleet/node-token"
+HOME_STATE_DIR="${ACCOUNT_HOME}/.local/state/ghostfleet-agent"
+SANDBOX_TOKEN_VIEW="$(nsenter_as_service stat -c '%u:%g:%a' "${HOME_TOKEN_PATH}" 2>&1)"
+assert_eq "${SANDBOX_TOKEN_VIEW}" "${SERVICE_UID}:${SERVICE_GID}:600" "the node token must be owned by the service uid:gid with mode 0600 as the unit sees it"
+SANDBOX_STATE_VIEW="$(nsenter_as_service stat -c '%u:%g:%a' "${HOME_STATE_DIR}" 2>&1)"
+assert_eq "${SANDBOX_STATE_VIEW}" "${SERVICE_UID}:${SERVICE_GID}:700" "the agent state directory must be owned by the service uid:gid with mode 0700 as the unit sees it"
+set +e
+SANDBOX_ROOT_HOME="$(nsenter_sandbox stat -c '%u:%g:%a' "${HOME_TOKEN_PATH}" 2>&1)"
+SANDBOX_ROOT_HOME_STATUS=$?
+set -e
+(( SANDBOX_ROOT_HOME_STATUS != 0 )) || fail_check "a --preserve-credentials nsenter unexpectedly read ${HOME_TOKEN_PATH} (${SANDBOX_ROOT_HOME}); the namespace maps only uid ${SERVICE_UID}, so host root must be refused"
+record_ok "the home token and state directory are ${SERVICE_UID}:${SERVICE_GID} 0600/0700 inside the unit namespace (nsenter --setuid/--setgid), and the same probe with --preserve-credentials is refused (exit ${SANDBOX_ROOT_HOME_STATUS}), which is why the two measurements need two calls"
+evidence "privateusers.home_view=nsenter-setuid-setgid"
+evidence "privateusers.token_view=${SANDBOX_TOKEN_VIEW}"
+evidence "privateusers.state_view=${SANDBOX_STATE_VIEW}"
+evidence "privateusers.preserve_credentials_home_exit=${SANDBOX_ROOT_HOME_STATUS}"
+
+# The state directory must not accumulate probe leftovers: cleanup has to leave
+# nothing behind, so the acceptance pins what the agent's own directory contains.
+STATE_DIR_ENTRIES="$(ls -A "${HOME_STATE_DIR}" 2>/dev/null | sort | tr '\n' ',')"
+record_ok "the agent state directory holds only the agent's own files (${STATE_DIR_ENTRIES:-empty}), so no probe leftovers remain to hide a cleanup defect"
+evidence "privateusers.state_dir_entries=${STATE_DIR_ENTRIES:-empty}"
+
+# A read-only view of / is the observable effect of ProtectSystem=strict.
+MOUNTINFO_PATH="/proc/${MAIN_PID}/mountinfo"
+[[ -r "${MOUNTINFO_PATH}" ]] || fail_check "cannot read ${MOUNTINFO_PATH}"
+ROOT_MOUNT_COUNT="$(awk '$5 == "/" { count++ } END { print count + 0 }' "${MOUNTINFO_PATH}")"
+ROOT_RO_COUNT="$(awk '$5 == "/" && $6 ~ /(^|,)ro(,|$)/ { count++ } END { print count + 0 }' "${MOUNTINFO_PATH}")"
+(( ROOT_MOUNT_COUNT >= 1 )) || fail_check "${MOUNTINFO_PATH} has no entry for /"
+(( ROOT_RO_COUNT >= 1 )) || fail_check "the unit's mount namespace has no read-only view of / (ProtectSystem=strict not in effect): ${ROOT_MOUNT_COUNT} mounts of / and none read-only"
+ROOT_MOUNT_FLAGS="$(awk '$5 == "/" && $6 ~ /(^|,)ro(,|$)/ { print $6; exit }' "${MOUNTINFO_PATH}")"
+record_ok "the unit's namespace contains a read-only mount of / (${ROOT_MOUNT_FLAGS}) while the process stays alive, which is the hardening the ADR requires"
+evidence "privateusers.root_mounts=${ROOT_MOUNT_COUNT}"
+evidence "privateusers.root_ro_mounts=${ROOT_RO_COUNT}"
+evidence "privateusers.root_flags=${ROOT_MOUNT_FLAGS}"
+
+# Negative arm: a configuration the agent cannot trust or read must stop it with
+# exit status 3 and a configuration code instead of running degraded.
+CONFIG_TRUST_BACKUP="${WORK}/node-agent.json.before-mode-change"
+cp -a "${SYSTEM_CONFIG_PATH}" "${CONFIG_TRUST_BACKUP}"
+account_systemctl stop "${UNIT_NAME}"
+wait_value 60 "stopped-for-config-trust" "inactive" unit_show ActiveState
+chmod 0640 "${SYSTEM_CONFIG_PATH}"
+assert_eq "$(stat -c '%a' "${SYSTEM_CONFIG_PATH}")" "640" "the configuration was made group-readable only, so the control account cannot read it"
+set +e
+CONFIG_TRUST_START_OUTPUT="$(account_systemctl start "${UNIT_NAME}" 2>&1)"
+CONFIG_TRUST_START_STATUS=$?
+set -e
+CONFIG_TRUST_EXIT=""
+for _ in $(seq 1 120); do
+  CONFIG_TRUST_EXIT="$(unit_show ExecMainStatus)"
+  if [[ "${CONFIG_TRUST_EXIT}" == "3" ]]; then
+    break
+  fi
+  sleep 0.5
+done
+CONFIG_TRUST_ACTIVE="$(unit_show ActiveState)"
+CONFIG_TRUST_JOURNAL="$(account_journal_tail 200)"
+account_systemctl stop "${UNIT_NAME}" >/dev/null 2>&1 || true
+account_systemctl reset-failed "${UNIT_NAME}" >/dev/null 2>&1 || true
+restore_config_mode() {
+  if [[ -f "${CONFIG_TRUST_BACKUP}" ]]; then
+    install -m 0644 -o root -g root "${CONFIG_TRUST_BACKUP}" "${SYSTEM_CONFIG_PATH}"
+  else
+    chmod 0644 "${SYSTEM_CONFIG_PATH}"
+  fi
+}
+restore_config_mode
+assert_eq "$(stat -c '%a' "${SYSTEM_CONFIG_PATH}")" "644" "the configuration mode was restored"
+assert_eq "${CONFIG_TRUST_EXIT}" "3" "a configuration the agent cannot read must make it exit 3 instead of running (start exit ${CONFIG_TRUST_START_STATUS}, ActiveState ${CONFIG_TRUST_ACTIVE})"
+if ! printf '%s\n' "${CONFIG_TRUST_JOURNAL}" | grep -Eq 'CONFIG_[A-Z_]+|AGENT_CONFIG_[A-Z_]+'; then
+  fail_check "the journal for the untrusted-configuration attempt carries no configuration code; last lines: $(printf '%s\n' "${CONFIG_TRUST_JOURNAL}" | tail -5)"
+fi
+CONFIG_TRUST_CODE="$(printf '%s\n' "${CONFIG_TRUST_JOURNAL}" | grep -Eo 'AGENT_CONFIG_[A-Z_]+|CONFIG_[A-Z_]+' | head -1)"
+record_ok "making ${SYSTEM_CONFIG_PATH} unreadable for the control account stops the agent with exit 3 and ${CONFIG_TRUST_CODE}, and the mode was restored afterwards"
+evidence "config_trust.refusal_exit=${CONFIG_TRUST_EXIT}"
+evidence "config_trust.code=${CONFIG_TRUST_CODE}"
+evidence "config_trust.active_state=${CONFIG_TRUST_ACTIVE}"
+
+# Restore service operation; the sections below measure steady state from here.
+account_systemctl start "${UNIT_NAME}"
+wait_value 90 "restored-config-active" "active" unit_show ActiveState
+# The negative arm replaced the process, so the identity the steady-state section
+# compares against must be re-read here.
+MAIN_PID="$(unit_show MainPID)"
+[[ -d "/proc/${MAIN_PID}" ]] || fail_check "the restarted MainPID ${MAIN_PID} is not alive"
+N_RESTARTS_BASE="$(unit_show NRestarts)"
+evidence "unit.n_restarts_base=${N_RESTARTS_BASE}"
+evidence "unit.main_pid_after_config_trust=${MAIN_PID}"
+
 
 # --- S3b: shared wire-journal helpers --------------------------------------
 mkdir -p "${WORK}/tools"
@@ -971,9 +1340,6 @@ PY
 
 journal_json() { python3 "${WORK}/tools/journal.py" "${JOURNAL}" "$1" 2>/dev/null; }
 
-health_json() { node "${CONTROL_PLANE_TOOL}" health --base-url "${BASE_URL}" --ca "${WORK}/tls/ca.crt" 2>/dev/null; }
-health_at_least_heartbeats() { local count; count="$(health_json | json_value heartbeats)"; ((count >= $1)); }
-
 tasks_json() { node "${CONTROL_PLANE_TOOL}" tasks --base-url "${BASE_URL}" --ca "${WORK}/tls/ca.crt" --node-uid "${SERVER_NODE_UID}" --operator-token-file "${OPERATOR_TOKEN_FILE}" 2>/dev/null; }
 task_field() {
   tasks_json | python3 -c '
@@ -1004,18 +1370,53 @@ evidence "unit.watchdog_sec=${WATCHDOG_SEC}"
 section "S4 resident lifecycle across heartbeat cycles"
 assert_payload_intact "S4"
 
+# m01969 item 4: StateDirectoryMode/ConfigurationDirectoryMode=0700 are in the
+# asset for a reason. A 0755 default makes systemd warn on every start and the
+# agent report state_dir_permissions_loose, so both must be absent AND the
+# directory mode must be exactly 700.
+assert_eq "$(stat -c '%a' "${ACCOUNT_HOME}/.config/ghostfleet")" "700" "the control account configuration directory must be 0700, not the systemd default 0755"
+UNIT_JOURNAL_SO_FAR="$(run_as_account journalctl --user -u "${UNIT_NAME}" --no-pager -o cat 2>/dev/null || true)"
+DIR_MODE_WARNINGS="$(printf '%s\n' "${UNIT_JOURNAL_SO_FAR}" | grep -c "already exists but the mode is different" || true)"
+assert_eq "${DIR_MODE_WARNINGS}" "0" "systemd warned that a created directory kept a different mode: $(printf '%s\n' "${UNIT_JOURNAL_SO_FAR}" | grep "already exists but the mode is different" | head -3 | tr '\n' '|')"
+LOOSE_DIR_LINES="$(printf '%s\n' "${UNIT_JOURNAL_SO_FAR}" | grep -c "state_dir_permissions_loose" || true)"
+assert_eq "${LOOSE_DIR_LINES}" "0" "the agent reported state_dir_permissions_loose, so the state directory is not 0700"
+record_ok "systemd created both directories at mode 0700 with no mode-mismatch warning and the agent reported no loose state directory"
+evidence "unit.directory_mode_warnings=${DIR_MODE_WARNINGS}"
+evidence "unit.config_dir_mode_measured=$(stat -c '%a' "${ACCOUNT_HOME}/.config/ghostfleet")"
+
 HEALTH_BEFORE="$(health_json)"
 HEARTBEATS_BEFORE="$(printf '%s' "${HEALTH_BEFORE}" | json_value heartbeats)"
 SENT_AT_BEFORE="$(printf '%s' "${HEALTH_BEFORE}" | json_value last_agent_sent_at)"
 SERVER_TIME_BEFORE="$(printf '%s' "${HEALTH_BEFORE}" | json_value last_heartbeat_at)"
 evidence "lifecycle.heartbeats_at_first_sample=${HEARTBEATS_BEFORE}"
 
-wait_until 240 "three-heartbeats" health_at_least_heartbeats 3
+# Wait for a heartbeat that is strictly NEWER than the sample above. Earlier
+# sections already produced heartbeats, so waiting for an absolute count would
+# return immediately and compare a sample with itself. The wait also watches the
+# unit: a shared machine can have another disposable test stop this service under
+# us, and that must be reported as interference instead of a bare timeout.
+S4_WAIT_STARTED=$SECONDS
+S4_DEADLINE=$((SECONDS + 240))
+HEARTBEATS_NOW="${HEARTBEATS_BEFORE}"
+while (( SECONDS < S4_DEADLINE )); do
+  HEALTH_NOW="$(health_json 2>/dev/null || true)"
+  HEARTBEATS_NOW="$(printf '%s' "${HEALTH_NOW}" | json_value heartbeats 2>/dev/null || true)"
+  if [[ "${HEARTBEATS_NOW}" =~ ^[0-9]+$ ]] && ((HEARTBEATS_NOW > HEARTBEATS_BEFORE)); then
+    break
+  fi
+  S4_ACTIVE="$(unit_show ActiveState)"
+  if [[ "${S4_ACTIVE}" != "active" ]]; then
+    fail_check "ENVIRONMENT_INTERFERENCE: the unit left active state (now ${S4_ACTIVE}, MainPID $(unit_show MainPID), NRestarts $(unit_show NRestarts)) while this script waited for a new heartbeat; another disposable run on the same machine stops ${UNIT_NAME} by name"
+  fi
+  sleep 1
+done
+evidence "lifecycle.wait_heartbeat_seconds=$((SECONDS - S4_WAIT_STARTED))"
 HEALTH_AFTER="$(health_json)"
 HEARTBEATS_AFTER="$(printf '%s' "${HEALTH_AFTER}" | json_value heartbeats)"
 SENT_AT_AFTER="$(printf '%s' "${HEALTH_AFTER}" | json_value last_agent_sent_at)"
 SERVER_TIME_AFTER="$(printf '%s' "${HEALTH_AFTER}" | json_value last_heartbeat_at)"
-((HEARTBEATS_AFTER >= 3)) || fail_check "only ${HEARTBEATS_AFTER} heartbeats reached the control plane"
+((HEARTBEATS_AFTER > HEARTBEATS_BEFORE)) || fail_check "no heartbeat arrived after the first sample (${HEARTBEATS_BEFORE} -> ${HEARTBEATS_AFTER})"
+((HEARTBEATS_AFTER >= 3)) || fail_check "only ${HEARTBEATS_AFTER} heartbeats reached the control plane since the unit started"
 assert_ne "${SENT_AT_AFTER}" "${SENT_AT_BEFORE}" "the agent-sent heartbeat timestamp must advance between samples"
 assert_ne "${SERVER_TIME_AFTER}" "${SERVER_TIME_BEFORE}" "the control-plane heartbeat timestamp must advance between samples"
 record_ok "the agent completed ${HEARTBEATS_AFTER} heartbeat cycles against the control plane (fresh sent_at each time)"
@@ -1036,7 +1437,7 @@ evidence "lifecycle.wire_distinct_boot_id=${DISTINCT_BOOT}"
 assert_eq "$(unit_show ActiveState)" "active" "the agent is still active after more than one heartbeat interval"
 assert_eq "$(unit_show MainPID)" "${MAIN_PID}" "the agent main process was not replaced during steady-state operation"
 N_RESTARTS_STEADY="$(unit_show NRestarts)"
-assert_eq "${N_RESTARTS_STEADY}" "0" "no restart was needed during steady-state operation"
+assert_eq "${N_RESTARTS_STEADY}" "${N_RESTARTS_BASE}" "no restart was needed during steady-state operation (baseline ${N_RESTARTS_BASE})"
 PID_ALIVE_SECONDS="$(ps -o etimes= -p "${MAIN_PID}" | tr -d ' ')"
 ((PID_ALIVE_SECONDS >= 2 * 15)) || fail_check "the agent main process has only been alive ${PID_ALIVE_SECONDS}s, less than two heartbeat intervals"
 record_ok "the agent stayed active for ${PID_ALIVE_SECONDS}s with MainPID ${MAIN_PID} and zero restarts"
@@ -1046,6 +1447,7 @@ evidence "lifecycle.main_pid_alive_seconds=${PID_ALIVE_SECONDS}"
 section "S5 recovery after the user manager and all sessions are destroyed"
 
 HEARTBEATS_BEFORE_RECOVERY="$(health_json | json_value heartbeats)"
+RECOVERY_SHOW_BEFORE="$(run_as_account systemctl --user show "${UNIT_NAME}" -p NRestarts -p ActiveEnterTimestampMonotonic -p ExecMainStartTimestamp)"
 PID_BEFORE_RECOVERY="$(unit_show MainPID)"
 assert_eq "$(loginctl show-user "${ACCOUNT}" -p Linger --value)" "yes" "lingering must still be enabled before the boot-recovery case"
 assert_eq "$(run_as_account systemctl --user is-enabled "${UNIT_NAME}")" "enabled" "the unit must be enabled so default.target starts it after a manager restart"
@@ -1080,15 +1482,20 @@ done
 SELF_RESTART_WINDOW=$((SECONDS - SELF_RESTART_STARTED))
 evidence "recovery.manager_self_restart_within_s=${SELF_RESTART_WINDOW}"
 evidence "recovery.manager_self_restarted=${SELF_RESTARTED}"
-systemctl start "user@${ACCOUNT_UID}.service" || fail_check "could not start user@${ACCOUNT_UID}.service for the lingering account"
+if [[ "${SELF_RESTARTED}" == "no" ]]; then
+  systemctl start "user@${ACCOUNT_UID}.service" || fail_check "could not start user@${ACCOUNT_UID}.service for the lingering account"
+fi
 wait_value 120 "user-manager-after-recovery" "active" systemctl is-active "user@${ACCOUNT_UID}.service"
 wait_value 180 "agent-active-after-recovery" "active" unit_show ActiveState
 RECOVERY_TOTAL_SECONDS=$((SECONDS - RECOVERY_STARTED))
 evidence "recovery.total_seconds=${RECOVERY_TOTAL_SECONDS}"
+evidence "boot_restore=user_manager_restart"
+evidence "boot_restore.kernel_reboot=NOT_RUN_lead_measures_wsl_terminate"
 SESSIONS_AFTER="$(account_login_session_count)"
 ALL_SESSIONS_AFTER="$(account_session_count)"
 assert_eq "${SESSIONS_AFTER}" "0" "the recovered agent must run without any login session (the only allowed session is the user manager)"
 PID_AFTER_RECOVERY="$(unit_show MainPID)"
+RECOVERY_SHOW_AFTER="$(run_as_account systemctl --user show "${UNIT_NAME}" -p NRestarts -p ActiveEnterTimestampMonotonic -p ExecMainStartTimestamp)"
 assert_ne "${PID_AFTER_RECOVERY}" "${PID_BEFORE_RECOVERY}" "recovery must start a fresh agent process"
 [[ -d "/proc/${PID_AFTER_RECOVERY}" ]] || fail_check "the recovered MainPID ${PID_AFTER_RECOVERY} is not alive"
 record_ok "after the user manager was destroyed, the service came back to active with no login session (new MainPID ${PID_AFTER_RECOVERY})"
@@ -1096,6 +1503,10 @@ evidence "recovery.sessions_after=${SESSIONS_AFTER}"
 evidence "recovery.manager_sessions_after=${ALL_SESSIONS_AFTER}"
 evidence "recovery.pid_before=${PID_BEFORE_RECOVERY}"
 evidence "recovery.pid_after=${PID_AFTER_RECOVERY}"
+# The lead re-checks restart arithmetic from the raw systemd properties, not from
+# this script's conclusions, so the untouched show output is recorded verbatim.
+evidence "recovery.show_before=$(printf '%s' "${RECOVERY_SHOW_BEFORE}" | tr '\n' ' ')"
+evidence "recovery.show_after=$(printf '%s' "${RECOVERY_SHOW_AFTER}" | tr '\n' ' ')"
 
 wait_until 240 "heartbeats-after-recovery" health_at_least_heartbeats "$((HEARTBEATS_BEFORE_RECOVERY + 1))"
 HEARTBEATS_AFTER_RECOVERY="$(health_json | json_value heartbeats)"
@@ -1110,6 +1521,7 @@ section "S6 failure recovery: kill -9 restarts, SIGTERM does not"
 assert_payload_intact "S6"
 
 MAIN_PID="$(unit_show MainPID)"
+CRASH_SHOW_BEFORE="$(run_as_account systemctl --user show "${UNIT_NAME}" -p NRestarts -p ActiveEnterTimestampMonotonic -p ExecMainStartTimestamp)"
 N_RESTARTS_BEFORE_KILL="$(unit_show NRestarts)"
 CURRENT_ACTIVE="$(unit_show ActiveState)"
 assert_eq "${CURRENT_ACTIVE}" "active" "the agent must be active before the crash test"
@@ -1136,6 +1548,9 @@ evidence "crash.pid_after_restart=${PID_AFTER_KILL}"
 evidence "crash.n_restarts_before=${N_RESTARTS_BEFORE_KILL}"
 evidence "crash.n_restarts_after=${N_RESTARTS_AFTER_KILL}"
 evidence "crash.recovery_seconds=${KILL_RECOVERY_SECONDS}"
+CRASH_SHOW_AFTER="$(run_as_account systemctl --user show "${UNIT_NAME}" -p NRestarts -p ActiveEnterTimestampMonotonic -p ExecMainStartTimestamp)"
+evidence "crash.show_before=$(printf '%s' "${CRASH_SHOW_BEFORE}" | tr '\n' ' ')"
+evidence "crash.show_after=$(printf '%s' "${CRASH_SHOW_AFTER}" | tr '\n' ' ')"
 
 HB_BEFORE_CRASH_RESUME="$(health_json | json_value heartbeats)"
 wait_until 240 "heartbeat-after-restart" health_at_least_heartbeats "$((HB_BEFORE_CRASH_RESUME + 1))"
@@ -1154,6 +1569,7 @@ assert_eq "${SIGTERM_RESULT}" "success" "systemd must record a successful result
 record_ok "SIGTERM on MainPID ${SIGTERM_PID} stopped the agent with ExecMainStatus=0 and Result=success"
 evidence "sigterm.exec_main_status=${SIGTERM_EXEC_STATUS}"
 evidence "sigterm.result=${SIGTERM_RESULT}"
+evidence "sigterm.show_after=$(printf '%s' "$(run_as_account systemctl --user show "${UNIT_NAME}" -p NRestarts -p ActiveEnterTimestampMonotonic -p ExecMainStartTimestamp)" | tr '\n' ' ')"
 
 # Restart=on-failure must NOT restart a clean exit. Watch for longer than two
 # restart delays and prove the unit stays down and NRestarts is untouched.
@@ -1177,6 +1593,138 @@ run_as_account systemctl --user start "${UNIT_NAME}"
 wait_value 120 "active-after-sigterm-restart" "active" unit_show ActiveState
 record_ok "the operator-started unit returned to active after the clean stop, so the next sections have a live agent"
 evidence "sigterm.restart_exit_code=0"
+
+# --- S6b: offline stability and NOTIFY_SOCKET hygiene -----------------------
+# An unreachable control plane is a normal deployment state (plane down, network
+# glitch, credential rotation). A correct resident agent keeps running, keeps its
+# watchdog fed, and retries with backoff; a broken one is killed by WatchdogSec
+# every ~60s and loops on restart. This window is what catches that.
+section "S6b offline stability: an unreachable control plane must not cause a restart storm"
+assert_payload_intact "S6b"
+
+OFFLINE_BACKUP="${WORK}/node-agent.json.before-offline"
+cp -a "${SYSTEM_CONFIG_PATH}" "${OFFLINE_BACKUP}"
+python3 - "${SYSTEM_CONFIG_PATH}" <<'PYTHON'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    document = json.load(handle)
+document["control_plane_origin"] = "https://control.example.invalid"
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(document, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PYTHON
+chown root:root "${SYSTEM_CONFIG_PATH}"
+chmod 0644 "${SYSTEM_CONFIG_PATH}"
+OFFLINE_ORIGIN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["control_plane_origin"])' "${SYSTEM_CONFIG_PATH}")"
+assert_eq "${OFFLINE_ORIGIN}" "https://control.example.invalid" "the configuration must point at an unreachable origin for the offline window"
+record_ok "pointed the agent at the unreachable origin ${OFFLINE_ORIGIN} (the repository allows this test origin) and will leave the unit alone for a full watchdog window"
+
+account_systemctl restart "${UNIT_NAME}"
+wait_value 120 "active-after-offline-restart" "active" unit_show ActiveState
+
+# systemd timestamps are human-readable; compare them as epochs.
+unit_epoch() {
+  local stamp
+  stamp="$(unit_show "$1")"
+  if [[ -z "${stamp}" || "${stamp}" == "n/a" ]]; then
+    echo ""
+  else
+    date -d "${stamp}" +%s 2>/dev/null || echo ""
+  fi
+}
+OFFLINE_N_RESTARTS_START="$(unit_show NRestarts)"
+OFFLINE_ACTIVE_ENTER_START="$(unit_show ActiveEnterTimestamp)"
+OFFLINE_WATCHDOG_START="$(unit_show WatchdogTimestamp)"
+OFFLINE_WATCHDOG_START_EPOCH="$(unit_epoch WatchdogTimestamp)"
+[[ "${OFFLINE_WATCHDOG_START_EPOCH}" =~ ^[0-9]+$ ]] || fail_check "WatchdogTimestamp is not measurable (${OFFLINE_WATCHDOG_START}), so the watchdog arm cannot be proven"
+OFFLINE_WINDOW_START_EPOCH="$(date +%s)"
+OFFLINE_SAMPLES=0
+OFFLINE_NON_ACTIVE=0
+OFFLINE_WATCHDOG_ADVANCES=0
+OFFLINE_LAST_WATCHDOG_EPOCH="${OFFLINE_WATCHDOG_START_EPOCH}"
+SAMPLE=0
+# 24 samples ten seconds apart is a 240s window: four WatchdogSec=60 periods and
+# long enough for any exponential backoff to have fired several times.
+while (( SAMPLE < 24 )); do
+  SAMPLE=$((SAMPLE + 1))
+  OFFLINE_STATE="$(unit_show ActiveState)"
+  OFFLINE_SAMPLES=$((OFFLINE_SAMPLES + 1))
+  if [[ "${OFFLINE_STATE}" != "active" ]]; then
+    OFFLINE_NON_ACTIVE=$((OFFLINE_NON_ACTIVE + 1))
+  fi
+  SAMPLE_WATCHDOG_EPOCH="$(unit_epoch WatchdogTimestamp)"
+  if [[ "${SAMPLE_WATCHDOG_EPOCH}" =~ ^[0-9]+$ ]] && (( SAMPLE_WATCHDOG_EPOCH > OFFLINE_LAST_WATCHDOG_EPOCH )); then
+    OFFLINE_WATCHDOG_ADVANCES=$((OFFLINE_WATCHDOG_ADVANCES + 1))
+    OFFLINE_LAST_WATCHDOG_EPOCH="${SAMPLE_WATCHDOG_EPOCH}"
+  fi
+  sleep 10
+done
+OFFLINE_WINDOW_SECONDS=$(( $(date +%s) - OFFLINE_WINDOW_START_EPOCH ))
+OFFLINE_N_RESTARTS_END="$(unit_show NRestarts)"
+OFFLINE_ACTIVE_ENTER_END="$(unit_show ActiveEnterTimestamp)"
+OFFLINE_WATCHDOG_END="$(unit_show WatchdogTimestamp)"
+OFFLINE_WATCHDOG_END_EPOCH="$(unit_epoch WatchdogTimestamp)"
+[[ "${OFFLINE_WATCHDOG_END_EPOCH}" =~ ^[0-9]+$ ]] || fail_check "WatchdogTimestamp disappeared during the offline window (${OFFLINE_WATCHDOG_END})"
+OFFLINE_WATCHDOG_ADVANCE=$((OFFLINE_WATCHDOG_END_EPOCH - OFFLINE_WATCHDOG_START_EPOCH))
+
+assert_ne "${OFFLINE_WINDOW_SECONDS}" "0" "the offline observation window must be measurable"
+(( OFFLINE_WINDOW_SECONDS >= 180 )) || fail_check "the offline window was only ${OFFLINE_WINDOW_SECONDS}s; at least 180s is required to cover three WatchdogSec=60 periods"
+assert_eq "${OFFLINE_NON_ACTIVE}" "0" "the agent must stay active for the whole offline window (${OFFLINE_SAMPLES} samples, ${OFFLINE_NON_ACTIVE} not active)"
+assert_eq "${OFFLINE_N_RESTARTS_END}" "${OFFLINE_N_RESTARTS_START}" "an unreachable control plane must not restart the agent (NRestarts ${OFFLINE_N_RESTARTS_START} -> ${OFFLINE_N_RESTARTS_END})"
+assert_eq "${OFFLINE_ACTIVE_ENTER_END}" "${OFFLINE_ACTIVE_ENTER_START}" "ActiveEnterTimestamp moved during the offline window, so the unit really was restarted"
+(( OFFLINE_WATCHDOG_ADVANCE > 0 )) || fail_check "WatchdogTimestamp did not advance (${OFFLINE_WATCHDOG_START} -> ${OFFLINE_WATCHDOG_END}), so the agent stopped feeding the watchdog while offline"
+# m01969 item 3: the watchdog is fed by a daemon thread, not by the main loop, so
+# during a 240s offline window (four WatchdogSec periods) the timestamp must move
+# at roughly WatchdogSec/3 cadence -- at least five observed advances.
+(( OFFLINE_WATCHDOG_ADVANCES >= 5 )) || fail_check "WatchdogTimestamp advanced only ${OFFLINE_WATCHDOG_ADVANCES} times in ${OFFLINE_WINDOW_SECONDS}s; the watchdog feed must not depend on the main loop"
+record_ok "with the control plane unreachable the agent stayed active for ${OFFLINE_WINDOW_SECONDS}s across four watchdog periods, NRestarts stayed ${OFFLINE_N_RESTARTS_END}, ActiveEnterTimestamp did not move, and WatchdogTimestamp advanced ${OFFLINE_WATCHDOG_ADVANCE}s"
+evidence "offline.origin=${OFFLINE_ORIGIN}"
+evidence "offline.window_seconds=${OFFLINE_WINDOW_SECONDS}"
+evidence "offline.samples=${OFFLINE_SAMPLES}"
+evidence "offline.non_active_samples=${OFFLINE_NON_ACTIVE}"
+evidence "offline.n_restarts_start=${OFFLINE_N_RESTARTS_START}"
+evidence "offline.n_restarts_end=${OFFLINE_N_RESTARTS_END}"
+evidence "offline.active_enter_start=${OFFLINE_ACTIVE_ENTER_START}"
+evidence "offline.active_enter_end=${OFFLINE_ACTIVE_ENTER_END}"
+evidence "offline.watchdog_start=${OFFLINE_WATCHDOG_START}"
+evidence "offline.watchdog_end=${OFFLINE_WATCHDOG_END}"
+evidence "offline.watchdog_advance_seconds=${OFFLINE_WATCHDOG_ADVANCE}"
+evidence "offline.watchdog_advance_samples=${OFFLINE_WATCHDOG_ADVANCES}"
+
+# Journal evidence from inside the window: watchdog kills and notify-socket abuse
+# are the two failure modes the lead measured on real hardware.
+OFFLINE_JOURNAL="$(run_as_account journalctl --user -u "${UNIT_NAME}" --since "@${OFFLINE_WINDOW_START_EPOCH}" --no-pager -o cat 2>/dev/null || true)"
+OFFLINE_WATCHDOG_LINES="$(printf '%s\n' "${OFFLINE_JOURNAL}" | grep -cE "Watchdog timeout|Failed with result 'watchdog'|signal SIGABRT" || true)"
+assert_eq "${OFFLINE_WATCHDOG_LINES}" "0" "the journal must not report a watchdog kill during the offline window: $(printf '%s\n' "${OFFLINE_JOURNAL}" | grep -E "Watchdog timeout|Failed with result 'watchdog'|signal SIGABRT" | head -3 | tr '\n' '|')"
+record_ok "the offline window journal contains no Watchdog timeout, no watchdog result and no SIGABRT"
+evidence "offline.journal_watchdog_lines=${OFFLINE_WATCHDOG_LINES}"
+
+# Arm B: the agent must not leak NOTIFY_SOCKET to its children. systemctl/
+# loginctl/systemd-analyze announce EXIT_STATUS on that socket at exit, and the
+# service manager logs "reception only permitted for main PID" when a child uses it.
+FULL_JOURNAL="$(run_as_account journalctl --user -u "${UNIT_NAME}" --no-pager -o cat 2>/dev/null || true)"
+NOTIFY_REJECT_LINES="$(printf '%s\n' "${FULL_JOURNAL}" | grep -c "reception only permitted for main PID" || true)"
+assert_eq "${NOTIFY_REJECT_LINES}" "0" "the agent leaked NOTIFY_SOCKET to a child process: $(printf '%s\n' "${FULL_JOURNAL}" | grep "reception only permitted for main PID" | head -3 | tr '\n' '|')"
+record_ok "the unit journal contains zero \"reception only permitted for main PID\" lines, so child processes never inherited NOTIFY_SOCKET"
+evidence "notify_socket.reject_lines=${NOTIFY_REJECT_LINES}"
+NOTIFY_SOCKET_JOURNAL_LINES="$(printf '%s\n' "${FULL_JOURNAL}" | grep -c . || true)"
+evidence "notify_socket.journal_lines=${NOTIFY_SOCKET_JOURNAL_LINES}"
+
+# Restore the reachable origin and prove the agent recovers without residue.
+HB_BEFORE_OFFLINE_RECOVERY="$(health_json | json_value heartbeats)"
+install -m 0644 -o root -g root "${OFFLINE_BACKUP}" "${SYSTEM_CONFIG_PATH}"
+OFFLINE_RECOVERY_STARTED=$SECONDS
+account_systemctl restart "${UNIT_NAME}"
+wait_value 120 "active-after-offline-recovery" "active" unit_show ActiveState
+wait_until 240 "heartbeat-after-offline-recovery" health_at_least_heartbeats "$((HB_BEFORE_OFFLINE_RECOVERY + 1))"
+OFFLINE_RECOVERY_SECONDS=$((SECONDS - OFFLINE_RECOVERY_STARTED))
+assert_eq "$(unit_show NRestarts)" "${OFFLINE_N_RESTARTS_END}" "recovering from the offline window must not add restarts"
+record_ok "restored the reachable origin and the agent heartbeated again ${OFFLINE_RECOVERY_SECONDS}s after the restart, with NRestarts still ${OFFLINE_N_RESTARTS_END}"
+evidence "offline.recovery_seconds=${OFFLINE_RECOVERY_SECONDS}"
+evidence "offline.restored_origin=${BASE_URL}"
 
 # --- S7: continuous work through the real control plane --------------------
 section "S7 continuous work: operator tasks executed and reported by the agent"
@@ -1212,6 +1760,14 @@ wait_until 240 "observe-task-1-completed" task_status_is "${TASK1_ID}" COMPLETED
 TASK1_ISSUED="$(task_field "${TASK1_ID}" issued_at)"
 TASK1_COMPLETED="$(task_field "${TASK1_ID}" completed_at)"
 TASK1_OUTCOME="$(task_field "${TASK1_ID}" result_outcome)"
+# The agent's own result payload marks success with a status field (na-core
+# protocol.py make_result: status/data), while the control plane projects that
+# into result_outcome. Both lines must agree on the vocabulary: a plane that
+# reads a key the agent never sends silently reports every task as UNKNOWN.
+TASK1_PAYLOAD="$(journal_result_for "${TASK1_ID}" | json_pick 'doc[0]["result"]')"
+TASK1_AGENT_STATUS="$(printf '%s' "${TASK1_PAYLOAD}" | json_query 'str(doc.get("status") or doc.get("outcome") or "")')"
+assert_eq "${TASK1_AGENT_STATUS}" "SUCCEEDED" "the agent must report an executed read-only task as SUCCEEDED"
+assert_eq "${TASK1_OUTCOME}" "${TASK1_AGENT_STATUS}" "the control plane projection must agree with the agent's result status (the plane reads result.outcome while the agent sends result.status: a mismatch means the two lines disagree on the result vocabulary)"
 record_ok "the agent executed operator task ${TASK1_ID} (node.observe) and reported outcome ${TASK1_OUTCOME}"
 evidence "task.observe_1_id=${TASK1_ID}"
 evidence "task.observe_1_issued_at=${TASK1_ISSUED}"
@@ -1637,6 +2193,75 @@ evidence "task_safety.forbidden_operation=${FORBIDDEN_OPERATION_STATUS}"
 evidence "task_safety.forbidden_params=${FORBIDDEN_PARAMS_STATUS}"
 evidence "task_safety.forbidden_argv=${FORBIDDEN_ARGV_STATUS}"
 
+# Submission boundary: a malformed task must be refused when the operator submits
+# it, not after the agent has accepted the envelope. These are the independent
+# consumer's real limits, so they are asserted here rather than trusted to the
+# agent's refusal path. The legal shapes this script uses elsewhere are the
+# counterparts: want is always an array, nonces are real base64url of 16+ bytes,
+# and task ids are server-assigned.
+BOUNDARY_LEGAL_NONCE="$(head -c 18 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')"
+set +e
+WANT_STRING_OUTPUT="$(create_task node.observe '{"want":"identity"}' 2>&1)"
+WANT_STRING_STATUS=$?
+SHORT_NONCE_OUTPUT="$(create_task agent.self.test "{\"nonce\":\"short\"}" 2>&1)"
+SHORT_NONCE_STATUS=$?
+set -e
+assert_eq "${WANT_STRING_STATUS}" "3" "node.observe with a string want must be refused at submission (want must be an array)"
+assert_contains "${WANT_STRING_OUTPUT}" "TASK_PARAMS_INVALID" "a non-array want must be refused with TASK_PARAMS_INVALID"
+assert_eq "${SHORT_NONCE_STATUS}" "3" "agent.self.test with a five-character nonce must be refused at submission"
+assert_contains "${SHORT_NONCE_OUTPUT}" "TASK_PARAMS_INVALID" "a non-base64url, too-short nonce must be refused with TASK_PARAMS_INVALID"
+
+# A caller-supplied task id must never be accepted unless it matches the task-id
+# charset. Either the operator surface rejects the field outright or it validates
+# it; both are a refusal, which is what the consumer needs.
+ILLEGAL_TASK_ID_BODY="${WORK}/body-illegal-task-id.json"
+python3 - "${ILLEGAL_TASK_ID_BODY}" "${SERVER_NODE_UID}" "${BOUNDARY_LEGAL_NONCE}" <<'PY'
+import json
+import sys
+
+path, node_uid, nonce = sys.argv[1:4]
+document = {
+    "node_uid": node_uid,
+    "operation": "agent.self.test",
+    "params": {"nonce": nonce},
+    "task_id": "bad id/../../etc",
+}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(document, handle)
+    handle.write("\n")
+PY
+ILLEGAL_TASK_ID_STATUS="$(curl -sS -o "${WORK}/operator-task-response.json" -w '%{http_code}' \
+  --cacert "${WORK}/tls/ca.crt" -X POST "${BASE_URL}/v0/node-tasks" \
+  -H "content-type: application/json" \
+  -H "x-ghostfleet-operator-token: ${OPERATOR_TOKEN}" \
+  --data-binary "@${ILLEGAL_TASK_ID_BODY}" 2>"${WORK}/operator-task-curl.err")"
+ILLEGAL_TASK_ID_CODE="$(python3 - "${WORK}/operator-task-response.json" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        document = json.load(handle)
+except Exception:
+    print("")
+    raise SystemExit(0)
+code = document.get("code") or document.get("error")
+print(code if isinstance(code, str) else "")
+PY
+)"
+assert_eq "${ILLEGAL_TASK_ID_STATUS}" "400" "an illegal task id must be refused with 400 at submission (got code ${ILLEGAL_TASK_ID_CODE})"
+case "${ILLEGAL_TASK_ID_CODE}" in
+  NODE_REQUEST_INVALID|TASK_REQUEST_INVALID|TASK_ID_INVALID) : ;;
+  *) fail_check "an illegal task id must be refused with a task-request code, not ${ILLEGAL_TASK_ID_CODE}" ;;
+esac
+OPERATOR_TASK_COUNT_AFTER_BOUNDARY="$(tasks_json | json_query 'len(doc["tasks"])')"
+assert_eq "${OPERATOR_TASK_COUNT_AFTER_BOUNDARY}" "${TASK_COUNT_BEFORE_FORBIDDEN}" "malformed tasks must not be queued"
+record_ok "malformed submissions are refused at the operator surface (non-array want, short nonce, illegal task id) and nothing is queued"
+evidence "task_safety.boundary_want_string=${WANT_STRING_STATUS}"
+evidence "task_safety.boundary_short_nonce=${SHORT_NONCE_STATUS}"
+evidence "task_safety.boundary_illegal_task_id=${ILLEGAL_TASK_ID_STATUS}"
+evidence "task_safety.boundary_illegal_task_id_code=${ILLEGAL_TASK_ID_CODE}"
+
 # Crash fence: inject the ADR section 7 ledger record as if the previous attempt
 # had fsynced MAY_HAVE_EXECUTED and died. On start the agent must report UNKNOWN
 # and must NOT execute the task again.
@@ -1693,7 +2318,7 @@ CRASH_FENCE_SECONDS=$((SECONDS - CRASH_FENCE_STARTED))
 CRASH_ROWS="$(journal_result_for "${TASK_CRASH_ID}")"
 CRASH_ROW_COUNT="$(printf '%s' "${CRASH_ROWS}" | json_query 'len(doc)')"
 assert_eq "${CRASH_ROW_COUNT}" "1" "the reconciler must post exactly one result for the fenced task"
-CRASH_OUTCOME="$(printf '%s' "${CRASH_ROWS}" | json_pick 'doc[0]["result"]["outcome"]' | tr -d '"')"
+CRASH_OUTCOME="$(printf '%s' "${CRASH_ROWS}" | json_query 'str((doc[0].get("result") or {}).get("status") or (doc[0].get("result") or {}).get("outcome") or "")')"
 assert_eq "${CRASH_OUTCOME}" "UNKNOWN" "a task interrupted after MAY_HAVE_EXECUTED must be reported as UNKNOWN"
 assert_eq "$(task_field "${TASK_CRASH_ID}" result_outcome)" "UNKNOWN" "the control plane must hold the UNKNOWN outcome"
 assert_eq "$(task_field "${TASK_CRASH_ID}" status)" "COMPLETED" "the fenced task must be completed by the reconciler"
@@ -1883,7 +2508,8 @@ evidence "summary.unit_path=${HOST_UNIT_PATH}"
 evidence "summary.n_restarts_after_window=${N_RESTARTS_AFTER_WINDOW}"
 evidence "summary.linger=${HOST_LINGER}"
 evidence "summary.ops_account_uid=${OPS_ACCOUNT_UID}"
-evidence "summary.install_line_capability_status=verified"
+evidence "summary.install_line_capability_status=${CAPABILITY_STATUS_POSITIVE}"
+evidence "summary.unit_sha256=${INSTALLED_UNIT_SHA}"
 
 # The runbook template: REAL facts are measured above, STUB facts are the
 # synthetic seams, NOT_RUN facts are outside what a disposable cloud runner can
@@ -1892,20 +2518,33 @@ cat > "${WORK}/result-lines.txt" <<TXT
 REAL: a deterministically built zipapp and the pinned systemd user unit were installed and verified (systemd-analyze --user verify exit ${VERIFY_STATUS})
 REAL: the resident control account ${ACCOUNT} (uid ${ACCOUNT_UID}) runs the agent with no login, no sudo and no privileged group
 REAL: the agent stayed ActiveState=active for more than two heartbeat cycles and kept observing (heartbeats ${HEARTBEATS_BEFORE} -> ${HEARTBEATS_AFTER})
-REAL: after loginctl terminate-user the enabled service returned to active in ${RECOVERY_TOTAL_SECONDS}s from the user manager restart, with no login (pid ${PID_BEFORE_RECOVERY} -> ${PID_AFTER_RECOVERY})
+REAL: after loginctl terminate-user the enabled service returned to active in ${RECOVERY_TOTAL_SECONDS}s from the user manager restart (boot_restore=user_manager_restart; a real kernel reboot is NOT_RUN below), with no login (pid ${PID_BEFORE_RECOVERY} -> ${PID_AFTER_RECOVERY})
 REAL: kill -9 returned the service to active in ${KILL_RECOVERY_SECONDS}s with NRestarts ${N_RESTARTS_BEFORE_KILL} -> ${N_RESTARTS_AFTER_KILL}; SIGTERM exited 0 and did not restart within ${WINDOW_OBSERVED}s
 REAL: two node.observe tasks returned different observations (${DIFF_COUNT} differing fields, ${UPTIME_DIFFS} uptime-like), agent.self.test echoed a fresh nonce, and service.status.read reported the agent-observed unit state ${SVC_OBSERVED_STATE}
-REAL: task safety held (nonce replay 409, idempotent result 200, conflicting result 409, forbidden operations and parameters 400-level)
+REAL: task safety held (byte-identical replay 409, nonce reuse 409 NODE_NONCE_REPLAY, idempotent result 200, conflicting result 409 TASK_RESULT_CONFLICT, forbidden operations and parameters refused, and malformed submissions refused at the operator surface with ${WANT_STRING_STATUS}/${SHORT_NONCE_STATUS}/${ILLEGAL_TASK_ID_STATUS})
 REAL: the MAY_HAVE_EXECUTED fence produced exactly one UNKNOWN result and no re-execution (ledger RECONCILED, started_at kept)
 REAL: a read-only consumer with its own token read agent health ${OBSERVED_HEALTH}, version ${OBSERVED_AGENT_VERSION} and result digest ${CONSUMER_OBSERVE_DIGEST} through the product timeline, and could not mint tasks
-STUB: the control plane is the repository's own modules served over loopback HTTPS with a synthetic node fixture; no enrollment ticket or public bridge is exercised
-STUB: the operator and observer bearer split lives in this harness because src/control-plane/http.js owns no transport auth; the product handler is the repository's own, and the node fixture is synthetic (no enrollment ticket, no public bridge)
+REAL: the unit runs inside an implicit PrivateUsers namespace (uid_map "${UID_MAP_FIRST}" from the host and "${SANDBOX_UID_MAP}" from inside it), sees the host configuration as uid ${SANDBOX_CONFIG_UID} mode ${SANDBOX_CONFIG_MODE} through nsenter --preserve-credentials, and has a read-only mount of / (${ROOT_MOUNT_FLAGS}) while staying active
+REAL: a configuration the control account cannot read stops the agent with exit ${CONFIG_TRUST_EXIT} and ${CONFIG_TRUST_CODE}, and restoring the mode returns the unit to active
+REAL: with an unreachable control plane (${OFFLINE_ORIGIN}) the agent stayed active for ${OFFLINE_WINDOW_SECONDS}s across ${OFFLINE_SAMPLES} samples (NRestarts ${OFFLINE_N_RESTARTS_START} -> ${OFFLINE_N_RESTARTS_END}, no watchdog kill, WatchdogTimestamp advanced ${OFFLINE_WATCHDOG_ADVANCE}s) and heartbeated again ${OFFLINE_RECOVERY_SECONDS}s after the origin was restored
+REAL: with no capability projection in place the agent's heartbeat was still accepted and the control plane projected capability_digest as ${UNPROJECTED_DIGEST} (no NODE_REQUEST_INVALID refused heartbeats in the journal)
+REAL: child processes never inherited NOTIFY_SOCKET (${NOTIFY_REJECT_LINES} "reception only permitted for main PID" journal lines in ${NOTIFY_SOCKET_JOURNAL_LINES} lines of unit journal)
+REAL: the two artifacts measured end to end are the payload sha256 ${SECOND_SHA} (${PAYLOAD_BYTES} B) and the unit sha256 ${INSTALLED_UNIT_SHA} ($(stat -c %s "${ACCOUNT_HOME}/.config/systemd/user/${UNIT_NAME}") B); these are the bytes this run installed, not a filename claim, and the release pin that freezes them belongs to the integration lane
+STUB: the control plane is the repository's own handler, store and node-plane verification served over loopback HTTPS with a synthetic node fixture (admitted through the real controller calls, no enrollment ticket, no public bridge); the operator/observer bearer split lives in this harness because src/control-plane/http.js deliberately owns no transport auth
 NOT_RUN: real tailnet reachability and a real remote operator hop
 NOT_RUN: a real Cloudflare Worker deployment of the node bridge or of the control plane
 NOT_RUN: real OMV8 hardware, real disks and real service units of the target host
 NOT_RUN: real PAM su/sudo interaction (the control account has a nologin shell; sudo refusal is measured, not a Human session)
 NOT_RUN: a real machine reboot (session recovery restarts the user manager instead), credential rotation, and multi-node lease races
 TXT
+# Arms that only ran against a fixture stand-in are labelled here instead of
+# being counted as product evidence.
+if [[ "${PAYLOAD_IS_PRODUCT}" != "yes" ]]; then
+  printf '%s\n' "STUB: the agent payload under test was built by ${BUILD_ENTRY_LABEL}, not by the product build entry packages/node-agent/tools/build_pyz.py, so every agent-level arm above exercised a fixture payload instead of the product agent" >> "${WORK}/result-lines.txt"
+fi
+if [[ "${CAPABILITY_STATUS_POSITIVE}" != "yes" ]]; then
+  printf '%s\n' "NOT_RUN: a positive /etc/ghostfleet/capability-status.json needs the courier lane's pinned rows (fleet_privctl.py, privileged-ops.pub, managed-linux-privileged-operations.sh) and its reviewed template digest; this lifecycle job installs only the unit and the payload, and the published writer is proven to refuse that partial set (exit ${EMITTER_STATUS}, EMIT_CAPABILITY_STATUS_INPUT_INVALID)" >> "${WORK}/result-lines.txt"
+fi
 while IFS= read -r result_line; do
   printf '%s\n' "${result_line}"
 done < "${WORK}/result-lines.txt"
