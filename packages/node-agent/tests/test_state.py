@@ -1,0 +1,177 @@
+"""state.json：原子写、损坏 fail-closed、启动周期与 seq 语义。"""
+from __future__ import annotations
+
+import json
+import os
+import stat
+
+import pytest
+
+from ghostfleet_agent import state as state_module
+from ghostfleet_agent.state import (
+    BOOT_ID_PATH,
+    UNKNOWN_BOOT_ID,
+    AgentState,
+    StateCorruptError,
+    StateStore,
+    StateWriteError,
+    StoreError,
+    atomic_write_bytes,
+    atomic_write_json,
+    ensure_state_dir,
+    read_boot_id,
+)
+
+BOOT_UUID = "11111111-2222-3333-4444-555555555555"
+
+
+def _store(tmp_path, *, boot_id=None) -> StateStore:
+    # boot_id 现在由进程启动时生成并持久化轮换（合同 A），旧 boot_id_path 仅为兼容保留。
+    boot_path = tmp_path / "boot_id"
+    boot_path.write_text((boot_id if boot_id is not None else BOOT_UUID) + "\n", encoding="utf-8")
+    return StateStore(str(tmp_path / "state" / "state.json"), boot_id_path=str(boot_path))
+
+
+def test_state_initialisation_is_atomic_and_private(tmp_path):
+    store = _store(tmp_path)
+    state = store.load()
+    path = tmp_path / "state" / "state.json"
+    assert path.exists()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert state_module.BOOT_ID_RE.fullmatch(state.boot_id)
+    assert state.boot_id != BOOT_UUID
+    assert state.seq == 0
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert document["schema"] == state_module.STATE_SCHEMA
+    assert sorted(os.listdir(path.parent)) == ["state.json"]
+
+
+def test_sequencing_and_persistence(tmp_path):
+    store = _store(tmp_path)
+    store.load()
+    assert store.next_seq() == 1
+    assert store.next_seq() == 2
+    store.record_heartbeat(interval_s=30, observation={"a": 1}, health="OK")
+    reloaded = _store(tmp_path).load()
+    assert reloaded.last_health == "OK"
+    assert reloaded.server_interval_s == 30.0
+    assert reloaded.last_observation == {"a": 1}
+    assert reloaded.last_heartbeat_at is not None
+
+
+def test_failure_and_stop_bookkeeping(tmp_path):
+    store = _store(tmp_path)
+    store.load()
+    store.record_failure(4, health="FAILING")
+    assert store.state.consecutive_failures == 1
+    assert store.state.next_backoff_s == 4
+    store.mark_stopping()
+    assert store.state.stopping is True
+    store.record_stop()
+    assert store.state.stopping is False
+    assert store.state.last_stop is not None
+
+
+def test_new_boot_resets_seq_and_stopping(tmp_path):
+    store = _store(tmp_path)
+    first = store.load()
+    store.next_seq()
+    store.next_seq()
+    store.record_poll()
+    store.record_task_executed()
+    store.record_outbox_overflow(2)
+    store.mark_stopping()
+    store.save()
+
+    other_boot = _store(tmp_path).load()
+    assert other_boot.boot_id != first.boot_id
+    assert state_module.BOOT_ID_RE.fullmatch(other_boot.boot_id)
+    assert other_boot.seq == 0
+    assert other_boot.stopping is False
+    assert other_boot.consecutive_failures == 0
+    # 连续工作计数跨重启保留（合同 E/F）。
+    assert other_boot.polls == 1
+    assert other_boot.tasks_executed == 1
+    assert other_boot.outbox_overflow == 2
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "{",
+        "[]",
+        '{"schema": "wrong"}',
+        "[]",
+    ],
+)
+def test_corrupt_state_is_rejected(tmp_path, text):
+    directory = tmp_path / "state"
+    directory.mkdir()
+    (directory / "state.json").write_text(text, encoding="utf-8")
+    with pytest.raises(StateCorruptError):
+        _store(tmp_path).load()
+
+
+def test_oversize_state_is_rejected(tmp_path):
+    directory = tmp_path / "state"
+    directory.mkdir()
+    (directory / "state.json").write_text(" " * (state_module.MAX_STATE_BYTES + 1), encoding="utf-8")
+    with pytest.raises(StateCorruptError):
+        _store(tmp_path).load()
+
+
+def test_atomic_write_failure_leaves_no_half_file(tmp_path, monkeypatch):
+    target = tmp_path / "payload.json"
+    atomic_write_json(target, {"a": 1})
+    original = target.read_bytes()
+
+    def _boom(source, destination):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(state_module.os, "replace", _boom)
+    with pytest.raises(StateWriteError):
+        atomic_write_json(target, {"a": 2})
+    assert target.read_bytes() == original
+    assert sorted(os.listdir(tmp_path)) == ["payload.json"]
+
+
+def test_atomic_write_failure_without_previous_file(tmp_path, monkeypatch):
+    target = tmp_path / "fresh.json"
+    monkeypatch.setattr(state_module.os, "replace", lambda *_a: (_ for _ in ()).throw(OSError("boom")))
+    with pytest.raises(StateWriteError):
+        atomic_write_bytes(target, b"{}")
+    assert sorted(os.listdir(tmp_path)) == []
+
+
+def test_state_dir_is_created_private_and_symlink_rejected(tmp_path):
+    directory = tmp_path / "state"
+    ensure_state_dir(str(directory))
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+    target = tmp_path / "real"
+    target.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(target, target_is_directory=True)
+    with pytest.raises(StoreError):
+        ensure_state_dir(str(link))
+
+
+def test_read_boot_id_is_bounded(tmp_path):
+    if not os.path.exists(BOOT_ID_PATH):
+        pytest.skip("/proc is not available")
+    value = read_boot_id()
+    assert value == UNKNOWN_BOOT_ID or len(value) >= 8
+    bad = tmp_path / "boot"
+    bad.write_text("not-a-uuid\n", encoding="utf-8")
+    assert read_boot_id(str(bad)) == UNKNOWN_BOOT_ID
+
+
+def test_agent_state_from_document_tolerates_out_of_range_scalars():
+    state = AgentState.from_document({"schema": state_module.STATE_SCHEMA, "seq": -1, "boot_id": 5, "next_backoff_s": 99999})
+    assert state.seq == 0
+    assert state.boot_id == UNKNOWN_BOOT_ID
+    assert state.next_backoff_s == 0
+
+
+def test_agent_state_from_document_ignores_unknown_fields():
+    state = AgentState.from_document({"schema": state_module.STATE_SCHEMA, "seq": 3, "extra": "x"})
+    assert state.seq == 3
