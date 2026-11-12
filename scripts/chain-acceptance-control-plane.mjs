@@ -280,10 +280,15 @@ server.listen(0, "127.0.0.1", () => {
   // distinguishable origins while exercising one process.
   const assetsOrigin = "https://127.0.0.1:" + port;
   const enrollOrigin = "https://localhost:" + port;
+  // A third, distinct host: the node plane the agent polls after enrollment. It
+  // is carried as an environment variable only and the stub never fetches it, so
+  // the synthetic .invalid name never resolves, let alone leaves this process.
+  const nodePlaneOrigin = "https://node-plane.example.invalid:" + port;
   // The launcher text is the real createTicketDelivery output, unmodified.
   const delivery = createTicketDelivery({
     record, short_code: shortCode,
-    assets_origin: assetsOrigin, enroll_origin: enrollOrigin, bootstrap_sha256: bootstrapDigest,
+    assets_origin: assetsOrigin, enroll_origin: enrollOrigin,
+    node_plane_origin: nodePlaneOrigin, bootstrap_sha256: bootstrapDigest,
   });
   writeFileSync(join(work, "launcher.sh"), "#!/bin/sh\n" + delivery.command + "\n", { mode: 0o755 });
   // The delivered selection text, decoded from the exact claim bytes, so the job

@@ -85,7 +85,8 @@ async function compose({ mode, pollute = false }) {
 
   const delivery = createTicketDelivery({
     record: { ticket_id: ticketId }, short_code: "12345678",
-    assets_origin: origin, enroll_origin: enroll.origin, bootstrap_sha256: digest,
+    assets_origin: origin, enroll_origin: enroll.origin,
+    node_plane_origin: "https://node-plane.example.invalid", bootstrap_sha256: digest,
   });
   const env = {
     PATH: (pollute ? poison + ":" : "") + bin + ":" + ROOT_PATH,

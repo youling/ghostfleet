@@ -10,6 +10,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const script = resolve(here, "../scripts/render-delivery.mjs");
 const assets_origin = "https://assets.example.invalid";
 const enroll_origin = "https://enroll.example.invalid";
+const node_plane_origin = "https://node-plane.example.invalid";
 const bootstrap_sha256 = "c".repeat(64);
 const ticket_id = "ticket-12345678-1234-1234-1234-123456789abc";
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -19,6 +20,7 @@ function render(extra = [], input = {}) {
     script,
     "--assets-origin", assets_origin,
     "--enroll-origin", enroll_origin,
+    "--node-plane-origin", node_plane_origin,
     "--bootstrap-sha256", bootstrap_sha256,
     "--ticket-id", ticket_id,
     ...extra,
@@ -28,19 +30,20 @@ function render(extra = [], input = {}) {
 
 test("the CLI renders exactly the library command, with no extra output", () => {
   const expected = createTicketDelivery({
-    ticket_id, short_code: "12345678", assets_origin, enroll_origin, bootstrap_sha256,
+    ticket_id, short_code: "12345678", assets_origin, enroll_origin, node_plane_origin, bootstrap_sha256,
   });
   const result = render(["--short-code", "12345678"]);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, expected.command + "\n");
   assert.equal(result.stderr, "");
-  // The three pinned inputs are readable for a byte-for-byte deployment check.
+  // The four pinned inputs are readable for a byte-for-byte deployment check.
   const json = JSON.parse(render(["--json"], { input: undefined }).stdout);
   assert.equal(json.assets_origin, assets_origin);
   assert.equal(json.enroll_origin, enroll_origin);
+  assert.equal(json.node_plane_origin, node_plane_origin);
   assert.equal(json.bootstrap_sha256, bootstrap_sha256);
   assert.equal(json.one_time_url, enroll_origin + "/v1/enrollment-tickets/" + ticket_id);
-  assert.equal(json.protocol, "ghostfleet-enrollment-delivery/v1");
+  assert.equal(json.protocol, "ghostfleet-enrollment-delivery/v2");
 });
 
 test("the rendered command carries the hardening and no one-time handle", () => {
@@ -54,6 +57,14 @@ test("the rendered command carries the hardening and no one-time handle", () => 
   assert.match(command, /TMPROOT=\/run\//);
   assert.match(command, /IFS= read -r GHOSTFLEET_ENROLLMENT_URL < \/dev\/tty/);
   assert.match(command, /GHOSTFLEET_OPERATING_USER="\$\{1-\}"/);
+  // The node plane is an environment variable, never a URL or an argv token.
+  assert.match(command, /GHOSTFLEET_NODE_PLANE_ORIGIN=/);
+  assert.match(command, /export GHOSTFLEET_NODE_PLANE_ORIGIN/);
+  // The courier body is repeated once per elevation branch, so the origin shows
+  // up once per branch; every appearance must still be that env assignment.
+  const nodePlaneAssignments = command.split("GHOSTFLEET_NODE_PLANE_ORIGIN=").length - 1;
+  assert.ok(nodePlaneAssignments > 0, "the node plane must be delivered as an environment assignment");
+  assert.equal(command.split(node_plane_origin).length - 1, nodePlaneAssignments, "the node plane may only appear inside its env assignment");
   // Neither the ticket id, the ticket URL, nor the short code reaches argv.
   assert.equal(command.includes(ticket_id), false);
   assert.equal(command.includes(enroll_origin + "/v1/enrollment-tickets/" + ticket_id), false, "the full one-time URL never reaches argv");
@@ -71,20 +82,30 @@ test("--print-sha256 pins exactly the default-mode bytes", () => {
   // the same deployment pin the same command bytes.
   const otherTicket = spawnSync(process.execPath, [
     script, "--assets-origin", assets_origin, "--enroll-origin", enroll_origin,
+    "--node-plane-origin", node_plane_origin,
     "--bootstrap-sha256", bootstrap_sha256, "--ticket-id", "ticket-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "--print-sha256",
   ], { encoding: "utf8" });
   assert.equal(otherTicket.stdout, pinned.stdout);
   // A different coordinate is a different pin.
   const otherDigest = spawnSync(process.execPath, [
     script, "--assets-origin", assets_origin, "--enroll-origin", enroll_origin,
+    "--node-plane-origin", node_plane_origin,
     "--bootstrap-sha256", "d".repeat(64), "--ticket-id", ticket_id, "--print-sha256",
   ], { encoding: "utf8" });
   assert.notEqual(otherDigest.stdout, pinned.stdout);
+  // The node plane is a pinned coordinate too: moving it changes the command.
+  const otherNodePlane = spawnSync(process.execPath, [
+    script, "--assets-origin", assets_origin, "--enroll-origin", enroll_origin,
+    "--node-plane-origin", "https://node-plane-2.example.invalid",
+    "--bootstrap-sha256", bootstrap_sha256, "--ticket-id", ticket_id, "--print-sha256",
+  ], { encoding: "utf8" });
+  assert.notEqual(otherNodePlane.stdout, pinned.stdout);
 });
 
 test("the legacy public_origin alias is the enrollment bridge, never the console", () => {
   const result = spawnSync(process.execPath, [
     script, "--assets-origin", assets_origin, "--public-origin", enroll_origin,
+    "--node-plane-origin", node_plane_origin,
     "--bootstrap-sha256", bootstrap_sha256, "--ticket-id", ticket_id,
   ], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -103,6 +124,18 @@ test("a mistyped flag is an error, never a silently ignored option", () => {
   }
 });
 
+function runRaw(extra) {
+  return spawnSync(process.execPath, [
+    script,
+    "--assets-origin", assets_origin,
+    "--enroll-origin", enroll_origin,
+    "--node-plane-origin", node_plane_origin,
+    "--bootstrap-sha256", bootstrap_sha256,
+    "--ticket-id", ticket_id,
+    ...extra,
+  ], { encoding: "utf8" });
+}
+
 test("invalid coordinates fail closed with an actionable code", () => {
   const cases = [
     { extra: ["--enroll-origin", assets_origin], code: "DELIVERY_ORIGINS_NOT_SEPARATED" },
@@ -111,17 +144,40 @@ test("invalid coordinates fail closed with an actionable code", () => {
     { extra: ["--ticket-id", "ticket-not-a-uuid"], code: "TICKET_ID_INVALID" },
   ];
   for (const item of cases) {
-    const args = [
-      script,
-      "--assets-origin", assets_origin,
-      "--enroll-origin", enroll_origin,
-      "--bootstrap-sha256", bootstrap_sha256,
-      "--ticket-id", ticket_id,
-      ...item.extra,
-    ];
-    const result = spawnSync(process.execPath, args, { encoding: "utf8" });
+    const result = runRaw(item.extra);
     assert.equal(result.status, 2, item.code);
     assert.equal(result.stdout, "", item.code + " must not print a command");
     assert.match(result.stderr, new RegExp(item.code));
+  }
+});
+
+test("the node plane origin is mandatory and must be a separate exact origin", () => {
+  // Missing flag: a deployment that cannot name the agent's plane must not get a
+  // command at all. The courier can no longer silently receive the broker origin
+  // as its control_plane_origin.
+  const missing = spawnSync(process.execPath, [
+    script, "--assets-origin", assets_origin, "--enroll-origin", enroll_origin,
+    "--bootstrap-sha256", bootstrap_sha256, "--ticket-id", ticket_id,
+  ], { encoding: "utf8" });
+  assert.equal(missing.status, 2);
+  assert.equal(missing.stdout, "");
+  assert.match(missing.stderr, /DELIVERY_NODE_PLANE_ORIGIN_REQUIRED/);
+
+  const cases = [
+    { value: assets_origin, code: "DELIVERY_ORIGINS_NOT_SEPARATED", why: "same host as the asset origin" },
+    { value: enroll_origin, code: "DELIVERY_ORIGINS_NOT_SEPARATED", why: "same host as the Access-protected enrollment bridge" },
+    { value: "http://node-plane.example.invalid", code: "DELIVERY_NODE_PLANE_ORIGIN_INVALID", why: "plain http" },
+    { value: node_plane_origin + "/v1", code: "DELIVERY_NODE_PLANE_ORIGIN_INVALID", why: "path" },
+    { value: node_plane_origin + "/?a=1", code: "DELIVERY_NODE_PLANE_ORIGIN_INVALID", why: "query" },
+    { value: node_plane_origin + "/#frag", code: "DELIVERY_NODE_PLANE_ORIGIN_INVALID", why: "fragment" },
+    // Composed so the source never carries a complete credential-bearing URL.
+    { value: "https://" + "user:pass@node-plane.example.invalid", code: "DELIVERY_NODE_PLANE_ORIGIN_INVALID", why: "userinfo" },
+    { value: "node-plane.example.invalid", code: "DELIVERY_NODE_PLANE_ORIGIN_INVALID", why: "not URL-shaped" },
+  ];
+  for (const item of cases) {
+    const result = runRaw(["--node-plane-origin", item.value]);
+    assert.equal(result.status, 2, item.why);
+    assert.equal(result.stdout, "", item.why + " must not print a command");
+    assert.match(result.stderr, new RegExp(item.code), item.why);
   }
 });

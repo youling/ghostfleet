@@ -7,7 +7,7 @@ import { CORE_OWNED_EVIDENCE, DEFAULT_ACCEPTANCE_EVIDENCE } from "../src/core/mo
 
 test("HTTP API creates and lists enrollment attempts", async () => {
   const controller = new GhostFleetController();
-  const handle = createHttpHandler(controller);
+  const handle = createHttpHandler(controller, { authorizeOperator: () => true });
   const create = await handle(new Request("http://ghostfleet.test/v0/enrollment-attempts", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -24,7 +24,7 @@ test("HTTP API creates and lists enrollment attempts", async () => {
 });
 
 test("HTTP health endpoint is independent from node availability", async () => {
-  const handle = createHttpHandler(new GhostFleetController());
+  const handle = createHttpHandler(new GhostFleetController(), { authorizeOperator: () => true });
   const response = await handle(new Request("http://ghostfleet.test/healthz"));
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true, service: "ghostfleet", version: "0.1.0-dev" });
@@ -32,7 +32,7 @@ test("HTTP health endpoint is independent from node availability", async () => {
 
 test("HTTP and read-only MCP expose the same provisional identity before and after acceptance", async () => {
   const c = new GhostFleetController();
-  const handle = createHttpHandler(c);
+  const handle = createHttpHandler(c, { authorizeOperator: () => true });
   const mcp = createMcpDispatcher(c);
   const a = c.createEnrollmentAttempt();
   c.prepareEnrollmentAttempt(a.attempt_id);
@@ -57,7 +57,7 @@ test("HTTP and read-only MCP expose the same provisional identity before and aft
 
 test("operator HTTP cannot forge Linux admission evidence or bootstrap completion", async () => {
   const c = new GhostFleetController();
-  const handle = createHttpHandler(c);
+  const handle = createHttpHandler(c, { authorizeOperator: () => true });
   const attempt = c.createEnrollmentAttempt({ asset_hint: "synthetic-target" });
   c.prepareEnrollmentAttempt(attempt.attempt_id);
   c.claimEnrollmentAttempt(attempt.attempt_id);

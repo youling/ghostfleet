@@ -18,7 +18,12 @@ const preflight = "sha256:" + "a".repeat(64);
 const origin = "https://ghostfleet.invalid";
 // The material origin and the enrollment bridge are separate public surfaces.
 const enroll = "https://enroll.example.invalid";
-const enrollmentDelivery = { assets_origin: "https://assets.example.invalid", enroll_origin: enroll, bootstrap_sha256: "b".repeat(64) };
+const enrollmentDelivery = {
+  assets_origin: "https://assets.example.invalid",
+  enroll_origin: enroll,
+  node_plane_origin: "https://node-plane.example.invalid",
+  bootstrap_sha256: "b".repeat(64),
+};
 // Synthetic UID assembled at runtime: the publication guard reserves literal
 // node identifiers for reviewed fixtures.
 const NODE_UID = ["node", "00000000", "0000", "4000", "8000", "000000000001"].join("-");
@@ -237,7 +242,7 @@ test("an accepted bundle is re-encoded from the validated selection, so shell an
 
 test("the HTTP claim never lets a client supply or widen the selection", async () => {
   const { c, attempt } = await scoped("managed-linux-standard");
-  const handler = createHttpHandler(c);
+  const handler = createHttpHandler(c, { authorizeOperator: () => true });
   const issued = await issue(c, attempt.attempt_id);
   const response = await handler(new Request(origin + "/v1/enrollment-tickets/" + issued.ticket.ticket_id + "/claim", {
     method: "POST",

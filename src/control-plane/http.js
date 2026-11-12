@@ -51,18 +51,47 @@ async function body(request, limit = BODY_LIMITS.default) {
   return text ? JSON.parse(text) : {};
 }
 
+// A response that carries a plaintext node credential must never be stored by an
+// intermediary cache, including a retried completion or a rotation.
+const CREDENTIAL_RESPONSE_HEADERS = Object.freeze({ "cache-control": "no-store", pragma: "no-cache" });
+
+// Only a contract-shaped code is reflected to the caller. An internal message
+// ("Cannot read properties of undefined ...", "Maximum call stack size exceeded")
+// is a bug, not a protocol answer, so it is logged and answered as a generic 500.
+const CONTRACT_CODE_PATTERN = /^[A-Z][A-Z0-9_]{2,79}$/;
+
 function errorResponse(error) {
-  const code = error?.code || (error instanceof SyntaxError ? "INVALID_JSON" : error?.message) || "INTERNAL_ERROR";
+  const candidate =
+    (typeof error?.code === "string" && error.code) ||
+    (error instanceof SyntaxError ? "INVALID_JSON" : typeof error?.message === "string" ? error.message : "");
+  if (!CONTRACT_CODE_PATTERN.test(candidate)) {
+    console.error("control-plane internal error:", error);
+    return json({ ok: false, error: "INTERNAL_ERROR" }, 500);
+  }
+  const code = candidate;
   const status = Number.isInteger(error?.status) ? error.status : code.includes("NOT_FOUND") ? 404 : code.includes("INVALID") || code.includes("MISSING") ? 409 : 400;
-  const payload = { ok: false, error: code };
+  // The operator plane follows the same double-field convention as the node
+  // plane: `error` is this repo's convention and `code` is what a client that
+  // dispatches on a stable code reads (na-core client.py _extract_error_code).
+  const payload = { ok: false, error: code, code };
   if (Array.isArray(error?.missing)) payload.missing = error.missing;
   return json(payload, status);
 }
 
-export function createHttpHandler(controller) {
+export function createHttpHandler(controller, options = {}) {
+  const authorizeOperator = options.authorizeOperator;
   // A node request is bounded, verified, and only then applied. The body limit
   // is enforced twice (declared content-length and streamed byte count) because
   // an anonymous node token holder is not trusted with the buffer.
+  // Node-plane failures carry the stable code twice: `error` is this repo's
+  // convention, `code` is what the Python agent client dispatches on
+  // (na-core client.py _extract_error_code reads `code` or `error.code`).
+  // Without the second field a 409 nonce/seq/boot conflict degrades from an
+  // automatic retry into a dropped request, so both are always emitted.
+  function nodeErrorPayload(code, extra = {}) {
+    return { ok: false, error: code, code, ...extra };
+  }
+
   async function nodeAgentRequest(request, node_uid, kind, task_id = null) {
     const limit = NODE_BODY_LIMITS[kind];
     let text;
@@ -70,12 +99,12 @@ export function createHttpHandler(controller) {
       text = await readText(request, limit);
     } catch (error) {
       // One body-cap failure has one code, no matter which layer noticed it.
-      if (error instanceof RequestBodyTooLarge) return json({ ok: false, error: "NODE_BODY_TOO_LARGE" }, 413);
+      if (error instanceof RequestBodyTooLarge) return json(nodeErrorPayload("NODE_BODY_TOO_LARGE"), 413);
       throw error;
     }
     const verification = controller.verifyNodeRequest({ node_uid, headers: request.headers, body: text, limit });
     if (!verification.ok) {
-      const payload = { ok: false, error: verification.code };
+      const payload = nodeErrorPayload(verification.code);
       const headers = {};
       if (Number.isInteger(verification.retry_after_s)) {
         payload.retry_after_s = verification.retry_after_s;
@@ -83,9 +112,38 @@ export function createHttpHandler(controller) {
       }
       return json(payload, verification.status, headers);
     }
-    if (kind === "heartbeat") return json(controller.nodeHeartbeat(verification));
-    if (kind === "poll") return json(controller.pollNodeTasks(verification));
-    return json(controller.applyNodeTaskResult(verification, task_id));
+    try {
+      if (kind === "heartbeat") return json(controller.nodeHeartbeat(verification));
+      if (kind === "poll") return json(controller.pollNodeTasks(verification));
+      return json(controller.applyNodeTaskResult(verification, task_id));
+    } catch (error) {
+      // Task-level failures (conflict / not found / scope) keep the same shape
+      // so a result submission can be classified as terminal by the agent.
+      if (error instanceof NodeAgentError) return json(nodeErrorPayload(error.code), error.status);
+      throw error;
+    }
+  }
+
+  // Fail closed by construction: without an explicit operator authorizer no
+  // operator route is served at all, so importing this handler directly can never
+  // be an authorization bypass. The adapter still gates first; this is the second
+  // line, and a node credential is never an operator credential.
+  async function requireOperator(request) {
+    if (typeof authorizeOperator !== "function") {
+      return json({ ok: false, error: "OPERATOR_AUTHORIZATION_UNAVAILABLE" }, 503);
+    }
+    let outcome;
+    try {
+      outcome = await authorizeOperator(request);
+    } catch {
+      return json({ ok: false, error: "OPERATOR_AUTH_INVALID" }, 401);
+    }
+    // Allowed: `true`, or `null` which is how the reference adapter's
+    // authorizeApi reports success. A denial Response passes through unchanged;
+    // anything else (including `undefined`) fails closed.
+    if (outcome === true || outcome === null) return null;
+    if (outcome instanceof Response) return outcome;
+    return json({ ok: false, error: "OPERATOR_AUTH_REQUIRED" }, 401);
   }
 
   return async function handle(request) {
@@ -93,7 +151,6 @@ export function createHttpHandler(controller) {
     const path = url.pathname.replace(/\/+$/, "") || "/";
     try {
       if (request.method === "GET" && path === "/healthz") return json({ ok: true, service: "ghostfleet", version: "0.1.0-dev" });
-      if (request.method === "GET" && path === "/v0/nodes") return json({ ok: true, nodes: controller.listNodes() });
 
       // Node agent plane (§5.2). These three routes authenticate with the node
       // credential, never the operator bearer, so they are matched before the
@@ -106,6 +163,13 @@ export function createHttpHandler(controller) {
       if (request.method === "POST" && resultRoute) {
         return await nodeAgentRequest(request, decodeURIComponent(resultRoute[1]), "result", decodeURIComponent(resultRoute[2]));
       }
+
+      // Every remaining /v0 route is an operator action.
+      if (path === "/v0" || path.startsWith("/v0/")) {
+        const denial = await requireOperator(request);
+        if (denial) return denial;
+      }
+      if (request.method === "GET" && path === "/v0/nodes") return json({ ok: true, nodes: controller.listNodes() });
 
       // Operator task and credential routes. They reuse the global operator
       // bearer enforced by the adapter, and they never expose a node token.
@@ -135,7 +199,7 @@ export function createHttpHandler(controller) {
         const input = await body(request, BODY_LIMITS.node_credential);
         const node_uid = input?.node_uid;
         if (typeof node_uid !== "string") throw new NodeAgentError("NODE_REQUEST_INVALID", 400);
-        return json(controller.rotateNodeCredential(node_uid));
+        return json(controller.rotateNodeCredential(node_uid), 200, CREDENTIAL_RESPONSE_HEADERS);
       }
       if (request.method === "GET" && path === "/v0/enrollment-attempts") return json({ ok: true, attempts: controller.listEnrollmentAttempts() });
       if (request.method === "GET" && path === "/v0/enrollment-templates") return json({ ok: true, templates: controller.listEnrollmentTemplates() });
@@ -169,7 +233,7 @@ export function createHttpHandler(controller) {
 
       if (request.method === "POST" && path === "/v1/enroll/complete") {
         const input = await body(request, BODY_LIMITS.complete);
-        return json({ ok: true, ...controller.completeEnrollmentTicket(input) });
+        return json({ ok: true, ...controller.completeEnrollmentTicket(input) }, 200, CREDENTIAL_RESPONSE_HEADERS);
       }
 
       match = /^\/v0\/enrollment-attempts\/([^/]+)\/([^/]+)$/.exec(path);

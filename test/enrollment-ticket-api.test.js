@@ -8,12 +8,14 @@ import { BOOTSTRAP_SH } from "../packages/bootstrap/src/index.js";
 
 const template_selection = { template_id: "managed-linux-tailscale", overrides: { "providers.tailscale.ssh": true } };
 const preflight = "sha256:" + "a".repeat(64);
-// Two public surfaces: immutable content-addressed material, and the narrow
-// enrollment bridge that owns the one-time ticket URL.
+// Three public surfaces: immutable content-addressed material, the narrow
+// enrollment bridge that owns the one-time ticket URL, and the node plane the
+// enrolled agent polls (never the Access-protected enrollment bridge).
 const assets_origin = "https://assets.example.invalid";
 const enroll_origin = "https://enroll.example.invalid";
+const node_plane_origin = "https://node-plane.example.invalid";
 const bootstrap_sha256 = "b".repeat(64);
-const enrollmentDelivery = { assets_origin, enroll_origin, bootstrap_sha256 };
+const enrollmentDelivery = { assets_origin, enroll_origin, node_plane_origin, bootstrap_sha256 };
 
 function syntheticMaterializer() {
   return async ({ attempt, ticket, preflight_digest }) => ({
@@ -118,7 +120,7 @@ test("ambiguous provider preparation creates no GhostFleet ticket and retries on
 
 test("an invalid enrollment origin cannot persist an unrecoverable ticket", async () => {
   const store = new InMemoryStore();
-  const c = controller({ store, enrollmentDelivery: { assets_origin, enroll_origin: "http://example.invalid", bootstrap_sha256 } });
+  const c = controller({ store, enrollmentDelivery: { assets_origin, enroll_origin: "http://example.invalid", node_plane_origin, bootstrap_sha256 } });
   const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
   await assert.rejects(
     () => c.issueEnrollmentTicket(attempt.attempt_id),
@@ -168,7 +170,7 @@ test("a deployment without the immutable asset coordinates mints nothing and pre
 
 test("collapsing the asset and enrollment origins onto one host is refused", async () => {
   const store = new InMemoryStore();
-  const c = controller({ store, enrollmentDelivery: { assets_origin, enroll_origin: assets_origin, bootstrap_sha256 } });
+  const c = controller({ store, enrollmentDelivery: { assets_origin, enroll_origin: assets_origin, node_plane_origin, bootstrap_sha256 } });
   const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
   await assert.rejects(
     () => c.issueEnrollmentTicket(attempt.attempt_id),
@@ -177,12 +179,20 @@ test("collapsing the asset and enrollment origins onto one host is refused", asy
   assert.equal(store.findEnrollmentTicketByAttempt(attempt.attempt_id), null);
 });
 
-test("delivery names the asset origin, the pinned bootstrap digest and the enrollment origin", async () => {
+test("delivery names the asset origin, the pinned bootstrap digest, the enrollment origin and the node plane", async () => {
   const c = controller();
   const attempt = c.createEnrollmentAttempt({ asset_hint: "node", template_selection });
   const issued = await c.issueEnrollmentTicket(attempt.attempt_id);
+  assert.equal(issued.delivery.protocol, "ghostfleet-enrollment-delivery/v2");
   assert.equal(issued.delivery.assets_origin, assets_origin);
+  assert.equal(issued.delivery.node_plane_origin, node_plane_origin);
   assert.equal(issued.delivery.bootstrap_sha256, bootstrap_sha256);
+  // The node plane is env-only: it is never a URL, an argv token or a log line.
+  assert.match(issued.delivery.command, /GHOSTFLEET_NODE_PLANE_ORIGIN=/);
+  assert.match(issued.delivery.command, /export GHOSTFLEET_NODE_PLANE_ORIGIN/);
+  const nodePlaneAssignments = issued.delivery.command.split("GHOSTFLEET_NODE_PLANE_ORIGIN=").length - 1;
+  assert.ok(nodePlaneAssignments > 0);
+  assert.equal(issued.delivery.command.split(node_plane_origin).length - 1, nodePlaneAssignments, "the node plane only appears inside its env assignment");
   assert.equal(issued.delivery.one_time_url, enroll_origin + "/v1/enrollment-tickets/" + issued.ticket.ticket_id);
   assert.match(issued.delivery.command, new RegExp("/sha256/" + bootstrap_sha256));
   assert.equal(issued.delivery.command.includes(issued.ticket.ticket_id), false, "the handle never reaches argv");
@@ -232,7 +242,7 @@ test("completion is resume-bound, materializes exact provisional identity, and i
 
 test("public HTTP claim route is ticket-authenticated while operator ticket issuance stays under v0", async () => {
   const c = controller();
-  const handle = createHttpHandler(c);
+  const handle = createHttpHandler(c, { authorizeOperator: () => true });
   const created = await handle(new Request("https://ghostfleet.invalid/v0/enrollment-attempts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ asset_hint: "node", template_selection }) }));
   const attempt = (await created.json()).attempt;
   const issued = await handle(new Request("https://ghostfleet.invalid/v0/enrollment-attempts/" + attempt.attempt_id + "/ticket", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }));
@@ -247,7 +257,7 @@ test("public HTTP claim route is ticket-authenticated while operator ticket issu
 
 test("oversized public bodies are refused with 413 before any claim or completion effect", async () => {
   const c = controller();
-  const handle = createHttpHandler(c);
+  const handle = createHttpHandler(c, { authorizeOperator: () => true });
   const created = await handle(new Request("https://ghostfleet.invalid/v0/enrollment-attempts", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -284,7 +294,7 @@ test("oversized public bodies are refused with 413 before any claim or completio
 
 test("bootstrap consumes the actual formatted HTTP claim response", { skip: process.platform === "win32" }, async () => {
   const c = controller();
-  const handle = createHttpHandler(c);
+  const handle = createHttpHandler(c, { authorizeOperator: () => true });
   const created = await handle(new Request("https://ghostfleet.invalid/v0/enrollment-attempts", {
     method: "POST",
     headers: { "content-type": "application/json" },

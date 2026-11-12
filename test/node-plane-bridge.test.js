@@ -213,3 +213,45 @@ test("the bridge forwards the same node handle it matched and keeps its own caps
   assert.deepEqual(BODY_LIMITS, { heartbeat: 16 * 1024, poll: 4 * 1024, result: 64 * 1024 });
   assert.equal(RATE_LIMIT_RETRY_SECONDS, 10);
 });
+
+test("a bare query delimiter is a flat 404, not an empty accepted query", async () => {
+  const env = { GHOSTFLEET_CONTROL_PLANE: controlPlane() };
+  // url.search is empty for a bare "?", so a search-based check would accept it
+  // and forward to the control plane. The raw URL is what decides.
+  const response = await bridge.fetch(new Request(origin + heartbeatPath + "?", json(envelope)), env);
+  assert.equal(response.status, 404);
+  assert.equal((await response.json()).error, "NOT_FOUND");
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(env.GHOSTFLEET_CONTROL_PLANE.calls.length, 0);
+});
+
+test("an unsupported media type refuses a streaming body without reading it", async () => {
+  const env = { GHOSTFLEET_CONTROL_PLANE: controlPlane() };
+  let cancelled = false;
+  // A body that never produces a chunk: if the bridge read the body before the
+  // media-type check, the request would stall forever instead of answering 415.
+  const body = new ReadableStream({
+    pull() { return new Promise(() => {}); },
+    cancel() { cancelled = true; },
+  });
+  const request = new Request(origin + pollPath, {
+    method: "POST",
+    headers: { "content-type": "text/plain" },
+    body,
+    duplex: "half",
+  });
+  let timer;
+  const guard = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error("the bridge read a body it must not read")), 500);
+  });
+  let response;
+  try {
+    response = await Promise.race([bridge.fetch(request, env), guard]);
+  } finally {
+    clearTimeout(timer);
+  }
+  assert.equal(response.status, 415);
+  assert.equal((await response.json()).error, "UNSUPPORTED_CONTENT_TYPE");
+  assert.equal(cancelled, false, "a refused stream is neither read nor cancelled by the bridge");
+  assert.equal(env.GHOSTFLEET_CONTROL_PLANE.calls.length, 0);
+});

@@ -11,12 +11,13 @@ import { createTicketDelivery } from "../src/control-plane/tickets.js";
 // material, and the narrow enrollment bridge that owns the one-time ticket URL.
 const assets_origin = "https://assets.example.invalid";
 const enroll_origin = "https://enroll.example.invalid";
+const node_plane_origin = "https://node-plane.example.invalid";
 const ticketId = "ticket-12345678-1234-1234-1234-123456789abc";
 const url = enroll_origin + "/v1/enrollment-tickets/" + ticketId;
 const shortCode = "12345678";
 const delivery = (bootstrap_sha256 = "b".repeat(64)) => createTicketDelivery({
   record: { ticket_id: ticketId }, short_code: shortCode,
-  assets_origin, enroll_origin, bootstrap_sha256,
+  assets_origin, enroll_origin, node_plane_origin, bootstrap_sha256,
 });
 const pty = existsSync("/usr/bin/script") ? "/usr/bin/script" : "/bin/script";
 const hasPty = process.platform !== "win32" && existsSync(pty);
@@ -132,21 +133,31 @@ test("elevated script keeps the download in a root-created workspace", () => {
   assert.ok(execute > verify, "the digest check must precede execution");
 });
 
-test("delivered command carries both public coordinates and the pinned digest", () => {
+test("delivered command carries all three public coordinates and the pinned digest", () => {
   const d = delivery();
+  assert.equal(d.protocol, "ghostfleet-enrollment-delivery/v2");
   assert.equal(d.assets_origin, assets_origin);
   assert.equal(d.enroll_origin, enroll_origin, "the enrollment origin is readable for a byte-for-byte deployment check");
+  assert.equal(d.node_plane_origin, node_plane_origin, "the node plane is readable for a byte-for-byte deployment check");
   assert.equal(d.bootstrap_sha256, "b".repeat(64));
   assert.equal(d.one_time_url, enroll_origin + "/v1/enrollment-tickets/" + ticketId);
   const script = unquoteShell(d.command);
   assert.ok(script.includes("'" + assets_origin + "'"), "the asset origin is a fixed assignment");
   assert.ok(script.includes("'" + enroll_origin + "/v1/enrollment-tickets/'"));
-  // The immutable material origin is exported to the courier as a fixed value.
+  // Both deployment coordinates are exported to the courier as fixed values.
   assert.ok(script.includes("GHOSTFLEET_ASSETS_ORIGIN='" + assets_origin + "'"));
+  assert.ok(script.includes("GHOSTFLEET_NODE_PLANE_ORIGIN='" + node_plane_origin + "'"));
+  assert.ok(script.includes("export GHOSTFLEET_NODE_PLANE_ORIGIN"));
+  // The node plane travels as env only: every appearance is the assignment, never
+  // an argv token or a URL (the courier body repeats per elevation branch).
+  const nodePlaneAssignments = d.command.split("GHOSTFLEET_NODE_PLANE_ORIGIN=").length - 1;
+  assert.ok(nodePlaneAssignments > 0);
+  assert.equal(d.command.split(node_plane_origin).length - 1, nodePlaneAssignments);
+  assert.equal(d.one_time_url.includes(node_plane_origin), false);
 });
 
 test("delivered command is origin-only: claim-material fields cannot reach argv, URL or script", () => {
-  const plain = createTicketDelivery({ record: { ticket_id: ticketId }, short_code: shortCode, assets_origin, enroll_origin, bootstrap_sha256: "b".repeat(64) });
+  const plain = createTicketDelivery({ record: { ticket_id: ticketId }, short_code: shortCode, assets_origin, enroll_origin, node_plane_origin, bootstrap_sha256: "b".repeat(64) });
   const enriched = createTicketDelivery({
     record: {
       ticket_id: ticketId,
@@ -163,6 +174,7 @@ test("delivered command is origin-only: claim-material fields cannot reach argv,
     short_code: shortCode,
     assets_origin,
     enroll_origin,
+    node_plane_origin,
     bootstrap_sha256: "b".repeat(64),
   });
   assert.equal(enriched.command, plain.command);

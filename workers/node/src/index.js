@@ -120,10 +120,12 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     // No 405: a non-POST is indistinguishable from an unknown path, and no
-    // query string is part of this contract.
+    // query string is part of this contract. The raw URL is checked because a
+    // bare "?" parses to an empty url.search while still being a query string.
     if (request.method !== "POST") return notFound();
+    if (request.url.includes("?")) return notFound();
     const route = ROUTES.find((entry) => entry.path.test(url.pathname));
-    if (!route || url.search) return notFound();
+    if (!route) return notFound();
     const match = route.path.exec(url.pathname);
     const nodeUid = match[1];
 
