@@ -70,6 +70,12 @@ systemd --user (control account, Linger=yes)
 
 日志边界：只写 stdout（journald 捕获），结构化 JSON 行，字段白名单；**永不**写入 token、`resume_session`、短码、完整控制面响应体或任何私有部署事实。日志速率由循环周期天然限制，错误路径按退避降频。
 
+配置契约（与 `packages/node-agent` 的实际解析器一致，courier 按此逐键生成）：
+
+- `/etc/ghostfleet/node-agent.json` 恰好 5 个键：`control_plane_origin`、`heartbeat_interval_s`、`heartbeat_interval_min_s`、`heartbeat_interval_max_s`、`allowed_units`。agent 拒绝任何未知顶层键（`CONFIG_UNKNOWN_KEY`）与非数字心跳（`CONFIG_TYPE_INVALID`）；心跳是数字秒（30 / 30 / 300，ADR 速率预算按 30 s 周期），不是区间对象。
+- `control_plane_origin` 是**节点面（node-plane）桥**的 origin，不是 Enrollment/Assets origin：后者受 Access 保护或只服务一次性下载，agent 连上去只会得到 302/403。三个 origin 由交付命令显式交付（节点面 origin 经 `GHOSTFLEET_NODE_PLANE_ORIGIN` 环境变量交给 courier）；courier 只校验并消费，不自行推导。缺失、形态不是精确 HTTPS origin、或与 enrollment origin 同 host 一律 fail closed（`CAPABILITY_NODE_PLANE_ORIGIN_REQUIRED` / `_INVALID` / `_NOT_SEPARATED`），且在写任何文件之前拒绝。
+- 配置不含 `schema`、`node_uid` 或任何凭据；`node_uid` 只住在 `%h/.config/ghostfleet/node.json`（`0600`）。courier 写完后必须能被 `python3 -I <payload> check-config --config <file>` 接受，这条交叉契约由 bootstrap 测试回放真实字节保证。
+
 ## 5. 协议 v0（`ghostfleet-node-agent/v0`）
 
 ### 5.1 认证
@@ -146,11 +152,11 @@ systemd --user (control account, Linger=yes)
 
 任务执行前：`ledger[task_id] = {state: MAY_HAVE_EXECUTED, operation, started_at}` → `fsync` 目录项 → 才调用实现函数。完成后写 `{state: SUCCEEDED|REFUSED|FAILED, finished_at, result_digest}`（`REFUSED` = 校验拒绝且**副作用为零**，`FAILED` = 尝试过但失败，`UNKNOWN` = 无法判定是否已执行；结果信封复用任务信封的 `schema` 并附加 `{task_id, operation, result, result_digest}`）。三者不可混用：**实现函数调用期间抛出的异常绝不报 `REFUSED`**——那等于向控制面承诺「可以安全重投」。规则由每个 operation 的显式声明决定：声明 `effect: none`（v0 的四个 operation 全部是只读观测/回显）→ 抛异常报 `FAILED` + 具体错误码；声明 `effect: may_mutate`（v0 不存在，预留给后续写操作）→ 抛异常一律报 `UNKNOWN`，宁可让控制面按未知副作用处理，也不猜。启动时扫描 ledger：任何 `MAY_HAVE_EXECUTED` 且无终态的任务，先补写一条 `UNKNOWN` 结果进 outbox（只报事实，不重跑），再标 `RECONCILED`。
 
-有界驱逐绝不丢未对账条目：超过上限时只驱逐已终态条目（`RESULT_DROPPED` 优先，其次其他终态，最后才 `FENCED`），`MAY_HAVE_EXECUTED` **永不驱逐**；若账本达上限且仍含未对账条目，agent 停止接收新任务并以 `AGENT_LEDGER_EXHAUSTED` fail closed，直到下一次成功对账——`不重复执行` 优先于 `有界`，宁可停摆也不猜。
+有界驱逐绝不丢未对账条目：超过上限时只驱逐「可证明幂等」的条目——`RESULT_DROPPED` 记录优先（即使 ledger 里原本没有该 `task_id`，它也只是一条可驱逐的事实记录；驱逐时留墓碑，`begin()` 不会把同一 `task_id` 当 NEW 重执行），其次是 `read_only` operation 的**已对账**终态；**`FENCED`（`MAY_HAVE_EXECUTED`）、`UNKNOWN` 以及任何 `may_mutate` operation 的终态永不驱逐**（首版本文写过「最后才 `FENCED`」，与实现和安全语义矛盾，已按「永不驱逐」定稿）。库容因此仍可能被这类条目吃满：此时 agent 停止接收新任务并以 `AGENT_LEDGER_EXHAUSTED` fail closed（心跳继续、`health=DEGRADED`），直到下一次成功对账——`不重复执行` 优先于 `有界`，宁可停摆也不猜。为不让「实现从未被调用」的条目白占容量：operation 的 allowlist 校验必须在写栅栏**之前**完成（未知 operation 直接 `REFUSED`，不写栅栏），且批处理中途写账本失败（`AGENT_LEDGER_EXHAUSTED`）必须转成同一个「停止 poll、继续心跳、`health=DEGRADED`」状态，不许以脏退出收场。
 
 启动闸门：`run` 在进入循环前校验凭据文件是常规文件（非符号链接）、权限 `0600`、属主等于当前 euid，节点配置 `/etc/ghostfleet/node-agent.json` 为 root 拥有的 `0644`；任一不符 → 退出 3（不进入循环，不打印文件内容）。载荷完整性是**安装期**属性（root 拥有的 `/usr/local/libexec/ghostfleet` 路径 + bootstrap 逐字节校验 + unit `ProtectSystem=strict` 使其运行期不可写），运行期不做自哈希——能改写载荷的人同样能改写载荷里的常量，自哈希只增加仪式感。
 
-写盘一律 `tmp + os.replace` 并 `fsync` 文件与目录，避免半写状态。outbox 上限 64 条：溢出时保留最新 64 条并把被丢弃条目的 `task_id` 记入 ledger 的 `RESULT_DROPPED`（这是事实记录，不是静默丢弃）。
+写盘一律 `tmp + os.replace` 并 `fsync` 文件与目录，避免半写状态。outbox 上限 64 条：溢出时保留最新 64 条并把被丢弃条目的 `task_id` 记入 ledger 的 `RESULT_DROPPED`（这是事实记录，不是静默丢弃）。顺序固定为**先写 ledger 的 `RESULT_DROPPED`、再清空 outbox 的 dropped 清单**：崩溃只会导致重复标记（幂等），绝不会在「清单已清空、账本还没写」的窗口里丢掉事实。
 
 ## 8. systemd 生命周期
 
@@ -209,14 +215,14 @@ WantedBy=default.target
 - **`ConfigurationDirectoryMode=0700`**：courier 为放 `node-token` 把 `~/.config/ghostfleet` 建成 `0700`，而 `ConfigurationDirectory=ghostfleet` 默认要求 `0755`，systemd 每次启动都告警 `ConfigurationDirectory 'ghostfleet' already exists but the mode is different (File system: 700 ConfigurationDirectoryMode: 755)`；若目录尚未存在，systemd 会按 0755 创建。unit 必须显式 `ConfigurationDirectoryMode=0700` 与 courier 口径对齐。
 - **`StateDirectoryMode=0700`**：`StateDirectory=ghostfleet-agent` 默认按 `0755` 创建，而 agent 自己的启动自检要求状态目录只有属主可写，于是每轮启动都会打出一条 `state_dir_permissions_loose mode 0o755` 的 warning（首轮真机一次启动出现 4–5 条），日志被自己的告警噪声淹没。unit 显式 `StateDirectoryMode=0700`，agent 侧对同一 path/mode 的 warning **每进程只打一次**（去重，不降级为静默）。
 - **子进程必须剥掉 notify 环境（实测教训，2026-11-12）**：`NOTIFY_SOCKET` 会随环境继承给每一个被调起的子进程；实测 `systemctl`、`loginctl`、`systemd-analyze` 这类 libsystemd CLI 在**退出时**会向 `NOTIFY_SOCKET` 发一条 `EXIT_STATUS=0`。`NotifyAccess=main` 下这些消息不被接受，journal 每轮刷 `Got notification message from PID <child>, but reception only permitted for main PID <main>`；一旦放宽成 `NotifyAccess=all`，这些伪 `EXIT_STATUS=0` 就会被当成主进程的退出状态，污染服务结果。因此 `CommandRunner.run()` 必须显式传 `env=`，在 `dict(os.environ)` 基础上删除 `NOTIFY_SOCKET`、`LISTEN_FDS`、`LISTEN_PID`、`WATCHDOG_USEC`、`WATCHDOG_PID`（保留 `PATH`/`HOME`/`LANG`/`XDG_RUNTIME_DIR`），并由单测断言 spawn 环境的键集合、以及 observe 输出不因剥离而改变。
-- **安全停止**：`SIGTERM` → 停止取新任务、flush outbox（有界超时 10 s）、写 `last_stop` 事实、退出 0。
+- **安全停止**：`SIGTERM` → 停止取新任务、flush outbox（有界预算 8 s）、写 `last_stop` 事实、退出 0。预算不是常量相加的纸面算术，而是运行时逐请求生效：`stop_event` 在 heartbeat 前、poll 前、flush 的每条 send 前检查，置位后不再发起新的 heartbeat/poll/result 请求；`Outbox.flush` 接受 deadline/stop 参数，单条请求的 socket 超时被钳制到剩余预算。最坏停机时延 ≈ 1 s（分块睡眠可打断）+ 被钳制的单请求 + 8 s（flush），必须显著小于 `TimeoutStopSec=30`，并由「64 条 pending + 慢控制面 + `SIGTERM`」的真实时限测试守护（只把常量相加的测试不算证据）。
 - **健康可见性**：`systemctl --user show` 的 `ActiveState`/`NRestarts`/`ExecMainStatus` 外加 Agent 自报的 `health`，构成独立消费者可观察的外部证据。
 
 ## 9. 安全边界与威胁模型
 
 | 攻击面 | 缓解 |
 | --- | --- |
-| 控制面被冒充 / 中间人 | 仅 HTTPS；控制面 URL 来自 root-owned 配置，不由任务下发；凭据不明文落日志 |
+| 控制面被冒充 / 中间人 | 仅 HTTPS（唯一例外是受控验收环境里显式开启的 loopback 明文：需要 `allow_loopback_http` 配置或测试专用环境变量，且 unit 永不设置；默认拒绝）；控制面 URL 来自 root-owned 配置，不由任务下发；凭据不明文落日志 |
 | 节点 token 泄漏 | `0600` 单账户可读；服务端只存摘要（AEAD 副本仅在首次认证前存在，首次认证即销毁）；绑定 `node_uid`；支持轮换（`POST /v0/node-credential/rotate`，旧 token 立即失效）与吊销（`revoked` → Agent 清凭据并停止上报） |
 | 重放已抓取请求 | 600 s `nonce` 窗口 + `sent_at` 偏差限制 |
 | 恶意任务（提权/命令注入） | 双端 allowlist、无 shell、数组传参、禁用键递归检查、参数长度与深度上限 |
