@@ -54,12 +54,16 @@ export async function readFixture(name) {
 // present in this checkout the selection automatically pins those bytes instead,
 // so the same tests exercise the frozen payload without a code change.
 export const REAL_AGENT_PAYLOAD_PATH = join(here, "..", "..", "..", "node-agent", "dist", "node-agent.pyz");
-export async function agentPayload() {
+export async function agentPayloadSource() {
   try {
-    return await readFile(REAL_AGENT_PAYLOAD_PATH);
+    return { path: REAL_AGENT_PAYLOAD_PATH, bytes: await readFile(REAL_AGENT_PAYLOAD_PATH), real: true };
   } catch {
-    return await readFixture(AGENT_PAYLOAD_ARTIFACT);
+    const path = join(fixtureDir, AGENT_PAYLOAD_ARTIFACT);
+    return { path, bytes: await readFile(path), real: false };
   }
+}
+export async function agentPayload() {
+  return (await agentPayloadSource()).bytes;
 }
 
 // The dedicated run identity the courier owns and the privileged operations
@@ -255,6 +259,11 @@ export async function makeHost() {
   // installed payload, so the fixture models root:root for exactly those paths.
   await seedOwner(host, host.payloadDir);
   await seedOwner(host, host.payloadPath);
+  // The payload source this host's selection pins: the real rebuilt artifact when
+  // this checkout carries one, else the synthetic fixture. Tests derive every
+  // expected digest from here instead of hard-coding either digest.
+  host.payloadSource = await agentPayloadSource();
+  host.payloadSha256 = sha256(host.payloadSource.bytes);
   // A host-scoped selection pins this host's payload prefix: the unit bytes and
   // the payload path agree, and the relayed script rewrites the same prefix.
   host.buildSelection = (overrides = {}) => buildSelection({ payloadPath: host.payloadPath, ...overrides });
@@ -282,6 +291,10 @@ export async function makeHost() {
     FIXTURE_REAL_CURL: REAL_CURL,
     GHOSTFLEET_OPERATING_USER: OPERATING_USER,
     GHOSTFLEET_ASSETS_ORIGIN: host.assetsUrl,
+    // The Console delivery command exports the node-plane origin next to the
+    // other two origins. The fixture keeps it on a host distinct from the
+    // rendered broker origin, exactly like the production topology.
+    GHOSTFLEET_NODE_PLANE_ORIGIN: "https://node-plane.fixture.invalid",
   };
   return host;
 }

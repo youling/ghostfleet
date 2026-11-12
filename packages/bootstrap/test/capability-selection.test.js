@@ -63,15 +63,25 @@ test("the published courier selects nothing unless the template requested it", (
   assert.equal(blockOf(rendered), renderCapabilityBlock(null));
 });
 
-test("the reviewed template posture decides helper and Linger, never the courier", () => {
+test("the reviewed template posture decides the managed lane, never the courier", () => {
   const managed = { roles: ["managed"], privilege: { helper_required: true, broker_required: true } };
-  assert.deepEqual({ ...selectedCapabilitiesFromPosture(managed) },
-    { helper_required: true, linger_required: true, user_service_required: false });
+  // A managed template always installs the managed user service: the role decides
+  // it, so a missing worker unit must fail closed instead of downgrading to a
+  // Linger-only account with nothing to keep alive.
+  assert.throws(() => selectedCapabilitiesFromPosture(managed), /CAPABILITY_MANAGED_ARTIFACTS_INCOMPLETE/);
+  assert.deepEqual({ ...selectedCapabilitiesFromPosture(managed, { userUnit: "unit" }) },
+    { helper_required: true, linger_required: true, user_service_required: true });
   const limited = { roles: ["customer-managed"], privilege: { helper_required: false } };
   assert.equal(selectedCapabilitiesFromPosture(limited), null);
   const withUnit = { roles: ["managed"], privilege: { helper_required: false } };
   assert.deepEqual({ ...selectedCapabilitiesFromPosture(withUnit, { userUnit: "unit" }) },
     { helper_required: false, linger_required: true, user_service_required: true });
+  // A helper-only template has no managed lane, so a worker unit is unrequested.
+  const helperOnly = { roles: ["customer-managed"], privilege: { helper_required: true } };
+  assert.deepEqual({ ...selectedCapabilitiesFromPosture(helperOnly) },
+    { helper_required: true, linger_required: false, user_service_required: false });
+  assert.throws(() => selectedCapabilitiesFromPosture(helperOnly, { userUnit: "unit" }),
+    /CAPABILITY_NOT_REQUESTED_BY_TEMPLATE/);
 });
 
 test("rendered capability carries version, template provenance and SHA-256 pinned artifacts", () => {
@@ -119,6 +129,10 @@ test("unrequested, unpinned or inconsistent privilege selections are refused at 
   assert.throws(render({ installer: "other.sh" }), /CAPABILITY_INSTALLER_NOT_PINNED/);
   assert.throws(render({ privileged_key: "other.pub" }), /CAPABILITY_PRIVILEGED_KEY_NOT_PINNED/);
   assert.throws(render({ user_unit: null, user_service_required: true }), /CAPABILITY_USER_UNIT_REQUIRED/);
+  // Linger with no user service grants the account permanent residency with
+  // nothing to keep alive: that is a downgraded managed lane, refused outright.
+  assert.throws(render({ user_unit: null, user_service_required: false }),
+    /CAPABILITY_LINGER_REQUIRES_USER_SERVICE/);
   assert.throws(render({ template_digest: "sha256:short" }), /CAPABILITY_TEMPLATE_DIGEST_INVALID/);
   assert.throws(render({ version: "bad version" }), /CAPABILITY_VERSION_INVALID/);
   assert.throws(render({ control_account: "root" }), /CAPABILITY_CONTROL_ACCOUNT_INVALID/);

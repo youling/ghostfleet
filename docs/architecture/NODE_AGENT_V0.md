@@ -61,7 +61,7 @@ systemd --user (control account, Linger=yes)
 | 路径 | 属主 / 权限 | 内容 |
 | --- | --- | --- |
 | `/usr/local/libexec/ghostfleet/node-agent.pyz` | `root:root` `0755` | Agent 载荷（单个 Python zipapp，作为被 pin 的 capability artifact 安装，逐字节校验） |
-| `/etc/ghostfleet/node-agent.json` | `root:root` `0644` | 非秘密配置：控制面 URL、心跳区间上下限、允许观测的 unit 名列表 |
+| `/etc/ghostfleet/node-agent.json` | `root:root` `0644` | 非秘密配置：节点面桥 origin、心跳秒数与上下限（30/30/300）、允许观测的 unit 名列表；无 `schema`、无 `node_uid`、无凭据 |
 | `%h/.config/ghostfleet/node-token` | `0600`（账户自身） | 注册时铸造的节点 token，仅本账户可读 |
 | `%h/.config/ghostfleet/node.json` | `0600` | `node_uid`、平台、注册时间（非秘密但按最小暴露存放） |
 | `%h/.local/state/ghostfleet-agent/state.json` | `0600` | 游标、序列号、退避状态、上次成功时间 |
@@ -69,6 +69,12 @@ systemd --user (control account, Linger=yes)
 | `%h/.local/state/ghostfleet-agent/outbox.json` | `0600` | 待回传结果，上限 64 条 |
 
 日志边界：只写 stdout（journald 捕获），结构化 JSON 行，字段白名单；**永不**写入 token、`resume_session`、短码、完整控制面响应体或任何私有部署事实。日志速率由循环周期天然限制，错误路径按退避降频。
+
+配置契约（与 `packages/node-agent` 的实际解析器一致，courier 按此逐键生成）：
+
+- `/etc/ghostfleet/node-agent.json` 恰好 5 个键：`control_plane_origin`、`heartbeat_interval_s`、`heartbeat_interval_min_s`、`heartbeat_interval_max_s`、`allowed_units`。agent 拒绝任何未知顶层键（`CONFIG_UNKNOWN_KEY`）与非数字心跳（`CONFIG_TYPE_INVALID`）；心跳是数字秒（30 / 30 / 300，ADR 速率预算按 30 s 周期），不是区间对象。
+- `control_plane_origin` 是**节点面（node-plane）桥**的 origin，不是 Enrollment/Assets origin：后者受 Access 保护或只服务一次性下载，agent 连上去只会得到 302/403。三个 origin 由交付命令显式交付（节点面 origin 经 `GHOSTFLEET_NODE_PLANE_ORIGIN` 环境变量交给 courier）；courier 只校验并消费，不自行推导。缺失、形态不是精确 HTTPS origin、或与 enrollment origin 同 host 一律 fail closed（`CAPABILITY_NODE_PLANE_ORIGIN_REQUIRED` / `_INVALID` / `_NOT_SEPARATED`），且在写任何文件之前拒绝。
+- 配置不含 `schema`、`node_uid` 或任何凭据；`node_uid` 只住在 `%h/.config/ghostfleet/node.json`（`0600`）。courier 写完后必须能被 `python3 -I <payload> check-config --config <file>` 接受，这条交叉契约由 bootstrap 测试回放真实字节保证。
 
 ## 5. 协议 v0（`ghostfleet-node-agent/v0`）
 
