@@ -159,6 +159,8 @@ PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=read-only
+StateDirectory=ghostfleet-agent
+ConfigurationDirectory=ghostfleet
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
@@ -182,6 +184,7 @@ WantedBy=default.target
 - **开机恢复**：`loginctl enable-linger <control_account>`（已在 #79 账户隔离里实现）+ `WantedBy=default.target` → 无人类登录也自动拉起。
 - **故障恢复**：`Restart=on-failure` + `RestartSec=5`（正常 `SIGTERM` 退出 0 不重启，异常退出/信号/看门狗超时才重启，语义边界明确）；`WatchdogSec=60` 由 Agent 每次循环 `sd_notify(WATCHDOG=1)` 喂狗，卡死则被杀重启。
 - **配置有效性必测**：unit 必须通过 `systemd-analyze --user verify`；`ProtectHome=read-only` 是合法取值（`read-write` 不是，旧稿已修），真实读写目录只经 `ReadWritePaths` 精确开放。
+- **目录必须先存在**（实测教训）：`ReadWritePaths` 指向不存在的目录会让服务在挂载命名空间阶段直接失败（`status=226/NAMESPACE`，且 `Restart=on-failure` 会无限重试）。因此 unit 用 `StateDirectory=ghostfleet-agent` + `ConfigurationDirectory=ghostfleet` 让 systemd 创建这两个目录（`verify` 与启动均通过），courier 安装时也要创建并把 `~/.config/ghostfleet` 收紧到 `0700`——两条路径互为自愈。
 - **安全停止**：`SIGTERM` → 停止取新任务、flush outbox（有界超时 10 s）、写 `last_stop` 事实、退出 0。
 - **健康可见性**：`systemctl --user show` 的 `ActiveState`/`NRestarts`/`ExecMainStatus` 外加 Agent 自报的 `health`，构成独立消费者可观察的外部证据。
 
