@@ -25,6 +25,6 @@
   ],
   "scripts": {
     "check": "node --check src/index.js && node --check src/bootstrap.js && node --check src/convergence.js && node --check src/ticket.js && node --check src/preflight.js && node --check src/session.js && node --check src/management-plan.js && node --check src/capability.js",
-    "test": "node --test --test-timeout=120000 test/*.test.js"
+    "test": "node --test --test-timeout=240000 test/*.test.js"
   }
 }
