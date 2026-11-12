@@ -184,6 +184,40 @@ def test_failed_evictable_but_unknown_and_fenced_are_not(tmp_path):
         uncertain.begin("task-overflow", "node.observe")
 
 
+def test_absent_dropped_results_are_evictable_and_keep_a_tombstone(tmp_path):
+    """P2b：absent task_id 的 RESULT_DROPPED 不能永久耗尽账本（真机 512 次即停摆）。
+
+    旧实现把 absent-id 丢弃建成 UNKNOWN（永不驱逐），512 个不存在 task 的丢弃事实
+    就能让 is_exhausted() 永久为真、begin() 抛错、poll 永远停摆。现在丢弃事实先判定
+    可驱逐，但驱逐必须留墓碑：begin() 绝不能把"结果已丢"的任务当 NEW 重跑。
+    """
+    ledger = _ledger(tmp_path)
+    ledger.save = lambda: None
+    ledger.save_tombstones = lambda: None
+    for index in range(MAX_LEDGER_ENTRIES + 8):
+        ledger.mark_result_dropped(f"task-absent-{index:05d}")
+
+    assert ledger.is_exhausted() is False
+    assert len(ledger.entries) <= MAX_LEDGER_ENTRIES
+    evicted = [task_id for task_id in ledger.tombstones if task_id.startswith("task-absent-")]
+    assert evicted, "驱逐 RESULT_DROPPED 必须留墓碑"
+    # 墓碑让被驱逐的丢弃任务视作已收敛：绝不重投、绝不重跑。
+    assert ledger.begin(evicted[0], "node.observe") == BEGIN_DONE
+    # 账本恢复接收新任务（poll 恢复）。
+    assert ledger.begin("task-fresh", "node.observe") == BEGIN_NEW
+    ledger.complete("task-fresh", "SUCCEEDED")
+
+    # 真实落盘 + 重启：丢弃事实仍可表达（墓碑跨重启保留）。
+    del ledger.save
+    del ledger.save_tombstones
+    ledger._prune()
+    ledger.save()
+    ledger.save_tombstones()
+    reloaded = _ledger(tmp_path)
+    assert reloaded.is_exhausted() is False
+    assert reloaded.begin(evicted[0], "node.observe") == BEGIN_DONE
+
+
 def test_tombstone_capacity_is_fail_closed(tmp_path, monkeypatch):
     monkeypatch.setattr(ledger_module, "MAX_TOMBSTONES", 2)
     ledger = _ledger(tmp_path)

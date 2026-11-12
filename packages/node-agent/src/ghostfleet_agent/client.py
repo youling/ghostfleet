@@ -356,22 +356,35 @@ class ControlPlaneClient:
         {OUTCOME_NONCE_REPLAY, OUTCOME_SEQ_REGRESSION, OUTCOME_BOOT_REPLAY}
     )
 
-    def send(self, path: str, body_builder, *, category: str, retry_hook=None) -> Response:
+    def send(self, path: str, body_builder, *, category: str, retry_hook=None, timeout_s=None) -> Response:
         """发送一次请求；409 按码分派，换新 nonce/seq/boot_id 重试一次。
 
         retry_hook(kind) 在重试前被调用：loop 用它轮换 boot_id（NODE_BOOT_REPLAY）。
         nonce 与 seq 由 body_builder 每次重新生成，因此天然换新。
+        timeout_s 是调用方给的剩余停机预算：只允许缩短、绝不允许超过配置值。
         """
         limit = CATEGORY_LIMITS[category]
-        response = self._send_once(path, body_builder, category=category, limit=limit)
+        response = self._send_once(path, body_builder, category=category, limit=limit, timeout_s=timeout_s)
         if response.kind in self.RETRYABLE_CONFLICTS:
             self.logger.warning("request_conflict_retry", category=category, outcome=response.kind)
             if retry_hook is not None:
                 retry_hook(response.kind)
-            response = self._send_once(path, body_builder, category=category, limit=limit)
+            response = self._send_once(path, body_builder, category=category, limit=limit, timeout_s=timeout_s)
         return response
 
-    def _send_once(self, path: str, body_builder, *, category: str, limit: int) -> Response:
+    def _request_timeout(self, timeout_s) -> float:
+        """剩余预算只能把请求超时调小：max(0.05, min(配置值, 剩余预算))。"""
+        if timeout_s is None:
+            return self.timeout_s
+        try:
+            budget = float(timeout_s)
+        except (TypeError, ValueError):
+            return self.timeout_s
+        if budget != budget or budget <= 0:  # NaN / 非正预算
+            return self.timeout_s
+        return max(0.05, min(self.timeout_s, budget))
+
+    def _send_once(self, path: str, body_builder, *, category: str, limit: int, timeout_s=None) -> Response:
         nonce = self._nonce_factory()
         body = body_builder(nonce)
         try:
@@ -386,7 +399,7 @@ class ControlPlaneClient:
                 self._url(path),
                 headers=self._headers(),
                 body=encoded,
-                timeout_s=self.timeout_s,
+                timeout_s=self._request_timeout(timeout_s),
             )
         except TransportError as error:
             if error.kind == "REDIRECT_REFUSED":
@@ -495,5 +508,11 @@ class ControlPlaneClient:
     def result_path(self, task_id: str) -> str:
         return f"/v0/nodes/{self.node_uid}/tasks/{task_id}/result"
 
-    def send_result_body(self, body_builder, task_id: str, *, retry_hook=None) -> Response:
-        return self.send(self.result_path(task_id), body_builder, category=CATEGORY_RESULT, retry_hook=retry_hook)
+    def send_result_body(self, body_builder, task_id: str, *, retry_hook=None, timeout_s=None) -> Response:
+        return self.send(
+            self.result_path(task_id),
+            body_builder,
+            category=CATEGORY_RESULT,
+            retry_hook=retry_hook,
+            timeout_s=timeout_s,
+        )

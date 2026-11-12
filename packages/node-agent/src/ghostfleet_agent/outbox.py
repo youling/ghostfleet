@@ -7,6 +7,7 @@ ADR §7：outbox 上限 64 条；溢出保留最新 64 条，被丢弃条目的 
 from __future__ import annotations
 
 import os
+import time
 
 from .logging import get_logger
 from .protocol import (
@@ -37,6 +38,9 @@ CONFLICT = "CONFLICT"
 TOO_LARGE = "TOO_LARGE"
 
 RETRY_AFTER_CAP_S = 3600.0
+# 剩余停机预算小于这个窗口就不再发起新请求：一条请求至少要有一点时间才可能成功，
+# 更重要的是绝不让它越过 deadline（TimeoutStopSec 下被 SIGKILL 会丢 last_stop）。
+MIN_SEND_WINDOW_S = 0.5
 
 RETRYABLE_OUTCOMES = frozenset(
     {
@@ -79,7 +83,17 @@ class FlushReport:
     使用它而不是本地指数退避，否则会在服务端明确要求等待时继续按秒猛打。
     """
 
-    __slots__ = ("sent", "rejected", "remaining", "fatal", "stop_outcome", "stop_code", "retry_after_s")
+    __slots__ = (
+        "sent",
+        "rejected",
+        "remaining",
+        "fatal",
+        "stop_outcome",
+        "stop_code",
+        "retry_after_s",
+        "stopped",
+        "deadline_hit",
+    )
 
     def __init__(self) -> None:
         self.sent: list[str] = []
@@ -89,6 +103,9 @@ class FlushReport:
         self.stop_outcome: str | None = None
         self.stop_code: str | None = None
         self.retry_after_s: float | None = None
+        # 因停机信号 / 停机预算用尽而提前结束（未发送的条目仍在队列里）。
+        self.stopped = False
+        self.deadline_hit = False
 
     @property
     def progressed(self) -> bool:
@@ -266,12 +283,34 @@ class Outbox:
                 return True
         return False
 
-    def flush(self, send) -> FlushReport:
-        """按顺序回传；send(item) 返回带 kind/code 属性的分类结果。"""
+    def flush(self, send, *, stop_event=None, deadline=None, clock=None) -> FlushReport:
+        """按顺序回传；send(item) 返回带 kind/code 属性的分类结果。
+
+        停机预算贯穿到每一条 send 之前（ADR §8 / TimeoutStopSec）：
+        - stop_event 已置位 → 立刻停止，绝不发起新请求（正常轮次用）；
+        - deadline（monotonic 秒）剩余不足 MIN_SEND_WINDOW_S → 停止；
+        - 传了 deadline 时把剩余预算作为 timeout_s 交给 send(item, timeout_s=...)，
+          单请求超时被钳到剩余预算，不让任何一条越过 deadline。
+        停机路径（shutdown）只传 deadline 不传 stop_event：SIGTERM 后仍要尝试发出
+        已完成的 result，这正是 outbox flush 的意义；预算到点即停。
+        """
         report = FlushReport()
         changed = False
+        clock = clock or time.monotonic
         for item in list(self._items):
-            outcome = send(item)
+            if stop_event is not None and stop_event.is_set():
+                report.stopped = True
+                break
+            remaining_budget = None
+            if deadline is not None:
+                remaining_budget = deadline - clock()
+                if remaining_budget < MIN_SEND_WINDOW_S:
+                    report.deadline_hit = True
+                    break
+            if remaining_budget is None:
+                outcome = send(item)
+            else:
+                outcome = send(item, timeout_s=remaining_budget)
             kind = getattr(outcome, "kind", None)
             code = getattr(outcome, "code", None)
             if kind == OUTCOME_OK:

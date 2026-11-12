@@ -199,14 +199,24 @@ class Ledger:
         self.save()
         return BEGIN_NEW
 
-    def complete(self, task_id: str, status: str, *, result_digest: str | None = None, code: str | None = None) -> None:
+    def complete(
+        self,
+        task_id: str,
+        status: str,
+        *,
+        result_digest: str | None = None,
+        code: str | None = None,
+        operation: str | None = None,
+    ) -> None:
         if status not in RESULT_STATES:
             raise LedgerWriteError("terminal status must be SUCCEEDED/REFUSED/FAILED/UNKNOWN", path=self.path)
         entry = self._entries.get(task_id)
         if entry is None:
+            # pre-dispatch 拒绝（例如未知 operation）没有栅栏条目：按事实建最小条目，
+            # 但保留真实 operation 名，便于审计为什么它没有进入实现函数。
             entry = {
                 "state": FENCED,
-                "operation": "unknown",
+                "operation": operation if isinstance(operation, str) and operation else "unknown",
                 "attempt": 1,
                 "started_at": _now(),
             }
@@ -277,20 +287,33 @@ class Ledger:
         return spec.effect
 
     def _evictable(self, task_id: str) -> bool:
-        """只有"可证明幂等的已收敛终态"可以驱逐。
+        """可驱逐 = 重投不会双执行，且事实可由墓碑表达。
 
-        不可证明幂等的一律永不驱逐：MAY_HAVE_EXECUTED 栅栏、UNKNOWN 终态、
-        以及任何 may_mutate operation 的终态。read_only 的已对账终态可以驱逐，
-        但驱逐时必须留下墓碑，防止 begin() 把它当成 NEW 重新执行。
+        1) result_state == RESULT_DROPPED 先判定：结果已确定不可回传，驱逐不会
+           造成"重投双执行"（墓碑仍让 begin() 返回 DONE），因此无论是否
+           reconciled、无论 operation 效果等级都可驱逐。absent task_id 的丢弃
+           事实（mark_result_dropped 建的最小条目）正靠这一条才不会被永久占满
+           账本。唯一例外是仍处于 FENCED 的条目：可能已执行且尚未收敛，必须由
+           启动对账补 UNKNOWN，绝不在这里驱逐。
+        2) 其余只驱逐"可证明幂等的已收敛终态"：MAY_HAVE_EXECUTED 栅栏、UNKNOWN
+           终态、任何 may_mutate operation 的终态永不驱逐。read_only 的已对账
+           终态可驱逐，但必须留墓碑防止 begin() 当成 NEW 重执行。
         """
         entry = self._entries[task_id]
         state = entry.get("state")
+        if entry.get("result_state") == RESULT_DROPPED:
+            return state != FENCED
         if state not in TERMINAL_STATES:
             return False
         if state == STATE_UNKNOWN:
             return False
-        if entry.get("reconciled") is not True and entry.get("result_state") != RESULT_DROPPED:
+        if entry.get("reconciled") is not True:
             return False
+        if state == STATE_REFUSED:
+            # REFUSED 只允许在 dispatch 之前产生（"实现从未被调用"的承诺），因此它
+            # 永远可以安全忘记，墓碑足以表达"已收敛"。这条保证未知 operation 之类
+            # 的 pre-dispatch 拒绝不会因 _effect 保守返回 MAY_MUTATE 而永久占满账本。
+            return True
         return self._effect(entry) == READ_ONLY
 
     def _prune(self) -> None:
