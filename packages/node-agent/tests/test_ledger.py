@@ -253,6 +253,24 @@ def test_corrupt_ledger_fails_closed(tmp_path, text):
         Ledger(str(tmp_path / "ledger.json")).load()
 
 
+def test_complete_rejects_a_second_digest_for_a_terminal_task(tmp_path):
+    """一个 task 只能有一个终态摘要：不同摘要必须 fail closed（同摘要幂等）。
+
+    上层（pre-dispatch 拒绝路径）若绕过历史直接覆盖，控制面就会收到两条不同摘要的
+    result（TASK_RESULT_CONFLICT）。这里把不变量做进账本本身。
+    """
+    ledger = _ledger(tmp_path)
+    ledger.begin("task-0001", "node.observe")
+    ledger.complete("task-0001", "SUCCEEDED", result_digest="a" * 64)
+    assert ledger.complete("task-0001", "SUCCEEDED", result_digest="a" * 64) is None
+    with pytest.raises(LedgerWriteError) as excinfo:
+        ledger.complete("task-0001", "REFUSED", result_digest="b" * 64)
+    assert "already committed" in str(excinfo.value)
+    entry = ledger.get("task-0001")
+    assert entry["state"] == "SUCCEEDED"
+    assert entry["result_digest"] == "a" * 64
+
+
 def test_ledger_roundtrip(tmp_path):
     ledger = _ledger(tmp_path)
     ledger.begin("task-0001", "agent.self.test")

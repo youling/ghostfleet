@@ -105,7 +105,8 @@ def test_headers_carry_bearer_and_node_identity():
     assert headers["x-ghostfleet-node-uid"] == NODE_UID
     assert headers["x-ghostfleet-agent-version"] == TEST_AGENT_VERSION
     assert headers["content-type"] == "application/json"
-    assert transport.calls[0]["timeout_s"] == 10.0
+    # 预算是绝对截止点：构包/序列化花的本地时间也从里面扣，所以只会略小于 10 s。
+    assert 9.0 < transport.calls[0]["timeout_s"] <= 10.0
 
 
 def test_result_path_is_node_scoped():
@@ -474,6 +475,68 @@ def test_conflict_retry_is_skipped_when_the_timeout_budget_is_spent():
     assert transport.calls[0]["timeout_s"] == pytest.approx(0.25)
     assert response.kind == OUTCOME_NONCE_REPLAY
     assert clock["now"] - 500.0 <= 0.25
+
+
+def test_local_build_cost_is_charged_before_the_first_attempt():
+    """P2：body_builder（next_seq + fsync）是本地耗时，必须从同一预算里扣。
+
+    旧实现只在第一次 POST 之后才看时钟：预算 4 s、构包 1.5 s、POST 超时仍给 4 s
+    → 单次尝试就能花 5.5 s，再叠加 retry_hook 更会越过 TimeoutStopSec。
+    """
+    clock = {"now": 1000.0}
+    transport = TimedTransport(
+        [json_response(409, {"code": NODE_NONCE_REPLAY}), json_response(200, {"interval_s": 30, "tasks": []})],
+        clock,
+        0.1,
+    )
+    client = make_client(transport, monotonic=lambda: clock["now"])
+
+    def slow_body(nonce):
+        clock["now"] += 1.5  # 本地构包/序列化代价
+        return _heartbeat_body(nonce)
+
+    def slow_hook(_kind):
+        clock["now"] += 2.0  # retry_hook 也是本地耗时（轮换 boot_id / 写状态）
+
+    response = client.send(
+        f"/v0/nodes/{NODE_UID}/heartbeat",
+        slow_body,
+        category=CATEGORY_HEARTBEAT,
+        retry_hook=slow_hook,
+        timeout_s=4.0,
+    )
+    # 构包后只剩 2.5 s → 第一次尝试的超时必须钳到 2.5 s，而不是整整 4 s。
+    assert len(transport.calls) == 1
+    assert transport.calls[0]["timeout_s"] == pytest.approx(2.5)
+    assert response.kind == OUTCOME_NONCE_REPLAY
+    assert clock["now"] - 1000.0 <= 4.0
+
+
+def test_every_attempt_fits_the_remaining_window():
+    """重试的第二次尝试也只拿"预算 − 已花时间"，两次尝试都不越过剩余窗口。"""
+    clock = {"now": 1000.0}
+    transport = TimedTransport(
+        [json_response(409, {"code": NODE_NONCE_REPLAY}), json_response(200, {"interval_s": 30, "tasks": []})],
+        clock,
+        0.1,
+    )
+    client = make_client(transport, monotonic=lambda: clock["now"])
+
+    def slow_body(nonce):
+        clock["now"] += 1.5
+        return _heartbeat_body(nonce)
+
+    response = client.send(
+        f"/v0/nodes/{NODE_UID}/heartbeat",
+        slow_body,
+        category=CATEGORY_HEARTBEAT,
+        timeout_s=6.0,
+    )
+    assert response.ok
+    assert len(transport.calls) == 2
+    assert transport.calls[0]["timeout_s"] == pytest.approx(4.5)
+    assert transport.calls[1]["timeout_s"] == pytest.approx(2.9)
+    assert clock["now"] - 1000.0 <= 6.0
 
 
 def test_conflict_retry_gets_only_the_remaining_budget():
