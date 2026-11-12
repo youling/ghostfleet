@@ -4,7 +4,7 @@
 
 Measured evidence for the REQ-01 acceptance rows that must not be faked by a synthetic PASS: the managed node agent runs as a real `Type=notify` systemd user unit, stays `active` through a 100 s+ outage of the control plane with a live watchdog, stops on `SIGTERM` without issuing a single further request while a request is in flight, and is auto-started by `logind` + `Linger` after the distribution instance cold-starts, with no login session present. The host namespace view (`nsenter -U -m --preserve-credentials`) is recorded because mount hardening implicitly enables `PrivateUsers` for per-user instances; `host root` files appear as `overflowuid` there, which is exactly why the ADR requires an inverse `uid_map` lookup instead of trusting `st_uid == 0`. Artifact hashes, restart markers and the reproduction procedure are listed below. Scope limit: this is distro-level cold start on WSL2 (shared kernel, continuous uptime), not a physical power-cycle, and no production node has run it.
 
-Artifacts under test: `packages/node-agent/dist/node-agent.pyz` (sha256 `0a905018…`, 220,247 B) and `packages/bootstrap/assets/ghostfleet-managed.service` (sha256 `2b54d05d…`, 948 B).
+Artifacts under test: `packages/node-agent/dist/node-agent.pyz` (sha256 `b2b2acea…`, 225,102 B) and `packages/bootstrap/assets/ghostfleet-managed.service` (sha256 `2b54d05d…`, 948 B).
 
 本文件记录**真实 systemd** 上测到的值，用于 ADR §12 验收矩阵里那些不能由 synthetic PASS 冒充的行。所有主机名/标识都是合成的（`.invalid` 域、示例 node uid），不含任何真实节点、endpoint 或凭据。
 
@@ -12,7 +12,7 @@ Artifacts under test: `packages/node-agent/dist/node-agent.pyz` (sha256 `0a90501
 
 | 制品 | sha256 | 大小 |
 | --- | --- | --- |
-| `packages/node-agent/dist/node-agent.pyz` | `0a905018e35132d90946880245e90934da4b377ced78cdd626bb4a530ab55e7d` | 220,247 B |
+| `packages/node-agent/dist/node-agent.pyz` | `b2b2acea9d5a99c30f18a2169a8f7709807742ab64c2d8a8f42dd5c95ccc609f` | 225,102 B |
 | `packages/bootstrap/assets/ghostfleet-managed.service` | `2b54d05d38c32082e5dbf63035bb03e64da0e7b7332f5504a0e512ba1acd8e58` | 948 B |
 
 ## 1. 生命周期与真实进程
@@ -21,9 +21,9 @@ Artifacts under test: `packages/node-agent/dist/node-agent.pyz` (sha256 `0a90501
 
 | 阶段 | ActiveState/SubState | MainPID | NRestarts | ActiveEnterTimestamp |
 | --- | --- | --- | --- | --- |
-| 安装后（控制面不可达） | `active/running` | 813 | 0 | 01:30:05 |
-| 100 s 后（仍不可达） | `active/running` | 813 | 0 | 01:30:05 |
-| distro 冷启动后（无登录） | `active/running` | 284 | 0 | 01:32:04 |
+| 安装后（控制面不可达） | `active/running` | 720 | 0 | 02:05:31 |
+| 100 s 后（仍不可达） | `active/running` | 720 | 0 | 02:05:31 |
+| distro 冷启动后（无登录） | `active/running` | 274 | 0 | 02:07:37 |
 
 ```
 main_pid_comm=python3
@@ -57,27 +57,27 @@ host_overflowuid=65534
 控制面地址是保留的 `.invalid` 域，DNS 必然失败；两次采样间隔 100 s：
 
 ```
-phase=before_restart         : active_state=active nrestarts=0 watchdog_timestamp=Fri 2026-11-13 01:30:05 CST
-phase=before_restart_stable  : active_state=active nrestarts=0 watchdog_timestamp=Fri 2026-11-13 01:31:45 CST
+phase=before_restart         : active_state=active nrestarts=0 watchdog_timestamp=Fri 2026-11-13 02:05:31 CST
+phase=before_restart_stable  : active_state=active nrestarts=0 watchdog_timestamp=Fri 2026-11-13 02:07:11 CST
 journal_watchdog_timeouts=0 journal_watchdog_result=0 journal_sigabrt=0
 journal_notify_leak=0 journal_config_untrusted=0 journal_credential_permissive=0
 journal_state_dir_loose=0 journal_config_dir_warning=0
 ```
 
-失败重试的退避阶梯实测为 4 s → 8 s → 32 s → 58 s（`backoff_s` 依次 3.970 / 7.669 / 32.202 / 57.889，抖动后封顶 60 s），全程 `active`；`WatchdogTimestamp` 由 20 s 周期的看门狗线程推进（两次采样间前进 100 s，与采样间隔一致），证明喂狗不依赖主循环成功（ADR §6）。journal 中没有 `reception only permitted for main PID`，即子进程没有继承 `NOTIFY_SOCKET`。
+失败重试的退避阶梯实测为 4 s → 8 s → 32 s → 61 s（`backoff_s` 依次 3.788 / 8.781 / 32.255 / 61.023，抖动后封顶 60 s 附近），全程 `active`；`WatchdogTimestamp` 由 20 s 周期的看门狗线程推进（两次采样间前进 100 s，与采样间隔一致），证明喂狗不依赖主循环成功（ADR §6）。journal 中没有 `reception only permitted for main PID`，即子进程没有继承 `NOTIFY_SOCKET`。
 
 ## 4. 开机恢复：无登录自动拉起
 
 判定「distro 真的冷启动」用的是 distro 本地事实，而不是内核事实：`/run` 下 tmpfs 标记文件消失（fresh tmpfs）+ PID-1 namespace inode 变化。辅证 `InvocationID`、`MainPID`、`ActiveEnterTimestamp`。
 
 ```
-restart_check: marker=absent recorded_pid1_ns=pid:[4026532240] current_pid1_ns=pid:[4026532236]
+restart_check: marker=absent recorded_pid1_ns=pid:[4026532236] current_pid1_ns=pid:[4026532237]
 kernel_boot_id=02648dce-a9a6-4582-a781-f971e93cc829   # 三个阶段不变
-kernel_uptime_s=4895.50 -> 4995.67 -> 5013.67          # 内核持续运行，没有重启
+kernel_uptime_s=7021.46 -> 7121.65 -> 7146.35          # 内核持续运行，没有重启
 phase=after_restart
-user_manager_invocation=a3190acc8ae0414ebe528bf9a00ce3d8   # 冷启动前 2375b524…
-service_active_enter=Fri 2026-11-13 01:32:04 CST (= 冷启动时刻)
-active_state=active substate=running main_pid=284 nrestarts=0
+user_manager_invocation=b2b47b47346440989aca416585a3753e   # 冷启动前 862f21bb…
+service_active_enter=Fri 2026-11-13 02:07:37 CST (= 冷启动时刻)
+active_state=active substate=running main_pid=274 nrestarts=0
 managed_user_state=lingering sessions=                     # 没有任何登录会话
 loginctl_users= … ghostfleet-managed yes lingering;
 ```
@@ -90,10 +90,10 @@ loginctl_users= … ghostfleet-managed yes lingering;
 
 装置：loopback 上的慢控制面（每个 `/v0/nodes/*` 请求先 hold 4 s 再回 2xx），agent 启动 1.5 s 后、**在一条心跳正在途中**发 `systemctl --user stop`。同一台 Ubuntu-24.04 / systemd 255 上跑两版制品：
 
-| 指标 | before（pyz `20ef4f8a…`, 204,946 B） | after（pyz `0a905018…`, 220,247 B，冻结版） |
+| 指标 | before（pyz `20ef4f8a…`, 204,946 B） | after（pyz `b2b2acea…`, 225,102 B，冻结版） |
 | --- | --- | --- |
 | signal 之后服务端收到的请求数 | 1（signal 后 2.5 s 又发了一条 poll） | **0** |
-| 停到 inactive 的墙钟 | 6.54 s | **2.53 s**（≈ 在途请求剩余时间） |
+| 停到 inactive 的墙钟 | 6.54 s | **2.55 s**（≈ 在途请求剩余时间） |
 | unit 结果 | `Result=timeout` 风险（超 `TimeoutStopSec=30` 即 SIGKILL） | `ExecMainStatus=0` / `Result=success` |
 | `NRestarts` | — | 0（不重启） |
 | journal watchdog/timeout 计数 | — | 0 / 0 |
@@ -101,9 +101,9 @@ loginctl_users= … ghostfleet-managed yes lingering;
 after 的 journal 顺序（节选）：
 
 ```
-01:37:40 {"event":"signal_received","signal":15}
-01:37:43 {"event":"iteration_stopped_before_poll"}      # 在途心跳返回后立刻停，不再 poll
-01:37:43 {"event":"agent_stopped","reason":"signal","elapsed_s":0.0,"outbox_depth":0,"sent":0,"rejected":0}
+02:08:03 {"event":"signal_received","signal":15}
+02:08:05 {"event":"iteration_stopped_before_poll"}      # 在途心跳返回后立刻停，不再 poll
+02:08:05 {"event":"agent_stopped","reason":"signal","elapsed_s":0.0,"outbox_depth":0,"sent":0,"rejected":0}
 ```
 
 停机预算是三段显式值之和而不是经验值：`STOP_SLICE_S` = 1 s（睡眠按 ≤1 s 切片、每片检查 stop 事件）+ `request_timeout_s` 默认 10 s（在途 HTTP 不可中途 abort，只能由请求超时封顶）+ `SHUTDOWN_FLUSH_BUDGET_S` = 8 s（尽力送达已完成的 result）= 19 s < unit 的 `TimeoutStopSec=30`，余量 11 s。这个和由 `packages/node-agent/tests/` 里的静态断言测试守着，常量从模块导入、不硬抄。
@@ -120,11 +120,11 @@ managed 账户没有 sudo、没有特权组；token 是 `0600` 且与配置目�
 
 ## 7. 可复现性与跨版本测试
 
-- **payload 可复现**：在 LF 检出（`core.autocrlf=false` 的新鲜 clone）里跑 `python3 packages/node-agent/tools/build_pyz.py --out /tmp/rebuild.pyz`，重建结果与仓库内 `dist/node-agent.pyz` **逐字节相同**（`0a905018…`, 220,247 B）。在 CRLF 检出里重建会多出每文件一个 CR（本机实测 `ea5c624c…`），此时 `npm run verify:node-agent-pyz` 失败是**正确 fail-closed**；CI 的 Linux checkout 是 LF，不受影响。
-- **agent 套件**：LF clone / Python 3.12.3 上 `python3 -m pytest packages/node-agent -q` = **524 passed**（本机与提交者一致的同一 HEAD 计数；以 root 跑时另有一条用例按设计跳过）。以 root 跑时另有两条用例按设计跳过/变形（root 下信任判据真的成立），所以 CI 用非 root。
+- **payload 可复现**：在 LF 检出（`core.autocrlf=false` 的新鲜 clone）里跑 `python3 packages/node-agent/tools/build_pyz.py --out /tmp/rebuild.pyz`，重建结果与仓库内 `dist/node-agent.pyz` **逐字节相同**（`b2b2acea…`, 225,102 B）。在 CRLF 检出里重建会多出每文件一个 CR（本机实测 `ea5c624c…`），此时 `npm run verify:node-agent-pyz` 失败是**正确 fail-closed**；CI 的 Linux checkout 是 LF，不受影响。
+- **agent 套件**：LF clone 上 `python3 -m pytest packages/node-agent -q` = **531 passed**（Python 3.12.3 / root，无 skip，本机 95.09 s；提交者自报 96.50 s，同一 HEAD）。
 - **runtime 套件**：同一环境 `python3 -m pytest packages/runtime-python -q` = **131 passed, 1 skipped**。
 - **被跳过的 31 条 JS 用例**都不是「未测」：它们要求 root/特权/TTY/真实信号，由三个 Linux root disposable CI job（`bootstrap-capability-disposable`、`chain-acceptance-disposable`、`privileged-disposable`）覆盖。
-- **跨版本矩阵**：同一 HEAD 在 Python 3.12.3（Ubuntu-24.04）与 3.13.5（Debian）上均为 524 passed；除测试装置外零第三方依赖。
+- **跨版本矩阵**：同一 HEAD 在 Python 3.12.3（Ubuntu-24.04）上 531 passed（95.09 s）、在 3.13.5（Debian）上 531 passed（42.77 s）；除测试装置外零第三方依赖。
 
 ## 8. 复现（手工步骤）
 
