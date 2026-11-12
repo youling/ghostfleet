@@ -10,8 +10,9 @@ import {
   AGENT_SCHEMA, CREDENTIAL_HANDOFF_CIPHER, CREDENTIAL_HANDOFF_INFO, CREDENTIAL_HANDOFF_IV_BYTES,
   CREDENTIAL_HANDOFF_KEY_BYTES, CREDENTIAL_HANDOFF_MAX_DELIVERIES, CREDENTIAL_HANDOFF_SALT,
   CREDENTIAL_HANDOFF_STATES, CREDENTIAL_HANDOFF_TAG_BYTES, CREDENTIAL_HANDOFF_TTL_SECONDS,
-  MAX_TASKS_PER_POLL, NODE_BODY_LIMITS, NODE_RATE_LIMIT, TASK_LEASE_SECONDS,
-  TASK_OPERATIONS, TASK_SCHEMA, TASK_STATUS, defaultAgentState, mintNodeCredential, projectAgent, sha256Hex,
+  MAX_TASKS_PER_POLL, NODE_BODY_LIMITS, NODE_RATE_LIMIT, RESULT_STATUSES, TASK_LEASE_SECONDS,
+  TASK_OPERATIONS, TASK_SCHEMA, TASK_STATUS, canonicalJson, defaultAgentState, mintNodeCredential,
+  projectAgent, sha256Hex,
 } from "../../src/control-plane/node-agent.js";
 import worker, { GhostFleetState } from "../../src/adapters/cloudflare/worker.js";
 
@@ -194,6 +195,21 @@ function sendResult(handler, clock, node_uid, token, task_id, result, options = 
   });
 }
 
+// The authoritative result envelope, field-for-field from na-core's
+// protocol.py make_result (schema/task_id/node_uid/operation/status/observed_at
+// plus optional data/code). A cross-branch contract drift fails here.
+function taskResult(task, status, extra = {}) {
+  return {
+    schema: TASK_SCHEMA,
+    task_id: task.task_id,
+    node_uid: task.node_uid,
+    operation: task.operation,
+    status,
+    observed_at: new Date(START_MS).toISOString(),
+    ...extra,
+  };
+}
+
 // The node token never equals a stored digest, so a snapshot diff plus a text
 // scan is the strongest available leak assertion.
 function assertNoCredentialMaterial(text, token, digestHex) {
@@ -206,6 +222,10 @@ async function expectRejection(parts, invoke, status, code) {
   const result = await invoke();
   assert.equal(result.status, status, "unexpected status for " + code + ": " + result.text);
   assert.equal(result.json.error, code);
+  // The Python agent client dispatches 401/409 by this field (na-core
+  // client.py _extract_error_code), so the node plane must always carry it:
+  // without it a retryable nonce/seq/boot conflict is classified as terminal.
+  assert.equal(result.json.code, code, "node-plane errors must expose the stable code to the agent");
   assert.deepEqual(parts.store.snapshot(), before, "a rejected node request must not mutate state");
   return result;
 }
@@ -429,7 +449,7 @@ test("body caps are enforced before authentication and before any state change",
 
   const task = parts.controller.createNodeTask(node_uid, { operation: "node.observe", params: { want: ["identity"] } });
   const result = await sendResult(parts.handler, parts.clock, node_uid, credential.token, task.task_id, {
-    outcome: "OK", note: "y".repeat(NODE_BODY_LIMITS.result + 64),
+    ...taskResult(task, "SUCCEEDED"), data: { note: "y".repeat(NODE_BODY_LIMITS.result + 64) },
   });
   assert.equal(result.status, 413);
   assert.equal(result.json.error, "NODE_BODY_TOO_LARGE");
@@ -487,6 +507,7 @@ test("nonce replay is rejected and produces no additional side effect", async ()
   });
   assert.equal(exact.status, 409);
   assert.equal(exact.json.error, "NODE_SEQ_REGRESSION");
+  assert.equal(exact.json.code, "NODE_SEQ_REGRESSION");
   assert.deepEqual(parts.store.snapshot(), afterFirst);
 
   // The ring is the second line: a fresh seq cannot smuggle a used nonce back in.
@@ -495,6 +516,7 @@ test("nonce replay is rejected and produces no additional side effect", async ()
   });
   assert.equal(second.status, 409);
   assert.equal(second.json.error, "NODE_NONCE_REPLAY");
+  assert.equal(second.json.code, "NODE_NONCE_REPLAY");
   assert.deepEqual(parts.store.snapshot(), afterFirst);
 });
 
@@ -620,12 +642,16 @@ test("task results are idempotent by digest and are never overwritten", async ()
   assert.equal(lease.json.tasks.length, 1);
   assert.equal(lease.json.tasks[0].task_id, task.task_id);
 
-  const result = { outcome: "OK", observed: { identity: "synthetic-node", uptime_s: 42 } };
+  // na-core's exact shape: the result is bound to schema/task/node/operation and
+  // carries status (not outcome — the round-1 fixture used the wrong key and
+  // would have hidden the whole §7 vocabulary collapsing to UNKNOWN).
+  const result = taskResult(task, "SUCCEEDED", { data: { identity: "synthetic-node", uptime_s: 42 } });
   const first = await sendResult(parts.handler, parts.clock, node_uid, credential.token, task.task_id, result);
   assert.equal(first.status, 200);
   assert.equal(first.json.idempotent, false);
   assert.equal(first.json.task.status, TASK_STATUS.COMPLETED);
-  assert.equal(first.json.task.result_outcome, "OK");
+  assert.equal(first.json.task.result_outcome, "SUCCEEDED");
+  assert.equal(first.json.task.result_digest, sha256Hex(canonicalJson(result)), "the digest is server-derived");
   assert.match(first.json.result_digest, /^[a-z0-9]{64}$/);
   const completedAt = first.json.task.completed_at;
 
@@ -635,16 +661,16 @@ test("task results are idempotent by digest and are never overwritten", async ()
   assert.equal(replay.json.result_digest, first.json.result_digest);
   assert.equal(replay.json.task.completed_at, completedAt);
 
-  await expectRejection(parts, () => sendResult(parts.handler, parts.clock, node_uid, credential.token, task.task_id, {
-    outcome: "FAILED", observed: { identity: "tampered" },
-  }), 409, "TASK_RESULT_CONFLICT");
+  await expectRejection(parts, () => sendResult(parts.handler, parts.clock, node_uid, credential.token, task.task_id,
+    taskResult(task, "FAILED", { data: { identity: "tampered" } })), 409, "TASK_RESULT_CONFLICT");
 
   const other = makeId("task");
-  await expectRejection(parts, () => sendResult(parts.handler, parts.clock, node_uid, credential.token, other, { outcome: "OK" }), 404, "TASK_NOT_FOUND");
+  await expectRejection(parts, () => sendResult(parts.handler, parts.clock, node_uid, credential.token, other,
+    taskResult({ ...task, task_id: other }, "SUCCEEDED")), 404, "TASK_NOT_FOUND");
 
   await expectRejection(parts, () => nodePost(parts.handler, "/v0/nodes/" + node_uid + "/tasks/" + task.task_id + "/result", {
     token: credential.token, headerUid: node_uid,
-    body: agentEnvelope(parts.clock, node_uid, { task_id: other, result: { outcome: "OK" } }),
+    body: agentEnvelope(parts.clock, node_uid, { task_id: other, result }),
   }), 400, "NODE_REQUEST_INVALID");
 
   const completed = parts.controller.listNodeTasks(node_uid).find((item) => item.task_id === task.task_id);
@@ -652,6 +678,94 @@ test("task results are idempotent by digest and are never overwritten", async ()
   assert.equal(completed.completed_at, completedAt);
   const afterResult = await poll(parts.handler, parts.clock, node_uid, credential.token);
   assert.deepEqual(afterResult.json.tasks, []);
+});
+
+test("result status stays inside na-core's four-value vocabulary and fails closed to UNKNOWN", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "status-device");
+  const credential = giveCredential(parts.controller, node_uid);
+
+  // Pinned to na-core protocol.py:57-61; a rename on either side must fail here.
+  assert.deepEqual(RESULT_STATUSES, ["SUCCEEDED", "REFUSED", "FAILED", "UNKNOWN"]);
+
+  const send = async (status) => {
+    const task = parts.controller.createNodeTask(node_uid, { operation: "node.observe", params: { want: ["identity"] } });
+    const response = await sendResult(parts.handler, parts.clock, node_uid, credential.token, task.task_id, taskResult(task, status));
+    assert.equal(response.status, 200, "unexpected result for status " + JSON.stringify(status));
+    return response;
+  };
+
+  for (const status of RESULT_STATUSES) {
+    const response = await send(status);
+    assert.equal(response.json.task.result_outcome, status, "status is projected verbatim");
+  }
+
+  // Anything outside the vocabulary fails closed: it is never echoed back, so a
+  // consumer cannot be told "SUCCEEDED" by a malformed node.
+  for (const status of ["BOGUS", "succeeded", "", 42, { a: 1 }, ["SUCCEEDED"]]) {
+    const response = await send(status);
+    assert.equal(response.json.task.result_outcome, "UNKNOWN", "unexpected projection for " + JSON.stringify(status));
+  }
+  // A body that omits the status key entirely is also UNKNOWN, not an error.
+  const missingTask = parts.controller.createNodeTask(node_uid, { operation: "node.observe", params: { want: ["identity"] } });
+  const withoutStatus = taskResult(missingTask, "SUCCEEDED");
+  delete withoutStatus.status;
+  const missingResponse = await sendResult(parts.handler, parts.clock, node_uid, credential.token, missingTask.task_id, withoutStatus);
+  assert.equal(missingResponse.status, 200);
+  assert.equal(missingResponse.json.task.result_outcome, "UNKNOWN");
+});
+
+test("result envelopes must be bound to the task path and the queued operation", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "binding-device");
+  const other_uid = admitNode(parts.controller, "binding-other-device");
+  const credential = giveCredential(parts.controller, node_uid);
+  const task = parts.controller.createNodeTask(node_uid, { operation: "node.observe", params: { want: ["identity"] } });
+  const send = (result) => sendResult(parts.handler, parts.clock, node_uid, credential.token, task.task_id, result);
+
+  await expectRejection(parts, () => send({ ...taskResult(task, "SUCCEEDED"), schema: "ghostfleet-node-task/v1" }),
+    400, "TASK_RESULT_SCHEMA_UNSUPPORTED");
+  await expectRejection(parts, () => send({ ...taskResult(task, "SUCCEEDED"), task_id: makeId("task") }),
+    409, "TASK_RESULT_SCOPE_MISMATCH");
+  await expectRejection(parts, () => send({ ...taskResult(task, "SUCCEEDED"), operation: "service.status.read" }),
+    409, "TASK_OPERATION_MISMATCH");
+  await expectRejection(parts, () => send({ ...taskResult(task, "SUCCEEDED"), node_uid: other_uid }),
+    403, "NODE_SCOPE_MISMATCH");
+
+  // The task was untouched by all four rejections and still completes normally.
+  const ok = await send(taskResult(task, "SUCCEEDED"));
+  assert.equal(ok.status, 200);
+  assert.equal(ok.json.task.status, TASK_STATUS.COMPLETED);
+  assert.equal(ok.json.task.result_outcome, "SUCCEEDED");
+});
+
+test("a node-supplied result_digest is advisory and never decides idempotency", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "digest-device");
+  const credential = giveCredential(parts.controller, node_uid);
+  const task = parts.controller.createNodeTask(node_uid, { operation: "node.observe", params: { want: ["uptime"] } });
+  const result = taskResult(task, "REFUSED", { code: "OBSERVE_NOT_PERMITTED" });
+  const expected = sha256Hex(canonicalJson(result));
+
+  const send = (advisory_digest) => nodePost(parts.handler, "/v0/nodes/" + node_uid + "/tasks/" + task.task_id + "/result", {
+    token: credential.token, headerUid: node_uid,
+    body: agentEnvelope(parts.clock, node_uid, { task_id: task.task_id, result, result_digest: advisory_digest }),
+  });
+
+  const wrong = "f".repeat(64);
+  const first = await send(wrong);
+  assert.equal(first.status, 200);
+  assert.equal(first.json.result_digest, expected, "the stored digest is the server-derived one");
+  assert.notEqual(first.json.result_digest, wrong);
+  assert.equal(first.json.task.result_digest, expected);
+
+  // A different advisory digest with the same result is still an idempotent
+  // replay: the client value never participates in the comparison.
+  const replay = await send("0".repeat(64));
+  assert.equal(replay.status, 200);
+  assert.equal(replay.json.idempotent, true);
+  assert.equal(replay.json.result_digest, expected);
+  assert.equal(replay.json.task.result_outcome, "REFUSED");
 });
 
 test("expired tasks are retired instead of dispatched", async () => {
@@ -738,6 +852,56 @@ function workerFixture() {
     },
   };
 }
+
+test("node-plane errors expose the stable code the Python agent dispatches on", async () => {
+  // Cross-branch contract (na-core client.py _classify): 401/409 handling is
+  // decided by the body's stable code, not by the HTTP status alone. Losing the
+  // field silently turns a retryable nonce/seq conflict into a dropped request.
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "contract-device");
+  const credential = giveCredential(parts.controller, node_uid);
+  const beatPath = "/v0/nodes/" + node_uid + "/heartbeat";
+  const body = agentEnvelope(parts.clock, node_uid);
+
+  const anonymous = await nodePost(parts.handler, beatPath, { token: null, headerUid: node_uid, body });
+  assert.equal(anonymous.status, 401);
+  assert.equal(anonymous.json.error, "NODE_AUTH_INVALID");
+  assert.equal(anonymous.json.code, "NODE_AUTH_INVALID");
+
+  const accepted = await nodePost(parts.handler, beatPath, { token: credential.token, headerUid: node_uid, body });
+  assert.equal(accepted.status, 200);
+
+  const intrusive = await nodePost(parts.handler, beatPath, {
+    token: credential.token, headerUid: node_uid, body: { ...body, seq: body.seq + 1 },
+  });
+  assert.equal(intrusive.status, 409);
+  assert.equal(intrusive.json.code, "NODE_NONCE_REPLAY");
+  assert.equal(intrusive.json.error, "NODE_NONCE_REPLAY");
+
+  parts.clock.advance(600);
+  const bucket = parts.store.getNode(node_uid).agent;
+  parts.store.putNodeAgent(node_uid, { ...bucket, rate: { tokens: 0, updated_at_ms: parts.clock.now() } });
+  const limited = await poll(parts.handler, parts.clock, node_uid, credential.token);
+  assert.equal(limited.status, 429);
+  assert.equal(limited.json.code, "NODE_RATE_LIMITED");
+  assert.equal(limited.response.headers.get("retry-after"), String(limited.json.retry_after_s));
+
+  const task = parts.controller.createNodeTask(node_uid, { operation: "node.observe", params: { want: ["identity"] } });
+  // Each accepted request costs one bucket token, so a refill precedes each call.
+  parts.clock.advance(NODE_RATE_LIMIT.refill_seconds);
+  const lease = await poll(parts.handler, parts.clock, node_uid, credential.token);
+  assert.equal(lease.status, 200);
+  parts.clock.advance(NODE_RATE_LIMIT.refill_seconds);
+  const first = await sendResult(parts.handler, parts.clock, node_uid, credential.token, task.task_id,
+    taskResult(task, "SUCCEEDED"));
+  assert.equal(first.status, 200);
+  parts.clock.advance(NODE_RATE_LIMIT.refill_seconds);
+  const conflict = await sendResult(parts.handler, parts.clock, node_uid, credential.token, task.task_id,
+    taskResult(task, "FAILED", { code: "OBSERVE_FAILED" }));
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.json.code, "TASK_RESULT_CONFLICT");
+  assert.equal(conflict.json.error, "TASK_RESULT_CONFLICT");
+});
 
 test("worker exempts only the three node routes from operator bearer auth", async () => {
   const fixture = workerFixture();

@@ -650,6 +650,11 @@ export class GhostFleetController {
     if (verification.payload.task_id !== task_id) throw new NodeAgentError("NODE_REQUEST_INVALID", 400);
     const result = verification.payload.result;
     if (!result || typeof result !== "object" || Array.isArray(result)) throw new NodeAgentError("TASK_RESULT_INVALID", 400);
+    // The stored digest is always derived here, from the canonical result. The
+    // node's own result_digest (if it sends one) is advisory and never enters
+    // the comparison: JS and Python canonical JSON can render floats differently,
+    // so trusting a cross-language digest would make a replay look like a
+    // conflict at random.
     const applied = applyTaskResult(verification.agent, {
       node_uid: verification.node.node_uid, task_id, result,
       result_digest: sha256Hex(canonicalJson(result)), nowMs: this.clock.now(),

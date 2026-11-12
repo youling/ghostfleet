@@ -63,6 +63,15 @@ export function createHttpHandler(controller) {
   // A node request is bounded, verified, and only then applied. The body limit
   // is enforced twice (declared content-length and streamed byte count) because
   // an anonymous node token holder is not trusted with the buffer.
+  // Node-plane failures carry the stable code twice: `error` is this repo's
+  // convention, `code` is what the Python agent client dispatches on
+  // (na-core client.py _extract_error_code reads `code` or `error.code`).
+  // Without the second field a 409 nonce/seq/boot conflict degrades from an
+  // automatic retry into a dropped request, so both are always emitted.
+  function nodeErrorPayload(code, extra = {}) {
+    return { ok: false, error: code, code, ...extra };
+  }
+
   async function nodeAgentRequest(request, node_uid, kind, task_id = null) {
     const limit = NODE_BODY_LIMITS[kind];
     let text;
@@ -70,12 +79,12 @@ export function createHttpHandler(controller) {
       text = await readText(request, limit);
     } catch (error) {
       // One body-cap failure has one code, no matter which layer noticed it.
-      if (error instanceof RequestBodyTooLarge) return json({ ok: false, error: "NODE_BODY_TOO_LARGE" }, 413);
+      if (error instanceof RequestBodyTooLarge) return json(nodeErrorPayload("NODE_BODY_TOO_LARGE"), 413);
       throw error;
     }
     const verification = controller.verifyNodeRequest({ node_uid, headers: request.headers, body: text, limit });
     if (!verification.ok) {
-      const payload = { ok: false, error: verification.code };
+      const payload = nodeErrorPayload(verification.code);
       const headers = {};
       if (Number.isInteger(verification.retry_after_s)) {
         payload.retry_after_s = verification.retry_after_s;
@@ -83,9 +92,16 @@ export function createHttpHandler(controller) {
       }
       return json(payload, verification.status, headers);
     }
-    if (kind === "heartbeat") return json(controller.nodeHeartbeat(verification));
-    if (kind === "poll") return json(controller.pollNodeTasks(verification));
-    return json(controller.applyNodeTaskResult(verification, task_id));
+    try {
+      if (kind === "heartbeat") return json(controller.nodeHeartbeat(verification));
+      if (kind === "poll") return json(controller.pollNodeTasks(verification));
+      return json(controller.applyNodeTaskResult(verification, task_id));
+    } catch (error) {
+      // Task-level failures (conflict / not found / scope) keep the same shape
+      // so a result submission can be classified as terminal by the agent.
+      if (error instanceof NodeAgentError) return json(nodeErrorPayload(error.code), error.status);
+      throw error;
+    }
   }
 
   return async function handle(request) {

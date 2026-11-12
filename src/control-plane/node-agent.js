@@ -69,6 +69,14 @@ export const TASK_STATUS = Object.freeze({
   EXPIRED: "EXPIRED",
 });
 
+// The crash-safety vocabulary of §7, byte-identical to na-core's
+// protocol.py RESULT_STATUSES. The projection may only ever carry one of these
+// four values: REFUSED/FAILED mean "safe to repeat", SUCCEEDED means "done",
+// and UNKNOWN means "may have executed, never repeat". Any other value the node
+// sends is downgraded to UNKNOWN instead of being echoed into a public
+// projection a consumer might trust.
+export const RESULT_STATUSES = Object.freeze(["SUCCEEDED", "REFUSED", "FAILED", "UNKNOWN"]);
+
 // Nodes may authenticate while they are still provisional: admission is the
 // operator's job, and the agent plane only needs a minted credential.
 export const NODE_AGENT_LIFECYCLES = Object.freeze(["PROVISIONAL", "ACTIVE"]);
@@ -896,6 +904,24 @@ export function applyTaskResult(agent, input) {
   const task = Object.hasOwn(tasks, input.task_id) ? tasks[input.task_id] : null;
   if (!task) throw new NodeAgentError("TASK_NOT_FOUND", 404);
   if (task.node_uid !== input.node_uid) throw new NodeAgentError("TASK_SCOPE_MISMATCH", 403);
+
+  // The result envelope must prove which task it answers before it can touch
+  // durable state (na-core make_result binds schema/task_id/node_uid/operation).
+  // Everything here runs before the digest branch, so a mis-bound replay cannot
+  // be mistaken for an idempotent success.
+  const result = input.result;
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw new NodeAgentError("TASK_RESULT_INVALID", 400);
+  }
+  if (result.schema !== TASK_SCHEMA) throw new NodeAgentError("TASK_RESULT_SCHEMA_UNSUPPORTED", 400);
+  if (result.task_id !== task.task_id) throw new NodeAgentError("TASK_RESULT_SCOPE_MISMATCH", 409);
+  if (result.operation !== task.operation) throw new NodeAgentError("TASK_OPERATION_MISMATCH", 409);
+  if (result.node_uid !== task.node_uid) throw new NodeAgentError("NODE_SCOPE_MISMATCH", 403);
+
+  // The digest is computed by the caller from canonicalJson(result) on the
+  // control-plane side. A result_digest a node puts in its own body is advisory
+  // only: it is never read here and never compared, because Python and JS
+  // canonical JSON may disagree on float rendering (1.0 vs 1).
   const digest = input.result_digest;
   if (typeof digest !== "string" || !RESULT_DIGEST_PATTERN.test(digest)) {
     throw new NodeAgentError("TASK_RESULT_INVALID", 400);
@@ -906,10 +932,10 @@ export function applyTaskResult(agent, input) {
     }
     throw new NodeAgentError("TASK_RESULT_CONFLICT", 409);
   }
-  const outcome =
-    input.result && typeof input.result.outcome === "string" && input.result.outcome.length <= 32
-      ? input.result.outcome
-      : "UNKNOWN";
+  // result.status is the na-core field name. Strict equality only: an unknown
+  // string, an object, a missing key or a different casing fails closed to
+  // UNKNOWN rather than being passed through.
+  const outcome = RESULT_STATUSES.includes(result.status) ? result.status : "UNKNOWN";
   const completed = {
     ...task,
     status: TASK_STATUS.COMPLETED,
