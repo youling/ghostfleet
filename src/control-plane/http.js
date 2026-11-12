@@ -1,3 +1,5 @@
+import { NODE_BODY_LIMITS } from "./node-agent.js";
+
 function json(value, status = 200) {
   return new Response(JSON.stringify(value, null, 2), { status, headers: { "content-type": "application/json; charset=utf-8" } });
 }
@@ -53,12 +55,37 @@ function errorResponse(error) {
 }
 
 export function createHttpHandler(controller) {
+  // A node request is bounded, verified, and only then applied. The body limit
+  // is enforced twice (declared content-length and streamed byte count) because
+  // an anonymous node token holder is not trusted with the buffer.
+  async function nodeAgentRequest(request, node_uid, kind, task_id = null) {
+    const limit = NODE_BODY_LIMITS[kind];
+    const text = await readText(request, limit);
+    const verification = controller.verifyNodeRequest({ node_uid, headers: request.headers, body: text, limit });
+    if (!verification.ok) return json({ ok: false, error: verification.code }, verification.status);
+    if (kind === "heartbeat") return json(controller.nodeHeartbeat(verification));
+    if (kind === "poll") return json(controller.pollNodeTasks(verification));
+    return json(controller.applyNodeTaskResult(verification, task_id));
+  }
+
   return async function handle(request) {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
     try {
       if (request.method === "GET" && path === "/healthz") return json({ ok: true, service: "ghostfleet", version: "0.1.0-dev" });
       if (request.method === "GET" && path === "/v0/nodes") return json({ ok: true, nodes: controller.listNodes() });
+
+      // Node agent plane (§5.2). These three routes authenticate with the node
+      // credential, never the operator bearer, so they are matched before the
+      // operator route table and verify before touching any state.
+      const heartbeatRoute = /^\/v0\/nodes\/([^/]+)\/heartbeat$/.exec(path);
+      if (request.method === "POST" && heartbeatRoute) return await nodeAgentRequest(request, decodeURIComponent(heartbeatRoute[1]), "heartbeat");
+      const pollRoute = /^\/v0\/nodes\/([^/]+)\/tasks\/poll$/.exec(path);
+      if (request.method === "POST" && pollRoute) return await nodeAgentRequest(request, decodeURIComponent(pollRoute[1]), "poll");
+      const resultRoute = /^\/v0\/nodes\/([^/]+)\/tasks\/([^/]+)\/result$/.exec(path);
+      if (request.method === "POST" && resultRoute) {
+        return await nodeAgentRequest(request, decodeURIComponent(resultRoute[1]), "result", decodeURIComponent(resultRoute[2]));
+      }
       if (request.method === "GET" && path === "/v0/enrollment-attempts") return json({ ok: true, attempts: controller.listEnrollmentAttempts() });
       if (request.method === "GET" && path === "/v0/enrollment-templates") return json({ ok: true, templates: controller.listEnrollmentTemplates() });
       if (request.method === "GET" && path === "/v0/human-gates") return json({ ok: true, gates: controller.listHumanGates() });

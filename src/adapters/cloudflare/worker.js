@@ -51,6 +51,14 @@ export default {
     const isMcp = path.replace(/\/+$/, "") === "/mcp";
     const isEnrollmentClaim = request.method === "POST" && /^\/v1\/enrollment-tickets\/[^/]+\/claim$/.test(path);
     const isEnrollmentComplete = request.method === "POST" && path === "/v1/enroll/complete";
+    // The three node agent routes carry the node credential minted at enrollment
+    // completion, not the operator bearer. They are exempted by exact path so no
+    // other /v0 or /mcp route loses operator authorization.
+    const isNodeAgentRoute = request.method === "POST" && (
+      /^\/v0\/nodes\/[^/]+\/heartbeat$/.test(path) ||
+      /^\/v0\/nodes\/[^/]+\/tasks\/poll$/.test(path) ||
+      /^\/v0\/nodes\/[^/]+\/tasks\/[^/]+\/result$/.test(path)
+    );
     if (request.method === "GET" && path === "/v1/bootstrap.sh") {
       // Retired: this was an unpinned second entrance to the courier. The only
       // supported delivery is the Console-generated command, which pins the
@@ -77,7 +85,7 @@ export default {
       const result = await configureTailscaleProvider(env, body);
       return Response.json(result.payload, { status: result.status, headers: { "cache-control": "no-store" } });
     }
-    if (path.startsWith("/v0/") || isMcp) {
+    if ((path.startsWith("/v0/") || isMcp) && !isNodeAgentRoute) {
       const denial = await authorizeApi(request, env, { readOnly: isMcp });
       if (denial) return denial;
     }

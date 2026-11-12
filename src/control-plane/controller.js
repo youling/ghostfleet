@@ -12,6 +12,11 @@ import { CORE_OWNED_EVIDENCE, EnrollmentState, EventType, HumanGateState, NodeLi
 import { assertPublicSafe, publicClone } from "../core/security.js";
 import { InvalidTransitionError, transitionAttempt } from "../core/state-machine.js";
 import { InMemoryStore } from "./store.js";
+import {
+  AGENT_SCHEMA, MAX_TASKS_PER_HEARTBEAT, MAX_TASKS_PER_POLL, NodeAgentError, TASK_LEASE_SECONDS,
+  applyHeartbeat, applyTaskResult, canonicalJson, createTask, mintNodeCredential, pollTasks,
+  projectNode, publicTask, sha256Hex, validateTaskInput, verifyNodeRequest,
+} from "./node-agent.js";
 import { createEnrollmentTemplateCatalog } from "./enrollment-templates.js";
 import { selectionMissingComponents, templateRequiresCapability } from "./capability-selection.js";
 import {
@@ -292,7 +297,8 @@ export class GhostFleetController {
     const digest = completionDigest(report);
     if (record.state === "COMPLETED") {
       if (record.completion_digest !== digest) throw new EnrollmentTicketError("BOOTSTRAP_COMPLETION_CONFLICT", 409);
-      return { ticket: publicTicketMetadata(record), attempt: this.getEnrollmentAttempt(record.attempt_id) };
+      // A retried completion must never mint a second agent credential.
+      return { ticket: publicTicketMetadata(record), attempt: this.getEnrollmentAttempt(record.attempt_id), node_credential: null };
     }
     if (record.state !== "CONSUMED") throw new EnrollmentTicketError("TICKET_NOT_COMPLETABLE", 409);
     if (report.node_id !== record.node_id || (report.identity_kind && report.identity_kind !== record.identity_kind) ||
@@ -311,7 +317,24 @@ export class GhostFleetController {
       type: "BOOTSTRAP_COMPLETION", source: "ghostfleet-bootstrap",
       data: { status: "PASS", preflight_digest: record.preflight_digest, completion_digest: digest },
     });
-    return { ticket: publicTicketMetadata(completed), attempt: this.getEnrollmentAttempt(record.attempt_id) };
+    const node_credential = this.#mintNodeAgentCredential(attempt.node_uid);
+    return { ticket: publicTicketMetadata(completed), attempt: this.getEnrollmentAttempt(record.attempt_id), node_credential };
+  }
+
+  /**
+   * Mints the node agent credential exactly once, at successful enrollment
+   * completion (§5.1). Only the digest is durable; the token is returned to the
+   * caller in this single response and is never stored or logged.
+   */
+  #mintNodeAgentCredential(node_uid) {
+    const node = node_uid ? this.store.getNode(node_uid) : null;
+    if (!node) return null;
+    if (node.agent?.credential_digest) return null;
+    const minted = mintNodeCredential();
+    this.store.putNodeAgent(node_uid, {
+      ...node.agent, credential_digest: minted.digestHex, credential_minted_at: this.now(),
+    });
+    return minted.token;
   }
   /**
    * The reviewed template — never a client argument — decides whether a node
@@ -491,13 +514,88 @@ export class GhostFleetController {
     this.#recordCatalogEvidence(id, node);
     this.transitionAttempt(this.getEnrollmentAttempt(id), EnrollmentState.ACCEPTED, "acceptance-evidence-complete");
     this.emit(EventType.NODE_ADMITTED, node.node_uid, { enrollment_attempt_id: id, platform: node.platform });
-    return publicClone(node);
+    return projectNode(node);
   }
 
-  getNode(id) { return required(this.store.getNode(id), "NODE_NOT_FOUND"); }
+  getNode(id) { return projectNode(required(this.store.getNode(id), "NODE_NOT_FOUND")); }
   listNodes() { return this.store.listNodes(); }
   listHumanGates() { return this.store.listGates(); }
   listEvents() { return this.store.listEvents(); }
+
+  // --- node agent plane (§5) -------------------------------------------------
+  // Verification is side-effect free: it returns a commit token only on success
+  // and the route method below decides what to persist from it.
+
+  verifyNodeRequest({ node_uid, headers, body, limit }) {
+    return verifyNodeRequest({ nodes: this.store.rawNodes() }, {
+      node_uid, headers, body, limit, nowMs: this.clock.now(),
+    });
+  }
+
+  #commitNodeAgent(verification, agent) {
+    this.store.putNodeAgent(verification.node.node_uid, {
+      ...agent, nonces: verification.commit.nonces, rate: verification.commit.rate,
+    });
+  }
+
+  nodeHeartbeat(verification) {
+    const nowMs = this.clock.now();
+    const dispatched = pollTasks(verification.agent, { nowMs, limit: MAX_TASKS_PER_HEARTBEAT });
+    const beat = applyHeartbeat(dispatched.agent, verification.payload, {
+      nowMs, agent_version: verification.agent_version,
+    });
+    this.#commitNodeAgent(verification, beat.agent);
+    return {
+      ok: true, schema: AGENT_SCHEMA, node_uid: verification.node.node_uid,
+      server_time: this.now(), interval_s: beat.interval_s, tasks: dispatched.tasks,
+    };
+  }
+
+  pollNodeTasks(verification) {
+    const polled = pollTasks(verification.agent, { nowMs: this.clock.now(), limit: MAX_TASKS_PER_POLL });
+    this.#commitNodeAgent(verification, polled.agent);
+    return {
+      ok: true, schema: AGENT_SCHEMA, node_uid: verification.node.node_uid,
+      server_time: this.now(), lease_seconds: TASK_LEASE_SECONDS, tasks: polled.tasks,
+    };
+  }
+
+  applyNodeTaskResult(verification, task_id) {
+    if (verification.payload.task_id !== task_id) throw new NodeAgentError("NODE_REQUEST_INVALID", 400);
+    const result = verification.payload.result;
+    if (!result || typeof result !== "object" || Array.isArray(result)) throw new NodeAgentError("TASK_RESULT_INVALID", 400);
+    const applied = applyTaskResult(verification.agent, {
+      node_uid: verification.node.node_uid, task_id, result,
+      result_digest: sha256Hex(canonicalJson(result)), nowMs: this.clock.now(),
+    });
+    this.#commitNodeAgent(verification, applied.agent);
+    return {
+      ok: true, task_id, idempotent: applied.idempotent,
+      result_digest: applied.result_digest, task: publicTask(applied.task),
+    };
+  }
+
+  // Operator-facing task queue. Task ids are server-assigned unless the caller
+  // names one, so a retried submission is idempotent instead of duplicating.
+  createNodeTask(node_uid, input = {}) {
+    const node = required(this.store.getNode(node_uid), "NODE_NOT_FOUND");
+    const { task_id: requested_task_id, ...task_input } = input;
+    const spec = validateTaskInput(task_input);
+    const created = createTask(node.agent, {
+      node_uid, task_id: requested_task_id ?? makeId("task"), operation: spec.operation,
+      params: spec.params, ttl_seconds: spec.ttl_seconds, nowMs: this.clock.now(),
+    });
+    this.store.putNodeAgent(node_uid, created.agent);
+    return publicTask(created.task);
+  }
+
+  listNodeTasks(node_uid) {
+    const node = required(this.store.getNode(node_uid), "NODE_NOT_FOUND");
+    return Object.values(node.agent.tasks).map(publicTask).sort(
+      (left, right) => String(left.issued_at).localeCompare(String(right.issued_at)) ||
+        String(left.task_id).localeCompare(String(right.task_id)),
+    );
+  }
 
   registerCapabilityDefinition(definition) {
     return this.store.putCapabilityDefinition(validateCapabilityDefinition(definition));
