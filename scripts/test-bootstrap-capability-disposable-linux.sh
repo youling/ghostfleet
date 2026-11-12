@@ -110,6 +110,7 @@ const unit = [
   "Type=notify",
   "NotifyAccess=main",
   "ExecStart=/usr/bin/python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz run",
+  "Environment=XDG_RUNTIME_DIR=%t",
   "Restart=on-failure",
   "RestartSec=5",
   "WatchdogSec=60",
