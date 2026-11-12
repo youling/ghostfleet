@@ -60,6 +60,8 @@ const REQUIRED_MODULES = Object.freeze({
     "projectNode",
     "projectAgent",
     "sha256Hex",
+    "canonicalJson",
+    "TASK_SCHEMA",
   ],
   "src/control-plane/store.js": ["InMemoryStore"],
   "src/control-plane/controller.js": ["GhostFleetController"],
@@ -322,6 +324,10 @@ function createHarnessServer(plane, fixture, options) {
     operator_token: options.operator_token,
     observer_token: options.observer_token,
     node_token: fixture.node_token,
+    // Set at run time through POST /acceptance/delay so the shell can create a
+    // slow control plane for the stop-during-in-flight-request arm without
+    // restarting this server (a restart would drop the tokens and the state).
+    request_delay_ms: 0,
   };
 
   function operatorAuthorized(request) {
@@ -396,8 +402,28 @@ function createHarnessServer(plane, fixture, options) {
         last_heartbeat_at: state.last_heartbeat_at,
         last_agent_sent_at: state.last_agent_sent_at,
         results: state.results.length,
+        request_delay_ms: state.request_delay_ms,
         host: state.host,
       });
+    }
+
+    // Runtime knob for the stop-during-an-in-flight-request arm: every node-plane
+    // request is held for this many milliseconds before it is answered, so a
+    // SIGTERM can land while a heartbeat or poll is still on the wire. The
+    // process already answers 2xx when the hold expires, i.e. it is a slow but
+    // healthy control plane, not a failing one.
+    if (method === "POST" && path === "/acceptance/delay") {
+      let requested = Number.NaN;
+      try {
+        requested = Number(JSON.parse((rawBody ?? Buffer.alloc(0)).toString("utf8") || "{}").ms);
+      } catch {
+        requested = Number.NaN;
+      }
+      if (!Number.isFinite(requested) || requested < 0 || requested > 30000) {
+        return json({ ok: false, error: "AC_DELAY_INVALID" }, 400);
+      }
+      state.request_delay_ms = Math.round(requested);
+      return json({ ok: true, request_delay_ms: state.request_delay_ms });
     }
 
     // Real product routes: operator task creation/listing and the node
@@ -410,6 +436,7 @@ function createHarnessServer(plane, fixture, options) {
   }
 
   async function handler(request, response) {
+    const receivedAt = isoNow();
     const startedAt = Date.now();
     const path = (new URL(request.url ?? "/", "https://127.0.0.1").pathname.replace(/\/+$/, "") || "/");
     state.requests += 1;
@@ -420,6 +447,11 @@ function createHarnessServer(plane, fixture, options) {
     try {
       rawBody = await readRequestBuffer(request);
       const webRequest = toWebRequest(request, rawBody);
+      // The hold happens after the body is read, so the delay stands in for a
+      // slow control plane rather than for a slow client upload.
+      if (isNodePlane && state.request_delay_ms > 0) {
+        await new Promise((resolve) => setTimeout(resolve, state.request_delay_ms));
+      }
       // Product surfaces (/v0/node-tasks, /v0/nodes) must pass through the
       // adapter-level authorization in acceptanceRoute; sending them straight to
       // the product handler would bypass the operator/observer split entirely.
@@ -471,6 +503,7 @@ function createHarnessServer(plane, fixture, options) {
     // self-description. Tokens never enter it; authorization is redacted.
     appendJournal(journalPath, {
       at: isoNow(),
+      received_at: receivedAt,
       method: request.method,
       path,
       status,
@@ -836,15 +869,45 @@ async function commandRequestBody(argv) {
   } else {
     body.task_id = requiredFlag(flags, "task-id");
     const resultFlag = optionalFlag(flags, "result", null);
+    let result;
     if (resultFlag === null) {
-      body.result = { outcome: "SUCCEEDED", observation: { source: "acceptance-harness", observed_at: isoNow() } };
+      result = { status: "SUCCEEDED", observation: { source: "acceptance-harness", observed_at: isoNow() } };
     } else {
       try {
-        body.result = JSON.parse(resultFlag);
+        result = JSON.parse(resultFlag);
       } catch {
         fail("AC_INVALID_FLAG", "--result must be JSON: " + resultFlag);
       }
     }
+    if (!result || typeof result !== "object" || Array.isArray(result)) {
+      fail("AC_INVALID_FLAG", "--result must be a JSON object");
+    }
+    // A result envelope is bound to its task before the digest branch runs:
+    // the product refuses a result whose schema, task_id, operation or node_uid
+    // does not match the queued task. Spread the caller's fields over the
+    // defaults so a probe can only vary what it names, exactly like the agent.
+    body.operation = optionalFlag(flags, "operation", "agent.self.test");
+    // The product binds a result to its task: result.task_id, result.node_uid and
+    // result.operation must equal the queued task or the plane refuses with
+    // TASK_RESULT_SCOPE_MISMATCH / TASK_OPERATION_MISMATCH / NODE_SCOPE_MISMATCH.
+    // packages/node-agent/src/ghostfleet_agent/protocol.py make_result() sends
+    // exactly these fields, so a submission without them is not a product shape.
+    body.result = {
+      schema: plane.nodeAgent.TASK_SCHEMA,
+      task_id: body.task_id,
+      node_uid: body.node_uid,
+      operation: body.operation,
+      // A replay probe must be able to resend a BYTE-IDENTICAL result: the plane
+      // digests the whole canonical result, so a timestamp taken from the clock
+      // here would turn every "resubmit the same result" into a genuine
+      // TASK_RESULT_CONFLICT. The default is therefore fixed and --observed-at
+      // overrides it when a probe wants a specific value.
+      observed_at: optionalFlag(flags, "observed-at", "2026-01-01T00:00:00Z"),
+      ...result,
+    };
+    // advisory but mandatory: the plane stores this digest and treats a second
+    // body with a different one as TASK_RESULT_CONFLICT.
+    body.result_digest = plane.nodeAgent.sha256Hex(plane.nodeAgent.canonicalJson(body.result));
   }
   process.stdout.write(JSON.stringify(body, null, 2) + "\n");
 }
