@@ -93,10 +93,10 @@ systemd --user (control account, Linger=yes)
 
 | 方法 | 路径 | 语义 |
 | --- | --- | --- |
-| POST | `/v0/nodes/{node_uid}/heartbeat` | 上报健康与观测摘要；响应回传 `interval_s`（钳制 15–300）与最多 2 个任务信封 |
+| POST | `/v0/nodes/{node_uid}/heartbeat` | 上报健康与观测摘要；响应回传 `interval_s`（钳制到 30–300：30 s 是速率底线，即使配置写得更窄也不会低于它）与最多 2 个任务信封 |
 | POST | `/v0/nodes/{node_uid}/tasks/poll` | 取任务（≤4 个/次），带 300 s 租约 |
 | POST | `/v0/nodes/{node_uid}/tasks/{task_id}/result` | 回传结果；同 `task_id` 同摘要→幂等 200，不同摘要→`409 TASK_RESULT_CONFLICT`；`result.status` 必须是 `SUCCEEDED`/`REFUSED`/`FAILED`/`UNKNOWN`，其它值 fail-closed 为 `UNKNOWN` |
-| POST | `/v0/node-tasks` | **operator 写权限**；入参 `node_uid`/`operation`/`params`/`ttl_s`，返回任务信封与 `task_id`；队列满（未过期非终态 ≥64）→ `409 TASK_QUEUE_FULL`，不得因已过期任务而永久 409 |
+| POST | `/v0/node-tasks` | **operator 写权限**；入参 `node_uid`/`operation`/`params`/`ttl_seconds`（字段名以此为准；未知键一律 `400 TASK_REQUEST_INVALID`），返回任务信封与 `task_id`；队列满（未过期非终态 ≥64）→ `409 TASK_QUEUE_FULL`，不得因已过期任务而永久 409 |
 | GET | `/v0/node-tasks?node_uid=` | **operator 读权限**；返回该节点任务投影（`status`/`result_outcome`/`result_digest`/`attempt`）。`result_outcome` 是 operator 侧字段名，取值必须就是节点上报的四值 `status` 词汇，不是第二套词汇；缺 `agent` 子树的历史记录必须先归一化，未知异常只回 `500 INTERNAL_ERROR`，不回显内部错误文本 |
 | POST | `/v0/node-credential/rotate` | **operator 写权限**；一次性返回明文 `node_credential`（`cache-control: no-store`），旧 token 立即失效并重置该节点 nonce/seq/boot 状态与 handoff 密文 |
 
