@@ -86,6 +86,45 @@ test("operator HTTP cannot forge Linux admission evidence or bootstrap completio
   assert.equal(c.listEvents().some((event) => event.type === "NodeAdmitted"), false);
 });
 
+test("a refused acceptance transition is a 409 while materialization shape errors stay 400", async () => {
+  const c = new GhostFleetController();
+  const handle = createHttpHandler(c, { authorizeOperator: () => true });
+  const attempt = c.createEnrollmentAttempt({ asset_hint: "synthetic-target" });
+  c.prepareEnrollmentAttempt(attempt.attempt_id);
+  c.claimEnrollmentAttempt(attempt.attempt_id);
+  const path = (suffix) => "https://ghostfleet.invalid/v0/enrollment-attempts/" +
+    encodeURIComponent(attempt.attempt_id) + "/" + suffix;
+  const post = (suffix, body) => handle(new Request(path(suffix), {
+    method: "POST", headers: { "content-type": "application/json" }, body,
+  }));
+
+  // Request shape: the body is repairable by the caller, so these stay 400.
+  for (const [body, code] of [
+    [JSON.stringify({ bogus: 1 }), "MATERIALIZATION_INPUT_INVALID"],
+    [JSON.stringify({ node_id: "x".repeat(129) }), "NODE_ID_INVALID"],
+    [JSON.stringify({ platform: "Linux!" }), "PLATFORM_INVALID"],
+  ]) {
+    const response = await post("materialize", body);
+    assert.equal(response.status, 400, code);
+    const payload = await response.json();
+    assert.equal(payload.error, code);
+    assert.equal(payload.code, code);
+  }
+
+  const materialized = await post("materialize", JSON.stringify({ node_id: "synthetic-target", platform: "linux" }));
+  assert.equal(materialized.status, 200);
+
+  // State: the request is well formed but the attempt lacks acceptance evidence.
+  // This is the status the cloud smoke and an operator retry policy dispatch on.
+  const admission = await post("accept", "{}");
+  assert.equal(admission.status, 409);
+  const outcome = await admission.json();
+  assert.equal(outcome.error, "ACCEPTANCE_EVIDENCE_MISSING");
+  assert.equal(outcome.code, "ACCEPTANCE_EVIDENCE_MISSING");
+  assert.ok(Array.isArray(outcome.missing) && outcome.missing.length > 0);
+  assert.equal(c.getNode(c.getEnrollmentAttempt(attempt.attempt_id).node_uid).lifecycle, "PROVISIONAL");
+});
+
 test("SDK-side evidence remains a separate integration responsibility, not HTTP authority", async () => {
   const c = new GhostFleetController();
   const attempt = c.createEnrollmentAttempt();
