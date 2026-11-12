@@ -130,9 +130,9 @@
       "reason": "Independent synthetic UUID for unknown-subject negative test."
     },
     {
-      "path": "packages/bootstrap/test/capability-ceremony.test.js",
+      "path": "packages/bootstrap/test/support/capability-fixture.js",
       "rule": "node-identity",
-      "line_sha256": "cf90f74365d7e4d3654d834448df4800cf7593d051023da369fb69da28aba24a",
+      "line_sha256": "f38ca6ed56283515a1f24fddb7847bf7d925b7a9660977903c70ac229f5e54a1",
       "kind": "inert-fixture-or-detector",
       "reason": "All-zero synthetic node UID used only by the offline capability fixture; not copied from a live node."
     },

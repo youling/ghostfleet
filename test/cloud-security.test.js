@@ -23,6 +23,16 @@ const requestWithBody = (token, path, body) => new Request(request("POST", token
   body: JSON.stringify(body),
 });
 
+test("the unpinned bootstrap endpoint is retired", async () => {
+  const response = await worker.fetch(new Request("https://ghostfleet.invalid/v1/bootstrap.sh"), {});
+  assert.equal(response.status, 410);
+  const body = await response.json();
+  assert.equal(body.ok, false);
+  assert.equal(body.error, "BOOTSTRAP_ENTRYPOINT_RETIRED");
+  assert.match(body.remediation, /asset origin/);
+  assert.match(body.remediation, /SHA-256/);
+});
+
 test("cloud API fails closed before it reaches storage", async () => {
   let calls = 0;
   const env = {

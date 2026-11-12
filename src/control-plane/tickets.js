@@ -87,9 +87,19 @@ export function validatePublicOrigin(value) {
 }
 
 // The delivered command carries no ticket URL, short code, or provider credential.
-// Root elevation happens before the downloaded bootstrap is executed. The Human
-// pastes the one-time URL into the protected root terminal, with terminal echo
-// disabled; the script then asks for the separate eight-digit short code.
+// It carries exactly three pinned coordinates: the public immutable asset origin,
+// the expected SHA-256 of the bootstrap courier, and the enrollment origin that
+// must own the one-time ticket URL. The bootstrap is downloaded from
+// <assets_origin>/sha256/<digest>, verified against the pinned digest, and only
+// then executed. Root elevation happens before that download; the Human pastes
+// the one-time URL into the protected root terminal, with terminal echo disabled,
+// and the script then asks for the separate eight-digit short code.
+//
+// The two origins are never interchangeable. The asset origin serves public,
+// content-addressed, read-only material and needs no Access login; the enrollment
+// origin exposes only the claim/complete bridge. A ticket URL minted on the asset
+// origin (or any other host) is refused before the bootstrap runs, so a
+// compromised or mistyped delivery cannot redirect the one-time material.
 //
 // The elevated script is environment-proof (review F-62-1) and interruption-safe
 // (review F-62-2):
@@ -129,7 +139,11 @@ const TRUSTED_STTY = "/usr/bin/stty";
 const TRUSTED_MKTEMP = "/usr/bin/mktemp";
 const TRUSTED_CURL = "/usr/bin/curl";
 const TRUSTED_WGET = "/usr/bin/wget";
+const TRUSTED_SHA256SUM = "/usr/bin/sha256sum";
 const TRUSTED_RM = "/bin/rm";
+const BROWSER_PREFIX = "/v1/enrollment-tickets/";
+const TICKET_ID_PATTERN = /^ticket-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const BOOTSTRAP_DIGEST = /^[0-9a-f]{64}$/;
 
 function quoteShell(value) {
   return "'" + String(value).replaceAll("'", "'\\''") + "'";
@@ -174,8 +188,12 @@ const OPERATING_USER_CAPTURE = [
 ].join("\n");
 
 
-function portableBootstrapCommand(origin) {
-  const downloadUrl = origin + "/v1/bootstrap.sh";
+function portableBootstrapCommand({ assets_origin, enroll_origin, bootstrap_sha256 }) {
+  const downloadUrl = assets_origin + "/sha256/" + bootstrap_sha256;
+  // The download scheme is pinned by the validated origin. A redirect or a
+  // scheme downgrade is a hard failure, never a silent second source.
+  const proto = assets_origin.startsWith("https://") ? "=https" : "=http";
+  const ticket_prefix = enroll_origin + BROWSER_PREFIX;
   const rootScript = [
     "set -eu",
     "umask 077",
@@ -215,15 +233,41 @@ function portableBootstrapCommand(origin) {
     'WORK_DIR="$(' + TRUSTED_MKTEMP + ' -d "$TMPROOT"ghostfleet-enroll.XXXXXXXX)"',
     'BOOTSTRAP="$WORK_DIR/bootstrap.sh"',
     "if [ -x " + TRUSTED_CURL + " ]; then",
-    "  " + TRUSTED_CURL + " -fsSL " + quoteShell(downloadUrl) + ' -o "$BOOTSTRAP"',
+    // No redirect following, and an explicit status check: without -L a 3xx is
+    // a final response, so curl's exit code alone cannot tell a redirect from
+    // the pinned object. Only a direct 2xx body is ever considered.
+    '  if ! HTTP_CODE="$(' + TRUSTED_CURL + " --fail --silent --show-error --no-location --max-redirs 0 --proto " + quoteShell(proto) + ' --connect-timeout 15 --max-time 120 --write-out \'%{http_code}\' --output "$BOOTSTRAP" ' + quoteShell(downloadUrl) + ')"; then',
+    "    printf '%s\\n' 'GhostFleet bootstrap download failed: the pinned content address must answer with a direct 2xx; redirects, 4xx and 5xx are refused and nothing was executed' >&2",
+    "    exit 1",
+    "  fi",
+    '  case "$HTTP_CODE" in',
+    '    2[0-9][0-9]) ;;',
+    "    *) printf '%s\\n' \"GhostFleet bootstrap download was refused: HTTP $HTTP_CODE from the pinned content address; redirects are not followed and nothing was executed\" >&2; exit 1 ;;",
+    "  esac",
     "elif [ -x " + TRUSTED_WGET + " ]; then",
-    "  " + TRUSTED_WGET + " -qO " + quoteShell(downloadUrl) + ' "$BOOTSTRAP"',
+    "  if ! " + TRUSTED_WGET + ' --quiet --max-redirect=0 --timeout=120 --output-document="$BOOTSTRAP" ' + quoteShell(downloadUrl) + "; then",
+    "    printf '%s\\n' 'GhostFleet bootstrap download failed: the pinned content address must answer with a direct 2xx; redirects, 4xx and 5xx are refused and nothing was executed' >&2",
+    "    exit 1",
+    "  fi",
     "else",
     "  printf '%s\\n' 'GhostFleet requires curl or wget' >&2",
     "  exit 1",
     "fi",
     'if [ ! -s "$BOOTSTRAP" ]; then',
     "  printf '%s\\n' 'GhostFleet bootstrap download is empty' >&2",
+    "  exit 1",
+    "fi",
+    // Unknown bytes are never executed as root: the pinned digest is checked
+    // before the terminal prompt, before the enrollment URL is known, and before
+    // any byte of the download can run.
+    "EXPECTED_SHA256=" + quoteShell(bootstrap_sha256),
+    'if ! ACTUAL_SHA256="$(' + TRUSTED_SHA256SUM + ' "$BOOTSTRAP")"; then',
+    "  printf '%s\\n' 'GhostFleet bootstrap integrity check could not run: " + TRUSTED_SHA256SUM + " is required' >&2",
+    "  exit 1",
+    "fi",
+    'ACTUAL_SHA256="${ACTUAL_SHA256%% *}"',
+    'if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then',
+    "  printf 'GhostFleet bootstrap integrity check failed: expected sha256 %s, got %s; nothing was executed\\n' \"$EXPECTED_SHA256\" \"${ACTUAL_SHA256:-missing}\" >&2",
     "  exit 1",
     "fi",
     'if ! TTY_STATE="$(' + TRUSTED_STTY + ' -g 2>/dev/null < /dev/tty)"; then',
@@ -239,10 +283,19 @@ function portableBootstrapCommand(origin) {
     TRUSTED_STTY + ' "$TTY_STATE" < /dev/tty',
     "TTY_STATE=",
     "printf '\\n' > /dev/tty",
-    'case "$GHOSTFLEET_ENROLLMENT_URL" in ' + quoteShell(origin) + "/v1/enrollment-tickets/ticket-*) ;;",
-    "  *) printf '%s\\n' 'Invalid enrollment URL for this control plane' >&2; exit 1 ;;",
+    "ENROLL_PREFIX=" + quoteShell(ticket_prefix),
+    'case "$GHOSTFLEET_ENROLLMENT_URL" in',
+    '  ' + quoteShell(ticket_prefix) + '*) TICKET_ID="${GHOSTFLEET_ENROLLMENT_URL#"$ENROLL_PREFIX"}" ;;',
+    "  *) printf '%s\\n' 'Invalid enrollment URL for this enrollment origin' >&2; exit 1 ;;",
     "esac",
+    // The origin is not enough: the remainder must be exactly one ticket id and
+    // nothing else, so a path, query or extra segment cannot reach the bridge.
+    'printf "%s" "$TICKET_ID" | grep -Eq ' + quoteShell(TICKET_ID_PATTERN.source) + " || { printf '%s\\n' 'Invalid enrollment URL for this enrollment origin' >&2; exit 1; }",
     "export GHOSTFLEET_ENROLLMENT_URL",
+    // The asset origin is a fixed assignment in the delivered command. It is
+    // never derived from the ticket URL or from the claim response.
+    "GHOSTFLEET_ASSETS_ORIGIN=" + quoteShell(assets_origin),
+    "export GHOSTFLEET_ASSETS_ORIGIN",
     // The bootstrap validates this name again before anything becomes its owner.
     'GHOSTFLEET_OPERATING_USER="${1-}"',
     "export GHOSTFLEET_OPERATING_USER",
@@ -267,14 +320,74 @@ function portableBootstrapCommand(origin) {
   ].join("\n");
 }
 
-export function createTicketDelivery({ record, short_code, public_origin }) {
-  const origin = validatePublicOrigin(public_origin);
-  const one_time_url = origin + "/v1/enrollment-tickets/" + encodeURIComponent(record.ticket_id);
+export function validateBootstrapDigest(value) {
+  const raw = String(value ?? "").trim().replace(/^sha256:/, "");
+  if (!BOOTSTRAP_DIGEST.test(raw)) throw new EnrollmentTicketError("BOOTSTRAP_DIGEST_INVALID");
+  return raw;
+}
+
+function validateDeliveryOrigin(value, code) {
+  try {
+    return validatePublicOrigin(value);
+  } catch {
+    throw new EnrollmentTicketError(code);
+  }
+}
+
+/**
+ * The immutable-material origin and the enrollment bridge are two different
+ * public surfaces. They are validated independently and must not collapse into
+ * one origin: otherwise the digest-checked bootstrap would be served by the
+ * Access-protected console, or the one-time ticket would be minted on the
+ * unauthenticated asset host.
+ */
+export function validateDeliveryCoordinates({ assets_origin, enroll_origin, bootstrap_sha256 } = {}) {
+  const assets = validateDeliveryOrigin(assets_origin, "ASSETS_ORIGIN_INVALID");
+  const enroll = validateDeliveryOrigin(enroll_origin, "ENROLL_ORIGIN_INVALID");
+  if (assets === enroll) throw new EnrollmentTicketError("DELIVERY_ORIGINS_NOT_SEPARATED");
   return Object.freeze({
+    assets_origin: assets,
+    enroll_origin: enroll,
+    bootstrap_sha256: validateBootstrapDigest(bootstrap_sha256),
+  });
+}
+
+/**
+ * Build the single authoritative one-click delivery.
+ *
+ * The caller supplies the deployment coordinates and the ticket identity:
+ *   { assets_origin, enroll_origin, bootstrap_sha256, ticket_id | record }
+ *
+ * `public_origin` is accepted only as a legacy alias for `enroll_origin` (the
+ * bridge that owns the ticket URL). It is never the Console/Access origin: a
+ * ticket URL minted on the Access-protected console could not be claimed by a
+ * node that has not enrolled yet.
+ *
+ * The result exposes every input back (assets_origin, enroll_origin,
+ * bootstrap_sha256) so a deployment can compare byte-for-byte in CI instead of
+ * maintaining a second, hand-written command.
+ */
+export function createTicketDelivery({
+  record = null, ticket_id = null, short_code, assets_origin,
+  enroll_origin = null, public_origin = null, bootstrap_sha256,
+}) {
+  const id = ticket_id ?? record?.ticket_id;
+  if (!TICKET_ID_PATTERN.test(String(id ?? ""))) throw new EnrollmentTicketError("TICKET_ID_INVALID");
+  const coordinates = validateDeliveryCoordinates({
+    assets_origin,
+    enroll_origin: enroll_origin ?? public_origin,
+    bootstrap_sha256,
+  });
+  const one_time_url = coordinates.enroll_origin + BROWSER_PREFIX + encodeURIComponent(id);
+  return Object.freeze({
+    protocol: "ghostfleet-enrollment-delivery/v1",
     one_time_url,
     short_code,
-    expires_at: record.expires_at,
-    command: portableBootstrapCommand(origin),
+    expires_at: record?.expires_at ?? null,
+    assets_origin: coordinates.assets_origin,
+    enroll_origin: coordinates.enroll_origin,
+    bootstrap_sha256: coordinates.bootstrap_sha256,
+    command: portableBootstrapCommand(coordinates),
     warning: "ONE_TIME_ENROLLMENT_MATERIAL_EXECUTE_PROMPTLY",
   });
 }

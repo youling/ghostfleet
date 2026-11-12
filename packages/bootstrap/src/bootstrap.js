@@ -6,6 +6,7 @@ export PATH
 
 BROKER_ORIGIN="\${GHOSTFLEET_BROKER_ORIGIN:-}"
 ENROLLMENT_URL="\${GHOSTFLEET_ENROLLMENT_URL:-}"
+ASSETS_ORIGIN="\${GHOSTFLEET_ASSETS_ORIGIN:-}"
 if [ -n "$ENROLLMENT_URL" ]; then
   printf '%s' "$ENROLLMENT_URL" | grep -Eq '^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?/v1/enrollment-tickets/[A-Za-z0-9._~%-]+$' || {
     printf '%s\\n' 'fleet-enroll: invalid one-time enrollment URL; an exact HTTPS ticket URL is required' >&2
@@ -237,6 +238,7 @@ capability_validate_selection() {
   printf '%s' "$CAPABILITY_TEMPLATE_DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$' || fail 'selected-capability template digest is invalid'
   case "$CAPABILITY_ARTIFACT_COUNT" in ''|*[!0-9]*) fail 'selected-capability artifact count is invalid' ;; esac
   [ "$CAPABILITY_ARTIFACT_COUNT" -ge 1 ] || fail 'selected capability pins no artifacts'
+  [ -n "$ASSETS_ORIGIN" ] || fail 'selected capability pins artifacts but no immutable asset origin was delivered; no privileged component was installed'
   for capability_tool in base64 cut mktemp sha256sum; do
     command -v "$capability_tool" >/dev/null 2>&1 || fail "preflight failed: $capability_tool is required by the selected capability"
   done
@@ -289,13 +291,42 @@ capability_validate_selection() {
   if [ "$CAPABILITY_LINGER_REQUIRED" = 1 ] || [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
     command -v loginctl >/dev/null 2>&1 || fail 'preflight failed: loginctl is required by the selected capability'
   fi
-  # The pinned bytes are a dependency, not a later step: prove every digest in a
-  # private staging directory before ANY package, provider, service or credential
-  # effect. A mismatching artifact is a missing dependency.
+  # The pinned bytes are a dependency, not a later step. On the rendered channel
+  # this runs before any effect; on the claim channel the authorized claim has
+  # already happened, but nothing is installed and no one-off credential is
+  # written or used until every digest matched in a private staging directory.
+  # A mismatching artifact is a missing dependency.
   capability_stage
   capability_stage_cleanup
   CAPABILITY_SELECTION_DIGEST="$(capability_selection_digest)"
   return 0
+}
+
+# Fetch one pinned artifact from the immutable asset origin. The URL is built
+# only from the validated origin and the digest the claim pinned, so a selection
+# can never introduce a host, path or query. No redirects: the content address is
+# the only reviewed location, and a 3xx is a failed verification, not a detour.
+capability_fetch() {
+  capability_url="$ASSETS_ORIGIN/sha256/$1"
+  capability_scheme="\${ASSETS_ORIGIN%%:*}"
+  CAPABILITY_HTTP_CODE=
+  if command -v curl >/dev/null 2>&1; then
+    # Without -L a 3xx is a final response, so the exit code alone cannot tell a
+    # redirect from the pinned object; the status is checked explicitly.
+    if ! CAPABILITY_HTTP_CODE="$(curl --fail --silent --show-error --no-location --max-redirs 0 --proto "=$capability_scheme" --connect-timeout 15 --max-time 120 --write-out '%{http_code}' --output "$2" "$capability_url")"; then
+      return 1
+    fi
+    case "$CAPABILITY_HTTP_CODE" in
+      2[0-9][0-9]) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    wget --quiet --max-redirect=0 --timeout=120 --output-document="$2" "$capability_url"
+    return $?
+  fi
+  CAPABILITY_HTTP_CODE=
+  return 127
 }
 
 capability_stage() {
@@ -310,13 +341,16 @@ capability_stage() {
     capability_name="$(capability_artifact_field "$capability_index" 1)"
     capability_digest="$(capability_artifact_field "$capability_index" 2)"
     capability_mode="$(capability_artifact_field "$capability_index" 3)"
-    capability_actual=
-    if capability_artifact_field "$capability_index" 4 | base64 -d > "$CAPABILITY_STAGE_DIR/$capability_name" 2>/dev/null; then
-      capability_actual="$(sha256sum "$CAPABILITY_STAGE_DIR/$capability_name" | cut -d ' ' -f 1)"
+    if ! capability_fetch "$capability_digest" "$CAPABILITY_STAGE_DIR/$capability_name"; then
+      capability_stage_cleanup
+      capability_detail='no 2xx response'
+      [ -z "$CAPABILITY_HTTP_CODE" ] || capability_detail="HTTP $CAPABILITY_HTTP_CODE"
+      fail "selected-capability artifact $capability_name could not be fetched from $ASSETS_ORIGIN/sha256/$capability_digest ($capability_detail); redirects are not followed and no privileged component was installed"
     fi
+    capability_actual="$(sha256sum "$CAPABILITY_STAGE_DIR/$capability_name" | cut -d ' ' -f 1)" || capability_actual=
     if [ "$capability_actual" != "$capability_digest" ]; then
       capability_stage_cleanup
-      fail "selected-capability artifact $capability_name failed digest verification"
+      fail "selected-capability artifact $capability_name failed digest verification (expected $capability_digest, got \${capability_actual:-empty}); no privileged component was installed"
     fi
     chmod "$capability_mode" "$CAPABILITY_STAGE_DIR/$capability_name"
     capability_index=$((capability_index + 1))
@@ -1180,7 +1214,9 @@ capability_ingest_claim() {
       user_unit_artifact=*) CAPABILITY_USER_UNIT_ARTIFACT="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)" ;;
       artifact=*)
         capability_row="$(printf '%s' "$capability_line" | cut -d '=' -f 2-)"
-        printf '%s' "$capability_row" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}[|][0-9a-f]{64}[|]0?[0-7]{3}[|][A-Za-z0-9+/=]+$' || fail 'claim capability artifact row is invalid; no privileged component was installed'
+        # A1: address only. Inline bytes were the old shape and would let the
+        # claim, rather than the digest-verified asset origin, decide content.
+        printf '%s' "$capability_row" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}[|][0-9a-f]{64}[|]0?[0-7]{3}$' || fail 'claim capability artifact row must be name|sha256|mode; inline artifact content is refused and no privileged component was installed'
         [ "$capability_slot" -le 16 ] || fail 'claim capability ships more artifacts than this courier supports'
         eval "CAPABILITY_ARTIFACT_\${capability_slot}=\\$capability_row"
         capability_slot=$((capability_slot + 1))
@@ -1470,6 +1506,41 @@ if [ -z "$BROKER_ORIGIN" ]; then
   checkpoint_is_compliant || fail 'deployment broker origin is required before bootstrap effects'
 else
   printf '%s' "$BROKER_ORIGIN" | grep -Eq '^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$' || fail 'deployment broker origin must be exact HTTPS origin'
+fi
+
+# Selected-capability artifacts come from the immutable public asset origin. The
+# launcher exports its exact value as a fixed assignment; this script never
+# derives it from the ticket URL, from the claim response, or from argv. The
+# origin is a location, never a trust anchor: every artifact is still verified
+# against the digest the claim pinned.
+#
+# The exact scheme prefixes are composed from variables so the published source
+# carries no locator of its own.
+ASSET_HTTPS_PREFIX='https://'
+ASSET_LOOPBACK_PREFIX='http://'
+asset_origin_is_exact() {
+  ASSET_ORIGIN_VALUE="$1"
+  case "$ASSET_ORIGIN_VALUE" in
+    "$ASSET_HTTPS_PREFIX"*) ASSET_ORIGIN_REST="\${ASSET_ORIGIN_VALUE#"$ASSET_HTTPS_PREFIX"}" ;;
+    "$ASSET_LOOPBACK_PREFIX"127.0.0.1:*|"$ASSET_LOOPBACK_PREFIX"localhost:*) ASSET_ORIGIN_REST="\${ASSET_ORIGIN_VALUE#"$ASSET_LOOPBACK_PREFIX"}" ;;
+    *) return 1 ;;
+  esac
+  # host[:port] only: no userinfo, path, query, fragment or second scheme.
+  case "$ASSET_ORIGIN_REST" in
+    ''|*[!A-Za-z0-9.:-]*) return 1 ;;
+  esac
+  case "$ASSET_ORIGIN_REST" in
+    *:*)
+      ASSET_ORIGIN_PORT="\${ASSET_ORIGIN_REST##*:}"
+      ASSET_ORIGIN_HOST="\${ASSET_ORIGIN_REST%%:*}"
+      case "$ASSET_ORIGIN_PORT" in ''|*[!0-9]*) return 1 ;; esac
+      case "$ASSET_ORIGIN_HOST" in ''|*:*|.*) return 1 ;; esac
+      ;;
+  esac
+  return 0
+}
+if [ -n "$ASSETS_ORIGIN" ]; then
+  asset_origin_is_exact "$ASSETS_ORIGIN" || fail 'asset origin must be an exact https origin (loopback http is only for local test runs): no path, userinfo, query or fragment'
 fi
 
 if [ "$(id -u)" -ne 0 ]; then

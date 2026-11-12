@@ -143,6 +143,15 @@ case "$name" in
       record "curl-config mode=$(stat -c '%a' "$config")"
     fi
     record "curl-argv $arguments"
+    # Pinned artifacts are fetched from a real local HTTP server: the digest
+    # check and the no-redirect behavior are exercised against real curl and a
+    # real content-addressed response, not against another stub.
+    case "$url" in
+      */sha256/*)
+        record "curl-asset $url"
+        exec "${FIXTURE_REAL_CURL:?FIXTURE_REAL_CURL is required}" "$@"
+        ;;
+    esac
     case "$url" in
       */claim)
         record "curl claim"

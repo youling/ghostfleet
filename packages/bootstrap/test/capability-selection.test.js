@@ -83,11 +83,12 @@ test("rendered capability carries version, template provenance and SHA-256 pinne
   for (const artifact of supplied.artifacts) {
     const row = block.split("\n").find((line) => line.startsWith("CAPABILITY_ARTIFACT_") && line.includes("'" + artifact.name + "|"));
     assert.ok(row, "artifact row for " + artifact.name);
-    const [, name, digest, mode, base64] = row.match(/^CAPABILITY_ARTIFACT_\d+='([^|]*)\|([0-9a-f]{64})\|([0-7]{4})\|([A-Za-z0-9+/=]+)'$/);
+    // A1: an address row, never the bytes. name|sha256|mode is the whole row.
+    const [, name, digest, mode] = row.match(/^CAPABILITY_ARTIFACT_\d+='([^|]*)\|([0-9a-f]{64})\|([0-7]{4})'$/);
     assert.equal(name, artifact.name);
     assert.equal("sha256:" + digest, sha256(artifact.content));
-    assert.equal(Buffer.from(base64, "base64").toString("utf8"), artifact.content);
     assert.equal(mode, "0" + (artifact.mode.replace(/^0/, "")));
+    assert.doesNotMatch(row, /[A-Za-z0-9+/]{16,}={0,2}'$/, "no inline artifact bytes may reach the command");
   }
   // The default block is replaced, never appended to.
   assert.equal(rendered.split(CAPABILITY_BLOCK_BEGIN).length, 2);
@@ -128,16 +129,19 @@ test("unrequested, unpinned or inconsistent privilege selections are refused at 
   }), /CAPABILITY_ARTIFACT_DIGEST_MISMATCH/);
 });
 
-test("the shell text decoder rejects unknown keys and truncated artifact rows", () => {
+test("the shell text decoder accepts address rows and refuses inline bytes", () => {
   const valid = encodeCapabilitySelection(selection());
   const text = Buffer.from(valid, "base64").toString("utf8");
   assert.ok(decodeCapabilitySelection(text));
+  assert.match(text, /^artifact=[^|]+\|[0-9a-f]{64}\|[0-7]{4}$/m);
   const unknown = text + "unexpected_field=1\n";
   assert.throws(() => decodeCapabilitySelection(unknown), /CAPABILITY_SELECTION_INVALID/);
-  const truncated = text.replace(/^artifact=(.+)$/m, (match, row) => "artifact=" + row.split("|").slice(0, 3).join("|"));
-  assert.throws(() => decodeCapabilitySelection(truncated), /CAPABILITY_SELECTION_INVALID/);
-  const extra = text.replace(/^artifact=(.+)$/m, (match, row) => "artifact=" + row + "|extra");
-  assert.throws(() => decodeCapabilitySelection(extra), /CAPABILITY_SELECTION_INVALID/);
+  const truncated = text.replace(/^artifact=(.+)$/m, (match, row) => "artifact=" + row.split("|").slice(0, 2).join("|"));
+  assert.throws(() => decodeCapabilitySelection(truncated), /CAPABILITY_ARTIFACT_ROW_INVALID/);
+  // A legacy v1 row inlined the bytes; the new decoder must refuse it instead of
+  // preferring the claim over the immutable asset origin.
+  const inline = text.replace(/^artifact=(.+)$/m, (match, row) => "artifact=" + row + "|Zm9yYmlkZGVu");
+  assert.throws(() => decodeCapabilitySelection(inline), /CAPABILITY_ARTIFACT_ROW_INVALID/);
 });
 
 test("the published courier carries no literal control bytes or split printf formats", async () => {

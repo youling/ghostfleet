@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { createTicketDelivery } from "../src/control-plane/tickets.js";
 
 const pty = existsSync("/usr/bin/script") ? "/usr/bin/script" : "/bin/script";
@@ -17,14 +18,29 @@ const caller = userInfo().username;
 const isRoot = process.getuid?.() === 0;
 const ROOT_PATH = "/usr/sbin:/usr/bin:/sbin:/bin";
 
-function serve(body) {
+// The immutable material origin: exactly one success path, addressed by digest.
+function serveAssets(body, digest) {
   return new Promise((resolve) => {
+    let hits = 0;
     const server = createServer((request, response) => {
-      if (request.url === "/v1/bootstrap.sh") {
+      hits += 1;
+      if (request.url === "/sha256/" + digest) {
         response.writeHead(200, { "content-type": "text/plain" });
         response.end(body);
         return;
       }
+      response.writeHead(404);
+      response.end();
+    });
+    server.listen(0, "127.0.0.1", () => resolve({ server, origin: "http://127.0.0.1:" + server.address().port, hits: () => hits }));
+  });
+}
+
+// A second, distinct origin for the enrollment bridge. The launcher only
+// validates the ticket URL against it here; this composition does not claim.
+function serveEnroll() {
+  return new Promise((resolve) => {
+    const server = createServer((request, response) => {
       response.writeHead(404);
       response.end();
     });
@@ -51,10 +67,12 @@ async function compose({ mode, pollute = false }) {
   stub(poison, "curl", "printf ran > " + JSON.stringify(marker));
 
   const bootstrapBody = "#!/bin/sh\n" +
-    "printf '{\"user\":\"%s\",\"path\":\"%s\",\"home\":\"%s\",\"sudo_user\":\"%s\",\"url\":\"%s\"}\\n' " +
-    "\"$GHOSTFLEET_OPERATING_USER\" \"$PATH\" \"$HOME\" \"$SUDO_USER\" \"$GHOSTFLEET_ENROLLMENT_URL\" > " +
+    "printf '{\"user\":\"%s\",\"path\":\"%s\",\"home\":\"%s\",\"sudo_user\":\"%s\",\"url\":\"%s\",\"assets\":\"%s\"}\\n' " +
+    "\"$GHOSTFLEET_OPERATING_USER\" \"$PATH\" \"$HOME\" \"$SUDO_USER\" \"$GHOSTFLEET_ENROLLMENT_URL\" \"$GHOSTFLEET_ASSETS_ORIGIN\" > " +
     JSON.stringify(record) + "\n";
-  const { server, origin } = await serve(bootstrapBody);
+  const digest = createHash("sha256").update(bootstrapBody).digest("hex");
+  const { server, origin, hits } = await serveAssets(bootstrapBody, digest);
+  const enroll = await serveEnroll();
 
   const idBody = mode === "root"
     ? 'case "$1" in -u) echo 0 ;; -un) echo root ;; esac'
@@ -65,7 +83,10 @@ async function compose({ mode, pollute = false }) {
     if (mode === "su") stub(bin, "su", 'shift 3; exec /bin/sh -c "$1"');
   }
 
-  const delivery = createTicketDelivery({ record: { ticket_id: ticketId }, short_code: "12345678", public_origin: origin });
+  const delivery = createTicketDelivery({
+    record: { ticket_id: ticketId }, short_code: "12345678",
+    assets_origin: origin, enroll_origin: enroll.origin, bootstrap_sha256: digest,
+  });
   const env = {
     PATH: (pollute ? poison + ":" : "") + bin + ":" + ROOT_PATH,
     HOME: work,
@@ -75,13 +96,15 @@ async function compose({ mode, pollute = false }) {
   child.stdout.on("data", (chunk) => { output += chunk; });
   child.stderr.on("data", (chunk) => { output += chunk; });
   const closed = new Promise((resolve) => child.on("close", (code) => resolve(code)));
-  child.stdin.write(origin + "/v1/enrollment-tickets/" + ticketId + "\n");
+  child.stdin.write(enroll.origin + "/v1/enrollment-tickets/" + ticketId + "\n");
   child.stdin.end();
   const code = await closed;
   const value = existsSync(record) ? JSON.parse(readFileSync(record, "utf8")) : null;
+  const hitsAfter = hits();
   server.close();
+  enroll.server.close();
   rmSync(work, { recursive: true, force: true });
-  return { code, output, value, poisoned: existsSync(marker) };
+  return { code, output, value, poisoned: existsSync(marker), hits: hitsAfter, assets_origin: origin, enroll_origin: enroll.origin };
 }
 
 test("the Console launcher hands the Human identity through sudo and su without weakening env -i", { skip: linuxOnly || isRoot }, async () => {
@@ -94,6 +117,7 @@ test("the Console launcher hands the Human identity through sudo and su without 
     assert.equal(result.value.home, "/root", mode + ": HOME is root's");
     assert.equal(result.value.sudo_user, "", mode + ": the caller environment is still dropped");
     assert.match(result.value.url, /\/v1\/enrollment-tickets\/ticket-/, mode + ": the one-time URL still reaches the bootstrap");
+    assert.equal(result.value.assets, result.assets_origin, mode + ": the asset origin reaches the courier as a fixed value");
   }
 });
 

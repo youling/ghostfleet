@@ -2,7 +2,7 @@
 // Local control-plane stub for the disposable chained-acceptance CI job.
 //
 // It is the server half of one enrollment, and nothing else: it serves the
-// exact published courier bytes at /v1/bootstrap.sh, verifies the one-time
+// exact published courier bytes at /sha256/<digest>, verifies the one-time
 // short code with the real src/control-plane/tickets.js module, and answers
 // the claim with the reviewed capability selection bound to the ticket's
 // template_digest. The completion receipt is accepted and recorded.
@@ -108,8 +108,21 @@ const record = createTicketRecord({
 });
 
 const courierBody = Buffer.from(BOOTSTRAP_SH, "utf8");
+
+// The immutable material store: exactly the public bytes, addressed by digest.
+// The courier and the launcher both fetch from this map, never from an inline
+// claim payload, so the content-addressing path is the one under test.
+const assetBytes = new Map();
+const addAsset = (bytes) => {
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  assetBytes.set(digest, bytes);
+  return digest;
+};
+const bootstrapDigest = addAsset(courierBody);
+for (const artifact of shape.artifacts) addAsset(Buffer.from(artifact.content, "utf8"));
+
 const claimPath = "/v1/enrollment-tickets/" + encodeURIComponent(ticketId) + "/claim";
-const counters = { bootstrap: 0, claim: 0 };
+const counters = { bootstrap: 0, artifact: 0, claim: 0 };
 const counterFile = (name) => join(work, name + "-count");
 for (const name of Object.keys(counters)) writeFileSync(counterFile(name), "0");
 const bump = (name) => {
@@ -141,16 +154,25 @@ const server = createServer(
       response.end(body);
     };
     try {
-      if (request.method === "GET" && url.pathname === "/v1/bootstrap.sh") {
-        bump("bootstrap");
-        // Hash the exact buffer handed to the socket, not the source constant,
-        // so the job can compare what the server sent with what curl wrote.
-        writeFileSync(
-          join(work, "served-bootstrap.sha256"),
-          createHash("sha256").update(courierBody).digest("hex") + "\n",
-        );
-        send(200, courierBody, "text/plain");
-        console.log("stub: served the published courier bytes");
+      if (request.method === "GET" && /^\/sha256\/[0-9a-f]{64}$/.test(url.pathname)) {
+        const digest = url.pathname.slice("/sha256/".length);
+        if (digest === bootstrapDigest) {
+          bump("bootstrap");
+          // Record the exact digest handed to the socket, so the job can compare
+          // what the server sent with what the launcher wrote and verified.
+          writeFileSync(join(work, "served-bootstrap.sha256"), bootstrapDigest + "\n");
+          send(200, courierBody, "application/octet-stream");
+          console.log("stub: served the published courier at its content address");
+          return;
+        }
+        const bytes = assetBytes.get(digest);
+        if (bytes) {
+          bump("artifact");
+          send(200, bytes, "application/octet-stream");
+          console.log("stub: served a pinned artifact at its content address");
+          return;
+        }
+        send(404, "not found", "text/plain");
         return;
       }
       if (request.method === "GET" && url.pathname === "/healthz") {
@@ -225,15 +247,25 @@ server.on("error", (error) => {
 const quoteShell = (value) => "'" + String(value).replaceAll("'", "'\\''") + "'";
 
 server.listen(0, "127.0.0.1", () => {
-  const origin = "https://127.0.0.1:" + server.address().port;
+  const port = server.address().port;
+  // Two public surfaces on one HTTPS listener: the certificate names both
+  // 127.0.0.1 and localhost, so the asset origin and the enrollment bridge stay
+  // distinguishable origins while exercising one process.
+  const assetsOrigin = "https://127.0.0.1:" + port;
+  const enrollOrigin = "https://localhost:" + port;
   // The launcher text is the real createTicketDelivery output, unmodified.
-  const delivery = createTicketDelivery({ record, short_code: shortCode, public_origin: origin });
+  const delivery = createTicketDelivery({
+    record, short_code: shortCode,
+    assets_origin: assetsOrigin, enroll_origin: enrollOrigin, bootstrap_sha256: bootstrapDigest,
+  });
   writeFileSync(join(work, "launcher.sh"), "#!/bin/sh\n" + delivery.command + "\n", { mode: 0o755 });
   // The delivered selection text, decoded from the exact claim bytes, so the job
   // can count the pinned artifact rows instead of trusting the module's summary.
   writeFileSync(join(work, "claim-selection.txt"), Buffer.from(selectionBase64, "base64").toString("utf8"));
   const facts = {
-    origin,
+    origin: enrollOrigin,
+    assets_origin: assetsOrigin,
+    bootstrap_sha256: bootstrapDigest,
     ticket_id: ticketId,
     short_code: shortCode,
     template_digest: templateDigest,
@@ -251,8 +283,8 @@ server.listen(0, "127.0.0.1", () => {
     join(work, "facts.sh"),
     Object.entries(facts).map(([name, value]) => name.toUpperCase() + "=" + quoteShell(value)).join("\n") + "\n",
   );
-  console.log("stub: listening on " + origin);
-  writeFileSync(join(work, "ready"), origin + "\n");
+  console.log("stub: listening on " + enrollOrigin + " (assets " + assetsOrigin + ")");
+  writeFileSync(join(work, "ready"), enrollOrigin + "\n");
 });
 
 for (const signal of ["SIGTERM", "SIGINT"]) {

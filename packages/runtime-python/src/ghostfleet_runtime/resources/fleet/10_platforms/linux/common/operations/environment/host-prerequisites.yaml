@@ -24,8 +24,9 @@ mutates_host: false
 groups:
   enrollment:
     description: >-
-      One-click enrollment courier on a fresh Debian-family host
-      (GET /v1/bootstrap.sh). Probed before any credential is consumed.
+      One-click enrollment on a fresh Debian-family host: the Console-generated
+      command downloads the courier from the immutable asset origin by SHA-256
+      and verifies it before execution. Probed before any credential is consumed.
     canonical_ref: docs/PLATFORMS.md
   baseline-backup:
     description: >-
