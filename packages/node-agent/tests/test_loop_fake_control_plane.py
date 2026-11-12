@@ -38,6 +38,7 @@ from ghostfleet_agent.protocol import (
     NODE_BOOT_ID_CAPACITY_REACHED,
     NODE_NONCE_REPLAY,
     NODE_RATE_LIMITED,
+    OUTCOME_DENIED,
     OUTCOME_NETWORK_ERROR,
     OUTCOME_OK,
     AGENT_LEDGER_EXHAUSTED,
@@ -1403,3 +1404,148 @@ def test_first_unknown_operation_is_still_refused(sandbox, control_plane):
     assert len(posts) == 1
     assert posts[0]["body"]["result"]["status"] == RESULT_REFUSED
     assert posts[0]["body"]["result_digest"] == entry["result_digest"]
+
+
+# -- round-5：旧版本遗留 outbox body 的升级路径 -------------------------------
+def test_legacy_unknown_body_is_rebuilt_with_the_ledger_operation(sandbox, control_plane):
+    """升级路径：账本已是 UNKNOWN 终态、队列里躺着旧版本用错 operation 写的 body。
+
+    3dd0a44 的 _reconcile_task 用重投 envelope 的 operation 写 UNKNOWN body，账本记的
+    却是 begin() 时的 operation，两边 digest 相同——旧发送闸只比 digest，于是会把
+    result.operation=capability.inspect 发出去，控制面 409 TASK_OPERATION_MISMATCH 永久
+    拒绝、outbox 删条目、账本仍 UNKNOWN、重投被 inspect() 跳过：这个任务永远没有可接受
+    结果。这里直接落盘构造该状态（不经 begin/reconcile 自然路径），走启动 flush。
+    """
+    control_plane.respond = idle_responder(control_plane)
+    loop, _ = build_agent(sandbox, control_plane)
+    task_id = "task-legacy-unknown-body"
+    legacy = make_result(
+        task_id=task_id,
+        node_uid=sandbox.node_uid,
+        operation="capability.inspect",
+        status=RESULT_UNKNOWN,
+        code=AGENT_EXECUTION_UNKNOWN,
+    )
+    loop.outbox.add(
+        {
+            "task_id": task_id,
+            "operation": "capability.inspect",
+            "result": legacy,
+            "result_digest": digest_of(legacy),
+        }
+    )
+    # 旧版本账本事实：operation 是 begin() 时的 node.observe，digest 与队列 body 相同。
+    loop.ledger.complete(
+        task_id,
+        RESULT_UNKNOWN,
+        result_digest=digest_of(legacy),
+        operation="node.observe",
+    )
+
+    restarted, stream = build_agent(sandbox, control_plane)
+    assert restarted.run_once() == 0
+
+    posts = control_plane.requests_to("/result")
+    assert len(posts) == 1
+    body = posts[0]["body"]
+    entry = restarted.ledger.get(task_id)
+    # ① 发出的那条 result 的 operation 是账本那一个（node.observe），不是旧 body 的。
+    assert body["operation"] == "node.observe"
+    assert body["result"]["operation"] == "node.observe"
+    assert body["result"]["status"] == RESULT_UNKNOWN
+    # ② 账本只有一个摘要，且与线上 body 一致。
+    assert entry["state"] == RESULT_UNKNOWN
+    assert entry["operation"] == "node.observe"
+    assert entry["reconciled"] is True
+    assert body["result_digest"] == entry["result_digest"]
+    assert "result_body_rebuilt" in stream.getvalue()
+
+    # ③ 同一 task 重投不产生第二条结果。
+    restarted._process_task(make_task(node_uid=sandbox.node_uid, task_id=task_id))
+    assert restarted.run_once() == 0
+    assert restarted.ledger.get(task_id)["result_digest"] == entry["result_digest"]
+    assert len(control_plane.requests_to("/result")) == 1
+
+
+def test_unverifiable_succeeded_body_is_dropped_not_sent(sandbox, control_plane):
+    """终态不是 UNKNOWN 且队列 body 对不上：绝不发送，撤销 + RESULT_DROPPED 收敛。"""
+    control_plane.respond = idle_responder(control_plane)
+    loop, _ = build_agent(sandbox, control_plane)
+    task_id = "task-corrupt-succeeded"
+    good = make_result(
+        task_id=task_id,
+        node_uid=sandbox.node_uid,
+        operation="node.observe",
+        status=RESULT_SUCCEEDED,
+        data={"ok": True},
+    )
+    loop.ledger.complete(
+        task_id,
+        RESULT_SUCCEEDED,
+        result_digest=digest_of(good),
+        operation="node.observe",
+    )
+    bad = make_result(
+        task_id=task_id,
+        node_uid=sandbox.node_uid,
+        operation="capability.inspect",
+        status=RESULT_SUCCEEDED,
+        data={"ok": True},
+    )
+    loop.outbox.add(
+        {
+            "task_id": task_id,
+            "operation": "capability.inspect",
+            "result": bad,
+            "result_digest": digest_of(bad),
+        }
+    )
+
+    restarted, stream = build_agent(sandbox, control_plane)
+    assert restarted.run_once() == 0
+
+    assert control_plane.requests_to("/result") == []
+    assert restarted.outbox.has(task_id) is False
+    entry = restarted.ledger.get(task_id)
+    assert entry["state"] == RESULT_SUCCEEDED
+    assert entry["result_digest"] == digest_of(good)
+    assert entry["result_state"] == RESULT_DROPPED
+    assert "result_body_unverifiable" in stream.getvalue()
+    assert "result-operation-mismatch" in stream.getvalue()
+
+    # 结局确定：重投被跳过，永不补发、永不产生第二条结果。
+    restarted._process_task(make_task(node_uid=sandbox.node_uid, task_id=task_id))
+    assert restarted.run_once() == 0
+    assert restarted.outbox.has(task_id) is False
+    assert restarted.ledger.get(task_id)["result_digest"] == digest_of(good)
+    assert control_plane.requests_to("/result") == []
+
+
+def test_failed_retract_is_reported_and_deletes_nothing(sandbox, control_plane, monkeypatch):
+    """撤回失败必须 fail closed：不发送、不删条目、结构化错误里说清原因。"""
+    control_plane.respond = idle_responder(control_plane)
+    loop, stream = build_agent(sandbox, control_plane)
+    task_id = "task-retract-fails"
+    result = make_result(
+        task_id=task_id,
+        node_uid=sandbox.node_uid,
+        operation="agent.self.test",
+        status=RESULT_SUCCEEDED,
+        data={"nonce": None},
+    )
+    loop.outbox.add(
+        {
+            "task_id": task_id,
+            "operation": "agent.self.test",
+            "result": result,
+            "result_digest": digest_of(result),
+        }
+    )
+    # 账本里没有这条终态摘要 → 发送闸要求撤回；撤回本身失败（条目不在队列/落盘失败）。
+    monkeypatch.setattr(loop.outbox, "retract", lambda task_id: False)
+
+    outcome = loop._send_outbox_item(loop.outbox.get(task_id))
+    assert outcome.kind == OUTCOME_DENIED
+    assert loop.outbox.has(task_id) is True
+    assert control_plane.requests_to("/result") == []
+    assert "result_retract_failed" in stream.getvalue()

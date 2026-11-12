@@ -178,9 +178,10 @@ boot 重放换新 boot_id 重试一次，`NODE_BOOT_ID_CAPACITY_REACHED` 无法�
   `begin()` 命中墓碑按 `DONE` 处理，绝不因驱逐而重跑。墓碑满或账本达上限且无可驱逐条目时 `begin()` 拒绝、
   停止 poll（heartbeat 继续，health=`DEGRADED`、`health_reason=AGENT_LEDGER_EXHAUSTED`），对账腾出空间后自动恢复取任务。
 - `SIGTERM` 收尾的 flush 预算固定 8 秒并计入下面的停机上界；该预算**逐条检查**（每条 result POST 之前算一次剩余预算、单请求超时钳到剩余预算），耗尽即停，未发出的条目留在 outbox 下次启动优先重发。
-- 409 冲突（nonce/seq/boot 回放）的自动重试与第一次尝试**共用同一份超时预算**，且预算是 `send()` 入口处的**绝对截止点**：本地构包/序列化（`next_seq` + fsync）、transport 往返、`retry_hook` 的耗时全部从里面扣，每次 POST 之前都按截止点重算剩余超时。重试还要额外满足「剩余 ≥ `MIN_SEND_WINDOW_S` + 上一次的本地构包开销」，否则直接放弃重试、把第一次的 409 交给上层。**第一次尝试同样受一条硬规则约束**：构包与序列化之后剩余 < `MIN_SEND_WINDOW_S` 时一个字节都不发（返回网络错误形态交给退避），绝不靠把超时抬到 0.05 s 地板硬发——否则剩余 0.001 s 也会 POST 0.05 s，墙钟就超预算约 49 ms。因此一次 `send()` 的墙钟永远不超过它的预算：重试既不会拿到第二份预算，也不会用本地构包时间吃穿预算（回归测试 `test_local_build_cost_is_charged_before_the_first_attempt`、`test_every_attempt_fits_the_remaining_window`）。
-- 账本终态（result 摘要）没提交成功时，刚入队的结果会被**从 outbox 撤回**，绝不发送；撤回本身失败则 fail closed（记 `result_uncommitted_unsendable`，宁可不发）。发送前还有一道闸：outbox 条目的 `result_digest` 必须与账本已提交的终态摘要逐字相同，否则同样撤回不发送。已收敛并被有界驱逐的终态只在墓碑里留下 `result_digest`，墓碑摘要同样算「已提交」——否则账本压满时会把合法待发的结果误撤回，而墓碑只让 `begin()` 返回 `DONE`、不会补发，该 result 就永久丢了（回归测试 `test_evicted_terminal_result_is_still_sendable_via_its_tombstone`）。这样同一 task 只可能有一个会被发出的摘要（重启后是 `UNKNOWN`），不会出现"真实结果 + UNKNOWN"两条摘要被控制面判成 `TASK_RESULT_CONFLICT`。
-- 「dispatch 前就拒绝」的路径同样**先读账本历史再下结论**（`ledger.inspect()`，只读）：`MAY_HAVE_EXECUTED` → 按既有语义对账成 `UNKNOWN`；已有终态或只剩墓碑 → 记 `task_duplicate_skipped` 后跳过；只有完全没见过的 task_id 才写 `REFUSED`。否则同一 task_id 第二次到达（内容被改成未知 operation）会覆盖第一个摘要，甚至把已排队的 `UNKNOWN` 撤回。账本 `complete()` 自身也有 backstop：已有终态但 `result_digest` 不同时直接抛 `LedgerWriteError`（同摘要幂等）。**对账出来的 `UNKNOWN` 绑定账本里 `begin()` 记录的 operation，绝不使用重投 envelope 的 operation**：控制面按 ADR:109 校验 `result.operation` 等于任务 operation，用新 operation 回 `UNKNOWN`（同一 task_id 从 `node.observe` 重投成 `capability.inspect`）会被 409 `TASK_OPERATION_MISMATCH` 永久丢弃，而账本已是终态、下一次重投又被 `inspect()` 跳过——`MAY_HAVE_EXECUTED` 的任务就永远没有可接受的结果。outbox 里已有 body 时同样校验其 `result.operation`：与账本不一致就撤回并按账本 operation 重建 `UNKNOWN`（撤不回则 fail closed，发送闸按摘要不匹配拒发），绝不原样发送。回归测试 `test_known_terminal_task_is_not_refused_again`、`test_known_in_flight_task_is_reconciled_not_refused`、`test_reconciled_unknown_uses_the_operation_recorded_at_fence_time`、`test_queued_result_with_a_foreign_operation_is_rebuilt_not_sent`、`test_tombstoned_task_is_skipped_not_refused`、`test_first_unknown_operation_is_still_refused`、`tests/test_ledger.py::test_complete_rejects_a_second_digest_for_a_terminal_task`。
+- 409 冲突（nonce/seq/boot 回放）的自动重试与第一次尝试**共用同一份超时预算**，且预算是 `send()` 入口处的**绝对截止点**：本地构包/序列化（`next_seq` + fsync）、transport 往返、`retry_hook` 的耗时全部从里面扣，每次 POST 之前都按截止点重算剩余超时。重试还要额外满足「剩余 ≥ `MIN_SEND_WINDOW_S` + 上一次的本地构包开销」，否则直接放弃重试、把第一次的 409 交给上层。**第一次尝试同样受一条硬规则约束**：构包与序列化之后剩余 < `MIN_SEND_WINDOW_S` 时一个字节都不发（返回网络错误形态交给退避），绝不靠把超时抬到 0.05 s 地板硬发——否则剩余 0.001 s 也会 POST 0.05 s，凭空多烧掉一个最小发送窗口。**这份预算是「网络 POST 的预算」，不是 `send()` 的墙钟上界**：重试既不会拿到第二份预算，也不会靠本地构包时间吃穿预算（本地耗时先被扣掉），但本地构包/序列化（`next_seq` + fsync）与 `retry_hook` **不可中断**，它们跑起来就无法被预算打断，因此一次 `send()` 的实际墙钟可能超过预算（rev-core 实测预算 1.0 s + 1.2 s 慢构包 → 墙钟 1.2 s、一个 POST 都没发）。回归测试 `test_local_build_cost_is_charged_before_the_first_attempt`、`test_every_attempt_fits_the_remaining_window`、`test_request_is_not_sent_when_the_local_build_consumes_the_budget`。
+- 账本终态（result 摘要）没提交成功时，刚入队的结果会被**从 outbox 撤回**，绝不发送；撤回只认**真实返回值**：条目不在队列（`removed=False`）或落盘失败都算撤回失败，一律 fail closed（记 `result_retract_failed` / `result_uncommitted_unsendable`），既不发出去，也绝不把「撤回失败」当成功让 flush 删掉条目——那等于静默丢结果。
+- 发送前还有一道**逐字段闸**，拿 outbox body 与账本事实（含墓碑）对账：`body.task_id`、`body.operation`、嵌套的 `result.task_id` / `result.node_uid` / `result.schema` / `result.operation` 分别必须等于任务 id、本节点 uid、`ghostfleet-node-task/v0`、账本 operation；`result.status` 必须是合法状态且等于账本终态；`body.result_digest` 必须等于 `result` 的规范摘要，也必须等于账本已提交的摘要。任一不符就**绝不原样发送**：账本终态是 `UNKNOWN` 时撤回旧 body、按**账本 operation** 重建 `UNKNOWN`（重算摘要并覆盖同一条账本终态；`complete()` 对终态异摘要仍然 fail closed）；其它终态（`SUCCEEDED`/`FAILED`/`REFUSED`）时撤回条目并在账本记 `result_state=RESULT_DROPPED`，日志 `result_body_unverifiable` 给出字段级原因，执行终态与摘要保持原样、同一 task 重投被 `inspect()` 跳过——结局确定、不重试、不自旋。已收敛并被有界驱逐的终态只在墓碑里留下 `result_digest`，墓碑摘要同样算「已提交」——否则账本压满时会把合法待发的结果误撤回，而墓碑只让 `begin()` 返回 `DONE`、不会补发，该 result 就永久丢了（回归测试 `test_evicted_terminal_result_is_still_sendable_via_its_tombstone`）。这样同一 task 只可能有一个会被发出的摘要（重启后是 `UNKNOWN`），不会出现"真实结果 + UNKNOWN"两条摘要被控制面判成 `TASK_RESULT_CONFLICT`。升级路径（账本里已是 `UNKNOWN`、队列里却是旧版本用错 operation 写的 body）的回归测试：`test_legacy_unknown_body_is_rebuilt_with_the_ledger_operation`（只发一条、operation 与摘要都等于账本）、`test_unverifiable_succeeded_body_is_dropped_not_sent`（零 POST、`RESULT_DROPPED`、重投无第二条结果）、`test_failed_retract_is_reported_and_deletes_nothing`（撤回失败 → 拒发、条目仍在、结构化原因）。
+- 「dispatch 前就拒绝」的路径同样**先读账本历史再下结论**（`ledger.inspect()`，只读）：`MAY_HAVE_EXECUTED` → 按既有语义对账成 `UNKNOWN`；已有终态或只剩墓碑 → 记 `task_duplicate_skipped` 后跳过；只有完全没见过的 task_id 才写 `REFUSED`。否则同一 task_id 第二次到达（内容被改成未知 operation）会覆盖第一个摘要，甚至把已排队的 `UNKNOWN` 撤回。账本 `complete()` 自身也有 backstop：已有终态但 `result_digest` 不同时直接抛 `LedgerWriteError`（同摘要幂等）。**对账出来的 `UNKNOWN` 绑定账本里 `begin()` 记录的 operation，绝不使用重投 envelope 的 operation**：控制面按 ADR:109 校验 `result.operation` 等于任务 operation，用新 operation 回 `UNKNOWN`（同一 task_id 从 `node.observe` 重投成 `capability.inspect`）会被 409 `TASK_OPERATION_MISMATCH` 永久丢弃，而账本已是终态、下一次重投又被 `inspect()` 跳过——`MAY_HAVE_EXECUTED` 的任务就永远没有可接受的结果。outbox 里已有 body 时用的是与发送闸**同一套逐字段校验**（一条实现、两处调用：`_outbox_body_problems`），与账本不一致就撤回并按账本 operation 重建 `UNKNOWN`（撤不回则 fail closed，发送闸拒发），绝不原样发送。回归测试 `test_known_terminal_task_is_not_refused_again`、`test_known_in_flight_task_is_reconciled_not_refused`、`test_reconciled_unknown_uses_the_operation_recorded_at_fence_time`、`test_queued_result_with_a_foreign_operation_is_rebuilt_not_sent`、`test_tombstoned_task_is_skipped_not_refused`、`test_first_unknown_operation_is_still_refused`、`tests/test_ledger.py::test_complete_rejects_a_second_digest_for_a_terminal_task`。
 
 ### 停机预算（`TimeoutStopSec=30` 内，三段相加）
 
@@ -192,15 +193,20 @@ boot 重放换新 boot_id 重试一次，`NODE_BOOT_ID_CAPACITY_REACHED` 无法�
 | 余量 | `loop.SHUTDOWN_RESERVE_S` | 2 s | `STOPPING=1`、last_stop 落盘、进程退出 |
 | **合计** | — | **21 s** | **21 ≤ 30，余量 9 s** |
 
-不含余量的「信号 → 退出」上界是 1 + 10 + 8 = **19 s**。
+不含余量的「信号 → 退出」基线是 1 + 10 + 8 = **19 s**。
 
 这个上界是**运行时逐请求检查**的结果，不是常量相加的自我声明：`stop_event` 在心跳之前、poll 之前、以及
 `outbox.flush()` 的**每一条 send 之前**检查；停机路径只带 deadline（不带 `stop_event`，保证已完成的 result
 仍尝试发出），每条 send 的单请求超时被钳到「剩余预算」，`remaining < MIN_SEND_WINDOW_S` 立即停止并保留 pending。
 客户端在 `send()` 入口取一次绝对截止点，409 冲突重试只拿「截止点 − 现在」，且要求剩余 ≥ `MIN_SEND_WINDOW_S` +
 上一次的本地构包开销，否则**完全不重试**；每次 POST 的超时也被钳到当时的剩余时间，且构包后剩余
-不足 `MIN_SEND_WINDOW_S` 时任何一次尝试（含第一次）都不发（构包/序列化与 `retry_hook` 花掉的本地时间同样计费）
-——表中「在途 HTTP 请求 10 s」因此是整次 send（含本地构包与重试）的上界，不是每次尝试的上界。
+不足 `MIN_SEND_WINDOW_S` 时任何一次尝试（含第一次）都不发。
+
+**表中「在途 HTTP 请求 10 s」是网络 POST 的超时上界**（一次 `send()` 内所有 POST，含 409 重试，合计受同一个
+截止点约束），不是 `send()` 的墙钟上界：本地构包/序列化（`next_seq` + fsync）与 `retry_hook` **不可中断**，
+它们花的时间会从剩余窗口里扣掉、却无法在执行途中被打断。因此最坏墙钟是 1（睡眠）+ 10（POST）+ 该次 send 的
+本地构包/`retry_hook` 耗时 + 8（flush）+ 2（余量）；本地耗时由 fsync 主导（毫秒级），由 2 s 余量吸收，
+所以 19 s 基线 + 余量仍成立的前提是「单次本地构包/`retry_hook` ≤ 2 s」。
 测试：`test_stop_budget_is_a_runtime_deadline_not_a_constant_sum`
 （64 条 pending + 假时钟、每条 send 0.2 s，断言 elapsed ≤8 s + 一次 send 颗粒、逐条拿到递减的剩余预算、
 pending 可见）；`tests/test_outbox.py` 的 `test_flush_stops_before_any_send_when_stop_event_is_set`、

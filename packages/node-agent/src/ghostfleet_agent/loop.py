@@ -26,6 +26,8 @@ from .protocol import (
     AGENT_LEDGER_EXHAUSTED,
     AGENT_INTERNAL_ERROR,
     OUTCOME_AUTH_FATAL,
+    OUTCOME_DENIED,
+    OUTCOME_HANDLED,
     OUTCOME_INVALID_RESPONSE,
     OUTCOME_NETWORK_ERROR,
     OUTCOME_NONCE_REPLAY,
@@ -36,6 +38,7 @@ from .protocol import (
     OUTCOME_TRANSPORT_REFUSED,
     RESULT_STATUSES,
     RESULT_UNKNOWN,
+    SCHEMA_TASK,
     TASK_ID_RE,
     ProtocolError,
     digest_of,
@@ -282,29 +285,35 @@ class AgentLoop:
         existing = self.outbox.get(task_id)
         if existing is not None:
             body = existing.get("body") if isinstance(existing.get("body"), dict) else {}
-            result = body.get("result") if isinstance(body.get("result"), dict) else None
-            status = result.get("status") if isinstance(result, dict) else None
-            digest = body.get("result_digest")
-            queued_operation = result.get("operation") if isinstance(result, dict) else None
-            if status in RESULT_STATUSES and isinstance(digest, str) and queued_operation == ledger_operation:
-                # 结果已在 outbox 且 operation 与账本一致：以事实为准补齐 ledger 终态，绝不重跑。
-                self.ledger.complete(task_id, status, result_digest=digest)
+            # P1/P3.3：队列里的 body 必须逐字段与账本事实对得上（operation/task_id/
+            # node_uid/schema/摘要/status），不能只看 operation。校验函数与发送闸
+            # （_send_outbox_item）共用同一实现，避免两处口径漂移。
+            problems = self._outbox_body_problems(task_id, body, operation=ledger_operation)
+            if not problems:
+                result = body.get("result") if isinstance(body.get("result"), dict) else {}
+                # 结果已在 outbox 且与账本一致：以事实为准补齐 ledger 终态，绝不重跑。
+                self.ledger.complete(
+                    task_id,
+                    result.get("status"),
+                    result_digest=body.get("result_digest"),
+                    operation=ledger_operation,
+                )
                 self.ledger.mark_reconciled(task_id)
                 return
-            # 队列里的 body 不能原样发送：operation 与账本不一致会被控制面永久 409 丢弃，
-            # 发送出去的也就不是"这个 task 的已提交结果"。撤回并按账本 operation 重建 UNKNOWN。
+            # 队列里的 body 不能原样发送：控制面只接受 operation 等于任务 operation 的
+            # result，发出去也会被永久 409 丢弃，那就不是"这个 task 的已提交结果"。
+            # 撤回并按账本 operation 重建 UNKNOWN。
             self.logger.error(
                 "queued_result_not_sendable",
                 task_id=task_id,
-                queued_operation=queued_operation if isinstance(queued_operation, str) else None,
-                queued_status=status if isinstance(status, str) else None,
+                reasons=problems,
                 ledger_operation=ledger_operation,
             )
             try:
                 removed = self.outbox.retract(task_id)
             except OutboxWriteError as error:
-                # 撤不回内存/磁盘：发送闸（_result_digest_committed）会按摘要不匹配拒发，
-                # 这里仍按账本事实收敛终态，绝不把这个 body 发出去（fail closed）。
+                # 撤不回内存/磁盘：发送闸会按逐字段校验拒发，这里仍按账本事实收敛终态，
+                # 绝不把这个 body 发出去（fail closed）。
                 removed = False
                 self.logger.error("queued_result_retract_failed", task_id=task_id, outbox_error=str(error))
             if not removed:
@@ -620,50 +629,204 @@ class AgentLoop:
                 outbox_error=str(retract_error),
             )
             return False
+        if not removed:
+            self.logger.error(
+                "result_retract_failed",
+                task_id=task_id,
+                stage=stage,
+                reason="not-in-outbox",
+                detail=detail,
+            )
+            return False
         self.logger.error(
             "result_retracted_before_send",
             task_id=task_id,
             stage=stage,
-            removed=removed,
+            removed=True,
             detail=detail,
         )
         return True
 
-    def _result_digest_committed(self, task_id, digest) -> bool:
-        """发送前的最后一道闸：账本里必须有与 body 完全一致的终态摘要。
-
-        已收敛的只读终态会被有界驱逐、只剩墓碑，而墓碑同样记录 result_digest
-        （ledger._prune）。这种情况仍算"已提交"：否则队列里合法待发的结果会被
-        误撤回，控制面永远收不到该 result（墓碑只让 begin() 返回 DONE，不会补发）。
-        """
-        if not isinstance(task_id, str) or not isinstance(digest, str):
-            return False
+    def _committed_result_fact(self, task_id: str):
+        """账本（含墓碑）里这条 task 的终态事实：{state, operation, digest} 或 None。"""
         entry = self.ledger.get(task_id)
-        if isinstance(entry, dict):
-            if entry.get("result_digest") == digest and entry.get("state") in TERMINAL_STATES:
-                return True
+        if isinstance(entry, dict) and entry.get("state") in TERMINAL_STATES:
+            return {
+                "state": entry.get("state"),
+                "operation": entry.get("operation"),
+                "digest": entry.get("result_digest"),
+            }
         tombstones = getattr(self.ledger, "tombstones", None)
         tombstone = tombstones.get(task_id) if isinstance(tombstones, dict) else None
-        return isinstance(tombstone, dict) and tombstone.get("result_digest") == digest
+        if isinstance(tombstone, dict):
+            # 已收敛的只读终态会被有界驱逐、只剩墓碑；墓碑同样记 result_digest
+            # （ledger._prune）。这种情况仍算"已提交"：否则队列里合法待发的结果会被
+            # 误撤回，控制面永远收不到该 result（墓碑只让 begin() 返回 DONE，不会补发）。
+            return {
+                "state": tombstone.get("state"),
+                "operation": tombstone.get("operation"),
+                "digest": tombstone.get("result_digest"),
+            }
+        return None
+
+    def _outbox_body_problems(self, task_id, body, *, operation, digest=None, status=None):
+        """逐字段核对 outbox body 与账本事实；返回问题清单（空 = 可发送）。
+
+        0600/同 euid 不是跳过校验的理由：旧版本（3dd0a44）的 _reconcile_task 会把
+        重投 envelope 的 operation 写进 UNKNOWN body，升级后队列里就可能躺着一条
+        operation 与账本不符的条目。它一旦发出会被控制面 409
+        TASK_OPERATION_MISMATCH 永久拒绝、outbox 删条目、账本仍是 UNKNOWN，重投又被
+        inspect() 跳过——一个 MAY_HAVE_EXECUTED 的任务就永远没有可接受结果。
+        """
+        problems = []
+        result = body.get("result")
+        if not isinstance(result, dict):
+            problems.append("result-not-object")
+            result = {}
+        if body.get("task_id") != task_id:
+            problems.append("body-task-id-mismatch")
+        if isinstance(operation, str) and operation:
+            if body.get("operation") != operation:
+                problems.append("body-operation-mismatch")
+            if result.get("operation") != operation:
+                problems.append("result-operation-mismatch")
+        else:
+            problems.append("ledger-operation-missing")
+        if result.get("task_id") != task_id:
+            problems.append("result-task-id-mismatch")
+        if result.get("node_uid") != self.node_uid:
+            problems.append("result-node-uid-mismatch")
+        if result.get("schema") != SCHEMA_TASK:
+            problems.append("result-schema-mismatch")
+        result_status = result.get("status")
+        if result_status not in RESULT_STATUSES:
+            problems.append("result-status-invalid")
+        elif status is not None and result_status != status:
+            problems.append("result-status-mismatch")
+        body_digest = body.get("result_digest")
+        if not isinstance(body_digest, str):
+            problems.append("body-digest-missing")
+        else:
+            try:
+                canonical = digest_of(result)
+            except ProtocolError:
+                problems.append("result-not-canonical")
+            else:
+                if body_digest != canonical:
+                    problems.append("body-digest-not-canonical")
+        if isinstance(digest, str) and body_digest != digest:
+            problems.append("body-digest-mismatch")
+        return problems
+
+    def _settle_unverifiable_result(self, task_id: str, fact: dict, problems):
+        """队列 body 与账本不符时的确定结局：能重建就重建，否则丢掉并记账。"""
+        entry = self.ledger.get(task_id)
+        operation = fact.get("operation")
+        if (
+            fact.get("state") == RESULT_UNKNOWN
+            and isinstance(entry, dict)
+            and isinstance(operation, str)
+            and operation
+        ):
+            return self._rebuild_unknown_result(task_id, operation, problems)
+        return self._drop_unverifiable_result(task_id, fact, problems)
+
+    def _rebuild_unknown_result(self, task_id: str, operation: str, problems):
+        """用账本 operation 重建 UNKNOWN 结果（旧版本遗留 body 的升级路径）。
+
+        顺序是先账本后入队：若先入队成功再写账本失败，磁盘上会留下一条摘要永远
+        对不上的 body，只能靠下一轮再撤；反过来最坏只是这条 UNKNOWN 没进队列、账本
+        已按正确 operation 收敛，下一次重投被 inspect() 跳过，永不产生第二条结果。
+        终态摘要只能改写账本自己那一条（mark_unknown 覆盖 digest，不会写出第二个
+        终态），complete() 对终态异摘要 fail closed 的约束也不会被绕过。
+        """
+        detail = "queued result body does not match the ledger: " + ", ".join(problems)
+        if not self._retract_uncommitted_result(task_id, detail=detail, stage="send-rebuild"):
+            return SimpleNamespace(kind=OUTCOME_DENIED, code=AGENT_INTERNAL_ERROR)
+        result = make_result(
+            task_id=task_id,
+            node_uid=self.node_uid,
+            operation=operation,
+            status=RESULT_UNKNOWN,
+            code=AGENT_EXECUTION_UNKNOWN,
+        )
+        try:
+            self.ledger.mark_unknown(task_id, result_digest=digest_of(result))
+            self.ledger.mark_reconciled(task_id)
+            add = self._enqueue_result(result)
+        except (LedgerWriteError, OutboxWriteError) as error:
+            self.logger.error("result_body_rebuild_failed", task_id=task_id, detail=str(error), reasons=problems)
+            return SimpleNamespace(kind=OUTCOME_DENIED, code=AGENT_INTERNAL_ERROR)
+        if getattr(add, "status", None) == CONFLICT:
+            self.logger.error("result_body_rebuild_conflict", task_id=task_id, reasons=problems)
+        self.logger.error(
+            "result_body_rebuilt",
+            task_id=task_id,
+            operation=operation,
+            reasons=problems,
+            result_digest=digest_of(result),
+        )
+        return SimpleNamespace(kind=OUTCOME_HANDLED, code=None)
+
+    def _drop_unverifiable_result(self, task_id: str, fact: dict, problems):
+        """终态不是 UNKNOWN 的不可验证 body：fail closed 撤销，且只撤销一次。
+
+        结局是确定的、不会自旋：条目从 outbox 移除并在账本记 result_state=
+        RESULT_DROPPED，执行终态与摘要保持原样；同一 task 重投会被 inspect() 跳过，
+        永不产生第二条结果，也永远不会发出 operation 与账本不符的 result。
+        """
+        detail = "queued result body does not match the ledger: " + ", ".join(problems)
+        if not self._retract_uncommitted_result(task_id, detail=detail, stage="send-drop"):
+            return SimpleNamespace(kind=OUTCOME_DENIED, code=AGENT_INTERNAL_ERROR)
+        try:
+            self.ledger.mark_result_dropped(task_id)
+        except LedgerWriteError as error:
+            self.logger.error("result_body_drop_not_recorded", task_id=task_id, detail=str(error))
+        self.logger.error(
+            "result_body_unverifiable",
+            task_id=task_id,
+            ledger_state=fact.get("state"),
+            reasons=problems,
+            action="dropped",
+        )
+        return SimpleNamespace(kind=OUTCOME_HANDLED, code=None)
 
     def _send_outbox_item(self, item, timeout_s=None):
         body = item.get("body")
         if not isinstance(body, dict):
-            return SimpleNamespace(kind=OUTCOME_REJECTED, code=AGENT_INTERNAL_ERROR)
+            body = {}
         task_id = item.get("task_id")
-        digest = body.get("result_digest")
-        if not self._result_digest_committed(task_id, digest):
+        if not isinstance(task_id, str):
+            self.logger.error(
+                "result_body_unverifiable", task_id=None, reasons=["task-id-invalid"], action="left-pending"
+            )
+            return SimpleNamespace(kind=OUTCOME_DENIED, code=AGENT_INTERNAL_ERROR)
+        fact = self._committed_result_fact(task_id)
+        if fact is None or not isinstance(fact.get("digest"), str):
             # 账本没有这条 body 的终态摘要 → 绝不发送（fail closed）。正常情况下
-            # complete()/reconcile 已先行提交；这里兜住"提交失败后仍在队列里"的条目。
+            # complete()/reconcile 已先行提交；这里兜住"提交失败后仍在队列里"的条目，
+            # 以及只剩一条没有摘要的 RESULT_DROPPED 事实的条目。
             retracted = self._retract_uncommitted_result(
                 task_id, detail="terminal result digest is not committed in the ledger", stage="send"
             )
-            kind = OUTCOME_REJECTED if retracted else OUTCOME_DENIED
+            kind = OUTCOME_HANDLED if retracted else OUTCOME_DENIED
             return SimpleNamespace(kind=kind, code=AGENT_INTERNAL_ERROR)
+        operation = fact.get("operation")
+        problems = self._outbox_body_problems(
+            task_id,
+            body,
+            operation=operation if isinstance(operation, str) else "",
+            digest=fact.get("digest"),
+            status=fact.get("state"),
+        )
+        if problems:
+            # 账本有终态但队列 body 与事实对不上（典型：旧版本用错 operation 写的
+            # UNKNOWN）。绝不原样发送，交给 _settle_unverifiable_result 给出确定结局。
+            return self._settle_unverifiable_result(task_id, fact, problems)
         try:
             response = self.client.send_result_body(
                 lambda nonce: self._envelope(nonce, body),
-                str(item.get("task_id")),
+                task_id,
                 retry_hook=self._retry_hook,
                 timeout_s=timeout_s,
             )

@@ -92,6 +92,9 @@ OUTCOME_SERVER_ERROR = "SERVER_ERROR"
 OUTCOME_NETWORK_ERROR = "NETWORK_ERROR"
 OUTCOME_TRANSPORT_REFUSED = "TRANSPORT_REFUSED"
 OUTCOME_INVALID_RESPONSE = "INVALID_RESPONSE"
+# 发送闸在本地处置完毕（撤回不可信 body 并重建/记账），不产生网络请求：
+# outbox.flush 不计入 sent/rejected，也不删除条目，继续处理下一条。
+OUTCOME_HANDLED = "HANDLED"
 
 # 控制面拒绝但可退避重试（例如节点尚未 admitted / 时钟偏差 / 4xx 语义不明）。
 AGENT_UNIT_NOT_ALLOWED = "AGENT_UNIT_NOT_ALLOWED"

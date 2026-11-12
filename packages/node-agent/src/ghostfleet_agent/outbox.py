@@ -13,6 +13,7 @@ from .logging import get_logger
 from .protocol import (
     MAX_RESULT_BYTES,
     OUTCOME_AUTH_FATAL,
+    OUTCOME_HANDLED,
     OUTCOME_INVALID_RESPONSE,
     OUTCOME_NETWORK_ERROR,
     OUTCOME_NONCE_REPLAY,
@@ -292,11 +293,18 @@ class Outbox:
         先从内存移除（保证本进程内绝不可能再发出），再原子落盘；落盘失败向上抛
         OutboxWriteError 由调用方 fail closed（不发送 + 结构化错误），重启后磁盘上
         的条目会被 reconcile 以"事实"补齐终态，仍然只发一个摘要。
+
+        落盘失败时把条目放回原位置：撤回失败绝不能同时变成"条目已丢"——调用方看到
+        False 时仍能断言条目还在（内存/磁盘一致），并在下一轮重新尝试。
         """
         for index, item in enumerate(self._items):
             if item["task_id"] == task_id:
-                del self._items[index]
-                self.save()
+                removed = self._items.pop(index)
+                try:
+                    self.save()
+                except OutboxWriteError:
+                    self._items.insert(index, removed)
+                    raise
                 return True
         return False
 
@@ -341,6 +349,10 @@ class Outbox:
                 report.rejected.append(item["task_id"])
                 changed = True
                 self.logger.warning("result_rejected_permanently", task_id=item["task_id"], code=code)
+                continue
+            if kind == OUTCOME_HANDLED:
+                # 发送闸已在本地完成处置（撤回旧 body 并重建/记账）：旧条目已不在队列，
+                # 没有网络请求，不计入 sent/rejected，也不删除任何东西。
                 continue
             self.record_attempt(item["task_id"], code)
             changed = True
