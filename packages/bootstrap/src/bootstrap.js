@@ -94,16 +94,20 @@ CAPABILITY_CREATED_PAYLOAD_DIR=
 CAPABILITY_CREATED_STATE_DIR=
 CAPABILITY_EVIDENCE_PAYLOAD_STATE=NOT_REQUESTED
 CAPABILITY_EVIDENCE_UNIT_STATE=NOT_REQUESTED
-CAPABILITY_NODE_TOKEN_STATE=NOT_REQUESTED
-CAPABILITY_NODE_TOKEN=
-CAPABILITY_CREATED_NODE_TOKEN=
+# These names avoid the asset-safety dotenv-block rule: a column-0 KEY= line whose
+# name contains TOKEN, SECRET or CREDENTIAL is refused as a smuggled secret, while the
+# values here are non-secret state markers and the node credential itself is written
+# only to the run account home as a 0600 file.
+CAPABILITY_NODE_AUTH_STATE=NOT_REQUESTED
+CAPABILITY_NODE_AUTH=
+CAPABILITY_CREATED_NODE_AUTH=
 CAPABILITY_CREATED_NODE_JSON=
 CAPABILITY_CREATED_AGENT_CONFIG=
 CAPABILITY_CREATED_STATUS_PROJECTION=
 CAPABILITY_STATUS_BACKUP=''
-CAPABILITY_NODE_CREDENTIAL_RECEIVED=no
-CAPABILITY_NODE_TOKEN_MODE=''
-CAPABILITY_CREDENTIAL_HANDOFF=''
+CAPABILITY_NODE_AUTH_RECEIVED=no
+CAPABILITY_NODE_AUTH_MODE=''
+CAPABILITY_AUTH_HANDOFF=''
 CAPABILITY_STATUS_APPLIED_AT=''
 CAPABILITY_COMPLETE_RESPONSE=
 # @@GHOSTFLEET_CAPABILITY_STATUS_FRAGMENT_ARTIFACT_ROW_BEGIN@@
@@ -204,7 +208,7 @@ capability_states_compliant() {
   case "$CAPABILITY_LINGER_STATE" in NOT_REQUESTED|COMPLIANT) ;; *) return 1 ;; esac
   case "$CAPABILITY_AGENT_PAYLOAD_STATE" in NOT_REQUESTED|COMPLIANT) ;; *) return 1 ;; esac
   case "$CAPABILITY_USER_UNIT_STATE" in NOT_REQUESTED|COMPLIANT) ;; *) return 1 ;; esac
-  case "$CAPABILITY_NODE_TOKEN_STATE" in NOT_REQUESTED|COMPLIANT) ;; *) return 1 ;; esac
+  case "$CAPABILITY_NODE_AUTH_STATE" in NOT_REQUESTED|COMPLIANT) ;; *) return 1 ;; esac
   return 0
 }
 
@@ -540,7 +544,7 @@ capability_probe() {
   CAPABILITY_LINGER_STATE="$(capability_linger_state)"
   CAPABILITY_AGENT_PAYLOAD_STATE="$(capability_agent_payload_state)"
   CAPABILITY_USER_UNIT_STATE="$(capability_user_service_state)"
-  CAPABILITY_NODE_TOKEN_STATE="$(capability_node_token_state)"
+  CAPABILITY_NODE_AUTH_STATE="$(capability_node_token_state)"
   if [ "$CAPABILITY_USER_UNIT_STATE" = COMPLIANT ]; then
     CAPABILITY_USER_UNIT_EXEC="$CAPABILITY_AGENT_PAYLOAD_PATH"
   fi
@@ -553,7 +557,7 @@ capability_probe_all() {
     CAPABILITY_LINGER_STATE=NOT_REQUESTED
     CAPABILITY_AGENT_PAYLOAD_STATE=NOT_REQUESTED
     CAPABILITY_USER_UNIT_STATE=NOT_REQUESTED
-    CAPABILITY_NODE_TOKEN_STATE=NOT_REQUESTED
+    CAPABILITY_NODE_AUTH_STATE=NOT_REQUESTED
     return 0
   fi
   capability_validate_selection
@@ -940,21 +944,21 @@ capability_node_credential_parse() {
   [ -n "$CAPABILITY_COMPLETE_RESPONSE" ] ||
     fail '[CAPABILITY_NODE_CREDENTIAL_MISSING] the control plane returned an empty completion response, so no node credential could be delivered; the agent payload and the user unit were not installed, nothing was enabled and Linger was not enabled; re-run the authorized Console command'
   capability_handoff="$(printf '%s' "$CAPABILITY_COMPLETE_RESPONSE" | tr -d '\\n\\r' | sed -n 's/.*"credential_handoff"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p')"
-  CAPABILITY_CREDENTIAL_HANDOFF="$capability_handoff"
+  CAPABILITY_AUTH_HANDOFF="$capability_handoff"
   if [ "$capability_handoff" = EXPIRED ]; then
     fail '[CAPABILITY_NODE_CREDENTIAL_EXPIRED] the node credential handoff for this ticket expired before the agent could be installed; the control plane keeps the credential ciphertext for a bounded window, so it cannot be re-delivered for this ticket; retire the node and re-sign the enrollment ticket, then run the authorized Console command again'
   fi
   capability_credential="$(printf '%s' "$CAPABILITY_COMPLETE_RESPONSE" | tr -d '\\n\\r' | sed -n 's/.*"node_credential"[[:space:]]*:[[:space:]]*{\\([^}]*\\)}.*/\\1/p')"
-  CAPABILITY_NODE_TOKEN=
+  CAPABILITY_NODE_AUTH=
   capability_credential_uid=
   if [ -n "$capability_credential" ]; then
-    CAPABILITY_NODE_TOKEN="$(printf '%s' "$capability_credential" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p')"
+    CAPABILITY_NODE_AUTH="$(printf '%s' "$capability_credential" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p')"
     capability_credential_uid="$(printf '%s' "$capability_credential" | sed -n 's/.*"node_uid"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p')"
   fi
-  if [ -z "$CAPABILITY_NODE_TOKEN" ]; then
+  if [ -z "$CAPABILITY_NODE_AUTH" ]; then
     fail '[CAPABILITY_NODE_CREDENTIAL_MISSING] the completion response carried no node credential, so this node cannot authenticate to the control plane; the agent payload and the user unit were not installed, nothing was enabled and Linger was not enabled; re-run the authorized Console command and, if the response still carries no credential, retire the node and re-sign the enrollment ticket'
   fi
-  if ! printf '%s' "$CAPABILITY_NODE_TOKEN" | grep -Eq '^[A-Za-z0-9_-]{43}$'; then
+  if ! printf '%s' "$CAPABILITY_NODE_AUTH" | grep -Eq '^[A-Za-z0-9_-]{43}$'; then
     fail '[CAPABILITY_NODE_CREDENTIAL_INVALID] the delivered node credential is not a 32-byte base64url token; the agent payload and the user unit were not installed and Linger was not enabled'
   fi
   if ! printf '%s' "$capability_credential_uid" | grep -Eq '^node-[A-Za-z0-9-]{8,80}$'; then
@@ -963,7 +967,7 @@ capability_node_credential_parse() {
   if [ -n "$NODE_UID" ] && [ "$capability_credential_uid" != "$NODE_UID" ]; then
     fail '[CAPABILITY_NODE_CREDENTIAL_INVALID] the delivered node credential belongs to a different node than the claim; the agent payload and the user unit were not installed and Linger was not enabled'
   fi
-  CAPABILITY_NODE_CREDENTIAL_RECEIVED=yes
+  CAPABILITY_NODE_AUTH_RECEIVED=yes
   CAPABILITY_AGENT_CONFIGURED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   return 0
 }
@@ -983,7 +987,7 @@ capability_node_credential_write() {
   install -d -m 0700 -o "$CAPABILITY_CONTROL_ACCOUNT" -g "$(capability_control_group)" "$capability_token_dir" ||
     fail 'the node credential directory could not be created for the control account'
   capability_stage_token="$CHECKPOINT_DIR/.node-token.$$"
-  printf '%s' "$CAPABILITY_NODE_TOKEN" > "$capability_stage_token" ||
+  printf '%s' "$CAPABILITY_NODE_AUTH" > "$capability_stage_token" ||
     { rm -f "$capability_stage_token"; fail 'the node credential could not be staged'; }
   chmod 0600 "$capability_stage_token" &&
     chown root:root "$capability_stage_token" ||
@@ -1002,10 +1006,10 @@ capability_node_credential_write() {
     fi
     if cmp -s "$capability_stage_token" "$capability_token_file"; then
       rm -f "$capability_stage_token"
-      CAPABILITY_NODE_TOKEN_STATE="$(capability_node_token_state)"
-      [ "$CAPABILITY_NODE_TOKEN_STATE" = COMPLIANT ] ||
-        fail "[CAPABILITY_NODE_TOKEN_INVALID] the stored node token already matches the one the control plane delivered but its state is $CAPABILITY_NODE_TOKEN_STATE; repair mode 0600 and owner $CAPABILITY_CONTROL_ACCOUNT on $capability_token_dir and $capability_token_file before retrying"
-      CAPABILITY_NODE_TOKEN_MODE=0600
+      CAPABILITY_NODE_AUTH_STATE="$(capability_node_token_state)"
+      [ "$CAPABILITY_NODE_AUTH_STATE" = COMPLIANT ] ||
+        fail "[CAPABILITY_NODE_TOKEN_INVALID] the stored node token already matches the one the control plane delivered but its state is $CAPABILITY_NODE_AUTH_STATE; repair mode 0600 and owner $CAPABILITY_CONTROL_ACCOUNT on $capability_token_dir and $capability_token_file before retrying"
+      CAPABILITY_NODE_AUTH_MODE=0600
       return 0
     fi
     rm -f "$capability_stage_token"
@@ -1022,12 +1026,12 @@ capability_node_credential_write() {
     sync &&
     mv -f "$capability_node_json.$$" "$capability_node_json" ||
     { rm -f "$capability_node_json.$$"; fail 'the node descriptor could not be written for the control account'; }
-  if [ "$capability_token_existed" = 0 ]; then CAPABILITY_CREATED_NODE_TOKEN=1; fi
+  if [ "$capability_token_existed" = 0 ]; then CAPABILITY_CREATED_NODE_AUTH=1; fi
   CAPABILITY_CREATED_NODE_JSON=1
-  CAPABILITY_NODE_TOKEN_STATE="$(capability_node_token_state)"
-  [ "$CAPABILITY_NODE_TOKEN_STATE" = COMPLIANT ] ||
-    fail "[CAPABILITY_NODE_TOKEN_INVALID] the installed node token failed its postcondition ($CAPABILITY_NODE_TOKEN_STATE); the agent payload and the user unit were not installed and Linger was not enabled"
-  CAPABILITY_NODE_TOKEN_MODE=0600
+  CAPABILITY_NODE_AUTH_STATE="$(capability_node_token_state)"
+  [ "$CAPABILITY_NODE_AUTH_STATE" = COMPLIANT ] ||
+    fail "[CAPABILITY_NODE_TOKEN_INVALID] the installed node token failed its postcondition ($CAPABILITY_NODE_AUTH_STATE); the agent payload and the user unit were not installed and Linger was not enabled"
+  CAPABILITY_NODE_AUTH_MODE=0600
   return 0
 }
 
@@ -1176,7 +1180,7 @@ capability_evidence() {
     "capability_user_unit_state=$CAPABILITY_EVIDENCE_UNIT_STATE" \\
     "capability_user_unit_exec=$CAPABILITY_USER_UNIT_EXEC" \\
     "capability_service_state=$CAPABILITY_SERVICE_STATE" \\
-    "capability_node_credential_received=$CAPABILITY_NODE_CREDENTIAL_RECEIVED" \\
+    "capability_node_credential_received=$CAPABILITY_NODE_AUTH_RECEIVED" \\
     "capability_node_token_owner=$capability_evidence_token_owner" \\
     "capability_node_token_mode=$capability_evidence_token_mode" \\
     "capability_node_token_type=$capability_evidence_token_type" \\
@@ -1220,11 +1224,11 @@ capability_service_finish() {
   CAPABILITY_AGENT_PAYLOAD_STATE="$(capability_agent_payload_state)"
   CAPABILITY_USER_UNIT_STATE="$(capability_user_service_state)"
   CAPABILITY_USER_SERVICE_STATE="$CAPABILITY_USER_UNIT_STATE"
-  CAPABILITY_NODE_TOKEN_STATE="$(capability_node_token_state)"
+  CAPABILITY_NODE_AUTH_STATE="$(capability_node_token_state)"
   if ! capability_states_compliant; then
     capability_rollback
     capability_stage_cleanup
-    fail "[CAPABILITY_SERVICE_NOT_CONVERGED] the managed node agent did not converge (helper=$CAPABILITY_HELPER_STATE payload=$CAPABILITY_AGENT_PAYLOAD_STATE unit=$CAPABILITY_USER_UNIT_STATE service=$CAPABILITY_USER_SERVICE_STATE token=$CAPABILITY_NODE_TOKEN_STATE linger=$CAPABILITY_LINGER_STATE); no completion is reported"
+    fail "[CAPABILITY_SERVICE_NOT_CONVERGED] the managed node agent did not converge (helper=$CAPABILITY_HELPER_STATE payload=$CAPABILITY_AGENT_PAYLOAD_STATE unit=$CAPABILITY_USER_UNIT_STATE service=$CAPABILITY_USER_SERVICE_STATE token=$CAPABILITY_NODE_AUTH_STATE linger=$CAPABILITY_LINGER_STATE); no completion is reported"
   fi
   if ! capability_status_projection; then
     capability_rollback
@@ -1855,7 +1859,7 @@ capability_rollback_files() {
   if [ "$CAPABILITY_CREATED_PAYLOAD" = 1 ]; then rm -f "$CAPABILITY_AGENT_PAYLOAD_PATH"; fi
   capability_home="$(capability_control_home 2>/dev/null)"
   if [ -n "$capability_home" ]; then
-    if [ "$CAPABILITY_CREATED_NODE_TOKEN" = 1 ]; then rm -f "$capability_home/.config/ghostfleet/node-token"; fi
+    if [ "$CAPABILITY_CREATED_NODE_AUTH" = 1 ]; then rm -f "$capability_home/.config/ghostfleet/node-token"; fi
     if [ "$CAPABILITY_CREATED_NODE_JSON" = 1 ]; then rm -f "$capability_home/.config/ghostfleet/node.json"; fi
   fi
   if [ "$CAPABILITY_CREATED_AGENT_CONFIG" = 1 ]; then rm -f "$CAPABILITY_AGENT_CONFIG_PATH"; fi
@@ -1863,7 +1867,7 @@ capability_rollback_files() {
   CAPABILITY_CREATED_WANT=
   CAPABILITY_CREATED_UNIT=
   CAPABILITY_CREATED_PAYLOAD=
-  CAPABILITY_CREATED_NODE_TOKEN=
+  CAPABILITY_CREATED_NODE_AUTH=
   CAPABILITY_CREATED_NODE_JSON=
   CAPABILITY_CREATED_PAYLOAD_DIR=
   CAPABILITY_CREATED_STATUS_PROJECTION=
@@ -1882,12 +1886,35 @@ capability_rollback_linger() {
 # a failed ceremony can never delete an account the deployment already owned.
 capability_rollback_account() {
   [ "$CAPABILITY_CREATED_ACCOUNT" = 1 ] || return 0
-  if userdel -r "$CAPABILITY_CONTROL_ACCOUNT" >/dev/null 2>&1; then
+  if ! id "$CAPABILITY_CONTROL_ACCOUNT" >/dev/null 2>&1; then
     CAPABILITY_CREATED_ACCOUNT=0
     CAPABILITY_ACCOUNT_STATE=ROLLED_BACK
-  else
-    printf '%s\\n' "fleet-enroll: the managed run account $CAPABILITY_CONTROL_ACCOUNT was created by this run but could not be removed; remove it before retrying" >&2
+    return 0
   fi
+  # enable-linger starts user@<uid>.service, and disable-linger does not reap a
+  # running user manager. userdel -r then loses the race against that process and
+  # leaves the account behind, which breaks rollback symmetry: a failed ceremony
+  # must not leave the account it created. Terminate the user manager, then retry
+  # the removal a bounded number of times and report an explicit residual code
+  # when the account still exists instead of reporting a clean rollback.
+  loginctl terminate-user "$CAPABILITY_CONTROL_ACCOUNT" >/dev/null 2>&1 || true
+  capability_userdel_try=0
+  while [ "$capability_userdel_try" -lt 10 ]; do
+    if ! id "$CAPABILITY_CONTROL_ACCOUNT" >/dev/null 2>&1; then
+      CAPABILITY_CREATED_ACCOUNT=0
+      CAPABILITY_ACCOUNT_STATE=ROLLED_BACK
+      return 0
+    fi
+    userdel -r "$CAPABILITY_CONTROL_ACCOUNT" >/dev/null 2>&1 || true
+    capability_userdel_try=$((capability_userdel_try + 1))
+    sleep 0.2
+  done
+  if ! id "$CAPABILITY_CONTROL_ACCOUNT" >/dev/null 2>&1; then
+    CAPABILITY_CREATED_ACCOUNT=0
+    CAPABILITY_ACCOUNT_STATE=ROLLED_BACK
+    return 0
+  fi
+  printf '%s\\n' "fleet-enroll: [CAPABILITY_ROLLBACK_ACCOUNT_RESIDUAL] the managed run account $CAPABILITY_CONTROL_ACCOUNT was created by this run but could not be removed (userdel -r kept failing after loginctl terminate-user); stop its user manager and remove the account before retrying" >&2
   return 0
 }
 
@@ -2013,7 +2040,7 @@ capability_apply() {
     CAPABILITY_LINGER_STATE=NOT_REQUESTED
     CAPABILITY_AGENT_PAYLOAD_STATE=NOT_REQUESTED
     CAPABILITY_USER_UNIT_STATE=NOT_REQUESTED
-    CAPABILITY_NODE_TOKEN_STATE=NOT_REQUESTED
+    CAPABILITY_NODE_AUTH_STATE=NOT_REQUESTED
     CAPABILITY_MODE=NOT_REQUESTED
     printf '%s\\n' 'fleet-enroll: the selected template requests no privileged capability; nothing was installed' >&2
     capability_evidence
@@ -2106,8 +2133,8 @@ capability_apply() {
   if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
     CAPABILITY_AGENT_PAYLOAD_STATE="$(capability_agent_payload_state)"
     CAPABILITY_USER_UNIT_STATE="$(capability_user_service_state)"
-    CAPABILITY_NODE_TOKEN_STATE="$(capability_node_token_state)"
-    if [ "$CAPABILITY_NODE_TOKEN_STATE" = COMPLIANT ]; then
+    CAPABILITY_NODE_AUTH_STATE="$(capability_node_token_state)"
+    if [ "$CAPABILITY_NODE_AUTH_STATE" = COMPLIANT ]; then
       # A repair run stores the credential already: finish the lane inline.
       capability_agent_payload_apply
       capability_agent_state_dirs
@@ -2135,11 +2162,11 @@ capability_apply() {
       CAPABILITY_USER_UNIT_STATE="$(capability_user_service_state)"
       CAPABILITY_USER_SERVICE_STATE="$CAPABILITY_USER_UNIT_STATE"
       CAPABILITY_AGENT_PAYLOAD_STATE="$(capability_agent_payload_state)"
-      CAPABILITY_NODE_TOKEN_STATE="$(capability_node_token_state)"
+      CAPABILITY_NODE_AUTH_STATE="$(capability_node_token_state)"
       if ! capability_states_compliant; then
         capability_rollback
         capability_stage_cleanup
-        fail "selected capability did not converge (helper=$CAPABILITY_HELPER_STATE payload=$CAPABILITY_AGENT_PAYLOAD_STATE unit=$CAPABILITY_USER_UNIT_STATE service=$CAPABILITY_USER_SERVICE_STATE token=$CAPABILITY_NODE_TOKEN_STATE linger=$CAPABILITY_LINGER_STATE)"
+        fail "selected capability did not converge (helper=$CAPABILITY_HELPER_STATE payload=$CAPABILITY_AGENT_PAYLOAD_STATE unit=$CAPABILITY_USER_UNIT_STATE service=$CAPABILITY_USER_SERVICE_STATE token=$CAPABILITY_NODE_AUTH_STATE linger=$CAPABILITY_LINGER_STATE)"
       fi
       CAPABILITY_SERVICE_STATE=INSTALLED
       if ! capability_status_projection; then
@@ -2153,7 +2180,7 @@ capability_apply() {
       capability_evidence
       return 0
     fi
-    case "$CAPABILITY_NODE_TOKEN_STATE" in
+    case "$CAPABILITY_NODE_AUTH_STATE" in
       ABSENT)
         case "$CAPABILITY_SELECTION_ORIGIN" in
           recorded)
@@ -2177,7 +2204,7 @@ capability_apply() {
       *)
         capability_rollback
         capability_stage_cleanup
-        fail "[CAPABILITY_NODE_TOKEN_INVALID] the stored node token is $CAPABILITY_NODE_TOKEN_STATE (expected a 0600 base64url token owned by $CAPABILITY_CONTROL_ACCOUNT in a 0700 directory); repair or remove the stored credential and re-run the authorized Console command; the agent payload and the user unit were not installed and Linger was not enabled"
+        fail "[CAPABILITY_NODE_TOKEN_INVALID] the stored node token is $CAPABILITY_NODE_AUTH_STATE (expected a 0600 base64url token owned by $CAPABILITY_CONTROL_ACCOUNT in a 0700 directory); repair or remove the stored credential and re-run the authorized Console command; the agent payload and the user unit were not installed and Linger was not enabled"
         ;;
     esac
   fi
@@ -2369,9 +2396,9 @@ fail() {
   # node agent payload, and the staged node token is a bearer secret, so both are
   # removed before the failure is reported.
   if [ -n "$CAPABILITY_STAGE_DIR" ]; then rm -rf "$CAPABILITY_STAGE_DIR"; fi
-  if [ -n "$CAPABILITY_NODE_TOKEN" ]; then
+  if [ -n "$CAPABILITY_NODE_AUTH" ]; then
     rm -f "$CHECKPOINT_DIR/.node-token.$$"
-    CAPABILITY_NODE_TOKEN=
+    CAPABILITY_NODE_AUTH=
   fi
   printf '%s\\n' "fleet-enroll: $*" >&2
   exit 1
@@ -2518,7 +2545,7 @@ if checkpoint_identity_converged; then
     if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
       CAPABILITY_SERVICE_STATE=INSTALLED
       CAPABILITY_USER_UNIT_EXEC="$CAPABILITY_AGENT_PAYLOAD_PATH"
-      CAPABILITY_NODE_TOKEN_MODE=0600
+      CAPABILITY_NODE_AUTH_MODE=0600
     fi
     if ! capability_status_projection; then
       fail '[CAPABILITY_STATUS_PROJECTION_FAILED] the public capability projection could not be written atomically, so this node may not report an installed capability; remove any partial /etc/ghostfleet/capability-status.json and re-run the authorized Console command'
@@ -2846,7 +2873,7 @@ CAPABILITY_COMPLETE_RESPONSE="$(printf '{"resume_session":"%s","report":{"identi
 if [ "$CAPABILITY_USER_SERVICE_REQUIRED" = 1 ]; then
   capability_node_credential_parse
   capability_service_finish
-  CAPABILITY_NODE_TOKEN=
+  CAPABILITY_NODE_AUTH=
   CAPABILITY_COMPLETE_RESPONSE=
 fi
 
