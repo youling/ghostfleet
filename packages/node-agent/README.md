@@ -163,6 +163,29 @@ boot 重放换新 boot_id 重试一次，结果冲突视为永久拒绝）；429
 - 所有状态文件写入均为原子替换；损坏时 fail-closed 而非静默重置。
 - ledger 上限 512：只驱逐已对账终态（`RESULT_DROPPED` 最先），`MAY_HAVE_EXECUTED` 与待对账条目永不驱逐；账本达到上限且无可驱逐条目时停止 poll（heartbeat 继续，health=`DEGRADED`、`health_reason=AGENT_LEDGER_EXHAUSTED`），对账腾出空间后自动恢复取任务。
 
+## 运行行为（真机取证）
+
+以下三个行为由 Ubuntu 24.04 / systemd 255 真机 journal 取证驱动；测试全部为确定性注入，不依赖真实 systemd。
+
+- **离线不会变成重启风暴**：控制面不可达时主循环按 1→2→4…300 s 退避重试；喂狗由常驻 daemon 线程
+  按 `WatchdogSec/3 = 20 s` 独立完成，不依赖主线程推进，因此离线退避（每段 < 30 s）或长网络阻塞都不会饿死 watchdog。
+  `SIGTERM` 收尾顺序固定为「停喂狗线程 → `STOPPING=1` → 有界 flush → 写 last_stop → 退出」，`STOPPING` 之后不再发 `WATCHDOG`；
+  `--once` 不启动该线程，也不发 `WATCHDOG`。线程内任何异常只记一次 `watchdog_thread_failed` warning 后退出线程，绝不影响主循环。
+  测试：`tests/test_loop_fake_control_plane.py` 的 `test_watchdog_thread_beats_on_fake_time_axis`、
+  `test_offline_backoff_keeps_watchdog_beating`、`test_shutdown_joins_watchdog_before_stopping`、
+  `test_watchdog_thread_exception_does_not_kill_the_loop`、`test_run_once_never_starts_the_watchdog_thread`。
+- **子进程不继承 systemd 通知变量**：`CommandRunner` 派生 `systemctl`/`loginctl` 等命令行工具时，会从子进程环境中剔除
+  `NOTIFY_SOCKET`、`LISTEN_FDS`、`LISTEN_PID`、`WATCHDOG_USEC`、`WATCHDOG_PID`（但保留 `PATH`/`HOME`/`LANG`/`XDG_RUNTIME_DIR`，
+  不做 `env -i` 式清空）。否则这些 libsystemd 工具退出时会向 `NOTIFY_SOCKET` 发 `EXIT_STATUS=0`，systemd 每轮记一条
+  "Got notification message from PID <child>, but reception only permitted for main PID <main>" 拒绝日志。
+  测试：`tests/test_observe.py` 的 `test_child_environment_strips_systemd_notification_keys`、
+  `test_command_runner_child_cannot_see_notify_socket`、`test_command_runner_output_is_unchanged_by_environment_stripping`。
+- **state 目录权限告警只打一次**：state 目录（默认 `~/.local/state/ghostfleet-agent`，期望 `0700`）若对 group/other 开放，
+  记一条 `state_dir_permissions_loose` warning（只告警、不 fail-closed）；同一 `path`+`mode` 组合每进程生命周期只记一次。
+  告警字段 `writable_by_group`/`writable_by_other` 直接说明是否需要 `chmod 0700`。
+  **过宽定义**：`mode & 0o077 != 0`，即除属主之外任何人拥有任何权限；其中 group/other 的写位（`0o022`）风险最高，必须收紧。
+  测试：`tests/test_state.py` 的 `test_state_dir_loose_permission_warning_is_emitted_once`。
+
 ## 结构化事件
 
 常驻运行在 stdout 每轮输出单行 JSON，固定字段

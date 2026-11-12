@@ -155,6 +155,46 @@ def test_state_dir_is_created_private_and_symlink_rejected(tmp_path):
         ensure_state_dir(str(link))
 
 
+class _WarningRecorder:
+    def __init__(self):
+        self.events = []
+
+    def warning(self, event, **fields):
+        self.events.append((event, fields))
+
+
+def test_state_dir_loose_permission_warning_is_emitted_once(tmp_path):
+    state_module._LOOSE_PERMISSION_WARNINGS.clear()
+    directory = tmp_path / "state-loose"
+    directory.mkdir()
+    os.chmod(directory, 0o755)
+    recorder = _WarningRecorder()
+
+    ensure_state_dir(str(directory), logger=recorder)
+    ensure_state_dir(str(directory), logger=recorder)
+    events = [event for event in recorder.events if event[0] == "state_dir_permissions_loose"]
+    assert len(events) == 1  # 同一 path+mode 每进程只警告一次
+    fields = events[0][1]
+    assert fields["path"] == str(directory)
+    assert fields["mode"] == oct(0o755)
+    assert fields["writable_by_group"] is False
+    assert fields["writable_by_other"] is False
+
+    # group/other 有写位：仍然必须 warning（只是不再重复同一组合）。
+    os.chmod(directory, 0o775)
+    ensure_state_dir(str(directory), logger=recorder)
+    ensure_state_dir(str(directory), logger=recorder)
+    events = [event for event in recorder.events if event[0] == "state_dir_permissions_loose"]
+    assert len(events) == 2
+    assert events[1][1]["mode"] == oct(0o775)
+    assert events[1][1]["writable_by_group"] is True
+
+    # 0700 是正确配置：不告警。
+    private = tmp_path / "state-private"
+    ensure_state_dir(str(private), logger=recorder)
+    assert len([e for e in recorder.events if e[0] == "state_dir_permissions_loose"]) == 2
+
+
 def test_read_boot_id_is_bounded(tmp_path):
     if not os.path.exists(BOOT_ID_PATH):
         pytest.skip("/proc is not available")

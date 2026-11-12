@@ -10,6 +10,7 @@ import sys
 import pytest
 
 from ghostfleet_agent.observe import (
+    CHILD_ENV_STRIP_KEYS,
     DISK_FAILING_PCT,
     DISK_PRESSURE_PCT,
     HEALTH_DEGRADED,
@@ -21,6 +22,7 @@ from ghostfleet_agent.observe import (
     CommandRunner,
     Observer,
     bounded_text,
+    child_environment,
     compute_drift,
 )
 
@@ -490,3 +492,55 @@ def test_command_runner_timeout_degrades():
         [sys.executable, "-c", "import time; time.sleep(5)"]
     )
     assert (code, output) == (127, "")
+
+
+# -- P1-B：子进程不继承 systemd 通知变量（避免每轮 journal 噪音） -------------
+def test_child_environment_strips_systemd_notification_keys():
+    environment = child_environment(
+        {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/home/managed",
+            "LANG": "C.UTF-8",
+            "XDG_RUNTIME_DIR": "/run/user/1002",
+            "NOTIFY_SOCKET": "/run/user/1002/systemd/notify",
+            "LISTEN_FDS": "1",
+            "LISTEN_PID": "1234",
+            "WATCHDOG_USEC": "60000000",
+            "WATCHDOG_PID": "1234",
+        }
+    )
+    for key in CHILD_ENV_STRIP_KEYS:
+        assert key not in environment
+    # 不做 env -i：命令行工具仍需正常 PATH / locale / HOME / runtime dir。
+    assert environment["PATH"] == "/usr/bin:/bin"
+    assert environment["HOME"] == "/home/managed"
+    assert environment["XDG_RUNTIME_DIR"] == "/run/user/1002"
+
+
+def test_command_runner_child_cannot_see_notify_socket():
+    probe = (
+        "import json, os;"
+        "print(json.dumps({k: k in os.environ for k in "
+        "['NOTIFY_SOCKET','LISTEN_FDS','LISTEN_PID','WATCHDOG_USEC','WATCHDOG_PID','PATH','HOME']}))"
+    )
+    runner = CommandRunner(
+        timeout_s=5.0,
+        environ={
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": os.environ.get("HOME", "/"),
+            "NOTIFY_SOCKET": "/run/systemd/notify",
+            "WATCHDOG_USEC": "60000000",
+        },
+    )
+    code, output = runner.run([sys.executable, "-c", probe])
+    assert code == 0
+    seen = json.loads(output)
+    for key in ("NOTIFY_SOCKET", "LISTEN_FDS", "LISTEN_PID", "WATCHDOG_USEC", "WATCHDOG_PID"):
+        assert seen[key] is False
+    assert seen["PATH"] is True
+    assert seen["HOME"] is True
+
+
+def test_command_runner_output_is_unchanged_by_environment_stripping():
+    runner = CommandRunner(timeout_s=5.0, environ=dict(os.environ, NOTIFY_SOCKET="/run/systemd/notify"))
+    assert runner.run([sys.executable, "-c", "print('hello')"]) == (0, "hello")

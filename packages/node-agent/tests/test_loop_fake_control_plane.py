@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import io
 import json
+import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,10 +18,13 @@ from ghostfleet_agent import protocol
 from ghostfleet_agent.cli import build_loop, load_node_uid, load_token
 from ghostfleet_agent.config import load_config
 from ghostfleet_agent.ledger import MAX_LEDGER_ENTRIES
+from ghostfleet_agent.loop import WATCHDOG_INTERVAL_S, WatchdogThread
 from ghostfleet_agent.logging import Logger, clear_secrets
 from ghostfleet_agent.outbox import Outbox
 from ghostfleet_agent.protocol import (
     AGENT_EXECUTION_UNKNOWN,
+    AGENT_NETWORK_ERROR,
+    OUTCOME_NETWORK_ERROR,
     AGENT_LEDGER_EXHAUSTED,
     RESULT_STATUSES,
     RESULT_SUCCEEDED,
@@ -531,3 +536,119 @@ def test_shutdown_flushes_pending_results(sandbox, control_plane):
     loop.shutdown(reason="test")
     assert loop.outbox.depth() == 0
     assert [item["task_id"] for item in control_plane.results] == ["task-pending"]
+
+
+# -- P1-A：常驻喂狗线程（离线/长阻塞时也不能饿死 watchdog） ------------------
+class OfflineClient:
+    """控制面不可达：每次请求都返回 NETWORK_ERROR，迫使循环走离线退避。"""
+
+    def __init__(self):
+        self.heartbeats = 0
+
+    def heartbeat(self, body_builder, **_kwargs):
+        self.heartbeats += 1
+        return SimpleNamespace(
+            kind=OUTCOME_NETWORK_ERROR, code=AGENT_NETWORK_ERROR, ok=False, retry_after_s=None
+        )
+
+    def poll(self, body_builder, **_kwargs):
+        return SimpleNamespace(
+            kind=OUTCOME_NETWORK_ERROR, code=AGENT_NETWORK_ERROR, ok=False, retry_after_s=None
+        )
+
+    def send_result_body(self, body_builder, task_id, **_kwargs):
+        return SimpleNamespace(kind=OUTCOME_NETWORK_ERROR, code=AGENT_NETWORK_ERROR)
+
+
+def test_watchdog_thread_beats_on_fake_time_axis():
+    """假时间轴：周期恒为 WatchdogSec/3=20 s，相邻间隔 ≤ WatchdogSec/2=30 s。"""
+
+    class Timeline:
+        now = 0.0
+        beats = []
+
+    timeline = Timeline()
+
+    class Notifier:
+        def watchdog(self):
+            timeline.beats.append(timeline.now)
+            return True
+
+    def waiter(seconds):
+        timeline.now += seconds
+        return len(timeline.beats) >= 5
+
+    watchdog = WatchdogThread(Notifier(), interval_s=WATCHDOG_INTERVAL_S, waiter=waiter)
+    watchdog._run()  # 同步执行：不启动真实线程、不真实睡眠
+
+    assert len(timeline.beats) == 5
+    gaps = [later - earlier for earlier, later in zip(timeline.beats, timeline.beats[1:])]
+    assert max(gaps) <= 30.0  # WatchdogSec=60 的一半
+    assert all(gap == pytest.approx(WATCHDOG_INTERVAL_S) for gap in gaps)
+
+
+def test_offline_backoff_keeps_watchdog_beating(sandbox, control_plane):
+    """离线连续 5 轮失败期间，喂狗线程仍按周期发 WATCHDOG（不会每 60 s 被重启）。"""
+    loop, _ = build_agent(sandbox, control_plane)
+    loop.client = OfflineClient()
+    notifier = RecordingNotifier()
+    loop.notifier = notifier
+    loop._watchdog_interval_s = 0.005
+    loop._sleep = lambda seconds: time.sleep(0.02)  # 让线程在真实时间里获得调度
+
+    assert loop.run_forever(max_iterations=5) == 0
+    assert loop.client.heartbeats == 5
+    assert notifier.calls[0] == "ready"
+    assert notifier.calls.count("watchdog") >= 5
+    assert notifier.calls[-1] == "stopping"
+
+
+def test_shutdown_joins_watchdog_before_stopping(sandbox, control_plane):
+    loop, _ = build_agent(sandbox, control_plane)
+    notifier = RecordingNotifier()
+    loop.notifier = notifier
+    loop._watchdog_interval_s = 0.005
+    loop._start_watchdog()
+    thread = loop._watchdog.thread
+    assert thread.is_alive()
+    time.sleep(0.03)
+    assert notifier.calls.count("watchdog") >= 1
+
+    loop.shutdown(reason="test")
+    assert loop._watchdog is None
+    assert not thread.is_alive()  # 先 join 线程，再发 STOPPING
+    assert notifier.calls[-1] == "stopping"
+    assert "watchdog" not in notifier.calls[notifier.calls.index("stopping"):]
+
+
+class ExplodingNotifier(RecordingNotifier):
+    def watchdog(self):
+        self.calls.append("watchdog")
+        raise RuntimeError("sd_notify broken")
+
+
+def test_watchdog_thread_exception_does_not_kill_the_loop(sandbox, control_plane):
+    loop, logger_stream = build_agent(sandbox, control_plane)
+    loop.client = OfflineClient()
+    loop.notifier = ExplodingNotifier()
+    loop._watchdog_interval_s = 0.001
+    loop._sleep = lambda seconds: time.sleep(0.02)
+
+    assert loop.run_forever(max_iterations=3) == 0
+    assert loop.client.heartbeats == 3
+    assert loop._watchdog is None
+    trace = logger_stream.getvalue()
+    assert "watchdog_thread_failed" in trace
+    assert trace.count("watchdog_thread_failed") == 1  # 线程内异常只 warning 一次
+
+
+def test_run_once_never_starts_the_watchdog_thread(sandbox, control_plane):
+    control_plane.respond = idle_responder(control_plane)
+    loop, _ = build_agent(sandbox, control_plane)
+    notifier = RecordingNotifier()
+    loop.notifier = notifier
+
+    assert loop.run_once() == 0
+    assert loop._watchdog is None
+    assert "watchdog" not in notifier.calls
+

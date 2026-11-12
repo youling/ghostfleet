@@ -65,6 +65,25 @@ class StateReadError(StoreError):
     code = "STATE_READ_FAILED"
 
 
+# 同一 path+mode 的宽松权限告警每进程只打一次（真机每轮启动会重复 4–5 条）。
+_LOOSE_PERMISSION_WARNINGS: set[tuple[str, int]] = set()
+
+
+def _warn_loose_permissions(log, directory: str, mode: int) -> None:
+    key = (directory, mode)
+    if key in _LOOSE_PERMISSION_WARNINGS:
+        return
+    _LOOSE_PERMISSION_WARNINGS.add(key)
+    log.warning(
+        "state_dir_permissions_loose",
+        path=directory,
+        mode=oct(mode),
+        writable_by_group=bool(mode & 0o020),
+        writable_by_other=bool(mode & 0o002),
+        note="STATE_DIR_SHOULD_BE_0700",
+    )
+
+
 def ensure_state_dir(path: str, *, logger=None) -> str:
     """创建并校验状态目录：必须是真实目录（非符号链接），权限 0700。"""
     log = logger or get_logger()
@@ -83,7 +102,7 @@ def ensure_state_dir(path: str, *, logger=None) -> str:
         raise StateWriteError("state directory must not be a symlink", path=directory)
     actual = stat.S_IMODE(info.st_mode)
     if actual & 0o077:
-        log.warning("state_dir_permissions_loose", path=directory, mode=oct(actual))
+        _warn_loose_permissions(log, directory, actual)
     return directory
 
 

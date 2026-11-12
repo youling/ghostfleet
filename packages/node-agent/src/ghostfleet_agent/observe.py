@@ -32,6 +32,17 @@ MAX_COMMAND_OUTPUT_BYTES = 1024
 
 UNIT_RE = re.compile(r"^[a-z][a-z0-9_.@-]{0,63}\.service$")
 UNIT_STATE_RE = re.compile(r"^[a-z][a-z-]{0,31}$")
+
+# systemd 通知相关变量绝不能传给子进程：libsystemd 的命令行工具（systemctl /
+# loginctl / systemd-analyze）退出时会向 NOTIFY_SOCKET 发 EXIT_STATUS=...，
+# 主进程之外的发信会被 systemd 拒绝并每轮记一条 journal 噪音。
+CHILD_ENV_STRIP_KEYS = (
+    "NOTIFY_SOCKET",
+    "LISTEN_FDS",
+    "LISTEN_PID",
+    "WATCHDOG_USEC",
+    "WATCHDOG_PID",
+)
 KNOWN_UNIT_STATES = frozenset(
     {"active", "reloading", "inactive", "failed", "activating", "deactivating", "unknown"}
 )
@@ -71,12 +82,27 @@ def bounded_text(value, *, limit: int = 64) -> str | None:
     return text
 
 
+def child_environment(environ=None) -> dict[str, str]:
+    """子进程环境：保留 PATH/LANG/HOME/XDG_RUNTIME_DIR，剔除 systemd 通知变量。
+
+    不做 env -i 式清空：命令行工具需要正常的 PATH 与 locale。只剔除
+    NOTIFY_SOCKET / LISTEN_* / WATCHDOG_*，避免子进程代主进程发伪通知。
+    """
+    source = os.environ if environ is None else environ
+    environment = {str(key): str(value) for key, value in source.items()}
+    for key in CHILD_ENV_STRIP_KEYS:
+        environment.pop(key, None)
+    return environment
+
+
 class CommandRunner:
     """最小 subprocess 包装：数组传参、无 shell、超时、输出截断。"""
 
-    def __init__(self, *, timeout_s: float = SYSTEMCTL_TIMEOUT_S, logger=None) -> None:
+    def __init__(self, *, timeout_s: float = SYSTEMCTL_TIMEOUT_S, logger=None, environ=None) -> None:
         self.timeout_s = timeout_s
         self.logger = logger or get_logger()
+        # 仅测试注入用；生产路径取 os.environ 再剥离通知变量。
+        self._environ = environ
 
     def run(self, argv: list[str]) -> tuple[int, str]:
         try:
@@ -86,6 +112,7 @@ class CommandRunner:
                 capture_output=True,
                 timeout=self.timeout_s,
                 check=False,
+                env=child_environment(self._environ),
             )
         except (OSError, subprocess.SubprocessError) as error:
             self.logger.warning("probe_command_failed", argv0=argv[0] if argv else "?", reason=type(error).__name__)
