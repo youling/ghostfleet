@@ -13,14 +13,17 @@ import platform
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 
 from .logging import get_logger
 from .protocol import canonical_bytes
 
-CAPABILITY_STATE_PATH = "/var/lib/fleet/capability-state.json"
+# ADR §7：只读公开投影，绝不读 root 0600 的私有 capability state。
+CAPABILITY_STATUS_PATH = "/etc/ghostfleet/capability-status.json"
 MAX_CAPABILITY_BYTES = 256 * 1024
+MAX_CAPABILITY_ARTIFACTS = 8
 MAX_UNITS_OBSERVED = 8
 MAX_DRIFT_ITEMS = 8
 SYSTEMCTL_TIMEOUT_S = 5.0
@@ -31,10 +34,6 @@ UNIT_STATE_RE = re.compile(r"^[a-z][a-z-]{0,31}$")
 KNOWN_UNIT_STATES = frozenset(
     {"active", "reloading", "inactive", "failed", "activating", "deactivating", "unknown"}
 )
-CAPABILITY_STATE_VALUES = frozenset(
-    {"ready", "installed", "missing", "degraded", "unknown", "active", "inactive", "failed", "absent"}
-)
-
 HEALTH_OK = "OK"
 HEALTH_DEGRADED = "DEGRADED"
 HEALTH_FAILING = "FAILING"
@@ -47,6 +46,8 @@ DISK_FAILING_PCT = 97.0
 
 _HOSTNAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _VERSION_TOKEN_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_ARTIFACT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
 class ProbeError(Exception):
@@ -101,7 +102,8 @@ class Observer:
         node_uid: str,
         agent_version: str,
         allowed_units=(),
-        capability_path: str = CAPABILITY_STATE_PATH,
+        capability_path: str = CAPABILITY_STATUS_PATH,
+        capability_uid: int = 0,
         runner: CommandRunner | None = None,
         uptime_path: str = "/proc/uptime",
         meminfo_path: str = "/proc/meminfo",
@@ -113,6 +115,8 @@ class Observer:
         self.agent_version = agent_version
         self.allowed_units = tuple(allowed_units)
         self.capability_path = capability_path
+        # 公开投影由 bootstrap 以 root:root 0644 写入；测试可显式放宽 uid 期望。
+        self.capability_uid = int(capability_uid)
         self.runner = runner or CommandRunner(logger=logger)
         self.uptime_path = uptime_path
         self.meminfo_path = meminfo_path
@@ -231,48 +235,94 @@ class Observer:
         return {"units": {unit: self.unit_state(unit) for unit in seen}, "configured": len(seen)}
 
     def capability(self) -> dict:
-        """只读摘要：digest + 组件状态键；不回文件内容。"""
+        """公开能力投影：只回白名单字段与整体摘要，绝不回文件原文。
+
+        信任前置条件（不符即 UNKNOWN，不尝试"部分读取"）：常规文件、属主 uid、
+        mode 无组/其他写位。文件缺失是 UNAVAILABLE，信任校验失败是 UNTRUSTED。
+        """
+        try:
+            info = os.lstat(self.capability_path)
+        except FileNotFoundError:
+            return {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNAVAILABLE"}
+        except OSError:
+            return {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
+        if not stat.S_ISREG(info.st_mode):
+            return {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
+        if info.st_uid != self.capability_uid:
+            return {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
+        if stat.S_IMODE(info.st_mode) & 0o022:
+            return {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
         try:
             with open(self.capability_path, "rb") as handle:
                 raw = handle.read(MAX_CAPABILITY_BYTES + 1)
-        except FileNotFoundError:
-            return {"status": "MISSING", "reason": "CAPABILITY_STATE_ABSENT"}
-        except PermissionError:
-            return {"status": "UNKNOWN", "reason": "CAPABILITY_STATE_UNREADABLE"}
         except OSError:
-            return {"status": "UNKNOWN", "reason": "CAPABILITY_STATE_UNREADABLE"}
+            return {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
         if len(raw) > MAX_CAPABILITY_BYTES:
-            return {"status": "UNKNOWN", "reason": "CAPABILITY_STATE_TOO_LARGE"}
+            return {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
         try:
             document = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
-            return {"status": "UNKNOWN", "reason": "CAPABILITY_STATE_INVALID"}
+            return {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
         if not isinstance(document, dict):
-            return {"status": "UNKNOWN", "reason": "CAPABILITY_STATE_INVALID"}
-        digest = hashlib.sha256(raw).hexdigest()
-        components = self._component_states(document)
-        return {"status": "READ", "digest": digest, "components": components}
+            return {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
+        return {"status": "READ", "digest": hashlib.sha256(raw).hexdigest(), **self._project_capability(document)}
 
     @staticmethod
-    def _component_states(document: dict) -> dict:
-        source = document.get("components")
-        if not isinstance(source, dict):
-            source = {key: value for key, value in document.items() if key != "schema"}
-        states: dict[str, str] = {}
-        for name, value in sorted(source.items()):
-            if len(states) >= 16:
-                break
-            if not isinstance(name, str) or not _VERSION_TOKEN_RE.fullmatch(name):
-                continue
-            state = None
-            if isinstance(value, str):
-                state = value
-            elif isinstance(value, dict):
-                candidate = value.get("state") or value.get("status")
-                state = candidate if isinstance(candidate, str) else None
-            if state is not None and state.lower() in CAPABILITY_STATE_VALUES:
-                states[name] = state.lower()
-        return states
+    def _project_capability(document: dict) -> dict:
+        """只投影公开字段；任何非法/越界字段直接省略而不是回显。"""
+        projected: dict = {}
+        schema = bounded_text(document.get("schema"), limit=64)
+        if schema is not None:
+            projected["schema"] = schema
+        selection = bounded_text(document.get("selection_digest"), limit=128)
+        if selection is None:
+            selection = bounded_text(document.get("selection"), limit=128)
+        if selection is not None:
+            projected["selection_digest"] = selection
+        artifacts = Observer._project_artifacts(document.get("artifacts"))
+        if artifacts:
+            projected["artifacts"] = artifacts
+        user_unit = Observer._project_artifact(document.get("user_unit"))
+        if user_unit is not None:
+            projected["user_unit"] = user_unit
+        payload = bounded_text(document.get("payload_sha256"), limit=64)
+        if payload is not None and _SHA256_RE.fullmatch(payload):
+            projected["payload_sha256"] = payload
+        for key in ("control_account", "privileged_account", "release_pin", "applied_at"):
+            value = bounded_text(document.get(key), limit=128)
+            if value is not None:
+                projected[key] = value
+        return projected
+
+    @staticmethod
+    def _project_artifact(value) -> dict | None:
+        if not isinstance(value, dict):
+            return None
+        name = value.get("name")
+        sha = value.get("sha256")
+        if not isinstance(name, str) or not _ARTIFACT_NAME_RE.fullmatch(name):
+            return None
+        if not isinstance(sha, str) or not _SHA256_RE.fullmatch(sha):
+            return None
+        return {"name": name, "sha256": sha}
+
+    @staticmethod
+    def _project_artifacts(value) -> list:
+        if isinstance(value, dict):
+            pairs = value.items()
+            raw_items = []
+            for name, sha in pairs:
+                raw_items.append({"name": name, "sha256": sha})
+        elif isinstance(value, list):
+            raw_items = list(value)
+        else:
+            return []
+        projected: list = []
+        for item in raw_items[:MAX_CAPABILITY_ARTIFACTS]:
+            artifact = Observer._project_artifact(item)
+            if artifact is not None:
+                projected.append(artifact)
+        return projected
 
     def capability_digest(self) -> str | None:
         summary = self.capability()

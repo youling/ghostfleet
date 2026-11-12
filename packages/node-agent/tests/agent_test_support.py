@@ -134,7 +134,9 @@ class AgentSandbox:
         self.config_path = self.root / "node-agent.json"
         self.node_uid = node_uid or make_node_uid()
         self.token_path.write_text(TEST_TOKEN + "\n", encoding="utf-8")
+        self.token_path.chmod(0o600)
         self.node_meta_path.write_text(json.dumps({"node_uid": self.node_uid, "platform": "linux"}), encoding="utf-8")
+        self.node_meta_path.chmod(0o600)
 
     def config_document(self, base_url: str, **overrides) -> dict:
         document = {
@@ -153,10 +155,12 @@ class AgentSandbox:
 
     def write_config(self, base_url: str, **overrides) -> Path:
         self.config_path.write_text(json.dumps(self.config_document(base_url, **overrides)), encoding="utf-8")
+        self.config_path.chmod(0o644)
         return self.config_path
 
     def write_raw_config(self, text: str) -> Path:
         self.config_path.write_text(text, encoding="utf-8")
+        self.config_path.chmod(0o644)
         return self.config_path
 
     def state_paths(self) -> dict:

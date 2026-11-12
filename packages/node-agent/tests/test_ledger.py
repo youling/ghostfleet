@@ -102,6 +102,43 @@ def test_prune_keeps_bounded_entries_even_with_dropped_results(tmp_path):
     assert ledger.pending_reconcile() == []
 
 
+def test_fences_are_never_evicted_and_exhaustion_blocks_new_work(tmp_path):
+    ledger = _ledger(tmp_path)
+    ledger.save = lambda: None  # 只为提速：仍在内存里累积 512 个栅栏
+    for index in range(MAX_LEDGER_ENTRIES):
+        ledger.begin(f"task-{index:05d}", "node.observe")
+    assert len(ledger.entries) == MAX_LEDGER_ENTRIES
+    assert ledger.is_exhausted() is True
+    # 超额只发生在没有可驱逐条目时：账本停在原地，栅栏一个都不许丢。
+    ledger.begin("task-overflow", "node.observe")
+    assert len(ledger.entries) == MAX_LEDGER_ENTRIES + 1
+    assert ledger.get("task-00000") is not None
+    assert ledger.is_exhausted() is True
+    # 完成后才允许驱逐：只驱逐刚刚对账的那条，其他栅栏一个不动。
+    ledger.complete("task-00001", "SUCCEEDED")
+    assert len(ledger.entries) == MAX_LEDGER_ENTRIES
+    assert ledger.get("task-00001") is None
+    assert ledger.get("task-00000") is not None
+    assert ledger.get("task-00002") is not None
+    # 剩余仍是全栅栏，所以依旧 exhausted；真实恢复路径是启动对账。
+    assert ledger.is_exhausted() is True
+    ledger.mark_unknown("task-00000")
+    ledger.mark_reconciled("task-00000")
+    assert ledger.is_exhausted() is False
+
+
+def test_reconciled_terminals_are_evictable_so_exhaustion_clears(tmp_path):
+    ledger = _ledger(tmp_path)
+    ledger.save = lambda: None
+    ledger._prune = lambda: None
+    for index in range(MAX_LEDGER_ENTRIES):
+        task_id = f"task-{index:05d}"
+        ledger.begin(task_id, "node.observe")
+        ledger.complete(task_id, "SUCCEEDED")
+    assert len(ledger.entries) == MAX_LEDGER_ENTRIES
+    assert ledger.is_exhausted() is False
+
+
 @pytest.mark.parametrize(
     "text",
     [

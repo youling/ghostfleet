@@ -14,10 +14,11 @@ import time
 from types import SimpleNamespace
 
 from .logging import get_logger
-from .observe import compute_drift
+from .observe import HEALTH_DEGRADED, compute_drift
 from .outbox import CONFLICT, DUPLICATE, TOO_LARGE
 from .protocol import (
     AGENT_EXECUTION_UNKNOWN,
+    AGENT_LEDGER_EXHAUSTED,
     AGENT_INTERNAL_ERROR,
     OUTCOME_AUTH_FATAL,
     OUTCOME_INVALID_RESPONSE,
@@ -40,6 +41,7 @@ from . import protocol as protocol_mod
 
 BACKOFF_BASE_S = 1.0
 BACKOFF_CAP_S = 300.0
+RETRY_AFTER_CAP_S = 3600.0
 SHUTDOWN_FLUSH_BUDGET_S = 30.0
 SHUTDOWN_FLUSH_ATTEMPTS = 30
 MIN_SLEEP_CHUNK_S = 0.2
@@ -180,6 +182,12 @@ class AgentLoop:
             outbox_depth=self.outbox.depth(),
             failures=int(self.state.consecutive_failures),
         )
+        # 账本到上限且没有可驱逐的已对账终态：停止取新任务，但心跳/观测继续，
+        # 让控制面看到 DEGRADED/AGENT_LEDGER_EXHAUSTED 而不是"节点失联"。
+        exhausted = self.ledger.is_exhausted()
+        if exhausted:
+            health = HEALTH_DEGRADED
+            self.logger.warning("ledger_exhausted", entries=len(self.ledger.entries))
         heartbeat_extra = {
             "health": health,
             "drift": drift,
@@ -188,6 +196,8 @@ class AgentLoop:
             "queue_depth": self.outbox.depth(),
             "observation": snapshot,
         }
+        if exhausted:
+            heartbeat_extra["health_reason"] = AGENT_LEDGER_EXHAUSTED
         heartbeat = self.client.heartbeat(
             lambda nonce: self._envelope(nonce, heartbeat_extra),
             interval_bounds=self.config.interval_bounds,
@@ -199,6 +209,17 @@ class AgentLoop:
             return self._fail_iteration("heartbeat", heartbeat.kind, heartbeat.code, heartbeat.retry_after_s)
         if heartbeat.interval_s is not None:
             self._interval_s = heartbeat.interval_s
+
+        if exhausted:
+            # 不 poll：宁可不取新任务，也不能因账本溢出丢掉"可能已执行"的事实。
+            report = self.outbox.flush(self._send_outbox_item)
+            if report.fatal:
+                raise AuthFatalError(report.stop_code)
+            self._retry_after_s = 0.0
+            self.notifier.watchdog()
+            self.state_store.record_heartbeat(interval_s=self._interval_s, observation=snapshot, health=health)
+            self._emit("poll", {"skipped": AGENT_LEDGER_EXHAUSTED, "tasks": 0, "health": health})
+            return "retry" if report.remaining else "ok"
 
         poll = self.client.poll(lambda nonce: self._envelope(nonce, {}), retry_hook=self._retry_hook)
         if poll.kind == OUTCOME_AUTH_FATAL:
@@ -346,6 +367,13 @@ class AgentLoop:
         backoff = max(0.5, float(self.state.next_backoff_s or 1))
         self._sleep_with_jitter(min(backoff, BACKOFF_CAP_S))
 
+    def _retry_delay(self) -> float:
+        """429 Retry-After 是服务端权威时长：不被本地 300 s 退避上限截断。"""
+        if self._retry_after_s > 0:
+            return min(max(float(self._retry_after_s), 1.0), RETRY_AFTER_CAP_S)
+        backoff = max(0.5, float(self.state.next_backoff_s or 1))
+        return min(backoff, BACKOFF_CAP_S)
+
     # -- 生命周期 -----------------------------------------------------------
     def run_once(self) -> int:
         """--once：一轮后返回退出码（0 成功 / 4 凭据致命 / 5 可重试失败）。"""
@@ -377,9 +405,7 @@ class AgentLoop:
             if outcome == "ok":
                 self._sleep_with_jitter(self._interval_s)
             else:
-                # 429 Retry-After 与指数退避取较大者，绝不提前重试。
-                delay = max(0.5, float(self.state.next_backoff_s or 1), float(self._retry_after_s))
-                self._sleep_with_jitter(min(delay, BACKOFF_CAP_S))
+                self._sleep_with_jitter(self._retry_delay())
         self.shutdown(reason=stop_reason)
         return 0
 

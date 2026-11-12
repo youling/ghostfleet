@@ -32,7 +32,13 @@ from .logging import get_logger, register_secret, clear_secrets
 from .loop import AgentLoop, AuthFatalError
 from .observe import Observer
 from .outbox import Outbox, OutboxCorruptError, OutboxWriteError
-from .protocol import NODE_UID_RE, ProtocolError, decode_json
+from .protocol import (
+    AGENT_CONFIG_UNTRUSTED,
+    AGENT_CREDENTIAL_PERMISSIVE,
+    NODE_UID_RE,
+    ProtocolError,
+    decode_json,
+)
 from .sdnotify import Notifier
 from .state import (
     StateCorruptError,
@@ -137,6 +143,57 @@ def load_node_uid(path: str) -> str:
     if not isinstance(node_uid, str) or not NODE_UID_RE.fullmatch(node_uid):
         raise CredentialError(CREDENTIAL_NODE_META_INVALID, "node_meta_path", "node-uid-invalid")
     return node_uid
+
+
+def verify_token_trust(path: str, *, euid: int | None = None) -> None:
+    """凭据信任闸门：常规文件、属主本人、mode 恰好 0600。
+
+    只回错误码与字段名，绝不打印文件内容或除路径外的信息。
+    """
+    expected_uid = os.geteuid() if euid is None else int(euid)
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        raise CredentialError(CREDENTIAL_TOKEN_MISSING, "token_path", "TOKEN_MISSING") from None
+    except OSError:
+        raise CredentialError(CREDENTIAL_TOKEN_UNREADABLE, "token_path", "TOKEN_UNREADABLE") from None
+    if not stat.S_ISREG(info.st_mode):
+        raise CredentialError(AGENT_CREDENTIAL_PERMISSIVE, "token_path", "TOKEN_NOT_REGULAR_FILE")
+    if info.st_uid != expected_uid:
+        raise CredentialError(AGENT_CREDENTIAL_PERMISSIVE, "token_path", "TOKEN_OWNER_MISMATCH")
+    if stat.S_IMODE(info.st_mode) != 0o600:
+        raise CredentialError(AGENT_CREDENTIAL_PERMISSIVE, "token_path", "TOKEN_MODE_NOT_0600")
+
+
+def verify_config_trust(
+    path: str,
+    *,
+    euid: int | None = None,
+    default_path: str = DEFAULT_CONFIG_PATH,
+) -> None:
+    """配置信任闸门：默认 /etc 配置必须 root:root 0644。
+
+    --config 覆盖只用于排障/验收，要求属主是当前用户且组/其他不可写；
+    两种形态都必须是常规文件（拒绝符号链接）。
+    """
+    expected_uid = os.geteuid() if euid is None else int(euid)
+    try:
+        info = os.lstat(path)
+    except OSError:
+        raise CredentialError(AGENT_CONFIG_UNTRUSTED, "config", "CONFIG_UNREADABLE") from None
+    if not stat.S_ISREG(info.st_mode):
+        raise CredentialError(AGENT_CONFIG_UNTRUSTED, "config", "CONFIG_NOT_REGULAR_FILE")
+    mode = stat.S_IMODE(info.st_mode)
+    if os.path.abspath(path) == os.path.abspath(default_path):
+        if info.st_uid != 0:
+            raise CredentialError(AGENT_CONFIG_UNTRUSTED, "config", "CONFIG_OWNER_NOT_ROOT")
+        if mode != 0o644:
+            raise CredentialError(AGENT_CONFIG_UNTRUSTED, "config", "CONFIG_MODE_NOT_0644")
+        return
+    if info.st_uid != expected_uid:
+        raise CredentialError(AGENT_CONFIG_UNTRUSTED, "config", "CONFIG_OWNER_MISMATCH")
+    if mode & 0o022:
+        raise CredentialError(AGENT_CONFIG_UNTRUSTED, "config", "CONFIG_WORLD_WRITABLE")
 
 
 COMMAND_RUN = "run"
@@ -386,6 +443,9 @@ def main(argv=None) -> int:
         token = load_token(config.token_path)
         node_uid = load_node_uid(config.node_meta_path)
         register_secret(token)
+        # 启动信任闸门（ADR §7）：不合规一律退出 3 且不联网，只报稳定错误码。
+        verify_token_trust(config.token_path)
+        verify_config_trust(args.config)
     except CredentialError as error:
         logger.error("credential_rejected", code=error.code, field=error.field, detail=error.detail)
         return EXIT_CREDENTIAL

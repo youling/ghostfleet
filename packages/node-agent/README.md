@@ -18,6 +18,8 @@ The package is stdlib-only and ships as a deterministic zipapp for `python3 -I`.
 | 无 sudo / 无特权通路 | 以普通用户运行；不写系统路径、不改 systemd unit、不读 secret 文件（token 归属当前用户） |
 | 只读词汇 | v0 只实现 `node.observe`、`service.status.read`、`capability.inspect`、`agent.self.test` |
 | 失败关闭 | 配置/凭据/状态任一不符合契约即拒绝启动或停止上报；未知输入一律拒绝，不猜 |
+| 启动信任闸门 | `run` 前校验 token 为常规文件、属主本人、mode 0600；默认配置必须 root:root 0644；不符退出 3 且不联网 |
+| 公开投影 | `capability.inspect` 只读 `/etc/ghostfleet/capability-status.json` 的白名单字段，绝不读 root-only 私有 state |
 | 凭据不落日志 | 日志与结构化事件只写固定字段，token/nonce/完整 params 绝不出现在 stdout |
 
 ## 文件布局（与 ADR §4 一致）
@@ -26,11 +28,18 @@ The package is stdlib-only and ships as a deterministic zipapp for `python3 -I`.
 | --- | --- | --- |
 | `/usr/local/libexec/ghostfleet/node-agent.pyz` | root:root 0755 | 载荷（确定性 zipapp，见下） |
 | `/etc/ghostfleet/node-agent.json` | root:root 0644 | 非秘密配置：控制面 origin、心跳上下限、任务白名单 |
+| `/etc/ghostfleet/capability-status.json` | root:root 0644 | 公开能力投影（bootstrap 原子写入）：schema、selection 摘要、artifact/user_unit 名+sha256、payload sha256、账户与 release pin；不含 token/私有路径 |
 | `~/.config/ghostfleet/node-token` | 0600 | 节点 bearer token 原文（单行） |
 | `~/.config/ghostfleet/node.json` | 0600 | `node_uid` / `platform` / `issued_at`（不含 origin） |
 | `~/.local/state/ghostfleet-agent/` | 0700 | `state.json` / `ledger.json` / `outbox.json`（均 0600） |
 
 控制面 origin 只能由 root-owned 配置给出，普通用户无法把 Agent 指向攻击者端点。
+
+启动信任闸门（任一不符即退出码 3，只报稳定错误码，不打印文件内容）：
+
+- token：`os.lstat` 必须是常规文件（拒绝符号链接）、属主 `uid == os.geteuid()`、mode 恰好 `0600`；失败码 `AGENT_CREDENTIAL_PERMISSIVE`。
+- 配置：默认路径 `/etc/ghostfleet/node-agent.json` 必须属主 root、mode `0644`；用 `--config` 覆盖（仅排障/验收）时要求属主是当前用户且组/其他不可写；失败码 `AGENT_CONFIG_UNTRUSTED`。
+- `capability-status.json`：读取前校验常规文件、属主 uid 0、mode 无组/其他写位；不符返回 `UNKNOWN/CAPABILITY_STATUS_UNTRUSTED`，缺失返回 `UNKNOWN/CAPABILITY_STATUS_UNAVAILABLE`。
 
 ## 配置字段
 
@@ -84,7 +93,7 @@ python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz status --json
 | --- | --- |
 | 0 | 成功（`--once` 一轮成功；SIGTERM/SIGINT 干净退出） |
 | 2 | 配置非法（JSON/字段/URL/白名单等不符合契约） |
-| 3 | 凭据或配置不可用（文件缺失、不可读、token/node_uid 非法）；此时绝不联网 |
+| 3 | 凭据或配置不可用（文件缺失、不可读、token/node_uid 非法、权限/属主/符号链接不符合信任闸门）；此时绝不联网 |
 | 4 | 认证/授权 FATAL（401/403），停止上报等待人类修复 |
 | 5 | 可重试的运行期失败（5xx/网络/状态损坏等）；按退避重试 |
 
@@ -99,12 +108,13 @@ python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz status --json
 `POST /v0/nodes/{node_uid}/tasks/{task_id}/result`。
 
 错误分派：401/403 → FATAL；409 按码处理（nonce 重放/seq 回退换新 nonce 与 seq 重试一次，
-boot 重放换新 boot_id 重试一次，结果冲突视为永久拒绝）；429 读取并遵守 `Retry-After`；
+boot 重放换新 boot_id 重试一次，结果冲突视为永久拒绝）；429 读取并遵守 `Retry-After`，
+带该头时等待时长以服务端为准（上限 3600s，不被本地 300s 退避封顶截断），无该头才用本地指数退避；
 5xx 与网络错误只退避重试，绝不当成功。
 
 任务词汇：`node.observe`（want ⊆ identity/os/uptime/disk/services/capability）、
 `service.status.read`（≤8 个 unit，必须在 `allowed_units` 白名单内）、
-`capability.inspect`（只回 sha256 摘要与组件状态，不回原始 JSON）、
+`capability.inspect`（只回公开投影：整体 sha256、selection 摘要、artifact/user_unit 名+sha256、payload sha256、账户/release pin；不回文件原文，也不读 `/var/lib/fleet/capability-state.json`）、
 `agent.self.test`（回显 nonce 与版本）。未知 operation 返回 `TASK_OPERATION_UNKNOWN`。
 
 ## 崩溃安全与幂等
@@ -114,6 +124,7 @@ boot 重放换新 boot_id 重试一次，结果冲突视为永久拒绝）；429
 - outbox 上限 64 条，溢出时丢最旧并把丢弃记成 `RESULT_DROPPED` 与 `outbox_overflow` 计数；
   未发出的结果下次启动优先重发，同 task_id 同 `result_digest` 幂等。
 - 所有状态文件写入均为原子替换；损坏时 fail-closed 而非静默重置。
+- ledger 上限 512：只驱逐已对账终态（`RESULT_DROPPED` 最先），`MAY_HAVE_EXECUTED` 与待对账条目永不驱逐；账本达到上限且无可驱逐条目时停止 poll（heartbeat 继续，health=`DEGRADED`、`health_reason=AGENT_LEDGER_EXHAUSTED`），对账腾出空间后自动恢复取任务。
 
 ## 结构化事件
 

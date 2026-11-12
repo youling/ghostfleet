@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 
 import pytest
@@ -247,6 +248,67 @@ def test_status_reports_work_counters_after_once(sandbox, control_plane, capsys)
     assert document["initialised"] is True
     assert document["polls"] >= 1
     assert len(control_plane.records) == before  # status 绝不联网
+
+
+# -- 启动信任闸门（ADR §7） -------------------------------------------------
+def test_permissive_token_mode_exits_credential_without_network(sandbox, control_plane, capsys):
+    sandbox.write_config(control_plane.url)
+    sandbox.token_path.chmod(0o644)
+    assert main(["--config", str(sandbox.config_path), "--once"]) == EXIT_CREDENTIAL
+    assert control_plane.records == []
+    output = capsys.readouterr().out
+    assert "AGENT_CREDENTIAL_PERMISSIVE" in output
+    assert "test-token" not in output
+
+
+def test_symlinked_token_exits_credential(sandbox, control_plane, capsys):
+    sandbox.write_config(control_plane.url)
+    target = sandbox.root / "token-target"
+    target.write_text(sandbox.token_path.read_text(encoding="utf-8"), encoding="utf-8")
+    target.chmod(0o600)
+    sandbox.token_path.unlink()
+    sandbox.token_path.symlink_to(target)
+    assert main(["--config", str(sandbox.config_path), "--once"]) == EXIT_CREDENTIAL
+    assert control_plane.records == []
+    assert "AGENT_CREDENTIAL_PERMISSIVE" in capsys.readouterr().out
+
+
+def test_token_owner_mismatch_is_rejected(sandbox):
+    sandbox.token_path.chmod(0o600)
+    with pytest.raises(CredentialError) as excinfo:
+        cli.verify_token_trust(str(sandbox.token_path), euid=os.geteuid() + 1)
+    assert excinfo.value.code == "AGENT_CREDENTIAL_PERMISSIVE"
+    assert excinfo.value.detail == "TOKEN_OWNER_MISMATCH"
+
+
+def test_world_writable_config_exits_credential(sandbox, control_plane, capsys):
+    sandbox.write_config(control_plane.url)
+    sandbox.config_path.chmod(0o666)
+    assert main(["--config", str(sandbox.config_path), "--once"]) == EXIT_CREDENTIAL
+    assert control_plane.records == []
+    output = capsys.readouterr().out
+    assert "AGENT_CONFIG_UNTRUSTED" in output
+    assert "test-token" not in output
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root 下普通用户文件同时也是 root 文件")
+def test_default_config_requires_root_owner(sandbox):
+    path = sandbox.write_config("https://control.example.invalid")
+    path.chmod(0o644)
+    with pytest.raises(CredentialError) as excinfo:
+        cli.verify_config_trust(str(path), default_path=str(path))
+    assert excinfo.value.code == "AGENT_CONFIG_UNTRUSTED"
+    assert excinfo.value.detail == "CONFIG_OWNER_NOT_ROOT"
+
+
+def test_config_symlink_is_rejected(sandbox):
+    path = sandbox.write_config("https://control.example.invalid")
+    link = sandbox.root / "config-link.json"
+    link.symlink_to(path)
+    with pytest.raises(CredentialError) as excinfo:
+        cli.verify_config_trust(str(link), default_path=str(link))
+    assert excinfo.value.code == "AGENT_CONFIG_UNTRUSTED"
+    assert excinfo.value.detail == "CONFIG_NOT_REGULAR_FILE"
 
 
 # -- 信号处理 --------------------------------------------------------------

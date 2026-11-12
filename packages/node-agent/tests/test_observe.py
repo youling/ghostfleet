@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 
 import pytest
@@ -45,15 +46,24 @@ def write_fixture(directory):
     disk = directory / "disk"
     disk.mkdir()
     capability = directory / "capability.json"
+    # 公开投影形态：只有白名单字段，没有 root-only 私有 state 的内容。
     capability.write_text(
         json.dumps(
             {
-                "schema": "capability/v0",
-                "components": {"runtime": {"state": "READY"}, "bad!": "ready", "agent": "installed"},
+                "schema": "ghostfleet-capability-status/v0",
+                "selection_digest": "a" * 64,
+                "artifacts": [{"name": "fleet-runtime", "sha256": "b" * 64}],
+                "user_unit": {"name": "fleet-runtime.service", "sha256": "c" * 64},
+                "payload_sha256": "d" * 64,
+                "control_account": "fleet-control",
+                "privileged_account": "root",
+                "release_pin": "2026.11.12",
+                "applied_at": "2026-11-12T00:00:00Z",
             }
         ),
         encoding="utf-8",
     )
+    capability.chmod(0o644)
     return capability, disk
 
 
@@ -66,6 +76,8 @@ def make_observer(directory, *, runner=None, units=(), hostname="node-host", cap
         agent_version=AGENT_VERSION,
         allowed_units=units,
         capability_path=str(capability_path),
+        # 测试文件属主是当前用户，显式放宽 uid 期望（生产默认 root）。
+        capability_uid=os.geteuid(),
         runner=runner or FakeRunner(),
         uptime_path=str(directory / "uptime"),
         meminfo_path=str(directory / "meminfo"),
@@ -209,42 +221,95 @@ def test_services_empty_allowlist(tmp_path):
     assert make_observer(tmp_path).services() == {"units": {}, "configured": 0}
 
 
-# -- capability 摘要 --------------------------------------------------------
-def test_capability_returns_digest_and_component_states(tmp_path):
+# -- capability 公开投影 ----------------------------------------------------
+def test_capability_returns_projection_without_raw_content(tmp_path):
     observer = make_observer(tmp_path)
     raw = open(observer.capability_path, "rb").read()
     summary = observer.capability()
     assert summary["status"] == "READ"
     assert summary["digest"] == hashlib.sha256(raw).hexdigest()
-    assert summary["components"] == {"agent": "installed", "runtime": "ready"}
-    assert "READY" not in json.dumps(summary)
+    assert summary["schema"] == "ghostfleet-capability-status/v0"
+    assert summary["selection_digest"] == "a" * 64
+    assert summary["artifacts"] == [{"name": "fleet-runtime", "sha256": "b" * 64}]
+    assert summary["user_unit"] == {"name": "fleet-runtime.service", "sha256": "c" * 64}
+    assert summary["payload_sha256"] == "d" * 64
+    assert summary["control_account"] == "fleet-control"
+    assert summary["privileged_account"] == "root"
+    assert summary["release_pin"] == "2026.11.12"
+    assert summary["applied_at"] == "2026-11-12T00:00:00Z"
+    rendered = json.dumps(summary)
+    assert "components" not in summary
+    # 返回值只能是投影，绝不能回显文件原文或私有路径。
+    assert str(observer.capability_path) not in rendered
+    assert "/var/lib/fleet" not in rendered
 
 
-def test_capability_missing_is_absent(tmp_path):
+def test_capability_projection_drops_unknown_and_malformed_fields(tmp_path):
+    document = {
+        "schema": "ghostfleet-capability-status/v0",
+        "payload_sha256": "not-a-digest",
+        "artifacts": [{"name": "ok-artifact", "sha256": "e" * 64}, {"name": "bad name", "sha256": "e" * 64}],
+        "user_unit": {"name": "unit.service", "sha256": "short"},
+        "secret_debug": "must-not-appear",
+        "raw_path": "/var/lib/fleet/capability-state.json",
+    }
+    summary = make_observer(tmp_path, capability=json.dumps(document)).capability()
+    assert summary["status"] == "READ"
+    assert summary["artifacts"] == [{"name": "ok-artifact", "sha256": "e" * 64}]
+    assert "user_unit" not in summary
+    assert "payload_sha256" not in summary
+    rendered = json.dumps(summary)
+    for leaked in ("secret_debug", "must-not-appear", "raw_path", "/var/lib/fleet"):
+        assert leaked not in rendered
+
+
+def test_capability_missing_is_unavailable(tmp_path):
     observer = make_observer(tmp_path)
     observer.capability_path = str(tmp_path / "absent.json")
-    assert observer.capability() == {"status": "MISSING", "reason": "CAPABILITY_STATE_ABSENT"}
+    assert observer.capability() == {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNAVAILABLE"}
     assert observer.capability_digest() is None
 
 
+def test_capability_owner_mismatch_is_untrusted(tmp_path):
+    observer = make_observer(tmp_path)
+    # 生产默认 capability_uid=0；测试文件属主是当前用户 → 必须 UNTRUSTED。
+    observer.capability_uid = 0
+    assert observer.capability() == {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
+
+
+def test_capability_group_or_world_writable_is_untrusted(tmp_path):
+    observer = make_observer(tmp_path)
+    for mode in (0o664, 0o622, 0o666):
+        os.chmod(observer.capability_path, mode)
+        assert observer.capability()["reason"] == "CAPABILITY_STATUS_UNTRUSTED"
+
+
+def test_capability_symlink_is_untrusted(tmp_path):
+    observer = make_observer(tmp_path)
+    target = tmp_path / "elsewhere.json"
+    target.write_text(json.dumps({"schema": "x"}), encoding="utf-8")
+    link = tmp_path / "link.json"
+    link.symlink_to(target)
+    observer.capability_path = str(link)
+    assert observer.capability()["reason"] == "CAPABILITY_STATUS_UNTRUSTED"
+
+
 @pytest.mark.parametrize(
-    "content, reason",
-    [
-        ("{not json", "CAPABILITY_STATE_INVALID"),
-        ("[1, 2, 3]", "CAPABILITY_STATE_INVALID"),
-    ],
+    "content",
+    ["{not json", "[1, 2, 3]", json.dumps({"schema": "ok"}) + "\x00"],
 )
-def test_capability_invalid_content_degrades(tmp_path, content, reason):
+def test_capability_invalid_content_is_untrusted(tmp_path, content):
     summary = make_observer(tmp_path, capability=content).capability()
-    assert summary == {"status": "UNKNOWN", "reason": reason}
+    assert summary == {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
 
 
-def test_capability_too_large_degrades(tmp_path):
+def test_capability_too_large_is_untrusted(tmp_path):
     observer = make_observer(tmp_path)
     path = tmp_path / "big.json"
     path.write_bytes(b"{" + b"x" * (MAX_CAPABILITY_BYTES + 2))
+    path.chmod(0o644)
     observer.capability_path = str(path)
-    assert observer.capability()["reason"] == "CAPABILITY_STATE_TOO_LARGE"
+    assert observer.capability()["reason"] == "CAPABILITY_STATUS_UNTRUSTED"
 
 
 # -- 组合观测 / 快照 / 健康度 -----------------------------------------------

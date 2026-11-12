@@ -157,6 +157,7 @@ class Ledger:
             entry["result_digest"] = result_digest
         if code is not None:
             entry["code"] = code
+        self._prune()
         self.save()
 
     def mark_unknown(self, task_id: str, *, result_digest: str | None = None) -> None:
@@ -183,6 +184,7 @@ class Ledger:
             return
         entry["reconciled"] = True
         entry["reconciled_at"] = _now()
+        self._prune()
         self.save()
 
     def mark_result_dropped(self, task_id: str) -> None:
@@ -204,12 +206,24 @@ class Ledger:
         self.save()
 
     # -- 保留上限 -----------------------------------------------------------
-    def _prune(self) -> None:
-        """有界保留：优先丢已对账终态，其次丢 RESULT_DROPPED，最后才丢栅栏。
+    def _evictable(self, task_id: str) -> bool:
+        """只有"已对账终态"可以安全驱逐；栅栏与待对账终态都不行。
 
-        文件必须保持在 MAX_LEDGER_BYTES 以内，否则下次 load 会 fail closed 把 agent
-        永久卡死；因此这里宁可 evict 并留下 warning，也不允许无界增长。丢弃顺序
-        刻意把 FENCED（可能已执行）放到最后，尽量不牺牲"不重跑"保证。
+        RESULT_DROPPED 例外：它本身就是"结果永不回传"的最终处置，驱逐它
+        不会让任何结果丢失（对应任务的结果本已被判定为不可交付）。
+        """
+        entry = self._entries[task_id]
+        if entry.get("state") not in TERMINAL_STATES:
+            return False
+        return entry.get("reconciled") is True or entry.get("result_state") == RESULT_DROPPED
+
+    def _prune(self) -> None:
+        """有界保留：只驱逐已对账终态，绝不驱逐 MAY_HAVE_EXECUTED。
+
+        驱逐顺序：RESULT_DROPPED 最先（结果本已不可回传），其次其他已对账终态。
+        "不重跑"优先于"有界"：账本达到上限且没有可驱逐条目时，账本停在原地，
+        由 loop 停止取新任务（health=DEGRADED / AGENT_LEDGER_EXHAUSTED）等待
+        对账腾出空间，而不是牺牲"可能已执行"的事实。
         """
         overflow = len(self._entries) - MAX_LEDGER_ENTRIES
         if overflow <= 0:
@@ -217,22 +231,23 @@ class Ledger:
 
         def _rank(task_id: str):
             entry = self._entries[task_id]
-            if (
-                entry.get("state") in TERMINAL_STATES
-                and entry.get("reconciled") is True
-                and entry.get("result_state") != RESULT_DROPPED
-            ):
-                return (0, entry.get("finished_at") or "")
             if entry.get("result_state") == RESULT_DROPPED:
-                return (1, entry.get("result_dropped_at") or entry.get("finished_at") or "")
-            if entry.get("state") in TERMINAL_STATES:
-                return (2, entry.get("finished_at") or "")
-            return (3, entry.get("started_at") or "")
+                return (0, entry.get("result_dropped_at") or entry.get("finished_at") or "")
+            return (1, entry.get("finished_at") or "")
 
-        ordered = sorted(self._entries, key=lambda task_id: (_rank(task_id), task_id))
-        for task_id in ordered[:overflow]:
+        candidates = sorted(
+            (task_id for task_id in self._entries if self._evictable(task_id)),
+            key=lambda task_id: (_rank(task_id), task_id),
+        )
+        for task_id in candidates[:overflow]:
             entry = self._entries.pop(task_id)
             if entry.get("result_state") == RESULT_DROPPED:
                 self.logger.warning("ledger_dropped_evicted", task_id=task_id)
-            elif entry.get("state") not in TERMINAL_STATES:
-                self.logger.warning("ledger_fence_evicted", task_id=task_id)
+            else:
+                self.logger.warning("ledger_entry_evicted", task_id=task_id)
+
+    def is_exhausted(self) -> bool:
+        """到达上限且没有可驱逐的已对账终态：不能再安全接收新任务。"""
+        if len(self._entries) < MAX_LEDGER_ENTRIES:
+            return False
+        return not any(self._evictable(task_id) for task_id in self._entries)

@@ -15,10 +15,12 @@ from agent_test_support import TEST_AGENT_VERSION, TEST_TOKEN, AgentSandbox, mak
 from ghostfleet_agent import protocol
 from ghostfleet_agent.cli import build_loop, load_node_uid, load_token
 from ghostfleet_agent.config import load_config
+from ghostfleet_agent.ledger import MAX_LEDGER_ENTRIES
 from ghostfleet_agent.logging import Logger, clear_secrets
 from ghostfleet_agent.outbox import Outbox
 from ghostfleet_agent.protocol import (
     AGENT_EXECUTION_UNKNOWN,
+    AGENT_LEDGER_EXHAUSTED,
     RESULT_STATUSES,
     RESULT_SUCCEEDED,
     RESULT_UNKNOWN,
@@ -456,6 +458,57 @@ def test_long_sleeps_are_chunked_with_watchdog(sandbox, control_plane):
     assert sleeps == [pytest.approx(30.0), pytest.approx(30.0), pytest.approx(15.0)]
     assert notifier.calls == ["watchdog", "watchdog"]
 
+
+
+
+# -- 429 Retry-After 权威 ---------------------------------------------------
+def test_retry_after_900_is_not_capped_by_backoff_ceiling(sandbox, control_plane):
+    loop, _ = build_agent(sandbox, control_plane)
+    sleeps = []
+    loop._sleep = sleeps.append
+    loop.state.next_backoff_s = 300
+    loop._retry_after_s = 900.0
+
+    # 服务端 Retry-After 是权威时长，不得被本地 300 s 退避上限截断。
+    assert loop._retry_delay() == pytest.approx(900.0)
+    loop._sleep_with_jitter(loop._retry_delay())
+    assert sum(sleeps) == pytest.approx(900.0)
+    assert sum(sleeps) > 300
+
+
+def test_local_backoff_without_retry_after_is_capped_at_300(sandbox, control_plane):
+    loop, _ = build_agent(sandbox, control_plane)
+    loop._retry_after_s = 0.0
+    loop.state.next_backoff_s = 1000
+    assert loop._retry_delay() == pytest.approx(300.0)
+
+
+# -- 账本耗尽：停止取任务，绝不驱逐栅栏 ---------------------------------------
+def test_ledger_exhaustion_stops_polling_and_resumes_after_reconcile(sandbox, control_plane):
+    loop, _ = build_agent(sandbox, control_plane)
+    loop.ledger.save = lambda: None  # 只为提速：栅栏仍在内存与迭代路径中
+    for index in range(MAX_LEDGER_ENTRIES):
+        loop.ledger.begin(f"task-fence-{index:04d}", "node.observe")
+    assert loop.ledger.is_exhausted() is True
+
+    assert loop.iteration() == "ok"
+    heartbeats = control_plane.requests_to("/heartbeat")
+    assert len(heartbeats) == 1
+    body = heartbeats[0]["body"]
+    assert body["health"] == "DEGRADED"
+    assert body["health_reason"] == AGENT_LEDGER_EXHAUSTED
+    # 关键：不 poll、不驱逐任何栅栏。
+    assert control_plane.requests_to("/tasks/poll") == []
+    assert len(loop.ledger.entries) == MAX_LEDGER_ENTRIES
+    assert loop.ledger.get("task-fence-0000") is not None
+
+    # 成功的对账腾出空间后，下一轮自动恢复取任务。
+    loop.ledger.mark_unknown("task-fence-0000")
+    loop.ledger.mark_reconciled("task-fence-0000")
+    assert loop.ledger.is_exhausted() is False
+    assert loop.iteration() == "ok"
+    assert len(control_plane.requests_to("/tasks/poll")) == 1
+    assert "health_reason" not in control_plane.requests_to("/heartbeat")[1]["body"]
 
 
 def test_shutdown_flushes_pending_results(sandbox, control_plane):
