@@ -23,11 +23,23 @@ function selection(overrides = {}) {
     privileged_account: "ghostfleet-ops",
     installer: "managed-linux-privileged-operations.sh",
     privileged_key: "privileged-ops.pub",
-    user_unit: { name: "ghostfleet-managed.service", artifact: "ghostfleet-managed.service" },
+    user_unit: {
+      name: "ghostfleet-managed.service",
+      artifact: "ghostfleet-managed.service",
+      payload_artifact: "node-agent.pyz",
+      payload_path: "/usr/local/libexec/ghostfleet/node-agent.pyz",
+      payload_mode: "0755",
+    },
     artifacts: [
       { name: "fleet-privctl.py", mode: "0755", content: "print('helper')\n" },
       { name: "privileged-ops.pub", mode: "0644", content: "ssh-ed25519 AAAAfixture synthetic\n" },
-      { name: "ghostfleet-managed.service", mode: "0644", content: "[Service]\nExecStart=/bin/true\n" },
+      {
+        name: "ghostfleet-managed.service",
+        mode: "0644",
+        content:
+          "[Unit]\nDescription=GhostFleet Node Agent (synthetic fixture)\nAfter=network-online.target\n\n[Service]\nType=notify\nExecStart=/usr/bin/python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz run\nReadWritePaths=%h/.config/ghostfleet %h/.local/state/ghostfleet-agent\nStateDirectory=ghostfleet-agent\nConfigurationDirectory=ghostfleet\n\n[Install]\nWantedBy=default.target\n",
+      },
+      { name: "node-agent.pyz", mode: "0755", content: "#!/usr/bin/env python3\nprint('agent')\n" },
       { name: "managed-linux-privileged-operations.sh", mode: "0750", content: "#!/bin/sh\nexit 0\n" },
     ],
     ...overrides,

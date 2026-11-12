@@ -28,7 +28,8 @@ async function artifacts() {
     { name: "managed-linux-privileged-operations.sh", mode: "0750", content: await readFile(join(fixtures, "capability-installer.sh"), "utf8") },
     { name: "fleet-privctl.py", mode: "0755", content: await readFile(join(fixtures, "fleet-privctl.py"), "utf8") },
     { name: "privileged-ops.pub", mode: "0644", content: await readFile(join(fixtures, "privileged-ops.pub"), "utf8") },
-    { name: "ghostfleet-managed.service", mode: "0644", content: await readFile(join(fixtures, "ghostfleet-managed.service"), "utf8") },
+    { name: "ghostfleet-managed.service", mode: "0644", content: await readFile(join(fixtures, "ghostfleet-node-agent.service"), "utf8") },
+    { name: "node-agent.pyz", mode: "0755", content: await readFile(join(fixtures, "node-agent.pyz"), "utf8") },
   ];
 }
 
@@ -44,7 +45,13 @@ async function bundleFor(template_digest, overrides = {}) {
     privileged_account: "ghostfleet-ops",
     installer: "managed-linux-privileged-operations.sh",
     privileged_key: "privileged-ops.pub",
-    user_unit: { name: "ghostfleet-managed.service", artifact: "ghostfleet-managed.service" },
+    user_unit: {
+      name: "ghostfleet-managed.service",
+      artifact: "ghostfleet-managed.service",
+      payload_artifact: "node-agent.pyz",
+      payload_path: "/usr/local/libexec/ghostfleet/node-agent.pyz",
+      payload_mode: "0755",
+    },
     artifacts: await artifacts(),
     ...overrides,
   });
@@ -112,8 +119,10 @@ test("a managed template ships only its own pinned artifacts, bound to the ticke
   assert.notEqual(selection.control_account, selection.privileged_account);
   assert.deepEqual(selection.artifacts.map((item) => item.name).sort(), [
     "fleet-privctl.py", "ghostfleet-managed.service",
-    "managed-linux-privileged-operations.sh", "privileged-ops.pub",
+    "managed-linux-privileged-operations.sh", "node-agent.pyz", "privileged-ops.pub",
   ]);
+  assert.equal(selection.user_unit.payload_artifact, "node-agent.pyz");
+  assert.equal(selection.user_unit.payload_path, "/usr/local/libexec/ghostfleet/node-agent.pyz");
   const text = Buffer.from(claimed.capability_selection, "base64").toString("utf8");
   assert.doesNotMatch(text, /BEGIN .*PRIVATE KEY|auth_key|resume_session/i);
 });

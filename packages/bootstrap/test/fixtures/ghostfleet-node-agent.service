@@ -1,0 +1,40 @@
+# Synthetic fixture copy of packages/bootstrap/assets/ghostfleet-managed.service.
+# Test-only: the directive set stays byte-comparable with the release asset.
+[Unit]
+Description=GhostFleet Node Agent
+After=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz run
+Environment=PYTHONDONTWRITEBYTECODE=1
+Restart=on-failure
+RestartSec=5
+WatchdogSec=60
+TimeoutStopSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=read-only
+StateDirectory=ghostfleet-agent
+ConfigurationDirectory=ghostfleet
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=%h/.config/ghostfleet %h/.local/state/ghostfleet-agent
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=default.target
