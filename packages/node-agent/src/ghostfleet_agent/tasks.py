@@ -128,12 +128,22 @@ def validate_envelope(
     node_uid: str,
     now: datetime | None = None,
     supported_operations=SUPPORTED_OPERATIONS,
+    allowed_units=(),
 ) -> ValidatedTask:
-    """校验任务信封；任何不符抛 TaskRefused（稳定错误码）。"""
+    """校验任务信封与 operation 参数；任何不符抛 TaskRefused（稳定错误码）。
+
+    白名单与参数校验全部发生在这里（调用实现之前），因此 REFUSED 始终等价于
+    "实现函数从未被调用、保证零副作用"。实现内部如果仍抛 TaskRefused，调用方
+    必须按 FAILED/UNKNOWN 处理（见 handle）。
+    """
     if not isinstance(envelope, dict):
         raise TaskRefused(TASK_ENVELOPE_INVALID, "task envelope must be an object")
+    # lease_expires_at 是 ADR §5.2 明列的服务端租约事实（服务端按 300 s 租约计算，
+    # 就在 attempt 前面）。Agent 不用它做任何本地决策（过期只看 expires_at），但必须
+    # 接受该字段，否则控制面的每个任务都会被判成 TASK_ENVELOPE_INVALID。
     extra = sorted(key for key in envelope if key not in {
         "schema", "task_id", "node_uid", "operation", "params", "issued_at", "expires_at", "attempt",
+        "lease_expires_at",
     })
     if extra:
         raise TaskRefused(TASK_ENVELOPE_INVALID, f"unexpected envelope field {extra[0]}")
@@ -161,6 +171,13 @@ def validate_envelope(
     try:
         issued_at = parse_timestamp(envelope.get("issued_at"), code=TASK_ENVELOPE_INVALID)
         expires_at = parse_timestamp(envelope.get("expires_at"), code=TASK_ENVELOPE_INVALID)
+        # 租约字段可选（兼容旧控制面/本地测试）；存在时只校验 RFC3339 UTC 形态，
+        # 不参与过期判断——过期语义只由 expires_at 决定，避免本地时钟与租约口径打架。
+        if "lease_expires_at" in envelope:
+            lease_expires_at = envelope["lease_expires_at"]
+            if not isinstance(lease_expires_at, str):
+                raise ProtocolError(TASK_ENVELOPE_INVALID, "lease_expires_at must be an RFC3339 UTC string")
+            parse_timestamp(lease_expires_at, code=TASK_ENVELOPE_INVALID)
     except ProtocolError as error:
         raise TaskRefused(error.code, error.detail) from None
     moment = now if now is not None else now_utc()
@@ -175,6 +192,7 @@ def validate_envelope(
         raise TaskRefused(TASK_EXPIRED, "task has expired")
     if operation not in supported_operations:
         raise TaskRefused(TASK_OPERATION_UNKNOWN, "operation is not in the v0 read-only vocabulary")
+    _validate_operation_params(operation, params, allowed_units=allowed_units)
     return ValidatedTask(task_id, envelope_node_uid, operation, dict(params), int(attempt), issued_at, expires_at)
 
 
@@ -182,6 +200,56 @@ def _require_only_params(params: dict, allowed: set[str]) -> None:
     extra = sorted(key for key in params if key not in allowed)
     if extra:
         raise TaskRefused(TASK_PARAMS_FORBIDDEN, f"params field {extra[0]} is not allowed for this operation")
+
+
+def _validate_operation_params(operation: str, params: dict, *, allowed_units=()) -> None:
+    """按 operation 校验 params 语义（禁用键/取值/本地白名单），从不调用实现。"""
+    if operation == OPERATION_OBSERVE:
+        _require_only_params(params, {"want"})
+        want = params.get("want")
+        if want is None:
+            return
+        if not isinstance(want, list) or not want:
+            raise TaskRefused(TASK_PARAMS_FORBIDDEN, "want must be a non-empty list")
+        selected: list[str] = []
+        for token in want:
+            if not isinstance(token, str) or token not in WANT_TOKENS:
+                raise TaskRefused(TASK_PARAMS_FORBIDDEN, "want contains an unsupported fact")
+            if token in selected:
+                raise TaskRefused(TASK_PARAMS_FORBIDDEN, "want contains duplicates")
+            selected.append(token)
+        return
+    if operation == OPERATION_SERVICE_STATUS:
+        _require_only_params(params, {"units"})
+        units = params.get("units")
+        if not isinstance(units, list) or not units:
+            raise TaskRefused(TASK_PARAMS_FORBIDDEN, "units must be a non-empty list")
+        if len(units) > MAX_UNITS_PER_TASK:
+            raise TaskRefused(TASK_PARAMS_FORBIDDEN, "at most 8 units per task")
+        selected_units: list[str] = []
+        for unit in units:
+            if not isinstance(unit, str) or not UNIT_RE.fullmatch(unit):
+                raise TaskRefused(TASK_PARAMS_FORBIDDEN, "unit name does not match the v0 unit pattern")
+            if unit in selected_units:
+                raise TaskRefused(TASK_PARAMS_FORBIDDEN, "unit list contains duplicates")
+            selected_units.append(unit)
+        configured = tuple(allowed_units)
+        if not configured:
+            raise TaskRefused(AGENT_UNIT_NOT_ALLOWED, "no allowed_units configured on this node")
+        allowed = set(configured)
+        for unit in selected_units:
+            if unit not in allowed:
+                raise TaskRefused(AGENT_UNIT_NOT_ALLOWED, "unit is not in the local allowlist")
+        return
+    if operation == OPERATION_CAPABILITY_INSPECT:
+        _require_only_params(params, set())
+        return
+    if operation == OPERATION_SELF_TEST:
+        _require_only_params(params, {"nonce"})
+        nonce = params.get("nonce")
+        if nonce is not None and (not isinstance(nonce, str) or not is_valid_nonce(nonce)):
+            raise TaskRefused(TASK_PARAMS_FORBIDDEN, "nonce must be base64url text of at least 16 bytes")
+        return
 
 
 class TaskExecutor:
@@ -216,6 +284,7 @@ class TaskExecutor:
                 envelope,
                 node_uid=self.node_uid,
                 supported_operations=frozenset(self.operations),
+                allowed_units=self.allowed_units,
             )
         except TaskRefused as refusal:
             # 校验发生在调用实现之前，保证无副作用 → REFUSED。
@@ -226,11 +295,9 @@ class TaskExecutor:
         try:
             data = self._dispatch(task, spec)
         except TaskRefused as refusal:
-            # 实现内的"调用真实动作之前"拒绝（参数语义 / 本地白名单）仍是 REFUSED；
-            # 对可能产生副作用的 operation 一律按不可判定处理。
-            if spec.effect == MAY_MUTATE:
-                return self._in_doubt(task, spec, refusal.code)
-            return self._refused(task.task_id, task.operation, refusal.code)
+            # 已经进入实现函数：Agent 不再有资格声明"零副作用"，因此绝不能报 REFUSED。
+            # 只读实现按 FAILED（无副作用，可重投）；可变更实现按 UNKNOWN（不可重投）。
+            return self._execution_failure(task, spec, refusal)
         except Exception as error:  # noqa: BLE001 - 实现层异常不拖垮循环
             return self._execution_failure(task, spec, error)
         return make_result(
@@ -317,57 +384,23 @@ class TaskExecutor:
         return handler(task)
 
     def _observe(self, task: ValidatedTask) -> dict:
-        _require_only_params(task.params, {"want"})
         want = task.params.get("want")
-        if want is None:
-            selected = tuple(DEFAULT_WANT)
-        else:
-            if not isinstance(want, list) or not want:
-                raise TaskRefused(TASK_PARAMS_FORBIDDEN, "want must be a non-empty list")
-            selected_list: list[str] = []
-            for token in want:
-                if not isinstance(token, str) or token not in WANT_TOKENS:
-                    raise TaskRefused(TASK_PARAMS_FORBIDDEN, "want contains an unsupported fact")
-                if token in selected_list:
-                    raise TaskRefused(TASK_PARAMS_FORBIDDEN, "want contains duplicates")
-                selected_list.append(token)
-            selected = tuple(selected_list)
+        selected = tuple(DEFAULT_WANT) if want is None else tuple(want)
         return self.observer.observe(selected)
 
     def _service_status(self, task: ValidatedTask) -> dict:
-        _require_only_params(task.params, {"units"})
-        units = task.params.get("units")
-        if not isinstance(units, list) or not units:
-            raise TaskRefused(TASK_PARAMS_FORBIDDEN, "units must be a non-empty list")
-        if len(units) > MAX_UNITS_PER_TASK:
-            raise TaskRefused(TASK_PARAMS_FORBIDDEN, "at most 8 units per task")
-        selected: list[str] = []
-        for unit in units:
-            if not isinstance(unit, str) or not UNIT_RE.fullmatch(unit):
-                raise TaskRefused(TASK_PARAMS_FORBIDDEN, "unit name does not match the v0 unit pattern")
-            if unit in selected:
-                raise TaskRefused(TASK_PARAMS_FORBIDDEN, "unit list contains duplicates")
-            selected.append(unit)
-        if not self.allowed_units:
-            raise TaskRefused(AGENT_UNIT_NOT_ALLOWED, "no allowed_units configured on this node")
-        allowed = set(self.allowed_units)
-        for unit in selected:
-            if unit not in allowed:
-                raise TaskRefused(AGENT_UNIT_NOT_ALLOWED, "unit is not in the local allowlist")
+        # 参数与白名单已在 validate_envelope 阶段校验：这里只执行，不再拒绝。
+        selected = tuple(task.params.get("units") or ())
         return {
             "units": {unit: self.observer.unit_state(unit) for unit in selected},
             "configured_units": len(self.allowed_units),
         }
 
     def _capability_inspect(self, task: ValidatedTask) -> dict:
-        _require_only_params(task.params, set())
         return self.observer.capability()
 
     def _self_test(self, task: ValidatedTask) -> dict:
-        _require_only_params(task.params, {"nonce"})
         nonce = task.params.get("nonce")
-        if nonce is not None and (not isinstance(nonce, str) or not is_valid_nonce(nonce)):
-            raise TaskRefused(TASK_PARAMS_FORBIDDEN, "nonce must be base64url text of at least 16 bytes")
         return {
             "task_id": task.task_id,
             "node_uid": self.node_uid,

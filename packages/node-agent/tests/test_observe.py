@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import sys
@@ -9,6 +10,7 @@ import sys
 import pytest
 
 from ghostfleet_agent.observe import (
+    CHILD_ENV_STRIP_KEYS,
     DISK_FAILING_PCT,
     DISK_PRESSURE_PCT,
     HEALTH_DEGRADED,
@@ -20,6 +22,7 @@ from ghostfleet_agent.observe import (
     CommandRunner,
     Observer,
     bounded_text,
+    child_environment,
     compute_drift,
 )
 
@@ -67,6 +70,40 @@ def write_fixture(directory):
     return capability, disk
 
 
+def install_sandbox_trust(monkeypatch, directory, *, uid_map=None, mountinfo=None, overflowuid=None, writable=False):
+    """模拟 systemd 硬化沙箱的 proc 视图：只映射别的 UID + / 只读。
+
+    ADR §9：这种沙箱里 host root 拥有的文件显示为 overflow uid。测试文件实际
+    属于当前用户，因此把 uid_map 造成「映射了另一个 UID」，让 st_uid 未被覆盖、
+    走 overflow 分支；overflowuid 注入成当前用户的 uid。测试把四项事实全部注入。
+    """
+    trust = importlib.import_module("ghostfleet_agent.trust")
+    proc = directory / "fake-proc"
+    proc.mkdir(parents=True, exist_ok=True)
+    euid = os.geteuid()
+    if uid_map is None:
+        other = euid + 1000
+        uid_map = f"          {other}        {other}          1\n"
+    if mountinfo is None:
+        mountinfo = "36 1 8:1 / / ro,relatime - ext4 /dev/root rw\n"
+    if overflowuid is None:
+        overflowuid = f"{euid}\n"
+    (proc / "uid_map").write_text(uid_map, encoding="ascii")
+    (proc / "mountinfo").write_text(mountinfo, encoding="ascii")
+    (proc / "overflowuid").write_text(overflowuid, encoding="ascii")
+    monkeypatch.setattr(trust, "UID_MAP_PATH", str(proc / "uid_map"))
+    monkeypatch.setattr(trust, "MOUNTINFO_PATH", str(proc / "mountinfo"))
+    monkeypatch.setattr(trust, "OVERFLOWUID_PATH", str(proc / "overflowuid"))
+    monkeypatch.setattr(trust, "_path_is_writable", (lambda path: True) if writable else (lambda path: False))
+    return proc
+
+
+@pytest.fixture(autouse=True)
+def sandbox_trust(tmp_path, monkeypatch):
+    """默认让 fixture 文件在这个模拟沙箱里等价于「host root 拥有」。"""
+    return install_sandbox_trust(monkeypatch, tmp_path)
+
+
 def make_observer(directory, *, runner=None, units=(), hostname="node-host", capability=None):
     capability_path, disk = write_fixture(directory)
     if capability is not None:
@@ -76,8 +113,6 @@ def make_observer(directory, *, runner=None, units=(), hostname="node-host", cap
         agent_version=AGENT_VERSION,
         allowed_units=units,
         capability_path=str(capability_path),
-        # 测试文件属主是当前用户，显式放宽 uid 期望（生产默认 root）。
-        capability_uid=os.geteuid(),
         runner=runner or FakeRunner(),
         uptime_path=str(directory / "uptime"),
         meminfo_path=str(directory / "meminfo"),
@@ -270,10 +305,33 @@ def test_capability_missing_is_unavailable(tmp_path):
     assert observer.capability_digest() is None
 
 
-def test_capability_owner_mismatch_is_untrusted(tmp_path):
+def test_capability_owner_mismatch_is_untrusted(tmp_path, monkeypatch):
+    install_sandbox_trust(monkeypatch, tmp_path / "owner", overflowuid="12345678")
     observer = make_observer(tmp_path)
-    # 生产默认 capability_uid=0；测试文件属主是当前用户 → 必须 UNTRUSTED。
-    observer.capability_uid = 0
+    # 沙箱里「host root」等价于 overflow uid；文件属主是当前用户 → 必须 UNTRUSTED。
+    assert observer.capability() == {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
+
+
+def test_capability_writable_mount_is_untrusted(tmp_path, monkeypatch):
+    install_sandbox_trust(
+        monkeypatch,
+        tmp_path / "rw",
+        mountinfo="36 1 8:1 / / rw,relatime - ext4 /dev/root rw\n",
+    )
+    observer = make_observer(tmp_path)
+    assert observer.capability() == {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
+
+
+def test_capability_writable_by_user_is_untrusted(tmp_path, monkeypatch):
+    install_sandbox_trust(monkeypatch, tmp_path / "wok", writable=True)
+    observer = make_observer(tmp_path)
+    assert observer.capability() == {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
+
+
+def test_capability_requires_uid_zero_when_namespace_maps_root(tmp_path, monkeypatch):
+    install_sandbox_trust(monkeypatch, tmp_path / "mapped", uid_map="0 0 4294967295\n")
+    observer = make_observer(tmp_path)
+    # uid 0 已映射时只认 st_uid == 0；属主是当前用户的文件不可信。
     assert observer.capability() == {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
 
 
@@ -434,3 +492,55 @@ def test_command_runner_timeout_degrades():
         [sys.executable, "-c", "import time; time.sleep(5)"]
     )
     assert (code, output) == (127, "")
+
+
+# -- P1-B：子进程不继承 systemd 通知变量（避免每轮 journal 噪音） -------------
+def test_child_environment_strips_systemd_notification_keys():
+    environment = child_environment(
+        {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/home/managed",
+            "LANG": "C.UTF-8",
+            "XDG_RUNTIME_DIR": "/run/user/1002",
+            "NOTIFY_SOCKET": "/run/user/1002/systemd/notify",
+            "LISTEN_FDS": "1",
+            "LISTEN_PID": "1234",
+            "WATCHDOG_USEC": "60000000",
+            "WATCHDOG_PID": "1234",
+        }
+    )
+    for key in CHILD_ENV_STRIP_KEYS:
+        assert key not in environment
+    # 不做 env -i：命令行工具仍需正常 PATH / locale / HOME / runtime dir。
+    assert environment["PATH"] == "/usr/bin:/bin"
+    assert environment["HOME"] == "/home/managed"
+    assert environment["XDG_RUNTIME_DIR"] == "/run/user/1002"
+
+
+def test_command_runner_child_cannot_see_notify_socket():
+    probe = (
+        "import json, os;"
+        "print(json.dumps({k: k in os.environ for k in "
+        "['NOTIFY_SOCKET','LISTEN_FDS','LISTEN_PID','WATCHDOG_USEC','WATCHDOG_PID','PATH','HOME']}))"
+    )
+    runner = CommandRunner(
+        timeout_s=5.0,
+        environ={
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": os.environ.get("HOME", "/"),
+            "NOTIFY_SOCKET": "/run/systemd/notify",
+            "WATCHDOG_USEC": "60000000",
+        },
+    )
+    code, output = runner.run([sys.executable, "-c", probe])
+    assert code == 0
+    seen = json.loads(output)
+    for key in ("NOTIFY_SOCKET", "LISTEN_FDS", "LISTEN_PID", "WATCHDOG_USEC", "WATCHDOG_PID"):
+        assert seen[key] is False
+    assert seen["PATH"] is True
+    assert seen["HOME"] is True
+
+
+def test_command_runner_output_is_unchanged_by_environment_stripping():
+    runner = CommandRunner(timeout_s=5.0, environ=dict(os.environ, NOTIFY_SOCKET="/run/systemd/notify"))
+    assert runner.run([sys.executable, "-c", "print('hello')"]) == (0, "hello")

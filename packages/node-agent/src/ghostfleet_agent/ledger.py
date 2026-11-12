@@ -16,10 +16,16 @@ import time
 
 from .logging import get_logger
 from .state import StoreError, atomic_write_json, load_json_document, ensure_state_dir
+from .tasks import MAY_MUTATE, OPERATION_SPECS, READ_ONLY
 
 LEDGER_SCHEMA = "ghostfleet-node-agent-ledger/v0"
+TOMBSTONE_SCHEMA = "ghostfleet-node-agent-tombstones/v0"
+TOMBSTONES_FILENAME = "tombstones.json"
 MAX_LEDGER_BYTES = 1024 * 1024
 MAX_LEDGER_ENTRIES = 512
+# 被驱逐任务的有界墓碑：task_id → 终态/摘要。没有它，一个已 UNKNOWN 且已对账的
+# 任务在驱逐后会被 begin() 当成 NEW 重新执行——"不重跑"必须优先于"有界"。
+MAX_TOMBSTONES = 4096
 
 FENCED = "MAY_HAVE_EXECUTED"
 STATE_SUCCEEDED = "SUCCEEDED"
@@ -54,11 +60,17 @@ def _now() -> str:
 class Ledger:
     """ledger.json 访问器；所有变更立即以原子写持久化。"""
 
-    def __init__(self, path: str, *, logger=None) -> None:
+    def __init__(self, path: str, *, logger=None, tombstone_path: str | None = None) -> None:
         self.path = os.path.abspath(path)
         self.directory = os.path.dirname(self.path) or "."
+        self.tombstone_path = (
+            os.path.abspath(tombstone_path)
+            if tombstone_path is not None
+            else os.path.join(self.directory, TOMBSTONES_FILENAME)
+        )
         self.logger = logger or get_logger()
         self._entries: dict[str, dict] = {}
+        self._tombstones: dict[str, dict] = {}
 
     # -- 载入 / 持久化 -------------------------------------------------------
     def load(self) -> dict[str, dict]:
@@ -86,7 +98,46 @@ class Ledger:
                 raise LedgerCorruptError("ledger entry has unknown state", path=self.path)
             entries[task_id] = dict(entry)
         self._entries = entries
+        self._tombstones = self._load_tombstones()
         return self._entries
+
+    def _load_tombstones(self) -> dict[str, dict]:
+        document = load_json_document(
+            self.tombstone_path,
+            schema=TOMBSTONE_SCHEMA,
+            corrupt_error=LedgerCorruptError,
+            max_bytes=MAX_LEDGER_BYTES,
+            logger=self.logger,
+        )
+        if document is None:
+            return {}
+        raw_entries = document.get("entries")
+        if not isinstance(raw_entries, dict):
+            raise LedgerCorruptError("tombstone entries must be an object", path=self.tombstone_path)
+        tombstones: dict[str, dict] = {}
+        for task_id, entry in raw_entries.items():
+            if not isinstance(task_id, str) or not isinstance(entry, dict):
+                raise LedgerCorruptError("tombstone entry has invalid shape", path=self.tombstone_path)
+            if entry.get("state") not in TERMINAL_STATES:
+                raise LedgerCorruptError("tombstone entry has non-terminal state", path=self.tombstone_path)
+            tombstones[task_id] = dict(entry)
+        if len(tombstones) > MAX_TOMBSTONES:
+            raise LedgerCorruptError("tombstones exceed capacity", path=self.tombstone_path)
+        return tombstones
+
+    def save_tombstones(self) -> None:
+        try:
+            atomic_write_json(
+                self.tombstone_path,
+                {"schema": TOMBSTONE_SCHEMA, "entries": self._tombstones},
+                logger=self.logger,
+            )
+        except StoreError as error:
+            raise LedgerWriteError(error.detail, path=self.tombstone_path) from None
+
+    @property
+    def tombstones(self) -> dict[str, dict]:
+        return self._tombstones
 
     def save(self) -> None:
         try:
@@ -126,6 +177,13 @@ class Ledger:
         只有 NEW 允许调用实现函数。ALREADY_FENCED 表示上次已进入可能已执行区间
         但未收敛，调用方必须走 UNKNOWN 对账而不是重跑。
         """
+        if self.is_exhausted():
+            # fail closed：账本/墓碑都满时不再接收新任务，宁可停摆也不重跑。
+            raise LedgerWriteError("ledger capacity exhausted (AGENT_LEDGER_EXHAUSTED)", path=self.path)
+        if task_id in self._tombstones:
+            # 曾被驱逐但墓碑记着它已经收敛：绝不能再执行一次。
+            self.logger.info("ledger_tombstone_replay", task_id=task_id, state=self._tombstones[task_id].get("state"))
+            return BEGIN_DONE
         entry = self._entries.get(task_id)
         if entry is not None:
             if entry.get("state") == FENCED:
@@ -209,24 +267,38 @@ class Ledger:
         self.save()
 
     # -- 保留上限 -----------------------------------------------------------
-    def _evictable(self, task_id: str) -> bool:
-        """只有"已对账终态"可以安全驱逐；栅栏与待对账终态都不行。
+    @staticmethod
+    def _effect(entry: dict) -> str:
+        """按 OPERATION_SPECS 判定效果等级；未知 operation 按 may_mutate 保守处理。"""
+        operation = entry.get("operation")
+        spec = OPERATION_SPECS.get(operation) if isinstance(operation, str) else None
+        if spec is None:
+            return MAY_MUTATE
+        return spec.effect
 
-        RESULT_DROPPED 例外：它本身就是"结果永不回传"的最终处置，驱逐它
-        不会让任何结果丢失（对应任务的结果本已被判定为不可交付）。
+    def _evictable(self, task_id: str) -> bool:
+        """只有"可证明幂等的已收敛终态"可以驱逐。
+
+        不可证明幂等的一律永不驱逐：MAY_HAVE_EXECUTED 栅栏、UNKNOWN 终态、
+        以及任何 may_mutate operation 的终态。read_only 的已对账终态可以驱逐，
+        但驱逐时必须留下墓碑，防止 begin() 把它当成 NEW 重新执行。
         """
         entry = self._entries[task_id]
-        if entry.get("state") not in TERMINAL_STATES:
+        state = entry.get("state")
+        if state not in TERMINAL_STATES:
             return False
-        return entry.get("reconciled") is True or entry.get("result_state") == RESULT_DROPPED
+        if state == STATE_UNKNOWN:
+            return False
+        if entry.get("reconciled") is not True and entry.get("result_state") != RESULT_DROPPED:
+            return False
+        return self._effect(entry) == READ_ONLY
 
     def _prune(self) -> None:
-        """有界保留：只驱逐已对账终态，绝不驱逐 MAY_HAVE_EXECUTED。
+        """有界保留：只驱逐可证明幂等的已收敛终态，并为每次驱逐留墓碑。
 
         驱逐顺序：RESULT_DROPPED 最先（结果本已不可回传），其次其他已对账终态。
-        "不重跑"优先于"有界"：账本达到上限且没有可驱逐条目时，账本停在原地，
-        由 loop 停止取新任务（health=DEGRADED / AGENT_LEDGER_EXHAUSTED）等待
-        对账腾出空间，而不是牺牲"可能已执行"的事实。
+        墓碑容量（4096）耗尽时不再驱逐，is_exhausted() 变真，由 loop 停止取新任务
+        （health=DEGRADED / AGENT_LEDGER_EXHAUSTED）等待人工处理。
         """
         overflow = len(self._entries) - MAX_LEDGER_ENTRIES
         if overflow <= 0:
@@ -242,15 +314,39 @@ class Ledger:
             (task_id for task_id in self._entries if self._evictable(task_id)),
             key=lambda task_id: (_rank(task_id), task_id),
         )
-        for task_id in candidates[:overflow]:
+        evicted = 0
+        tombstones_changed = False
+        for task_id in candidates:
+            if evicted >= overflow:
+                break
+            if len(self._tombstones) >= MAX_TOMBSTONES:
+                self.logger.error(
+                    "ledger_tombstone_exhausted",
+                    entries=len(self._entries),
+                    tombstones=len(self._tombstones),
+                )
+                break
             entry = self._entries.pop(task_id)
+            self._tombstones[task_id] = {
+                "state": entry.get("state"),
+                "operation": entry.get("operation"),
+                "result_digest": entry.get("result_digest"),
+                "evicted_at": _now(),
+            }
+            tombstones_changed = True
+            evicted += 1
             if entry.get("result_state") == RESULT_DROPPED:
                 self.logger.warning("ledger_dropped_evicted", task_id=task_id)
             else:
                 self.logger.warning("ledger_entry_evicted", task_id=task_id)
+        if tombstones_changed:
+            # 先写墓碑再写账本：崩溃只会留下"账本条目 + 墓碑"的重复，不会丢事实。
+            self.save_tombstones()
 
     def is_exhausted(self) -> bool:
-        """到达上限且没有可驱逐的已对账终态：不能再安全接收新任务。"""
+        """到达上限且没有可驱逐条目（或墓碑已满）：不能再安全接收新任务。"""
+        if len(self._tombstones) >= MAX_TOMBSTONES:
+            return True
         if len(self._entries) < MAX_LEDGER_ENTRIES:
             return False
         return not any(self._evictable(task_id) for task_id in self._entries)

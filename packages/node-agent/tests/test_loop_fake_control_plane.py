@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import io
 import json
+import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,11 +18,18 @@ from ghostfleet_agent import protocol
 from ghostfleet_agent.cli import build_loop, load_node_uid, load_token
 from ghostfleet_agent.config import load_config
 from ghostfleet_agent.ledger import MAX_LEDGER_ENTRIES
+from ghostfleet_agent.loop import WATCHDOG_INTERVAL_S, WatchdogThread
 from ghostfleet_agent.logging import Logger, clear_secrets
 from ghostfleet_agent.outbox import Outbox
 from ghostfleet_agent.protocol import (
     AGENT_EXECUTION_UNKNOWN,
+    AGENT_NETWORK_ERROR,
+    NODE_BOOT_ID_CAPACITY_REACHED,
+    NODE_RATE_LIMITED,
+    OUTCOME_NETWORK_ERROR,
     AGENT_LEDGER_EXHAUSTED,
+    TASK_OPERATION_MISMATCH,
+    TASK_RESULT_SCHEMA_UNSUPPORTED,
     RESULT_STATUSES,
     RESULT_SUCCEEDED,
     RESULT_UNKNOWN,
@@ -284,7 +293,8 @@ def test_run_forever_sleeps_interval_and_exits_zero(sandbox, control_plane):
 
     assert loop.run_forever(max_iterations=2) == 0
     assert len(control_plane.requests_to("/heartbeat")) == 2
-    assert sleeps and all(value == pytest.approx(15.0) for value in sleeps)
+    # 客户端/循环的周期下限是 30 s（ADR §5.1 速率预算），即使配置与心跳都写 15。
+    assert sleeps and all(value == pytest.approx(30.0) for value in sleeps)
     document = json.loads(sandbox.state_paths()["state"].read_text(encoding="utf-8"))
     assert document["last_stop"]
     assert document["stopping"] is False  # record_stop 已清位
@@ -375,6 +385,34 @@ def test_pending_outbox_is_flushed_before_new_work(sandbox, control_plane):
     assert any(path.endswith("/heartbeat") for path in paths)
 
 
+def test_startup_replays_persisted_outbox_drops_as_result_dropped(sandbox, control_plane):
+    loop, _ = build_agent(sandbox, control_plane)
+    for index in range(66):
+        result = protocol.make_result(
+            task_id=f"task-{index:04d}",
+            node_uid=sandbox.node_uid,
+            operation="node.observe",
+            status=RESULT_SUCCEEDED,
+            data={"status": "OK"},
+        )
+        loop.outbox.add(
+            {
+                "task_id": f"task-{index:04d}",
+                "operation": "node.observe",
+                "result": result,
+                "result_digest": digest_of(result),
+            }
+        )
+    # 崩溃后重启：丢弃事实必须从 outbox.json 重放成 ledger 的 RESULT_DROPPED。
+    assert loop.outbox.pending_dropped() == ["task-0000", "task-0001"]
+    assert loop.run_once() == 0
+    assert loop.outbox.pending_dropped() == []
+    for task_id in ("task-0000", "task-0001"):
+        assert loop.ledger.get(task_id)["result_state"] == "RESULT_DROPPED"
+    document = json.loads(sandbox.state_paths()["state"].read_text(encoding="utf-8"))
+    assert document["outbox_overflow"] == 2
+
+
 def test_outbox_overflow_is_counted_and_dropped_oldest(sandbox, control_plane):
     loop, _ = build_agent(sandbox, control_plane)
     for index in range(64):
@@ -462,18 +500,58 @@ def test_long_sleeps_are_chunked_with_watchdog(sandbox, control_plane):
 
 
 # -- 429 Retry-After 权威 ---------------------------------------------------
-def test_retry_after_900_is_not_capped_by_backoff_ceiling(sandbox, control_plane):
+def _enqueue_pending_result(loop, sandbox, task_id="task-rate-limited"):
+    result = protocol.make_result(
+        task_id=task_id,
+        node_uid=sandbox.node_uid,
+        operation="agent.self.test",
+        status=RESULT_SUCCEEDED,
+        data={"nonce": None},
+    )
+    loop.outbox.add(
+        {
+            "task_id": task_id,
+            "operation": "agent.self.test",
+            "result": result,
+            "result_digest": digest_of(result),
+        }
+    )
+    return result
+
+
+def test_result_429_retry_after_is_authoritative_and_not_jittered(sandbox, control_plane):
+    """真实 429 响应（含 Retry-After: 900）驱动：不许手设内部状态。"""
     loop, _ = build_agent(sandbox, control_plane)
+    _enqueue_pending_result(loop, sandbox)
+    attempts = {"result": 0}
+
+    def responder(record):
+        path = record["path"]
+        if path.endswith("/result"):
+            attempts["result"] += 1
+            if attempts["result"] == 1:
+                return 429, {"code": NODE_RATE_LIMITED}
+            return 200, {"status": "accepted"}
+        if path.endswith("/heartbeat"):
+            return 200, {"interval_s": 30.0, "tasks": []}
+        if path.endswith("/tasks/poll"):
+            return 200, {"tasks": []}
+        return 200, {}
+
+    control_plane.respond = responder
+    control_plane.respond_headers = {"Retry-After": "900"}
+
     sleeps = []
     loop._sleep = sleeps.append
-    loop.state.next_backoff_s = 300
-    loop._retry_after_s = 900.0
+    # 抖动故意拉满：服务端权威时长绝不能乘抖动。
+    loop._jitter = lambda ratio: 0.5
 
-    # 服务端 Retry-After 是权威时长，不得被本地 300 s 退避上限截断。
-    assert loop._retry_delay() == pytest.approx(900.0)
-    loop._sleep_with_jitter(loop._retry_delay())
-    assert sum(sleeps) == pytest.approx(900.0)
+    assert loop.run_forever(max_iterations=2) == 0
+    # 第一次 result POST 被 429：按 900 s（切块 30 s）等待，而不是本地 <=300 s 退避。
+    assert sum(sleeps[:30]) == pytest.approx(900.0)
     assert sum(sleeps) > 300
+    # 第二次投递真正发出，且没有在同一轮里连打。
+    assert attempts["result"] == 2
 
 
 def test_local_backoff_without_retry_after_is_capped_at_300(sandbox, control_plane):
@@ -481,6 +559,43 @@ def test_local_backoff_without_retry_after_is_capped_at_300(sandbox, control_pla
     loop._retry_after_s = 0.0
     loop.state.next_backoff_s = 1000
     assert loop._retry_delay() == pytest.approx(300.0)
+
+
+# -- 永久性错误：丢件而不是无限重投 -------------------------------------------
+@pytest.mark.parametrize(
+    "status, code",
+    [
+        (400, TASK_RESULT_SCHEMA_UNSUPPORTED),
+        (409, TASK_OPERATION_MISMATCH),
+    ],
+)
+def test_permanently_rejected_result_is_dropped_not_retried(sandbox, control_plane, status, code):
+    loop, _ = build_agent(sandbox, control_plane)
+    _enqueue_pending_result(loop, sandbox, task_id="task-permanent")
+    control_plane.respond = lambda record: (
+        (status, {"code": code}) if record["path"].endswith("/result") else (200, {"tasks": [], "interval_s": 30.0})
+    )
+
+    report = loop.outbox.flush(loop._send_outbox_item)
+    # 真实 client._classify 路径（真实 urllib + 真实 HTTP 状态码）判定为顶不可接受。
+    assert report.rejected == ["task-permanent"]
+    assert report.remaining == 0
+    assert loop.outbox.depth() == 0
+
+    # 再 flush 一次不得产生新的 result POST：丢件即终局。
+    before = len(control_plane.requests_to("/result"))
+    loop.outbox.flush(loop._send_outbox_item)
+    assert len(control_plane.requests_to("/result")) == before
+
+
+def test_boot_capacity_409_is_fatal_and_stops_the_loop(sandbox, control_plane):
+    control_plane.respond = lambda record: (409, {"code": NODE_BOOT_ID_CAPACITY_REACHED})
+    loop, stream = build_agent(sandbox, control_plane)
+
+    # 与 403 同路径：FATAL -> run_once 返 4，且只在第一轮打一次请求，不无限退避。
+    assert loop.run_once() == 4
+    assert len(control_plane.requests_to("/heartbeat")) == 1
+    assert "fatal" in stream.getvalue()
 
 
 # -- 账本耗尽：停止取任务，绝不驱逐栅栏 ---------------------------------------
@@ -502,9 +617,12 @@ def test_ledger_exhaustion_stops_polling_and_resumes_after_reconcile(sandbox, co
     assert len(loop.ledger.entries) == MAX_LEDGER_ENTRIES
     assert loop.ledger.get("task-fence-0000") is not None
 
-    # 成功的对账腾出空间后，下一轮自动恢复取任务。
+    # 只有"可证明幂等的已收敛终态"能腾出空间：UNKNOWN 即使已对账也永不驱逐。
     loop.ledger.mark_unknown("task-fence-0000")
     loop.ledger.mark_reconciled("task-fence-0000")
+    assert loop.ledger.is_exhausted() is True
+    # 把一条栅栏收敛成只读 operation 的成功终态，才真正腾出可驱逐条目。
+    loop.ledger.complete("task-fence-0001", RESULT_SUCCEEDED)
     assert loop.ledger.is_exhausted() is False
     assert loop.iteration() == "ok"
     assert len(control_plane.requests_to("/tasks/poll")) == 1
@@ -531,3 +649,119 @@ def test_shutdown_flushes_pending_results(sandbox, control_plane):
     loop.shutdown(reason="test")
     assert loop.outbox.depth() == 0
     assert [item["task_id"] for item in control_plane.results] == ["task-pending"]
+
+
+# -- P1-A：常驻喂狗线程（离线/长阻塞时也不能饿死 watchdog） ------------------
+class OfflineClient:
+    """控制面不可达：每次请求都返回 NETWORK_ERROR，迫使循环走离线退避。"""
+
+    def __init__(self):
+        self.heartbeats = 0
+
+    def heartbeat(self, body_builder, **_kwargs):
+        self.heartbeats += 1
+        return SimpleNamespace(
+            kind=OUTCOME_NETWORK_ERROR, code=AGENT_NETWORK_ERROR, ok=False, retry_after_s=None
+        )
+
+    def poll(self, body_builder, **_kwargs):
+        return SimpleNamespace(
+            kind=OUTCOME_NETWORK_ERROR, code=AGENT_NETWORK_ERROR, ok=False, retry_after_s=None
+        )
+
+    def send_result_body(self, body_builder, task_id, **_kwargs):
+        return SimpleNamespace(kind=OUTCOME_NETWORK_ERROR, code=AGENT_NETWORK_ERROR)
+
+
+def test_watchdog_thread_beats_on_fake_time_axis():
+    """假时间轴：周期恒为 WatchdogSec/3=20 s，相邻间隔 ≤ WatchdogSec/2=30 s。"""
+
+    class Timeline:
+        now = 0.0
+        beats = []
+
+    timeline = Timeline()
+
+    class Notifier:
+        def watchdog(self):
+            timeline.beats.append(timeline.now)
+            return True
+
+    def waiter(seconds):
+        timeline.now += seconds
+        return len(timeline.beats) >= 5
+
+    watchdog = WatchdogThread(Notifier(), interval_s=WATCHDOG_INTERVAL_S, waiter=waiter)
+    watchdog._run()  # 同步执行：不启动真实线程、不真实睡眠
+
+    assert len(timeline.beats) == 5
+    gaps = [later - earlier for earlier, later in zip(timeline.beats, timeline.beats[1:])]
+    assert max(gaps) <= 30.0  # WatchdogSec=60 的一半
+    assert all(gap == pytest.approx(WATCHDOG_INTERVAL_S) for gap in gaps)
+
+
+def test_offline_backoff_keeps_watchdog_beating(sandbox, control_plane):
+    """离线连续 5 轮失败期间，喂狗线程仍按周期发 WATCHDOG（不会每 60 s 被重启）。"""
+    loop, _ = build_agent(sandbox, control_plane)
+    loop.client = OfflineClient()
+    notifier = RecordingNotifier()
+    loop.notifier = notifier
+    loop._watchdog_interval_s = 0.005
+    loop._sleep = lambda seconds: time.sleep(0.02)  # 让线程在真实时间里获得调度
+
+    assert loop.run_forever(max_iterations=5) == 0
+    assert loop.client.heartbeats == 5
+    assert notifier.calls[0] == "ready"
+    assert notifier.calls.count("watchdog") >= 5
+    assert notifier.calls[-1] == "stopping"
+
+
+def test_shutdown_joins_watchdog_before_stopping(sandbox, control_plane):
+    loop, _ = build_agent(sandbox, control_plane)
+    notifier = RecordingNotifier()
+    loop.notifier = notifier
+    loop._watchdog_interval_s = 0.005
+    loop._start_watchdog()
+    thread = loop._watchdog.thread
+    assert thread.is_alive()
+    time.sleep(0.03)
+    assert notifier.calls.count("watchdog") >= 1
+
+    loop.shutdown(reason="test")
+    assert loop._watchdog is None
+    assert not thread.is_alive()  # 先 join 线程，再发 STOPPING
+    assert notifier.calls[-1] == "stopping"
+    assert "watchdog" not in notifier.calls[notifier.calls.index("stopping"):]
+
+
+class ExplodingNotifier(RecordingNotifier):
+    def watchdog(self):
+        self.calls.append("watchdog")
+        raise RuntimeError("sd_notify broken")
+
+
+def test_watchdog_thread_exception_does_not_kill_the_loop(sandbox, control_plane):
+    loop, logger_stream = build_agent(sandbox, control_plane)
+    loop.client = OfflineClient()
+    loop.notifier = ExplodingNotifier()
+    loop._watchdog_interval_s = 0.001
+    loop._sleep = lambda seconds: time.sleep(0.02)
+
+    assert loop.run_forever(max_iterations=3) == 0
+    assert loop.client.heartbeats == 3
+    assert loop._watchdog is None
+    trace = logger_stream.getvalue()
+    assert "watchdog_thread_failed" in trace
+    assert trace.count("watchdog_thread_failed") == 1  # 线程内异常只 warning 一次
+
+
+def test_run_once_never_starts_the_watchdog_thread(sandbox, control_plane):
+    control_plane.respond = idle_responder(control_plane)
+    loop, _ = build_agent(sandbox, control_plane)
+    notifier = RecordingNotifier()
+    loop.notifier = notifier
+
+    assert loop.run_once() == 0
+    assert loop._watchdog is None
+    assert "watchdog" not in notifier.calls
+

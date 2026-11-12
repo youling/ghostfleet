@@ -82,6 +82,18 @@ def test_overflow_keeps_newest_and_reports_dropped(tmp_path):
     assert box.has(f"task-{MAX_OUTBOX_ITEMS + 2:04d}")
 
 
+def test_overflow_drops_survive_reload_until_replayed(tmp_path):
+    box = _outbox(tmp_path)
+    for index in range(MAX_OUTBOX_ITEMS + 2):
+        box.add(_body(f"task-{index:04d}"))
+    # 丢弃事实与 items 同一次原子写持久化：进程崩溃后仍能补记 RESULT_DROPPED。
+    reloaded = _outbox(tmp_path)
+    assert reloaded.pending_dropped() == ["task-0000", "task-0001"]
+    assert reloaded.drain_dropped() == ["task-0000", "task-0001"]
+    assert _outbox(tmp_path).pending_dropped() == []
+    assert reloaded.depth() == MAX_OUTBOX_ITEMS
+
+
 def test_flush_removes_acknowledged_items_in_order(tmp_path):
     box = _outbox(tmp_path)
     box.add(_body("task-0001"))

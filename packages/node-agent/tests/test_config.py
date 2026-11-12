@@ -160,6 +160,27 @@ def test_loopback_http_is_allowed_only_for_loopback(tmp_path):
     assert config.loopback_http is True
 
 
+def test_loopback_http_is_forbidden_without_harness_opt_in(tmp_path, monkeypatch):
+    monkeypatch.delenv("GHOSTFLEET_AGENT_TEST_LOOPBACK_HTTP", raising=False)
+    sandbox = AgentSandbox(tmp_path)
+    path = sandbox.write_raw_config(json.dumps(sandbox.config_document("http://127.0.0.1:8080")))
+    with pytest.raises(ConfigError) as error:
+        load_config(path)
+    assert error.value.code == "CONFIG_LOOPBACK_HTTP_FORBIDDEN"
+    assert error.value.field == "control_plane_url"
+
+
+def test_loopback_http_opt_in_is_explicit_and_overrides_environment(tmp_path, monkeypatch):
+    monkeypatch.delenv("GHOSTFLEET_AGENT_TEST_LOOPBACK_HTTP", raising=False)
+    sandbox = AgentSandbox(tmp_path)
+    path = sandbox.write_raw_config(json.dumps(sandbox.config_document("http://127.0.0.1:8080")))
+    assert load_config(path, allow_loopback_http=True).loopback_http is True
+    monkeypatch.setenv("GHOSTFLEET_AGENT_TEST_LOOPBACK_HTTP", "1")
+    with pytest.raises(ConfigError) as error:
+        load_config(path, allow_loopback_http=False)
+    assert error.value.code == "CONFIG_LOOPBACK_HTTP_FORBIDDEN"
+
+
 def test_url_trailing_slash_is_normalised(tmp_path):
     config = _load(tmp_path, _base_document(tmp_path, control_plane_url=HTTPS + "/"))
     assert config.control_plane_url == HTTPS

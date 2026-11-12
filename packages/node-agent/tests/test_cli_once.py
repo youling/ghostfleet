@@ -1,6 +1,7 @@
 """cli：凭据 fail closed、退出码合同、--once 端到端。"""
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import threading
@@ -250,7 +251,31 @@ def test_status_reports_work_counters_after_once(sandbox, control_plane, capsys)
     assert len(control_plane.records) == before  # status 绝不联网
 
 
-# -- 启动信任闸门（ADR §7） -------------------------------------------------
+# -- 启动信任闸门（ADR §9） -------------------------------------------------
+def install_config_trust(monkeypatch, directory, *, uid_map=None, mountinfo=None, overflowuid=None, writable=False):
+    """注入 /proc 视图，让默认配置的 host-root 判据可在测试里确定性复现。"""
+    trust = importlib.import_module("ghostfleet_agent.trust")
+    proc = directory / "fake-proc"
+    proc.mkdir(parents=True, exist_ok=True)
+    euid = os.geteuid()
+    if uid_map is None:
+        # 只映射别的 UID：测试文件（属主是当前用户）落进 overflow 分支。
+        other = euid + 1000
+        uid_map = f"          {other}        {other}          1\n"
+    if mountinfo is None:
+        mountinfo = "36 1 8:1 / / ro,relatime - ext4 /dev/root rw\n"
+    if overflowuid is None:
+        overflowuid = f"{euid}\n"
+    (proc / "uid_map").write_text(uid_map, encoding="ascii")
+    (proc / "mountinfo").write_text(mountinfo, encoding="ascii")
+    (proc / "overflowuid").write_text(overflowuid, encoding="ascii")
+    monkeypatch.setattr(trust, "UID_MAP_PATH", str(proc / "uid_map"))
+    monkeypatch.setattr(trust, "MOUNTINFO_PATH", str(proc / "mountinfo"))
+    monkeypatch.setattr(trust, "OVERFLOWUID_PATH", str(proc / "overflowuid"))
+    monkeypatch.setattr(trust, "_path_is_writable", (lambda path: True) if writable else (lambda path: False))
+    return proc
+
+
 def test_permissive_token_mode_exits_credential_without_network(sandbox, control_plane, capsys):
     sandbox.write_config(control_plane.url)
     sandbox.token_path.chmod(0o644)
@@ -291,14 +316,55 @@ def test_world_writable_config_exits_credential(sandbox, control_plane, capsys):
     assert "test-token" not in output
 
 
+def test_default_config_accepts_host_root_overflow_on_readonly_mount(sandbox, monkeypatch, tmp_path):
+    # systemd 硬化沙箱常态：只映射自身 UID，host root 显示为 overflow uid。
+    install_config_trust(monkeypatch, tmp_path)
+    path = sandbox.write_config("https://control.example.invalid")
+    path.chmod(0o644)
+    cli.verify_config_trust(str(path), default_path=str(path))  # 不抛即通过
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root 下普通用户文件同时也是 root 文件")
-def test_default_config_requires_root_owner(sandbox):
+def test_default_config_requires_root_owner(sandbox, monkeypatch, tmp_path):
+    path = sandbox.write_config("https://control.example.invalid")
+    path.chmod(0o644)
+    # uid 0 已映射 → 只认 st_uid == 0；文件属于当前用户 → 不可信。
+    install_config_trust(monkeypatch, tmp_path, uid_map="0 0 4294967295\n")
+    with pytest.raises(CredentialError) as excinfo:
+        cli.verify_config_trust(str(path), default_path=str(path))
+    assert excinfo.value.code == "AGENT_CONFIG_UNTRUSTED"
+    assert excinfo.value.detail == "CONFIG_ROOT_NOT_PROVEN"
+
+
+def test_default_config_on_writable_mount_is_rejected(sandbox, monkeypatch, tmp_path):
+    install_config_trust(
+        monkeypatch,
+        tmp_path,
+        mountinfo="36 1 8:1 / / rw,relatime - ext4 /dev/root rw\n",
+    )
     path = sandbox.write_config("https://control.example.invalid")
     path.chmod(0o644)
     with pytest.raises(CredentialError) as excinfo:
         cli.verify_config_trust(str(path), default_path=str(path))
-    assert excinfo.value.code == "AGENT_CONFIG_UNTRUSTED"
-    assert excinfo.value.detail == "CONFIG_OWNER_NOT_ROOT"
+    assert excinfo.value.detail == "CONFIG_MOUNT_NOT_READONLY"
+
+
+def test_default_config_writable_by_user_is_rejected(sandbox, monkeypatch, tmp_path):
+    install_config_trust(monkeypatch, tmp_path, writable=True)
+    path = sandbox.write_config("https://control.example.invalid")
+    path.chmod(0o644)
+    with pytest.raises(CredentialError) as excinfo:
+        cli.verify_config_trust(str(path), default_path=str(path))
+    assert excinfo.value.detail == "CONFIG_WRITABLE_BY_USER"
+
+
+def test_default_config_requires_exact_0644(sandbox, monkeypatch, tmp_path):
+    install_config_trust(monkeypatch, tmp_path)
+    path = sandbox.write_config("https://control.example.invalid")
+    path.chmod(0o664)
+    with pytest.raises(CredentialError) as excinfo:
+        cli.verify_config_trust(str(path), default_path=str(path))
+    assert excinfo.value.detail == "CONFIG_MODE_NOT_0644"
 
 
 def test_config_symlink_is_rejected(sandbox):
@@ -309,6 +375,59 @@ def test_config_symlink_is_rejected(sandbox):
         cli.verify_config_trust(str(link), default_path=str(link))
     assert excinfo.value.code == "AGENT_CONFIG_UNTRUSTED"
     assert excinfo.value.detail == "CONFIG_NOT_REGULAR_FILE"
+
+
+def test_default_config_rejects_group_readable_0640(sandbox, monkeypatch, tmp_path):
+    # 0640（组可读）也不符合 ADR §4 的 0644 契约：默认路径分支必须拒绝。
+    install_config_trust(monkeypatch, tmp_path)
+    path = sandbox.write_config("https://control.example.invalid")
+    path.chmod(0o640)
+    with pytest.raises(CredentialError) as excinfo:
+        cli.verify_config_trust(str(path), default_path=str(path))
+    assert excinfo.value.code == "AGENT_CONFIG_UNTRUSTED"
+    assert excinfo.value.detail == "CONFIG_MODE_NOT_0644"
+
+
+# -- 启动闸门在 main 路径上的行为：失败前不联网、不落 state -------------------
+def test_run_rejects_untrusted_default_config_before_network(sandbox, control_plane, monkeypatch, tmp_path):
+    path = sandbox.write_config(control_plane.url)
+    install_config_trust(monkeypatch, tmp_path, uid_map="0 0 4294967295\n")
+    monkeypatch.setattr(cli, "DEFAULT_CONFIG_PATH", str(path))
+    assert main(["run", "--once", "--config", str(path)]) == EXIT_CREDENTIAL
+    assert control_plane.records == []
+    assert not sandbox.state_paths()["state"].exists()
+
+
+def test_run_rejects_wrong_mode_default_config_before_network(sandbox, control_plane, monkeypatch, tmp_path):
+    path = sandbox.write_config(control_plane.url)
+    path.chmod(0o640)
+    install_config_trust(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "DEFAULT_CONFIG_PATH", str(path))
+    assert main(["run", "--once", "--config", str(path)]) == EXIT_CREDENTIAL
+    assert control_plane.records == []
+    assert not sandbox.state_paths()["state"].exists()
+
+
+def test_run_with_permissive_token_has_no_side_effects(sandbox, control_plane):
+    sandbox.write_config(control_plane.url)
+    sandbox.token_path.chmod(0o666)
+    assert main(["run", "--once", "--config", str(sandbox.config_path)]) == EXIT_CREDENTIAL
+    assert control_plane.records == []
+    assert not sandbox.state_paths()["state"].exists()
+
+
+def test_check_config_applies_startup_trust_gates(sandbox, control_plane, capsys):
+    sandbox.write_config(control_plane.url)
+    sandbox.token_path.chmod(0o644)
+    assert main(["check-config", "--config", str(sandbox.config_path)]) == EXIT_CREDENTIAL
+    output = capsys.readouterr().out
+    document = json.loads([line for line in output.splitlines() if line.strip()][-1])
+    assert document["ok"] is False
+    assert document["command"] == "check-config"
+    assert document["code"] == "AGENT_CREDENTIAL_PERMISSIVE"
+    assert "test-token" not in output
+    assert control_plane.records == []
+    assert not sandbox.state_paths()["state"].exists()
 
 
 # -- 信号处理 --------------------------------------------------------------

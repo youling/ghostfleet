@@ -106,16 +106,20 @@ def test_new_boot_resets_seq_and_stopping(tmp_path):
 )
 def test_corrupt_state_is_rejected(tmp_path, text):
     directory = tmp_path / "state"
-    directory.mkdir()
-    (directory / "state.json").write_text(text, encoding="utf-8")
+    directory.mkdir(mode=0o700)
+    target = directory / "state.json"
+    target.write_text(text, encoding="utf-8")
+    os.chmod(target, 0o600)  # 先过信任闸，才轮到内容校验
     with pytest.raises(StateCorruptError):
         _store(tmp_path).load()
 
 
 def test_oversize_state_is_rejected(tmp_path):
     directory = tmp_path / "state"
-    directory.mkdir()
-    (directory / "state.json").write_text(" " * (state_module.MAX_STATE_BYTES + 1), encoding="utf-8")
+    directory.mkdir(mode=0o700)
+    target = directory / "state.json"
+    target.write_text(" " * (state_module.MAX_STATE_BYTES + 1), encoding="utf-8")
+    os.chmod(target, 0o600)
     with pytest.raises(StateCorruptError):
         _store(tmp_path).load()
 
@@ -143,6 +147,72 @@ def test_atomic_write_failure_without_previous_file(tmp_path, monkeypatch):
     assert sorted(os.listdir(tmp_path)) == []
 
 
+def test_atomic_write_fsyncs_file_before_rename_and_directory_after(tmp_path, monkeypatch):
+    events = []
+    real_fsync = os.fsync
+    real_replace = os.replace
+
+    def _fsync(descriptor):
+        events.append("fsync")
+        return real_fsync(descriptor)
+
+    def _replace(source, destination):
+        events.append("replace")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(state_module.os, "fsync", _fsync)
+    monkeypatch.setattr(state_module.os, "replace", _replace)
+    atomic_write_json(tmp_path / "payload.json", {"a": 1})
+    # 文件 fsync → rename → 目录 fsync：崩溃时不会出现半写文件。
+    assert events == ["fsync", "replace", "fsync"]
+
+
+def test_directory_fsync_failure_is_propagated(tmp_path, monkeypatch):
+    target = tmp_path / "payload.json"
+    atomic_write_json(target, {"a": 1})
+    calls = {"count": 0}
+    real_fsync = os.fsync
+
+    def _fsync(descriptor):
+        calls["count"] += 1
+        if calls["count"] == 2:  # 第二次是目录 fsync
+            raise OSError("simulated directory fsync failure")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(state_module.os, "fsync", _fsync)
+    with pytest.raises(StateWriteError):
+        atomic_write_json(target, {"a": 2})
+
+
+def test_state_file_with_loose_mode_is_rejected(tmp_path):
+    store = _store(tmp_path)
+    store.load()
+    target = tmp_path / "state" / "state.json"
+    os.chmod(target, 0o644)
+    with pytest.raises(StateCorruptError):
+        _store(tmp_path).load()
+
+
+def test_state_file_with_foreign_owner_is_rejected(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    store.load()
+    target = str(tmp_path / "state" / "state.json")
+    real_lstat = os.lstat
+
+    def _lstat(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        if os.fspath(path) == target:
+            return os.stat_result(
+                (info.st_mode, info.st_ino, info.st_dev, info.st_nlink, os.geteuid() + 1, info.st_gid,
+                 info.st_size, info.st_atime, info.st_mtime, info.st_ctime)
+            )
+        return info
+
+    monkeypatch.setattr(state_module.os, "lstat", _lstat)
+    with pytest.raises(StateCorruptError):
+        _store(tmp_path).load()
+
+
 def test_state_dir_is_created_private_and_symlink_rejected(tmp_path):
     directory = tmp_path / "state"
     ensure_state_dir(str(directory))
@@ -153,6 +223,49 @@ def test_state_dir_is_created_private_and_symlink_rejected(tmp_path):
     link.symlink_to(target, target_is_directory=True)
     with pytest.raises(StoreError):
         ensure_state_dir(str(link))
+
+
+class _WarningRecorder:
+    def __init__(self):
+        self.events = []
+
+    def warning(self, event, **fields):
+        self.events.append((event, fields))
+
+
+def test_state_dir_loose_permission_warns_once_then_fails_closed(tmp_path):
+    state_module._LOOSE_PERMISSION_WARNINGS.clear()
+    directory = tmp_path / "state-loose"
+    directory.mkdir()
+    os.chmod(directory, 0o755)
+    recorder = _WarningRecorder()
+
+    # 0o755 → 先记一次告警（同 path+mode 每进程一次），随后每次调用都 fail closed。
+    with pytest.raises(StateWriteError):
+        ensure_state_dir(str(directory), logger=recorder)
+    with pytest.raises(StateWriteError):
+        ensure_state_dir(str(directory), logger=recorder)
+    events = [event for event in recorder.events if event[0] == "state_dir_permissions_loose"]
+    assert len(events) == 1
+    fields = events[0][1]
+    assert fields["path"] == str(directory)
+    assert fields["mode"] == oct(0o755)
+    assert fields["writable_by_group"] is False
+    assert fields["writable_by_other"] is False
+
+    # group/other 有写位：换 mode 后必须再告警一次，同样 fail closed。
+    os.chmod(directory, 0o775)
+    with pytest.raises(StateWriteError):
+        ensure_state_dir(str(directory), logger=recorder)
+    events = [event for event in recorder.events if event[0] == "state_dir_permissions_loose"]
+    assert len(events) == 2
+    assert events[1][1]["mode"] == oct(0o775)
+    assert events[1][1]["writable_by_group"] is True
+
+    # 0700 是正确配置：不告警、不失败。
+    private = tmp_path / "state-private"
+    ensure_state_dir(str(private), logger=recorder)
+    assert len([e for e in recorder.events if e[0] == "state_dir_permissions_loose"]) == 2
 
 
 def test_read_boot_id_is_bounded(tmp_path):

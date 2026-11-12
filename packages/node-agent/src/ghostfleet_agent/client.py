@@ -29,6 +29,7 @@ from .protocol import (
     MAX_POLL_BYTES,
     MAX_RESULT_BYTES,
     NODE_AUTH_INVALID,
+    NODE_BOOT_ID_CAPACITY_REACHED,
     NODE_BOOT_REPLAY,
     NODE_CLOCK_SKEW,
     NODE_NONCE_REPLAY,
@@ -48,7 +49,10 @@ from .protocol import (
     OUTCOME_SERVER_ERROR,
     OUTCOME_TRANSPORT_REFUSED,
     SCHEMA_AGENT,
+    TASK_OPERATION_MISMATCH,
     TASK_RESULT_CONFLICT,
+    TASK_RESULT_SCHEMA_UNSUPPORTED,
+    TASK_RESULT_SCOPE_MISMATCH,
     ProtocolError,
     canonical_bytes,
     format_timestamp,
@@ -58,7 +62,9 @@ from .protocol import (
 from .tasks import MAX_TASKS_PER_HEARTBEAT, MAX_TASKS_PER_POLL
 
 MAX_RESPONSE_BYTES = 256 * 1024
-MIN_INTERVAL_S = 15.0
+# 客户端心跳下限 30s：ADR §5.1 的速率预算（24 容量 + 1/10s）按 30s 周期留了
+# 2 倍余量。服务端或抖动分支给出更小值时按 30s 处理，绝不自己打穿 bucket。
+MIN_INTERVAL_S = 30.0
 MAX_INTERVAL_S = 300.0
 CATEGORY_HEARTBEAT = "heartbeat"
 CATEGORY_POLL = "poll"
@@ -68,6 +74,16 @@ CATEGORY_LIMITS = {
     CATEGORY_POLL: MAX_POLL_BYTES,
     CATEGORY_RESULT: MAX_RESULT_BYTES,
 }
+# 控制面已明确判定"这条结果永远不可接受"的码：只能丢件 + warning，
+# 不能当 DENIED 无限重投（那会持续烧速率预算并把真实原因埋掉）。
+RESULT_REJECTED_CODES = frozenset(
+    {
+        TASK_RESULT_CONFLICT,
+        TASK_RESULT_SCHEMA_UNSUPPORTED,
+        TASK_RESULT_SCOPE_MISMATCH,
+        TASK_OPERATION_MISMATCH,
+    }
+)
 ERROR_CODE_RE = r"^[A-Z][A-Z0-9_]{3,63}$"
 import re
 
@@ -171,9 +187,10 @@ def parse_retry_after(value) -> int | None:
         seconds = int(text)
     else:
         return None
-    if seconds < MIN_RETRY_AFTER_S or seconds > MAX_RETRY_AFTER_S:
+    if seconds < MIN_RETRY_AFTER_S:
         return None
-    return seconds
+    # 服务端要求的等待超过 1h 时钳到上限并如实执行（绝不提前重试）。
+    return min(seconds, MAX_RETRY_AFTER_S)
 
 
 def _extract_error_code(document) -> str | None:
@@ -267,7 +284,8 @@ def _clamp_interval(value, bounds=None) -> float | None:
     if number != number or number in (float("inf"), float("-inf")):
         return None
     low, high = bounds if bounds is not None else (MIN_INTERVAL_S, MAX_INTERVAL_S)
-    low = max(float(low), 1.0)
+    # 配置可以更窄，但下限不得低于客户端的 30s 速率底线。
+    low = max(float(low), MIN_INTERVAL_S)
     high = max(float(high), low)
     return min(max(number, low), high)
 
@@ -401,13 +419,17 @@ class ControlPlaneClient:
             # 只有人类修复才能恢复，按 FATAL 停止上报，而不是无限重试。
             return Response(OUTCOME_AUTH_FATAL, status, code or NODE_SCOPE_MISMATCH)
         if status == 409:
+            if code == NODE_BOOT_ID_CAPACITY_REACHED:
+                # 控制面 boot 历史已满：node 侧无法自愈（不能自己 rotate），重试只会
+                # 持续烧速率预算并把真实原因埋掉；只有 operator 处理才能恢复。
+                return Response(OUTCOME_AUTH_FATAL, status, code)
             if code == NODE_NONCE_REPLAY:
                 return Response(OUTCOME_NONCE_REPLAY, status, code)
             if code == NODE_SEQ_REGRESSION:
                 return Response(OUTCOME_SEQ_REGRESSION, status, code)
             if code == NODE_BOOT_REPLAY:
                 return Response(OUTCOME_BOOT_REPLAY, status, code)
-            if category == CATEGORY_RESULT and code == TASK_RESULT_CONFLICT:
+            if category == CATEGORY_RESULT and code in RESULT_REJECTED_CODES:
                 return Response(OUTCOME_REJECTED, status, code)
             return Response(OUTCOME_DENIED, status, code)
         if status == 429:
@@ -434,8 +456,17 @@ class ControlPlaneClient:
             return HeartbeatResponse(
                 response.kind, response.status, response.code, response.body, retry_after_s=response.retry_after_s
             )
-        # interval 由控制面下发，但必须钳在 ADR 允许的 [15,300]（或配置更窄区间）内。
-        interval_s = _clamp_interval(response.body.get("interval_s"), interval_bounds)
+        # interval 由控制面下发，客户端下限 30s（速率预算），上限 300s。
+        raw_interval = response.body.get("interval_s")
+        if (
+            isinstance(raw_interval, (int, float))
+            and not isinstance(raw_interval, bool)
+            and raw_interval < MIN_INTERVAL_S
+        ):
+            self.logger.warning(
+                "server_interval_below_floor", interval_s=raw_interval, floor_s=MIN_INTERVAL_S
+            )
+        interval_s = _clamp_interval(raw_interval, interval_bounds)
         try:
             tasks = _parse_tasks(response.body, MAX_TASKS_PER_HEARTBEAT)
         except TaskListError as error:

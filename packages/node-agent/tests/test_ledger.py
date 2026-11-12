@@ -16,6 +16,7 @@ from ghostfleet_agent.ledger import (
     RESULT_DROPPED,
     Ledger,
     LedgerCorruptError,
+    LedgerWriteError,
 )
 
 
@@ -116,26 +117,33 @@ def test_prune_keeps_bounded_entries_even_with_dropped_results(tmp_path):
 def test_fences_are_never_evicted_and_exhaustion_blocks_new_work(tmp_path):
     ledger = _ledger(tmp_path)
     ledger.save = lambda: None  # 只为提速：仍在内存里累积 512 个栅栏
+    ledger.save_tombstones = lambda: None
     for index in range(MAX_LEDGER_ENTRIES):
         ledger.begin(f"task-{index:05d}", "node.observe")
     assert len(ledger.entries) == MAX_LEDGER_ENTRIES
     assert ledger.is_exhausted() is True
-    # 超额只发生在没有可驱逐条目时：账本停在原地，栅栏一个都不许丢。
-    ledger.begin("task-overflow", "node.observe")
-    assert len(ledger.entries) == MAX_LEDGER_ENTRIES + 1
+    # 无可驱逐条目时 fail closed：拒绝新任务，栅栏一个都不许丢。
+    with pytest.raises(LedgerWriteError):
+        ledger.begin("task-overflow", "node.observe")
+    assert len(ledger.entries) == MAX_LEDGER_ENTRIES
     assert ledger.get("task-00000") is not None
-    assert ledger.is_exhausted() is True
-    # 完成后才允许驱逐：只驱逐刚刚对账的那条，其他栅栏一个不动。
+    # 把一条栅栏收敛成只读 operation 的成功终态：它变成可驱逐，但还没被驱逐。
     ledger.complete("task-00001", "SUCCEEDED")
+    assert ledger.get("task-00001") is not None
+    assert ledger.is_exhausted() is False
+    # 再进一个新任务并收敛：prune 只驱逐刚对账的那条，其他栅栏一个不动。
+    ledger.begin("task-new", "node.observe")
+    ledger.complete("task-new", "SUCCEEDED")
     assert len(ledger.entries) == MAX_LEDGER_ENTRIES
     assert ledger.get("task-00001") is None
+    assert ledger.get("task-new") is not None
     assert ledger.get("task-00000") is not None
-    assert ledger.get("task-00002") is not None
-    # 剩余仍是全栅栏，所以依旧 exhausted；真实恢复路径是启动对账。
-    assert ledger.is_exhausted() is True
-    ledger.mark_unknown("task-00000")
-    ledger.mark_reconciled("task-00000")
-    assert ledger.is_exhausted() is False
+    # 被驱逐的任务留下墓碑：begin 视作已完成，绝不再执行一次。
+    assert "task-00001" in ledger.tombstones
+    assert ledger.begin("task-00001", "node.observe") == BEGIN_DONE
+    assert len(ledger.entries) == MAX_LEDGER_ENTRIES
+    # 栅栏facts原样保留（不因驱逐或重投而丢）。
+    assert ledger.begin("task-00000", "node.observe") == BEGIN_FENCED
 
 
 def test_reconciled_terminals_are_evictable_so_exhaustion_clears(tmp_path):
@@ -169,8 +177,28 @@ def test_failed_evictable_but_unknown_and_fenced_are_not(tmp_path):
         uncertain.begin(task_id, "node.observe")
         uncertain.mark_unknown(task_id)
     assert uncertain.is_exhausted() is True  # 待对账 UNKNOWN 与栅栏一样不可驱逐
+    # UNKNOWN 永远不可驱逐（副作用不可判定），对账只是补事实。
     uncertain.mark_reconciled("task-unknown-00000")
-    assert uncertain.is_exhausted() is False
+    assert uncertain.is_exhausted() is True
+    with pytest.raises(LedgerWriteError):
+        uncertain.begin("task-overflow", "node.observe")
+
+
+def test_tombstone_capacity_is_fail_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr(ledger_module, "MAX_TOMBSTONES", 2)
+    ledger = _ledger(tmp_path)
+    ledger.save = lambda: None
+    ledger._tombstones = {
+        "task-old-1": {"state": "SUCCEEDED"},
+        "task-old-2": {"state": "SUCCEEDED"},
+    }
+    assert ledger.is_exhausted() is True
+    with pytest.raises(LedgerWriteError):
+        ledger.begin("task-fresh", "node.observe")
+
+    # 容量恢复后，墓碑命中的任务视作已完成，绝不重跑。
+    monkeypatch.setattr(ledger_module, "MAX_TOMBSTONES", 8)
+    assert ledger.begin("task-old-1", "node.observe") == BEGIN_DONE
 
 
 @pytest.mark.parametrize(
@@ -184,7 +212,9 @@ def test_failed_evictable_but_unknown_and_fenced_are_not(tmp_path):
     ],
 )
 def test_corrupt_ledger_fails_closed(tmp_path, text):
-    (tmp_path / "ledger.json").write_text(text, encoding="utf-8")
+    target = tmp_path / "ledger.json"
+    target.write_text(text, encoding="utf-8")
+    target.chmod(0o600)  # 先过文件信任闸，才轮到内容校验
     with pytest.raises(LedgerCorruptError):
         Ledger(str(tmp_path / "ledger.json")).load()
 
