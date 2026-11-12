@@ -15,8 +15,9 @@ import { InMemoryStore } from "./store.js";
 import {
   AGENT_SCHEMA, MAX_TASKS_PER_HEARTBEAT, MAX_TASKS_PER_POLL, NodeAgentError, TASK_LEASE_SECONDS,
   applyHeartbeat, applyTaskResult, canonicalJson, createTask, credentialHandoffUsable,
-  mintNodeCredential, openCredentialHandoff, pollTasks, projectNode, publicTask,
-  publicTaskSummary, sealCredentialHandoff, sha256Hex, validateTaskInput, verifyNodeRequest,
+  mintNodeCredential, normalizeAgentState, openCredentialHandoff, pollTasks, projectNode,
+  publicTask, publicTaskSummary, sealCredentialHandoff, sha256Hex, validateTaskInput,
+  verifyNodeRequest,
 } from "./node-agent.js";
 import { createEnrollmentTemplateCatalog } from "./enrollment-templates.js";
 import { selectionMissingComponents, templateRequiresCapability } from "./capability-selection.js";
@@ -69,10 +70,10 @@ export class GhostFleetController {
     if (!configured || typeof configured !== "object") {
       throw new EnrollmentTicketError("ENROLLMENT_DELIVERY_NOT_CONFIGURED", 503);
     }
-    const supplied = [configured.assets_origin, configured.enroll_origin, configured.bootstrap_sha256]
+    const supplied = [configured.assets_origin, configured.enroll_origin, configured.node_plane_origin, configured.bootstrap_sha256]
       .filter((value) => typeof value === "string" && value.length > 0).length;
     if (supplied === 0) throw new EnrollmentTicketError("ENROLLMENT_DELIVERY_NOT_CONFIGURED", 503);
-    if (supplied < 3) throw new EnrollmentTicketError("ENROLLMENT_DELIVERY_INCOMPLETE", 503);
+    if (supplied < 4) throw new EnrollmentTicketError("ENROLLMENT_DELIVERY_INCOMPLETE", 503);
     try {
       return validateDeliveryCoordinates(configured);
     } catch (error) {
@@ -604,9 +605,15 @@ export class GhostFleetController {
   // and the route method below decides what to persist from it.
 
   verifyNodeRequest({ node_uid, headers, body, limit }) {
-    return verifyNodeRequest({ nodes: this.store.rawNodes() }, {
-      node_uid, headers, body, limit, nowMs: this.clock.now(),
-    });
+    // This runs before authentication, so it must not clone the node map: one
+    // record by uid, and only digest strings when a cross-node check is needed.
+    return verifyNodeRequest(
+      {
+        getNode: (uid) => this.store.getNode(uid),
+        credentialDigests: () => this.store.credentialDigests(),
+      },
+      { node_uid, headers, body, limit, nowMs: this.clock.now() },
+    );
   }
 
   #commitNodeAgent(verification, agent) {
@@ -657,7 +664,10 @@ export class GhostFleetController {
     // conflict at random.
     const applied = applyTaskResult(verification.agent, {
       node_uid: verification.node.node_uid, task_id, result,
-      result_digest: sha256Hex(canonicalJson(result)), nowMs: this.clock.now(),
+      // A body nested deeper than the canonical walker allows is a contract
+      // error, not an internal crash: the depth guard throws this exact code.
+      result_digest: sha256Hex(canonicalJson(result, "TASK_RESULT_INVALID")),
+      nowMs: this.clock.now(),
     });
     this.#commitNodeAgent(verification, applied.agent);
     return {
@@ -672,7 +682,7 @@ export class GhostFleetController {
     const node = required(this.store.getNode(node_uid), "NODE_NOT_FOUND");
     const { task_id: requested_task_id, ...task_input } = input;
     const spec = validateTaskInput(task_input);
-    const created = createTask(node.agent, {
+    const created = createTask(normalizeAgentState(node.agent), {
       node_uid, task_id: requested_task_id ?? makeId("task"), operation: spec.operation,
       params: spec.params, ttl_seconds: spec.ttl_seconds, nowMs: this.clock.now(),
     });
@@ -682,7 +692,9 @@ export class GhostFleetController {
 
   listNodeTasks(node_uid) {
     const node = required(this.store.getNode(node_uid), "NODE_NOT_FOUND");
-    return Object.values(node.agent.tasks).map(publicTask).sort(
+    // A record written before the agent plane existed has no agent subtree at
+    // all; it must read as an empty queue, never as a TypeError.
+    return Object.values(normalizeAgentState(node.agent).tasks).map(publicTask).sort(
       (left, right) => String(left.issued_at).localeCompare(String(right.issued_at)) ||
         String(left.task_id).localeCompare(String(right.task_id)),
     );
@@ -703,7 +715,7 @@ export class GhostFleetController {
     if (node.lifecycle === NodeLifecycle.RETIRED) throw new NodeAgentError("NODE_NOT_ROTATABLE", 409);
     const minted = mintNodeCredential();
     this.store.putNodeAgent(node_uid, {
-      ...node.agent,
+      ...normalizeAgentState(node.agent),
       credential_digest: minted.digestHex,
       credential_minted_at: this.now(),
       credential_handoff: null,

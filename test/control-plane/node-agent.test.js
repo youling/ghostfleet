@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { GhostFleetController } from "../../src/control-plane/controller.js";
 import { createHttpHandler } from "../../src/control-plane/http.js";
 import { DEFAULT_EVENTS_LIMIT, InMemoryStore } from "../../src/control-plane/store.js";
@@ -10,9 +11,10 @@ import {
   AGENT_SCHEMA, CREDENTIAL_HANDOFF_CIPHER, CREDENTIAL_HANDOFF_INFO, CREDENTIAL_HANDOFF_IV_BYTES,
   CREDENTIAL_HANDOFF_KEY_BYTES, CREDENTIAL_HANDOFF_MAX_DELIVERIES, CREDENTIAL_HANDOFF_SALT,
   CREDENTIAL_HANDOFF_STATES, CREDENTIAL_HANDOFF_TAG_BYTES, CREDENTIAL_HANDOFF_TTL_SECONDS,
-  MAX_TASKS_PER_POLL, NODE_BODY_LIMITS, NODE_RATE_LIMIT, RESULT_STATUSES, TASK_LEASE_SECONDS,
-  TASK_OPERATIONS, TASK_SCHEMA, TASK_STATUS, canonicalJson, defaultAgentState, mintNodeCredential,
-  projectAgent, sha256Hex,
+  BOOT_ID_HISTORY_LIMIT, HEARTBEAT_INTERVAL, MAX_TASKS_PER_POLL, NODE_BODY_LIMITS, NODE_RATE_LIMIT, RESULT_STATUSES, TASK_LEASE_SECONDS,
+  TASK_ENVELOPE_FIELDS, TASK_ID_PATTERN, TASK_OPERATIONS, TASK_RETENTION_LIMIT, TASK_SCHEMA, TASK_STATUS,
+  TASK_STORAGE_BYTES_LIMIT, applyTaskResult, canonicalJson, createTask, defaultAgentState, mintNodeCredential,
+  openCredentialHandoff, pollTasks, projectAgent, sealCredentialHandoff, sha256Hex,
 } from "../../src/control-plane/node-agent.js";
 import worker, { GhostFleetState } from "../../src/adapters/cloudflare/worker.js";
 
@@ -28,9 +30,16 @@ const HANDOFF_SECRET = "synthetic-operator-handoff-material";
 const enrollmentDelivery = {
   assets_origin: "https://assets.example.invalid",
   enroll_origin: "https://enroll.example.invalid",
+  node_plane_origin: "https://node-plane.example.invalid",
   bootstrap_sha256: "b".repeat(64),
 };
 const template_selection = { template_id: "managed-linux-tailscale", overrides: { "providers.tailscale.ssh": true } };
+// The exact heartbeat envelope a real na-core agent loop sends before the node
+// has a projected capability status (test/fixtures/heartbeat-before-projection.json).
+// Only node_uid is substituted for the synthetic node the test admits.
+const HEARTBEAT_BEFORE_PROJECTION = JSON.parse(
+  readFileSync(new URL("../fixtures/heartbeat-before-projection.json", import.meta.url), "utf8"),
+);
 
 function createClock(startMs = START_MS) {
   const state = { ms: startMs };
@@ -73,7 +82,14 @@ function makeController(options = {}) {
     ticketCodeFactory: () => "12345678",
     credentialHandoffSecret: HANDOFF_SECRET,
   });
-  return { controller, store, clock, handler: createHttpHandler(controller) };
+  // The adapter injects the operator bearer before the handler; tests that
+  // exercise operator routes pass an always-allow authorizer, and the fail-closed
+  // cases build a handler with no authorizer at all.
+  return {
+    controller, store, clock,
+    handler: createHttpHandler(controller, { authorizeOperator: () => true }),
+    bareHandler: createHttpHandler(controller),
+  };
 }
 
 // Runs the real enrollment ticket flow end to end and returns the single
@@ -569,7 +585,7 @@ test("heartbeat dispatches at most two tasks and leases never overlap", async ()
   const node_uid = admitNode(parts.controller, "dispatch-device");
   const credential = giveCredential(parts.controller, node_uid);
   const first = parts.controller.createNodeTask(node_uid, { operation: "node.observe", params: { want: ["identity"] } });
-  const second = parts.controller.createNodeTask(node_uid, { operation: "agent.self.test", params: { nonce: "heartbeat-probe" } });
+  const second = parts.controller.createNodeTask(node_uid, { operation: "agent.self.test", params: { nonce: "heartbeat-probe-nonce-01" } });
   const third = parts.controller.createNodeTask(node_uid, { operation: "capability.inspect", params: {} });
 
   const beat = await heartbeat(parts.handler, parts.clock, node_uid, credential.token, {
@@ -835,14 +851,13 @@ function workerFixture() {
       put: async (key, value) => { values.set(key, structuredClone(value)); },
     }),
   };
-  const state = new GhostFleetState({ storage });
   const operator = "operator-" + randomBytes(16).toString("hex");
   const reader = "read-only-" + randomBytes(16).toString("hex");
-  const env = {
-    GHOSTFLEET_OPERATOR_TOKEN: operator,
-    GHOSTFLEET_READ_TOKEN: reader,
-    GHOSTFLEET_STATE: { idFromName: () => "test", get: () => state },
-  };
+  const env = { GHOSTFLEET_OPERATOR_TOKEN: operator, GHOSTFLEET_READ_TOKEN: reader };
+  // The Durable Object needs the deployment env for its own defense-in-depth
+  // operator check, so it is built with the same env the outer fetch uses.
+  const state = new GhostFleetState({ storage }, env);
+  env.GHOSTFLEET_STATE = { idFromName: () => "test", get: () => state };
   return {
     values, operator, reader,
     request(path, options = {}) {
@@ -1154,4 +1169,483 @@ test("the durable object persists only successful node mutations", async () => {
   assert.equal((await limited.json()).error, "NODE_RATE_LIMITED");
   assert.equal(limited.headers.get("retry-after"), String(NODE_RATE_LIMIT.refill_seconds));
   assert.equal(blob(), limitedSeed, "a rate-limited request must not rewrite the durable blob");
+});
+// A real agent sends "capability_digest": null on every beat until the node has
+// a projected capability status (na-core observe.py sets None when
+// /etc/ghostfleet/capability-status.json is absent, loop.py always sends the
+// key). Rejecting that null made a PROVISIONAL node's first beat a 400 and the
+// agent backed off forever, so acceptance could never reach poll.
+test("a pre-projection heartbeat with an explicit null capability digest is accepted", async () => {
+  const parts = makeController({ clock: createClock(Date.parse(HEARTBEAT_BEFORE_PROJECTION.sent_at)) });
+  const node_uid = admitNode(parts.controller, "preprojection-device");
+  const credential = giveCredential(parts.controller, node_uid);
+  const body = { ...HEARTBEAT_BEFORE_PROJECTION, node_uid };
+  assert.equal(body.capability_digest, null);
+  assert.equal(body.health, "FAILING");
+
+  const beat = await nodePost(parts.handler, "/v0/nodes/" + node_uid + "/heartbeat", {
+    token: credential.token, headerUid: node_uid, body,
+  });
+  assert.equal(beat.status, 200, beat.text);
+  assert.equal(beat.json.ok, true);
+  assert.equal(beat.json.interval_s, 30);
+  assert.equal(parts.store.getNode(node_uid).agent.capability_digest, null);
+});
+
+test("explicit null is unknown only for the fields whose protocol allows it", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "null-semantics-device");
+  const credential = giveCredential(parts.controller, node_uid);
+  const digest = "sha256:" + "d".repeat(64);
+
+  const known = await heartbeat(parts.handler, parts.clock, node_uid, credential.token, { capability_digest: digest });
+  assert.equal(known.status, 200, known.text);
+  assert.equal(parts.store.getNode(node_uid).agent.capability_digest, digest);
+
+  // Omitted: no observation this beat, so the last known digest is preserved.
+  const omitted = await heartbeat(parts.handler, parts.clock, node_uid, credential.token);
+  assert.equal(omitted.status, 200, omitted.text);
+  assert.equal(parts.store.getNode(node_uid).agent.capability_digest, digest);
+
+  // Explicit null: the node reports "no capability status", so a stale digest
+  // must not survive as if it were fresh.
+  const cleared = await heartbeat(parts.handler, parts.clock, node_uid, credential.token, { capability_digest: null });
+  assert.equal(cleared.status, 200, cleared.text);
+  assert.equal(parts.store.getNode(node_uid).agent.capability_digest, null);
+
+  for (const candidate of ["abc", "", 0, false, [], {}]) {
+    await expectRejection(parts, () => heartbeat(parts.handler, parts.clock, node_uid, credential.token, {
+      capability_digest: candidate,
+    }), 400, "NODE_REQUEST_INVALID");
+  }
+  // queue_depth/drift describe definite observations, so null is malformed there.
+  await expectRejection(parts, () => heartbeat(parts.handler, parts.clock, node_uid, credential.token, {
+    queue_depth: null,
+  }), 400, "NODE_REQUEST_INVALID");
+  await expectRejection(parts, () => heartbeat(parts.handler, parts.clock, node_uid, credential.token, {
+    drift: null,
+  }), 400, "NODE_REQUEST_INVALID");
+});
+
+
+// ---------------------------------------------------------------------------
+// Round-4 hardening: retention, queue liveness, operator authorization, boot
+// history, interval floor, internal-error hygiene, cache headers, depth caps,
+// and the submission-time parameter contract from na-core.
+// ---------------------------------------------------------------------------
+
+test("the dispatched task envelope exposes exactly the nine fields na-core validates", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "envelope-device");
+  const credential = giveCredential(parts.controller, node_uid);
+  parts.controller.createNodeTask(node_uid, { operation: "capability.inspect", params: {}, ttl_seconds: 30 });
+  const polled = await poll(parts.handler, parts.clock, node_uid, credential.token);
+  assert.equal(polled.status, 200);
+  assert.equal(polled.json.tasks.length, 1);
+  // na-core tasks.py validate_envelope accepts this exact key set and REFUSES any
+  // extra key, so a field added here would make every dispatched task fail.
+  assert.deepEqual(Object.keys(polled.json.tasks[0]).sort(), [...TASK_ENVELOPE_FIELDS].sort());
+});
+
+test("task ids stay inside the na-core TASK_ID_RE at submission", () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "task-id-device");
+  const longest = "t" + "a".repeat(95);
+  assert.equal(TASK_ID_PATTERN.test(longest), true);
+  const created = parts.controller.createNodeTask(node_uid, {
+    task_id: longest, operation: "capability.inspect", params: {}, ttl_seconds: 30,
+  });
+  assert.equal(created.task_id, longest);
+  for (const bad of ["t" + "a".repeat(96), "-leading", "has space", "slash/id", "", "a".repeat(97)]) {
+    assert.equal(
+      taskCode(() => parts.controller.createNodeTask(node_uid, {
+        task_id: bad, operation: "capability.inspect", params: {}, ttl_seconds: 30,
+      })),
+      "TASK_REQUEST_INVALID",
+      JSON.stringify(bad),
+    );
+  }
+});
+
+// Acceptance evidence: before this round POST /v0/node-tasks returned 201 for
+// want="identity" and nonce="short", which the agent could only REFUSE after
+// dispatch. Submission now fails closed with the na-core literal code.
+test("operation parameters are rejected at submission with TASK_PARAMS_INVALID", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "param-device");
+  giveCredential(parts.controller, node_uid);
+  const rejects = (operation, params, code = "TASK_PARAMS_INVALID") =>
+    assert.equal(
+      taskCode(() => parts.controller.createNodeTask(node_uid, { operation, params, ttl_seconds: 30 })),
+      code,
+      operation + " " + JSON.stringify(params),
+    );
+  for (const want of ["identity", [], ["teleport"], ["identity", "identity"], ["identity", "os", "uptime", "disk", "services", "capability", "identity"]]) {
+    rejects("node.observe", { want });
+  }
+  rejects("node.observe", { extra: true }, "TASK_PARAMS_FORBIDDEN");
+  rejects("service.status.read", { units: ["nginx"] });
+  rejects("service.status.read", { units: [] });
+  rejects("service.status.read", { units: ["nginx.service", "nginx.service"] });
+  rejects("service.status.read", { units: Array.from({ length: 9 }, (_, index) => "unit" + index + ".service") });
+  rejects("service.status.read", { unit: ["nginx.service"] }, "TASK_PARAMS_FORBIDDEN");
+  rejects("agent.self.test", { nonce: "short" });
+  rejects("agent.self.test", { nonce: 42 });
+  rejects("agent.self.test", { nonce: "n".repeat(65) });
+  rejects("agent.self.test", { seed: "x" }, "TASK_PARAMS_FORBIDDEN");
+  rejects("capability.inspect", { want: [] });
+
+  // The same refusals are visible through the HTTP edge, not only the controller.
+  const httpRejected = await plainRequest(parts.handler, "/v0/node-tasks", {
+    body: { node_uid, operation: "node.observe", params: { want: "identity" } },
+  });
+  assert.equal(httpRejected.status, 400);
+  assert.equal(httpRejected.json.error, "TASK_PARAMS_INVALID");
+  assert.equal(httpRejected.json.code, "TASK_PARAMS_INVALID");
+
+  // Positive controls: a real want array and an 18-byte base64url nonce queue.
+  const observe = await plainRequest(parts.handler, "/v0/node-tasks", {
+    body: { node_uid, operation: "node.observe", params: { want: ["identity", "os"] } },
+  });
+  assert.equal(observe.status, 201);
+  const nonce = randomBytes(18).toString("base64url");
+  assert.equal(nonce.length >= 22, true);
+  const selfTest = await plainRequest(parts.handler, "/v0/node-tasks", {
+    body: { node_uid, operation: "agent.self.test", params: { nonce } },
+  });
+  assert.equal(selfTest.status, 201);
+  const serviceRead = await plainRequest(parts.handler, "/v0/node-tasks", {
+    body: { node_uid, operation: "service.status.read", params: { units: ["nginx.service"] } },
+  });
+  assert.equal(serviceRead.status, 201);
+});
+
+// P1-1: an expired task was never pruned, so the queue grew on every poll and
+// the single durable blob eventually exceeded its size bound.
+test("terminal task history is pruned by count and by bytes on every mutation", () => {
+  const node_uid = makeId("node");
+  let agent = defaultAgentState();
+  let nowMs = START_MS;
+  let createdTotal = 0;
+  for (let round = 0; round < 5; round += 1) {
+    for (let index = 0; index < 64; index += 1) {
+      const created = createTask(agent, {
+        node_uid, task_id: "round-" + round + "-task-" + index,
+        operation: "capability.inspect", params: {}, ttl_seconds: 600, nowMs,
+      });
+      agent = created.agent;
+      createdTotal += 1;
+    }
+    const leased = [];
+    for (let batch = 0; batch < 16; batch += 1) {
+      const polled = pollTasks(agent, { nowMs, limit: 4 });
+      agent = polled.agent;
+      leased.push(...polled.tasks);
+    }
+    assert.equal(leased.length, 64);
+    for (const envelope of leased) {
+      const result = {
+        schema: TASK_SCHEMA, task_id: envelope.task_id, node_uid, operation: envelope.operation,
+        status: "SUCCEEDED", observed_at: new Date(nowMs).toISOString(),
+      };
+      const applied = applyTaskResult(agent, {
+        task_id: envelope.task_id, node_uid, result, result_digest: sha256Hex(canonicalJson(result)), nowMs,
+      });
+      agent = applied.agent;
+    }
+    nowMs += 1000;
+  }
+  assert.equal(createdTotal, 320);
+  const tasks = Object.values(agent.tasks);
+  assert.ok(tasks.length <= TASK_RETENTION_LIMIT, "retained task count must be bounded, saw " + tasks.length);
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(agent.tasks), "utf8") <= TASK_STORAGE_BYTES_LIMIT,
+    "retained task bytes must stay inside the storage bound",
+  );
+  assert.ok(Object.hasOwn(agent.tasks, "round-4-task-63"), "the newest result must be retained");
+});
+
+test("expired tasks are evicted before completed history and never resurrect", () => {
+  const node_uid = makeId("node");
+  const tasks = {};
+  const base = START_MS;
+  for (let index = 0; index < 60; index += 1) {
+    tasks["expired-" + index] = {
+      task_id: "expired-" + index, node_uid, operation: "capability.inspect", params: {},
+      status: TASK_STATUS.EXPIRED, attempt: 0,
+      issued_at: new Date(base + index * 1000).toISOString(),
+      expires_at: new Date(base + index * 1000 - 1).toISOString(),
+      lease_expires_at: null, dispatched_at: null,
+      completed_at: new Date(base + index * 1000).toISOString(),
+      result_digest: null, result_outcome: null, size_bytes: 1,
+    };
+  }
+  for (let index = 0; index < 300; index += 1) {
+    tasks["completed-" + index] = {
+      task_id: "completed-" + index, node_uid, operation: "capability.inspect", params: {},
+      status: TASK_STATUS.COMPLETED, attempt: 1,
+      issued_at: new Date(base + index * 1000).toISOString(),
+      expires_at: new Date(base + 600000).toISOString(),
+      lease_expires_at: null, dispatched_at: new Date(base + index * 1000).toISOString(),
+      completed_at: new Date(base + (100 + index) * 1000).toISOString(),
+      result_digest: "a".repeat(64), result_outcome: "SUCCEEDED", size_bytes: 1,
+    };
+  }
+  const created = createTask({ ...defaultAgentState(), tasks }, {
+    node_uid, task_id: "fresh-task", operation: "capability.inspect", params: {}, ttl_seconds: 30, nowMs: base + 600000,
+  });
+  const retained = Object.values(created.agent.tasks);
+  assert.equal(retained.filter((task) => task.status === TASK_STATUS.EXPIRED).length, 0);
+  assert.equal(Object.hasOwn(created.agent.tasks, "completed-0"), false);
+  assert.equal(Object.hasOwn(created.agent.tasks, "completed-299"), true);
+  assert.equal(retained.filter((task) => task.status === TASK_STATUS.COMPLETED).length, TASK_RETENTION_LIMIT);
+  assert.equal(retained.filter((task) => task.status === TASK_STATUS.PENDING).length, 1);
+});
+
+// P1-2: pending used to be counted without checking expires_at, so a node that
+// stopped polling left the operator on 409 TASK_QUEUE_FULL forever.
+test("expired tasks do not block new operator submissions", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "queue-device");
+  giveCredential(parts.controller, node_uid);
+  for (let index = 0; index < 64; index += 1) {
+    parts.controller.createNodeTask(node_uid, {
+      task_id: "stale-" + index, operation: "capability.inspect", params: {}, ttl_seconds: 5,
+    });
+  }
+  parts.clock.advance(6);
+  const created = await plainRequest(parts.handler, "/v0/node-tasks", {
+    body: { node_uid, operation: "capability.inspect", params: {}, ttl_seconds: 30 },
+  });
+  assert.equal(created.status, 201, created.text);
+  const tasks = parts.controller.listNodeTasks(node_uid);
+  assert.equal(tasks.filter((task) => task.status === TASK_STATUS.PENDING).length, 1);
+  assert.equal(tasks.filter((task) => task.status === TASK_STATUS.EXPIRED).length, 64);
+});
+
+test("a node request without the x-ghostfleet-node-uid header is rejected", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "header-device");
+  const credential = giveCredential(parts.controller, node_uid);
+  await expectRejection(parts, () => poll(parts.handler, parts.clock, node_uid, credential.token, { headerUid: null }), 401, "NODE_AUTH_INVALID");
+});
+
+// P2-3: the boot history must fail closed at capacity instead of silently
+// forgetting a retired boot and letting a stale boot take the active slot.
+test("boot history refuses a new boot at capacity instead of evicting a retired id", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "boot-capacity-device");
+  const credential = giveCredential(parts.controller, node_uid);
+  const record = parts.store.getNode(node_uid);
+  parts.store.putNodeAgent(node_uid, {
+    ...record.agent,
+    retired_boot_ids: Array.from({ length: BOOT_ID_HISTORY_LIMIT }, (_, index) => "boot-retired-" + index),
+    last_boot_id: "boot-active",
+    last_seq: 5,
+  });
+  await expectRejection(
+    parts,
+    () => heartbeat(parts.handler, parts.clock, node_uid, credential.token, {}, { boot_id: "boot-fresh-1", seq: 0 }),
+    409,
+    "NODE_BOOT_ID_CAPACITY_REACHED",
+  );
+  await expectRejection(
+    parts,
+    () => heartbeat(parts.handler, parts.clock, node_uid, credential.token, {}, { boot_id: "boot-retired-0", seq: 0 }),
+    409,
+    "NODE_BOOT_REPLAY",
+  );
+  const active = await heartbeat(parts.handler, parts.clock, node_uid, credential.token, {}, { boot_id: "boot-active", seq: 6 });
+  assert.equal(active.status, 200, active.text);
+  assert.equal(active.json.interval_s, 30);
+});
+
+// P2-5 + ADR 8085ea8 §5.1 item 7: the server never accelerates a node below the
+// 30 s cadence; 15 s beats plus polls would exceed the 360/hour bucket.
+test("heartbeat interval never drops below the 30 second cadence", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "interval-device");
+  const credential = giveCredential(parts.controller, node_uid);
+  const failing = await heartbeat(parts.handler, parts.clock, node_uid, credential.token, {
+    health: "FAILING", drift: [{ code: "DRIFT_1" }, { code: "DRIFT_2" }, { code: "DRIFT_3" }, { code: "DRIFT_4" }, { code: "DRIFT_5" }],
+  });
+  assert.equal(failing.status, 200, failing.text);
+  assert.equal(failing.json.interval_s, HEARTBEAT_INTERVAL.default);
+  assert.equal(failing.json.interval_s >= 30, true);
+  const healthy = await heartbeat(parts.handler, parts.clock, node_uid, credential.token, { health: "OK", drift: [] });
+  assert.equal(healthy.json.interval_s, 30);
+  assert.equal(healthy.json.interval_s <= HEARTBEAT_INTERVAL.max, true);
+  assert.equal(HEARTBEAT_INTERVAL.min >= 30, true);
+  assert.equal(3600 / NODE_RATE_LIMIT.refill_seconds, 360);
+  assert.equal(NODE_RATE_LIMIT.capacity, 24);
+});
+
+// P2-1: importing the handler directly must never be an operator bypass, and a
+// node credential must never count as an operator credential.
+test("the handler fails closed on operator routes without an authorizer", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "operator-gate-device");
+  const credential = giveCredential(parts.controller, node_uid);
+  const routes = [
+    ["POST", "/v0/node-credential/rotate", { node_uid }],
+    ["POST", "/v0/node-tasks", { node_uid, operation: "capability.inspect", params: {} }],
+    ["GET", "/v0/node-tasks?node_uid=" + node_uid, undefined],
+    ["GET", "/v0/nodes", undefined],
+  ];
+  for (const [method, path, body] of routes) {
+    const denied = await plainRequest(parts.bareHandler, path, { method, body });
+    assert.equal(denied.status, 503, path + " " + denied.text);
+    assert.equal(denied.json.error, "OPERATOR_AUTHORIZATION_UNAVAILABLE");
+    assert.equal(denied.text.includes("node_credential"), false);
+    assert.equal(denied.text.includes(credential.token), false);
+  }
+  const deniedAuthorize = createHttpHandler(parts.controller, { authorizeOperator: () => false });
+  const deniedResult = await plainRequest(deniedAuthorize, "/v0/nodes", { method: "GET" });
+  assert.equal(deniedResult.status, 401);
+  assert.equal(deniedResult.json.error, "OPERATOR_AUTH_REQUIRED");
+
+  const throwing = createHttpHandler(parts.controller, { authorizeOperator: () => { throw new Error("synthetic failure"); } });
+  const throwingResult = await plainRequest(throwing, "/v0/nodes", { method: "GET" });
+  assert.equal(throwingResult.status, 401);
+  assert.equal(throwingResult.json.error, "OPERATOR_AUTH_INVALID");
+
+  const passthrough = createHttpHandler(parts.controller, { authorizeOperator: () => new Response("synthetic denial", { status: 418 }) });
+  const passed = await plainRequest(passthrough, "/v0/nodes", { method: "GET" });
+  assert.equal(passed.status, 418);
+  assert.equal(passed.text, "synthetic denial");
+
+  // The three node routes stay exempt from the operator gate but still verify
+  // the node credential themselves.
+  const anonymous = await poll(parts.bareHandler, parts.clock, node_uid, null);
+  assert.equal(anonymous.status, 401);
+  assert.equal(anonymous.json.error, "NODE_AUTH_INVALID");
+  const authorized = await poll(parts.bareHandler, parts.clock, node_uid, credential.token);
+  assert.equal(authorized.status, 200, authorized.text);
+});
+
+// P2-4: a record written before the agent plane existed has no agent subtree.
+test("a legacy node record without an agent subtree reads as an empty queue", async () => {
+  const node_uid = makeId("node");
+  const legacy = {
+    node_uid, node_id: "synthetic-legacy", platform: "linux", lifecycle: NodeLifecycle.ACTIVE,
+    capabilities: [], admitted_at: null,
+    materialized_at: new Date(START_MS).toISOString(), updated_at: new Date(START_MS).toISOString(),
+  };
+  const store = new InMemoryStore({
+    attempts: {}, gates: {}, nodes: { [node_uid]: legacy }, events: [],
+    capability_definitions: {}, consumer_acceptances: {},
+  });
+  const parts = makeController({ store });
+  assert.deepEqual(parts.controller.listNodeTasks(node_uid), []);
+  const listed = await plainRequest(parts.handler, "/v0/node-tasks?node_uid=" + encodeURIComponent(node_uid), { method: "GET" });
+  assert.equal(listed.status, 200, listed.text);
+  assert.deepEqual(listed.json.tasks, []);
+
+  // An unexpected internal error never becomes the public error code.
+  const broken = createHttpHandler({
+    listNodeTaskSummaries() { throw new TypeError("Cannot read properties of undefined (reading 'tasks')"); },
+  }, { authorizeOperator: () => true });
+  const internal = await plainRequest(broken, "/v0/node-tasks?node_uid=" + node_uid, { method: "GET" });
+  assert.equal(internal.status, 500);
+  assert.equal(internal.json.error, "INTERNAL_ERROR");
+  assert.equal(internal.text.includes("Cannot read"), false);
+});
+
+// P2-6: the unauthenticated path must not clone the whole node graph.
+test("an unauthenticated node request never clones every node record", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "amplify-device");
+  const credential = giveCredential(parts.controller, node_uid);
+  const other_uid = admitNode(parts.controller, "amplify-other-device");
+  const other = giveCredential(parts.controller, other_uid);
+  const original = parts.store.rawNodes.bind(parts.store);
+  let clones = 0;
+  parts.store.rawNodes = (...args) => { clones += 1; return original(...args); };
+  const anonymous = await poll(parts.handler, parts.clock, node_uid, null);
+  assert.equal(anonymous.status, 401);
+  const foreign = await poll(parts.handler, parts.clock, node_uid, other.token);
+  assert.equal(foreign.status, 403);
+  assert.equal(foreign.json.error, "NODE_SCOPE_MISMATCH");
+  assert.equal(clones, 0, "an anonymous or mis-scoped request must not clone the node graph");
+  const legitimate = await poll(parts.handler, parts.clock, node_uid, credential.token);
+  assert.equal(legitimate.status, 200);
+  assert.equal(clones, 0);
+});
+
+// P2-7: plaintext credentials must not be cached by any intermediary.
+test("credential-bearing responses carry cache-control: no-store", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "cache-device");
+  giveCredential(parts.controller, node_uid);
+  const rotated = await plainRequest(parts.handler, "/v0/node-credential/rotate", { body: { node_uid } });
+  assert.equal(rotated.status, 200, rotated.text);
+  assert.equal(typeof rotated.json.node_credential, "string");
+  assert.equal(rotated.json.node_credential.length > 0, true);
+  assert.equal(rotated.response.headers.get("cache-control"), "no-store");
+  assert.equal(rotated.response.headers.get("pragma"), "no-cache");
+
+  const attempt = parts.controller.createEnrollmentAttempt({ template_selection });
+  const issued = await parts.controller.issueEnrollmentTicket(attempt.attempt_id);
+  const claim = await parts.controller.claimEnrollmentTicket({
+    ticket_id: issued.ticket.ticket_id, short_code: "12345678", preflight_digest: PREFLIGHT,
+  });
+  const report = {
+    identity_kind: "provisional", enrollment_id: claim.enrollment_id, node_id: claim.node_id,
+    os_id: "debian", os_version_id: "13", bootstrap_version: "synthetic-v1",
+  };
+  const completed = await plainRequest(parts.handler, "/v1/enroll/complete", {
+    body: { resume_session: claim.resume_session, report },
+  });
+  assert.equal(completed.status, 200, completed.text);
+  assert.equal(completed.json.node_credential.token.length > 0, true);
+  assert.equal(completed.response.headers.get("cache-control"), "no-store");
+  assert.equal(completed.response.headers.get("pragma"), "no-cache");
+});
+
+// P2-8: a deeply nested result must be a contract refusal, not a stack overflow
+// reflected to the caller as an internal message.
+test("a deeply nested task result is refused with a contract code", async () => {
+  const parts = makeController();
+  const node_uid = admitNode(parts.controller, "nested-device");
+  const credential = giveCredential(parts.controller, node_uid);
+  parts.controller.createNodeTask(node_uid, { operation: "capability.inspect", params: {}, ttl_seconds: 60 });
+  const polled = await poll(parts.handler, parts.clock, node_uid, credential.token);
+  const task = polled.json.tasks[0];
+  let data = 1;
+  for (let depth = 0; depth < 5000; depth += 1) data = [data];
+  // JSON.stringify itself overflows the stack at this depth, so the deep value is
+  // spliced into a shallowly serialized envelope: the server must do the refusing.
+  const result = {
+    schema: TASK_SCHEMA, task_id: task.task_id, node_uid, operation: task.operation,
+    status: "SUCCEEDED", observed_at: new Date(parts.clock.now()).toISOString(), data: "__NESTED__",
+  };
+  const envelope = agentEnvelope(parts.clock, node_uid, { task_id: task.task_id, result });
+  const nestedJson = "[".repeat(5000) + "1" + "]".repeat(5000);
+  const raw = JSON.stringify(envelope).replace('"__NESTED__"', nestedJson);
+  const before = parts.store.snapshot();
+  const nested = await nodePost(parts.handler, "/v0/nodes/" + node_uid + "/tasks/" + task.task_id + "/result", {
+    token: credential.token, headerUid: node_uid, raw,
+  });
+  assert.equal(nested.status, 400, nested.text);
+  assert.equal(nested.json.error, "TASK_RESULT_INVALID");
+  assert.equal(nested.text.includes("Maximum call stack"), false);
+  assert.deepEqual(parts.store.snapshot(), before);
+});
+
+// P2-2/P2-11 adjacent: the sealed handoff is bound to node, ticket and handoff
+// id. A server-side binding mismatch is an integrity failure, never a token.
+test("the sealed credential handoff is bound to its node and ticket", () => {
+  const node_uid = makeId("node");
+  const ticket_id = makeId("ticket");
+  const handoff_id = makeId("handoff");
+  const token = mintNodeCredential().token;
+  const sealed = sealCredentialHandoff({
+    operatorSecret: HANDOFF_SECRET, token, node_uid, ticket_id, handoff_id, nowMs: START_MS,
+  });
+  assert.equal(openCredentialHandoff({ operatorSecret: HANDOFF_SECRET, handoff: sealed, node_uid, ticket_id }), token);
+  for (const binding of [{ node_uid: makeId("node"), ticket_id }, { node_uid, ticket_id: makeId("ticket") }]) {
+    const error = taskError(() => openCredentialHandoff({ operatorSecret: HANDOFF_SECRET, handoff: sealed, ...binding }));
+    assert.equal(error.code, "NODE_CREDENTIAL_HANDOFF_INVALID");
+    assert.equal(String(error.message).includes(token), false);
+  }
 });

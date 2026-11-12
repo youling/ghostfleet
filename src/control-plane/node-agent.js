@@ -24,8 +24,8 @@ export const NODE_BODY_LIMITS = Object.freeze({
 export const NONCE_WINDOW_SECONDS = 600;
 export const SENT_AT_TOLERANCE_SECONDS = 300;
 export const NONCE_RING_LIMIT = 256;
-// §5.1 (ADR 6a2ff5f): a per-node token bucket, not a fixed window. Capacity 24
-// with one token every 10 s is ~360 requests/hour, which leaves room above the
+// ADR 8085ea8 §5.1 item 7: a per-node token bucket, not a fixed window. Capacity
+// 24 with one token every 10 s is ~360 requests/hour, which leaves room above the
 // 30 s heartbeat cadence (2 requests per 30 s = 240/hour) for polls and results.
 export const NODE_RATE_LIMIT = Object.freeze({ capacity: 24, refill_tokens: 1, refill_seconds: 10 });
 
@@ -36,8 +36,19 @@ export const TASK_ATTEMPT_MAX = 3;
 export const MAX_TASKS_PER_POLL = 4;
 export const MAX_TASKS_PER_HEARTBEAT = 2;
 export const TASK_QUEUE_LIMIT = 64;
-export const TASK_RETENTION_LIMIT = 256;
-export const HEARTBEAT_INTERVAL = Object.freeze({ min: 15, max: 300, default: 30 });
+// §10: terminal task history is bounded by count and by bytes. The whole control
+// plane lives in one blob, so a queue that only compacts COMPLETED entries keeps
+// growing forever: an expired task was never pruned.
+export const TASK_RETENTION_LIMIT = 64;
+export const TASK_STORAGE_BYTES_LIMIT = 64 * 1024;
+export const TASK_RECORD_OVERHEAD_BYTES = 256;
+// ADR 8085ea8 §5.1 item 7 also fixes the node cadence floor at 30 s. Handing a
+// drifting node a 15 s interval would make it beat and poll at 480 requests/hour
+// against a 360/hour bucket, so the server never goes below one beat per 30 s.
+export const HEARTBEAT_INTERVAL = Object.freeze({ min: 30, max: 300, default: 30 });
+// A canonical JSON walk is bounded: a deeply nested body must be refused as a
+// contract error instead of overflowing the stack with an internal message.
+export const CANONICAL_JSON_MAX_DEPTH = 64;
 
 // §5.3 v0 vocabulary: read-only and non-privileged by construction. There is no
 // generic execute operation, and no remote shell.
@@ -59,6 +70,13 @@ export const SERVICE_UNIT_PATTERN = /^[a-z][a-z0-9_.@-]{0,63}\.service$/;
 export const MAX_SERVICE_UNITS = 8;
 export const AGENT_VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$/;
 export const NODE_UID_PATTERN = /^node-[A-Za-z0-9-]{1,80}$/;
+// na-core protocol.py TASK_ID_RE: the id becomes a URL path segment and an agent
+// ledger/log key, so it only allows protocol-safe characters and at most 96 of
+// them. Accepting a looser id here would only defer the refusal to the agent
+// (REFUSED TASK_ENVELOPE_INVALID) after the operator already saw a 201.
+export const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}$/;
+// na-core protocol.py NONCE_RE: 16+ bytes rendered as base64url (22..64 chars).
+export const NONCE_PATTERN = /^[A-Za-z0-9_-]{22,64}$/;
 export const CAPABILITY_DIGEST_PATTERN = /^sha256:[a-z0-9]{64}$/;
 export const RESULT_DIGEST_PATTERN = /^[a-z0-9]{64}$/;
 export const HEALTH_VALUES = Object.freeze(["OK", "DEGRADED", "FAILING"]);
@@ -156,7 +174,12 @@ export const PARAM_MAX_BYTES = 4096;
  * a fresh boot_id; a retired boot_id may never return.
  */
 export const SEQ_MAX_JUMP = 64;
-export const BOOT_ID_HISTORY_LIMIT = 16;
+// A retired boot id may never return, so its history is never silently evicted:
+// forgetting one would let that whole (boot_id, seq) space be replayed and would
+// let a stale boot take the active slot. At capacity the new boot is refused with
+// NODE_BOOT_ID_CAPACITY_REACHED instead; the active boot keeps working and an
+// operator credential rotation clears the history.
+export const BOOT_ID_HISTORY_LIMIT = 64;
 export const BOOT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -243,9 +266,10 @@ export function declaredBodyTooLarge(headers, limit) {
  * Canonical JSON: object keys sorted recursively, so a result digest is stable
  * across transports (JS object order is not a wire contract).
  */
-export function canonicalJson(value) {
+export function canonicalJson(value, depthExceededCode = "TASK_PARAMS_INVALID") {
   const seen = new Set();
-  const walk = (item) => {
+  const walk = (item, depth) => {
+    if (depth > CANONICAL_JSON_MAX_DEPTH) throw new NodeAgentError(depthExceededCode, 400);
     if (item === null) return "null";
     const type = typeof item;
     if (type === "string") return JSON.stringify(item);
@@ -261,18 +285,18 @@ export function canonicalJson(value) {
     seen.add(item);
     let encoded;
     if (Array.isArray(item)) {
-      encoded = "[" + item.map((entry) => walk(entry)).join(",") + "]";
+      encoded = "[" + item.map((entry) => walk(entry, depth + 1)).join(",") + "]";
     } else {
       const keys = Object.keys(item).sort();
       encoded =
         "{" +
-        keys.map((key) => JSON.stringify(key) + ":" + walk(item[key])).join(",") +
+        keys.map((key) => JSON.stringify(key) + ":" + walk(item[key], depth + 1)).join(",") +
         "}";
     }
     seen.delete(item);
     return encoded;
   };
-  return walk(value);
+  return walk(value, 0);
 }
 
 
@@ -496,6 +520,15 @@ export function publicTaskSummary(task) {
   return rest;
 }
 
+// The exact envelope keys na-core tasks.py validate_envelope accepts (and rejects
+// every other key on): schema, task_id, node_uid, operation, params, issued_at,
+// expires_at, attempt, lease_expires_at. Kept as a list so a test can assert the
+// emitted key set instead of relying on the two branches drifting apart.
+export const TASK_ENVELOPE_FIELDS = Object.freeze([
+  "schema", "task_id", "node_uid", "operation", "params",
+  "issued_at", "expires_at", "attempt", "lease_expires_at",
+]);
+
 export function taskEnvelope(task) {
   return {
     schema: TASK_SCHEMA,
@@ -525,10 +558,32 @@ function parseSentAt(value) {
 }
 
 function requireTaskId(value) {
-  if (typeof value !== "string" || value.length === 0 || value.length > 80) {
+  if (typeof value !== "string" || !TASK_ID_PATTERN.test(value)) {
     throw new NodeAgentError("TASK_REQUEST_INVALID", 400);
   }
   return value;
+}
+
+/**
+ * The caller may hand over the whole durable state ({ nodes }) or a read-only
+ * accessor pair ({ getNode, credentialDigests }). The accessor form is what the
+ * controller uses: verification is on the unauthenticated hot path, so it must
+ * read one record and a list of digest strings, never clone every node.
+ */
+function resolveNodeRecord(state, node_uid) {
+  if (state && typeof state.getNode === "function") return state.getNode(node_uid);
+  const nodes = state && typeof state.nodes === "object" && state.nodes !== null ? state.nodes : {};
+  return Object.hasOwn(nodes, node_uid) ? nodes[node_uid] : null;
+}
+
+function credentialDigests(state) {
+  if (state && typeof state.credentialDigests === "function") {
+    return state.credentialDigests().filter((digest) => typeof digest === "string" && digest);
+  }
+  const nodes = state && typeof state.nodes === "object" && state.nodes !== null ? state.nodes : {};
+  return Object.values(nodes)
+    .map((node) => normalizeAgentState(node?.agent).credential_digest)
+    .filter((digest) => typeof digest === "string" && digest);
 }
 
 /**
@@ -558,26 +613,26 @@ export function verifyNodeRequest(state, input) {
   if (typeof node_uid !== "string" || !NODE_UID_PATTERN.test(node_uid)) {
     return deny("NODE_AUTH_INVALID", 401);
   }
+  // ADR §5.1 requires all three headers. A missing uid is not a wildcard: the
+  // path uid alone must never identify the caller.
   const claimedUid = headerValue(headers, "x-ghostfleet-node-uid");
-  if (claimedUid !== null && claimedUid !== node_uid) return deny("NODE_SCOPE_MISMATCH", 403);
+  if (claimedUid === null) return deny("NODE_AUTH_INVALID", 401);
+  if (claimedUid !== node_uid) return deny("NODE_SCOPE_MISMATCH", 403);
   const authorization = headerValue(headers, "authorization");
   const bearer = typeof authorization === "string" ? BEARER_PATTERN.exec(authorization) : null;
   if (!bearer) return deny("NODE_AUTH_INVALID", 401);
 
-  const nodes = state && typeof state.nodes === "object" && state.nodes !== null ? state.nodes : {};
-  const node = Object.hasOwn(nodes, node_uid) ? nodes[node_uid] : null;
+  const node = resolveNodeRecord(state, node_uid);
   if (!node || typeof node !== "object") return deny("NODE_AUTH_INVALID", 401);
   const agent = normalizeAgentState(node.agent);
   const presentedDigest = sha256Hex(bearer[1]);
   if (!agent.credential_digest || !hexDigestEquals(presentedDigest, agent.credential_digest)) {
     // A credential minted for another node must be reported as a scope violation,
-    // not as an ordinary bad credential. Comparison stays constant time.
-    for (const [otherUid, other] of Object.entries(nodes)) {
-      if (otherUid === node_uid) continue;
-      const otherDigest = normalizeAgentState(other?.agent).credential_digest;
-      if (otherDigest && hexDigestEquals(presentedDigest, otherDigest)) {
-        return deny("NODE_SCOPE_MISMATCH", 403);
-      }
+    // not as an ordinary bad credential. Only digest strings are compared: an
+    // unauthenticated request must never deep-clone the durable node map.
+    for (const otherDigest of credentialDigests(state)) {
+      if (otherDigest === agent.credential_digest) continue;
+      if (hexDigestEquals(presentedDigest, otherDigest)) return deny("NODE_SCOPE_MISMATCH", 403);
     }
     return deny("NODE_AUTH_INVALID", 401);
   }
@@ -641,6 +696,13 @@ export function verifyNodeRequest(state, input) {
     }
   } else {
     if (agent.retired_boot_ids.includes(payload.boot_id)) return deny("NODE_BOOT_REPLAY", 409);
+    // The retired history is never silently evicted: a forgotten boot id could be
+    // replayed and a stale boot could take the active slot. At capacity the new
+    // boot is refused instead, leaving the active boot usable; an operator
+    // credential rotation clears the history.
+    if (lastBootId && agent.retired_boot_ids.length >= BOOT_ID_HISTORY_LIMIT) {
+      return deny("NODE_BOOT_ID_CAPACITY_REACHED", 409);
+    }
     nextRetiredBootIds = lastBootId
       ? [...agent.retired_boot_ids, lastBootId].slice(-BOOT_ID_HISTORY_LIMIT)
       : agent.retired_boot_ids;
@@ -714,29 +776,46 @@ function scanParams(value, depth) {
   if (type !== "boolean") throw new NodeAgentError("TASK_PARAMS_INVALID", 400);
 }
 
+// Every operation has exactly the parameter keys na-core's
+// _validate_operation_params tolerates. An extra key would be queued here and then
+// REFUSED by the agent (TASK_PARAMS_FORBIDDEN), so it is rejected at submission.
+function requireOnlyParams(params, allowed) {
+  for (const key of Object.keys(params)) {
+    if (!allowed.includes(key)) throw new NodeAgentError("TASK_PARAMS_FORBIDDEN", 400);
+  }
+}
+
 function validateObserveParams(params) {
+  requireOnlyParams(params, ["want"]);
   const want = params.want;
   if (want === undefined) return;
-  const wants = Array.isArray(want) ? want : [want];
-  if (wants.length === 0 || wants.length > OBSERVE_WANTS.length) {
+  // na-core requires a non-empty list without duplicates. A scalar would be
+  // queued, dispatched and then REFUSED, so it is a submission error instead.
+  if (!Array.isArray(want) || want.length === 0 || want.length > OBSERVE_WANTS.length) {
     throw new NodeAgentError("TASK_PARAMS_INVALID", 400);
   }
-  for (const entry of wants) {
-    if (typeof entry !== "string" || !OBSERVE_WANTS.includes(entry)) {
+  const seen = new Set();
+  for (const entry of want) {
+    if (typeof entry !== "string" || !OBSERVE_WANTS.includes(entry) || seen.has(entry)) {
       throw new NodeAgentError("TASK_PARAMS_INVALID", 400);
     }
+    seen.add(entry);
   }
 }
 
 function validateServiceReadParams(params) {
+  requireOnlyParams(params, ["units"]);
   const units = params.units;
   if (!Array.isArray(units) || units.length === 0 || units.length > MAX_SERVICE_UNITS) {
     throw new NodeAgentError("TASK_PARAMS_INVALID", 400);
   }
+  const seen = new Set();
   for (const unit of units) {
-    if (typeof unit !== "string" || !SERVICE_UNIT_PATTERN.test(unit)) {
+    // Duplicates are refused by na-core as well, so they never reach the queue.
+    if (typeof unit !== "string" || !SERVICE_UNIT_PATTERN.test(unit) || seen.has(unit)) {
       throw new NodeAgentError("TASK_PARAMS_INVALID", 400);
     }
+    seen.add(unit);
   }
 }
 
@@ -745,8 +824,11 @@ function validateCapabilityInspectParams(params) {
 }
 
 function validateSelfTestParams(params) {
+  requireOnlyParams(params, ["nonce"]);
   if (params.nonce === undefined) return;
-  if (typeof params.nonce !== "string" || params.nonce.length === 0 || params.nonce.length > 128) {
+  // Same shape the agent's protocol layer enforces (>=16 bytes base64url); a
+  // short human-readable string would only be REFUSED after dispatch.
+  if (typeof params.nonce !== "string" || !NONCE_PATTERN.test(params.nonce)) {
     throw new NodeAgentError("TASK_PARAMS_INVALID", 400);
   }
 }
@@ -808,16 +890,61 @@ function leaseActive(task, nowMs) {
   return Number.isFinite(leaseExpiresAt) && nowMs < leaseExpiresAt;
 }
 
-function pruneCompletedTasks(tasks) {
-  const entries = Object.values(tasks);
-  if (entries.length <= TASK_RETENTION_LIMIT) return tasks;
-  const completed = entries
-    .filter((task) => task.status === TASK_STATUS.COMPLETED)
-    .sort((left, right) => String(left.completed_at).localeCompare(String(right.completed_at)));
-  const overflow = entries.length - TASK_RETENTION_LIMIT;
-  if (overflow <= 0 || completed.length === 0) return tasks;
+const TERMINAL_TASK_STATUSES = Object.freeze([TASK_STATUS.COMPLETED, TASK_STATUS.EXPIRED]);
+
+function isTerminalTask(task) {
+  return TERMINAL_TASK_STATUSES.includes(task?.status);
+}
+
+function taskStorageBytes(task) {
+  return Number.isInteger(task?.size_bytes) ? task.size_bytes : TASK_RECORD_OVERHEAD_BYTES + 512;
+}
+
+/**
+ * Terminal history is evicted oldest first, and EXPIRED before COMPLETED: an
+ * expired task is a tombstone with no audit value, so keeping it while dropping a
+ * completed result would be backwards. Only terminal tasks are ever evicted; a
+ * pending or leased task is operator work and never disappears silently.
+ */
+function pruneTerminalTasks(tasks) {
   const next = { ...tasks };
-  for (const task of completed.slice(0, overflow)) delete next[task.task_id];
+  const entries = Object.values(next).filter((task) => task && typeof task === "object");
+  const rank = (task) => (task.status === TASK_STATUS.EXPIRED ? 0 : 1);
+  const order = (task) =>
+    String(task.completed_at ?? task.dispatched_at ?? task.issued_at ?? "") +
+    "|" + String(task.task_id);
+  const terminal = entries
+    .filter(isTerminalTask)
+    .sort((left, right) => rank(left) - rank(right) || order(left).localeCompare(order(right)));
+  let terminalCount = terminal.length;
+  let totalBytes = entries.reduce((sum, task) => sum + taskStorageBytes(task), 0);
+  for (const task of terminal) {
+    if (terminalCount <= TASK_RETENTION_LIMIT && totalBytes <= TASK_STORAGE_BYTES_LIMIT) break;
+    delete next[task.task_id];
+    terminalCount -= 1;
+    totalBytes -= taskStorageBytes(task);
+  }
+  return next;
+}
+
+/**
+ * Lazily retires tasks whose TTL passed while the node was not polling. Without
+ * this a stopped node leaves EXPIRED tasks that never become terminal, the
+ * pending count never drops, and every operator submission is 409 TASK_QUEUE_FULL.
+ */
+function expireDueTasks(tasks, nowMs) {
+  const next = { ...tasks };
+  for (const [taskId, task] of Object.entries(next)) {
+    if (!task || typeof task !== "object" || isTerminalTask(task)) continue;
+    if (taskExpired(task, nowMs)) {
+      next[taskId] = { ...task, status: TASK_STATUS.EXPIRED, completed_at: isoFromMs(nowMs) };
+      continue;
+    }
+    if (task.status === TASK_STATUS.LEASED && !leaseActive(task, nowMs) && task.attempt >= TASK_ATTEMPT_MAX) {
+      // A lease that can never be retried is terminal for the operator too.
+      next[taskId] = { ...task, status: TASK_STATUS.EXPIRED, completed_at: isoFromMs(nowMs) };
+    }
+  }
   return next;
 }
 
@@ -825,13 +952,15 @@ function pruneCompletedTasks(tasks) {
 export function createTask(agent, input) {
   const record = normalizeAgentState(agent);
   const nowMs = input.nowMs;
-  const tasks = { ...record.tasks };
-  const pending = Object.values(tasks).filter(
-    (task) => task && task.status !== TASK_STATUS.COMPLETED && task.status !== TASK_STATUS.EXPIRED,
+  const taskId = requireTaskId(input.task_id);
+  // Expiry and pruning happen on every mutation: a node that stopped polling must
+  // not leave tombstones that block operator submissions or grow the blob.
+  const live = pruneTerminalTasks(expireDueTasks(record.tasks, nowMs));
+  if (Object.hasOwn(live, taskId)) throw new NodeAgentError("TASK_ALREADY_EXISTS", 409);
+  const pending = Object.values(live).filter(
+    (task) => task && typeof task === "object" && !isTerminalTask(task),
   );
   if (pending.length >= TASK_QUEUE_LIMIT) throw new NodeAgentError("TASK_QUEUE_FULL", 409);
-  const taskId = requireTaskId(input.task_id);
-  if (Object.hasOwn(tasks, taskId)) throw new NodeAgentError("TASK_ALREADY_EXISTS", 409);
   const task = {
     task_id: taskId,
     node_uid: input.node_uid,
@@ -846,9 +975,18 @@ export function createTask(agent, input) {
     completed_at: null,
     result_digest: null,
     result_outcome: null,
+    // Durable accounting for the byte bound: recomputing every task body on each
+    // mutation would be the same order of work as re-serializing the blob.
+    size_bytes: TASK_RECORD_OVERHEAD_BYTES + Buffer.byteLength(canonicalJson(input.params), "utf8"),
   };
-  tasks[taskId] = task;
-  return { agent: { ...record, tasks: pruneCompletedTasks(tasks) }, task };
+  // The queue is bounded by bytes as well as by count: 64 maximal 4 KiB params
+  // would be 256 KiB and would overflow the single serialized object (§10).
+  const queuedBytes = pending.reduce((sum, entry) => sum + taskStorageBytes(entry), 0);
+  if (queuedBytes + task.size_bytes > TASK_STORAGE_BYTES_LIMIT) {
+    throw new NodeAgentError("TASK_QUEUE_FULL", 409);
+  }
+  const tasks = { ...live, [taskId]: task };
+  return { agent: { ...record, tasks: pruneTerminalTasks(tasks) }, task };
 }
 
 /**
@@ -871,9 +1009,9 @@ export function pollTasks(agent, input) {
   for (const task of ordered) {
     if (envelopes.length >= limit) break;
     if (!task || typeof task !== "object") continue;
-    if (task.status === TASK_STATUS.COMPLETED) continue;
-    if (taskExpired(task, nowMs)) {
-      tasks[task.task_id] = { ...task, status: TASK_STATUS.EXPIRED };
+    if (isTerminalTask(task)) continue;
+    if (taskExpired(task, nowMs) || task.status === TASK_STATUS.EXPIRED) {
+      tasks[task.task_id] = { ...task, status: TASK_STATUS.EXPIRED, completed_at: isoFromMs(nowMs) };
       continue;
     }
     if (task.status === TASK_STATUS.LEASED) {
@@ -891,7 +1029,7 @@ export function pollTasks(agent, input) {
     tasks[task.task_id] = leased;
     envelopes.push(taskEnvelope(leased));
   }
-  return { agent: { ...record, tasks }, tasks: envelopes };
+  return { agent: { ...record, tasks: pruneTerminalTasks(tasks) }, tasks: envelopes };
 }
 
 /**
@@ -944,7 +1082,12 @@ export function applyTaskResult(agent, input) {
     result_outcome: outcome,
   };
   tasks[task.task_id] = completed;
-  return { agent: { ...record, tasks }, task: completed, idempotent: false, result_digest: digest };
+  return {
+    agent: { ...record, tasks: pruneTerminalTasks(tasks) },
+    task: completed,
+    idempotent: false,
+    result_digest: digest,
+  };
 }
 
 /** Folds one heartbeat reporting block into the agent record (§5.2). */
@@ -959,13 +1102,25 @@ export function applyHeartbeat(agent, payload, input) {
     throw new NodeAgentError("NODE_REQUEST_INVALID", 400);
   }
   let capabilityDigest = record.capability_digest;
-  if (payload.capability_digest !== undefined) {
+  // A real agent reports "capability_digest": null on every beat before the node
+  // has a projected capability status: na-core observe.py sets None when
+  // /etc/ghostfleet/capability-status.json is absent (a legal state for a
+  // PROVISIONAL node) and loop.py always sends the key. null therefore means
+  // "explicitly unknown" and is stored as unknown instead of keeping a stale
+  // digest; only an omitted key means "no observation, keep the previous value".
+  if (payload.capability_digest === null) {
+    capabilityDigest = null;
+  } else if (payload.capability_digest !== undefined) {
     const candidate = payload.capability_digest;
     if (typeof candidate !== "string" || !CAPABILITY_DIGEST_PATTERN.test(candidate)) {
       throw new NodeAgentError("NODE_REQUEST_INVALID", 400);
     }
     capabilityDigest = candidate;
   }
+  // Nullable-by-protocol fields are the exception, not the pattern: health and
+  // capability_digest can be explicitly unknown, while queue_depth and drift
+  // always carry a definite observation. A null there is a malformed client, not
+  // an unknown value, so those two stay strictly typed.
   let queueDepth = record.queue_depth;
   if (payload.queue_depth !== undefined) {
     const candidate = payload.queue_depth;
@@ -981,8 +1136,10 @@ export function applyHeartbeat(agent, payload, input) {
     }
     driftCount = payload.drift.length;
   }
-  const base = driftCount > 0 || health === "FAILING" ? HEARTBEAT_INTERVAL.min : HEARTBEAT_INTERVAL.default;
-  const interval_s = Math.min(HEARTBEAT_INTERVAL.max, Math.max(HEARTBEAT_INTERVAL.min, base));
+  // ADR 8085ea8 §5.1 item 7: the server never accelerates a node. Health and
+  // drift choose nothing here, because a 15 s interval would make a beat plus a
+  // poll 480 requests/hour against the 360/hour bucket and pin the node on 429.
+  const interval_s = HEARTBEAT_INTERVAL.default;
   return {
     agent: {
       ...record,
@@ -992,6 +1149,7 @@ export function applyHeartbeat(agent, payload, input) {
       capability_digest: capabilityDigest,
       queue_depth: queueDepth,
       drift_count: driftCount,
+      tasks: pruneTerminalTasks(record.tasks),
     },
     interval_s,
   };

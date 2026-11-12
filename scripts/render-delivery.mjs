@@ -11,6 +11,7 @@
 //   node scripts/render-delivery.mjs \
 //     --assets-origin https://asset.example.invalid \
 //     --enroll-origin https://enroll.example.invalid \
+//     --node-plane-origin https://node-plane.example.invalid \
 //     --bootstrap-sha256 <64 hex> \
 //     --ticket-id ticket-<uuid> [--short-code <8 digits>] [--json | --print-sha256]
 //
@@ -24,7 +25,7 @@ import { createTicketDelivery } from "../src/control-plane/tickets.js";
 
 // Strict allowlists: a mistyped optional flag must fail loudly instead of
 // silently rendering a command without the requested mode.
-const STRING_FLAGS = new Set(["assets-origin", "enroll-origin", "public-origin", "bootstrap-sha256", "ticket-id", "short-code"]);
+const STRING_FLAGS = new Set(["assets-origin", "enroll-origin", "public-origin", "node-plane-origin", "bootstrap-sha256", "ticket-id", "short-code"]);
 const BOOLEAN_FLAGS = new Set(["json", "print-sha256"]);
 
 function parse(argv) {
@@ -50,6 +51,7 @@ try {
     assets_origin: args.assets_origin,
     enroll_origin: args.enroll_origin,
     public_origin: args.public_origin,
+    node_plane_origin: args.node_plane_origin,
     bootstrap_sha256: args.bootstrap_sha256,
   });
   if (args.print_sha256) {

@@ -29,7 +29,7 @@ npm run dev:init
 npm run dev
 ```
 
-在同一机器打开 `http://127.0.0.1:8791/`。初始化不打印凭据、不连接设备。详见 [快速开始](docs/GETTING_STARTED.md)、[文档目录](docs/README.md) 和 [可选平台运行时](docs/PLATFORMS.md)。只有选择 Python 模块时才需要 Python。主流程无需 ChatGPT/OpenAI 配置、回调、API key 或任何私仓权限。
+在同一机器打开 `http://127.0.0.1:8791/`。初始化不打印凭据、不连接设备。详见 [快速开始](docs/GETTING_STARTED.md)、[文档目录](docs/README.md) 和 [可选平台运行时](docs/PLATFORMS.md)。部署到 Cloudflare 时，根 `wrangler.jsonc` 已固定 `workers_dev: false` 与 `preview_urls: false`，唯一公开地址由部署方自己的 zone（routes/custom domain）提供。只有选择 Python 模块时才需要 Python。主流程无需 ChatGPT/OpenAI 配置、回调、API key 或任何私仓权限。
 
 <!-- topic:capabilities -->
 ### 能力矩阵
@@ -89,7 +89,7 @@ npm run dev:init
 npm run dev
 ```
 
-Open `http://127.0.0.1:8791/` on the same machine. Local initialization prints no credentials and contacts no hardware. See [Getting started](docs/GETTING_STARTED.md), the [documentation index](docs/README.md) and [optional platform runtimes](docs/PLATFORMS.md). Python is required only by selected optional modules. No ChatGPT/OpenAI configuration, callbacks, API key or private-repository access is required.
+Open `http://127.0.0.1:8791/` on the same machine. Local initialization prints no credentials and contacts no hardware. See [Getting started](docs/GETTING_STARTED.md), the [documentation index](docs/README.md) and [optional platform runtimes](docs/PLATFORMS.md). On Cloudflare the root `wrangler.jsonc` pins `workers_dev: false` and `preview_urls: false`; the only public address is the deployment's own zone (routes/custom domain). Python is required only by selected optional modules. No ChatGPT/OpenAI configuration, callbacks, API key or private-repository access is required.
 
 <!-- topic:capabilities -->
 ### Capability matrix

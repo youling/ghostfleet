@@ -45,6 +45,16 @@ export class InMemoryStore {
   }
   /** Raw node records, for protocol verification that must not mutate state. */
   rawNodes() { return structuredClone(this.state.nodes); }
+  /**
+   * Credential digests only, for the cross-node scope check on the
+   * unauthenticated path: cloning every node record there would let an anonymous
+   * caller amplify one request into a full copy of durable state.
+   */
+  credentialDigests() {
+    return Object.values(this.state.nodes)
+      .map((node) => normalizeAgentState(node?.agent).credential_digest)
+      .filter((digest) => typeof digest === "string" && digest);
+  }
   listNodes() { return Object.values(this.state.nodes).map(projectNode); }
   appendEvent(value) {
     this.state.events.push(publicClone(value));

@@ -168,14 +168,19 @@ test("provider credential setup is operator-only and transient through the priva
 test("Durable Object reloads committed state between requests", async () => {
   const values = new Map();
   const storage = { transaction: (fn) => fn({ get: async (key) => structuredClone(values.get(key)), put: async (key, value) => values.set(key, structuredClone(value)) }) };
-  const first = new GhostFleetState({ storage });
-  const created = await first.fetch(new Request("https://ghostfleet.test/v0/enrollment-attempts", { method: "POST", body: "{}" }));
+  // The Durable Object is its own operator gate now, so even a direct
+  // state.fetch needs an operator credential and a configured deployment env.
+  const operator = "operator-" + "s".repeat(40);
+  const env = { GHOSTFLEET_OPERATOR_TOKEN: operator };
+  const auth = { authorization: "Bearer " + operator };
+  const first = new GhostFleetState({ storage }, env);
+  const created = await first.fetch(new Request("https://ghostfleet.test/v0/enrollment-attempts", { method: "POST", headers: auth, body: "{}" }));
   assert.equal(created.status, 201);
   const attempt = (await created.json()).attempt;
-  const restored = new GhostFleetState({ storage });
-  const list = await restored.fetch(new Request("https://ghostfleet.test/v0/enrollment-attempts"));
+  const restored = new GhostFleetState({ storage }, env);
+  const list = await restored.fetch(new Request("https://ghostfleet.test/v0/enrollment-attempts", { headers: auth }));
   assert.equal((await list.json()).attempts[0].attempt_id, attempt.attempt_id);
-  const invalid = await restored.fetch(new Request("https://ghostfleet.test/v0/enrollment-attempts", { method: "POST", body: "{broken" }));
+  const invalid = await restored.fetch(new Request("https://ghostfleet.test/v0/enrollment-attempts", { method: "POST", headers: auth, body: "{broken" }));
   assert.equal((await invalid.json()).error, "INVALID_JSON");
   assert.equal(values.get("ghostfleet-state").attempts[attempt.attempt_id].state, "CREATED");
 });

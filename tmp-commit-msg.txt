@@ -1,0 +1,19 @@
+fix(control-plane): close the round-4 node plane review findings
+
+- bound durable task state: prune expired and completed history by count and
+  bytes on every task mutation, and treat expired tasks as dead for queue
+  accounting so a stalled poll can never wedge operator submissions
+- fail closed on the operator plane: no authorizer means 503, node credentials
+  never authorize operator routes, and a missing node-uid header is 401
+- refuse a new boot id at capacity instead of silently evicting a retired one,
+  so a replayed old boot can never displace an active one
+- never clone the whole node graph for an unauthenticated request: resolve one
+  record first and compare digest strings only
+- cap canonical JSON depth at 64 and reflect only contract-shaped error codes,
+  so internal messages cannot leak as protocol answers
+- mark credential responses no-store, reject a bare query delimiter at the
+  bridge, and fix the durability comments and the wrangler preview flags
+- delivery v2: node_plane_origin is mandatory and must be a separate origin
+- accept an explicit null capability_digest from a pre-projection heartbeat
+- tighten task_id/nonce shapes and operation params to the na-core contract
+- 20 new deterministic tests covering every finding and the contract arms

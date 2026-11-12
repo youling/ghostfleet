@@ -239,21 +239,21 @@
     {
       "path": "test/cloud-security.test.js",
       "rule": "unreviewed-endpoint",
-      "line_sha256": "9ba6e47608b0a0581c82a7277f993a01c5315ee61f598f088d89abee487af8aa",
+      "line_sha256": "1916aff75b94a8d3b92d68fbccf7a27bfaa2a09804c61491e1d31b790a497998",
       "kind": "inert-fixture-or-detector",
       "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
     },
     {
       "path": "test/cloud-security.test.js",
       "rule": "unreviewed-endpoint",
-      "line_sha256": "4a15dd7541199aebf29eaf6a3fb35af23645b0a83b111ecf0be3f9791c4cf0f9",
+      "line_sha256": "ce5713c0de169c8c4e68ab4b3c997ed49f49b6860c32354246aded0443a643e4",
       "kind": "inert-fixture-or-detector",
       "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
     },
     {
       "path": "test/cloud-security.test.js",
       "rule": "unreviewed-endpoint",
-      "line_sha256": "f48ed59e76f54fe8bb7bbafe024290bc4ce759e6bce089978670b1a71d2dbf6e",
+      "line_sha256": "83b5efd61aafe4cd3d0c691cb474c42fd0be85134e12a1675b0ad21e962a8ced",
       "kind": "inert-fixture-or-detector",
       "reason": "Exact synthetic test/negative classifier line; no real locator, credential, device or network execution."
     },
@@ -494,6 +494,13 @@
       "line_sha256": "fc1b52c86effa47ba9b93579b06d1e1467947415aa665dcd511dc8bbe0a86f26",
       "kind": "inert-fixture-or-detector",
       "reason": "Independent synthetic node UUID for consumer toolchain tests; no live host."
+    },
+    {
+      "path": "test/fixtures/heartbeat-before-projection.json",
+      "rule": "node-identity",
+      "sha256": "6213d76f67cae11c2211cc68c6681558fca1c9321dacf29fc3ac653cec8cd5f5",
+      "kind": "inert-fixture-or-detector",
+      "reason": "Captured pre-projection heartbeat replayed as a fixture; the node identity is a synthetic placeholder, not a live locator."
     }
   ],
   "binary_reviews": [

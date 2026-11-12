@@ -130,6 +130,7 @@ async function withDelivery(bytes, run) {
     short_code: "12345678",
     assets_origin: assets.origin,
     enroll_origin: enroll.origin,
+    node_plane_origin: "https://node-plane.example.invalid",
     bootstrap_sha256: sha256(bytes),
   });
   const fx = await sandbox(delivery);
@@ -168,7 +169,8 @@ test("a recording payload proves the verified bytes run with the pinned coordina
   const enroll = await serveEnroll();
   const delivery = createTicketDelivery({
     record: { ticket_id: ticketId }, short_code: "12345678",
-    assets_origin: assets.origin, enroll_origin: enroll.origin, bootstrap_sha256: sha256(bytes),
+    assets_origin: assets.origin, enroll_origin: enroll.origin,
+    node_plane_origin: "https://node-plane.example.invalid", bootstrap_sha256: sha256(bytes),
   });
   const fx = await sandbox(delivery);
   const url = enroll.origin + "/v1/enrollment-tickets/" + ticketId;
