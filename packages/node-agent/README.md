@@ -18,8 +18,8 @@ The package is stdlib-only and ships as a deterministic zipapp for `python3 -I`.
 | 无 sudo / 无特权通路 | 以普通用户运行；不写系统路径、不改 systemd unit、不读 secret 文件（token 归属当前用户） |
 | 只读词汇 | v0 只实现 `node.observe`、`service.status.read`、`capability.inspect`、`agent.self.test` |
 | 失败关闭 | 配置/凭据/状态任一不符合契约即拒绝启动或停止上报；未知输入一律拒绝，不猜 |
-| 启动信任闸门 | `run` 前校验 token 为常规文件、属主本人、mode 0600；默认配置必须 root:root 0644；不符退出 3 且不联网 |
-| 公开投影 | `capability.inspect` 只读 `/etc/ghostfleet/capability-status.json` 的白名单字段，绝不读 root-only 私有 state |
+| 启动信任闸门 | `run` 前校验 token 为常规文件、属主本人、mode 0600；默认配置必须 host root 拥有（user namespace 内按只读挂载判据）且 0644；不符退出 3 且不联网 |
+| 公开投影 | `capability.inspect` 只读 `/etc/ghostfleet/capability-status.json` 的白名单字段，属主判据与配置相同，绝不读 root-only 私有 state |
 | 凭据不落日志 | 日志与结构化事件只写固定字段，token/nonce/完整 params 绝不出现在 stdout |
 
 ## 文件布局（与 ADR §4 一致）
@@ -38,8 +38,24 @@ The package is stdlib-only and ships as a deterministic zipapp for `python3 -I`.
 启动信任闸门（任一不符即退出码 3，只报稳定错误码，不打印文件内容）：
 
 - token：`os.lstat` 必须是常规文件（拒绝符号链接）、属主 `uid == os.geteuid()`、mode 恰好 `0600`；失败码 `AGENT_CREDENTIAL_PERMISSIVE`。
-- 配置：默认路径 `/etc/ghostfleet/node-agent.json` 必须属主 root、mode `0644`；用 `--config` 覆盖（仅排障/验收）时要求属主是当前用户且组/其他不可写；失败码 `AGENT_CONFIG_UNTRUSTED`。
-- `capability-status.json`：读取前校验常规文件、属主 uid 0、mode 无组/其他写位；不符返回 `UNKNOWN/CAPABILITY_STATUS_UNTRUSTED`，缺失返回 `UNKNOWN/CAPABILITY_STATUS_UNAVAILABLE`。
+- 配置：默认路径 `/etc/ghostfleet/node-agent.json` 必须是常规文件（拒绝符号链接）、mode 恰好 `0644`，并满足下面的 host-root 判据；用 `--config` 覆盖（仅排障/验收）时要求属主是当前用户且组/其他不可写；失败码 `AGENT_CONFIG_UNTRUSTED`。
+- `capability-status.json`：读取前校验常规文件、mode 无组/其他写位，属主用同一 host-root 判据；不符返回 `UNKNOWN/CAPABILITY_STATUS_UNTRUSTED`，缺失返回 `UNKNOWN/CAPABILITY_STATUS_UNAVAILABLE`。
+
+### host-root 判据（user namespace aware）
+
+systemd 硬化过的 user unit 里 `PrivateUsers=` 等选项会启用 user namespace：host root 拥有的文件在沙箱内显示为 overflow uid（通常 65534），
+单纯的 `st_uid == 0` 会必然失败并让服务无限重启。判据因此分两支（`src/ghostfleet_agent/trust.py`，Agent 与能力投影共用同一实现）：
+
+1. **uid 0 已映射**（`/proc/self/uid_map` 内某行 inside == 0）：要求 `st_uid == 0`。
+2. **uid 0 未映射**：要求 `st_uid == overflowuid`（读 `/proc/sys/kernel/overflowuid`，读不到用 65534）**且**该路径在 `/proc/self/mountinfo`
+   最长前缀匹配的挂载带 `ro` 选项 **且** `os.access(path, os.W_OK)` 为假。
+
+第 2 支不是放宽：只映射自身 UID 的 namespace 里「host root 拥有」与「host 65534 拥有」在 uid 上无法区分，唯一内核级等价不变量是只读挂载；
+`RestrictNamespaces=yes` 阻止服务自建可写视图，因此门禁真正保证的是「托管账户改不了这个文件」。
+解析失败（`/proc` 不可读、mountinfo 无匹配项）一律 fail closed，按不可信处理。
+
+不可信时的稳定 detail 码：`CONFIG_ROOT_NOT_PROVEN`（uid 不匹配）、`CONFIG_MOUNT_NOT_READONLY`（挂载可写）、`CONFIG_WRITABLE_BY_USER`（当前用户可写）、
+`CONFIG_MODE_NOT_0644`；能力投影侧统一收敛为 `CAPABILITY_STATUS_UNTRUSTED`。
 
 ## 配置字段
 
@@ -114,7 +130,7 @@ boot 重放换新 boot_id 重试一次，结果冲突视为永久拒绝）；429
 
 任务词汇：`node.observe`（want ⊆ identity/os/uptime/disk/services/capability）、
 `service.status.read`（≤8 个 unit，必须在 `allowed_units` 白名单内）、
-`capability.inspect`（只回公开投影：整体 sha256、selection 摘要、artifact/user_unit 名+sha256、payload sha256、账户/release pin；不回文件原文，也不读 `/var/lib/fleet/capability-state.json`）、
+`capability.inspect`（只回公开投影：整体 sha256、selection 摘要、artifact/user_unit 名+sha256、payload sha256、账户/release pin；不回文件原文，也不读 `/var/lib/fleet/capability-state.json`；投影文件须通过上面的 host-root 判据）、
 `agent.self.test`（回显 nonce 与版本）。未知 operation 返回 `TASK_OPERATION_UNKNOWN`。
 
 结果状态（控制面据此决定是否重投）：

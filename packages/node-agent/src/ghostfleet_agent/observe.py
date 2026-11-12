@@ -19,6 +19,7 @@ import sys
 
 from .logging import get_logger
 from .protocol import canonical_bytes
+from .trust import host_root_owned
 
 # ADR §7：只读公开投影，绝不读 root 0600 的私有 capability state。
 CAPABILITY_STATUS_PATH = "/etc/ghostfleet/capability-status.json"
@@ -103,7 +104,6 @@ class Observer:
         agent_version: str,
         allowed_units=(),
         capability_path: str = CAPABILITY_STATUS_PATH,
-        capability_uid: int = 0,
         runner: CommandRunner | None = None,
         uptime_path: str = "/proc/uptime",
         meminfo_path: str = "/proc/meminfo",
@@ -115,8 +115,6 @@ class Observer:
         self.agent_version = agent_version
         self.allowed_units = tuple(allowed_units)
         self.capability_path = capability_path
-        # 公开投影由 bootstrap 以 root:root 0644 写入；测试可显式放宽 uid 期望。
-        self.capability_uid = int(capability_uid)
         self.runner = runner or CommandRunner(logger=logger)
         self.uptime_path = uptime_path
         self.meminfo_path = meminfo_path
@@ -237,8 +235,11 @@ class Observer:
     def capability(self) -> dict:
         """公开能力投影：只回白名单字段与整体摘要，绝不回文件原文。
 
-        信任前置条件（不符即 UNKNOWN，不尝试"部分读取"）：常规文件、属主 uid、
-        mode 无组/其他写位。文件缺失是 UNAVAILABLE，信任校验失败是 UNTRUSTED。
+        信任前置条件（不符即 UNKNOWN，不尝试"部分读取"）：常规文件、mode 无组/
+        其他写位、属主是 host root（namespace-aware，见 trust.host_root_owned：
+        uid 0 已映射要求 st_uid == 0；只映射自身 UID 的沙箱里要求 overflow uid +
+        只读挂载 + 当前用户不可写）。文件缺失是 UNAVAILABLE，信任校验失败是
+        UNTRUSTED。
         """
         try:
             info = os.lstat(self.capability_path)
@@ -248,9 +249,10 @@ class Observer:
             return {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
         if not stat.S_ISREG(info.st_mode):
             return {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
-        if info.st_uid != self.capability_uid:
-            return {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
         if stat.S_IMODE(info.st_mode) & 0o022:
+            return {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
+        trusted, _reason = host_root_owned(self.capability_path, info)
+        if not trusted:
             return {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
         try:
             with open(self.capability_path, "rb") as handle:

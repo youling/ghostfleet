@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import sys
@@ -67,6 +68,38 @@ def write_fixture(directory):
     return capability, disk
 
 
+def install_sandbox_trust(monkeypatch, directory, *, uid_map=None, mountinfo=None, overflowuid=None, writable=False):
+    """模拟 systemd 硬化沙箱的 proc 视图：只映射自身 UID + / 只读。
+
+    ADR §9：这种沙箱里 host root 拥有的文件显示为 overflow uid，可信判据退化为
+    「overflow uid + 只读挂载 + 当前用户不可写」。测试把四项事实全部注入。
+    """
+    trust = importlib.import_module("ghostfleet_agent.trust")
+    proc = directory / "fake-proc"
+    proc.mkdir(parents=True, exist_ok=True)
+    euid = os.geteuid()
+    if uid_map is None:
+        uid_map = f"          {euid}        {euid}          1\n"
+    if mountinfo is None:
+        mountinfo = "36 1 8:1 / / ro,relatime - ext4 /dev/root rw\n"
+    if overflowuid is None:
+        overflowuid = f"{euid}\n"
+    (proc / "uid_map").write_text(uid_map, encoding="ascii")
+    (proc / "mountinfo").write_text(mountinfo, encoding="ascii")
+    (proc / "overflowuid").write_text(overflowuid, encoding="ascii")
+    monkeypatch.setattr(trust, "UID_MAP_PATH", str(proc / "uid_map"))
+    monkeypatch.setattr(trust, "MOUNTINFO_PATH", str(proc / "mountinfo"))
+    monkeypatch.setattr(trust, "OVERFLOWUID_PATH", str(proc / "overflowuid"))
+    monkeypatch.setattr(trust, "_path_is_writable", (lambda path: True) if writable else (lambda path: False))
+    return proc
+
+
+@pytest.fixture(autouse=True)
+def sandbox_trust(tmp_path, monkeypatch):
+    """默认让 fixture 文件在这个模拟沙箱里等价于「host root 拥有」。"""
+    return install_sandbox_trust(monkeypatch, tmp_path)
+
+
 def make_observer(directory, *, runner=None, units=(), hostname="node-host", capability=None):
     capability_path, disk = write_fixture(directory)
     if capability is not None:
@@ -76,8 +109,6 @@ def make_observer(directory, *, runner=None, units=(), hostname="node-host", cap
         agent_version=AGENT_VERSION,
         allowed_units=units,
         capability_path=str(capability_path),
-        # 测试文件属主是当前用户，显式放宽 uid 期望（生产默认 root）。
-        capability_uid=os.geteuid(),
         runner=runner or FakeRunner(),
         uptime_path=str(directory / "uptime"),
         meminfo_path=str(directory / "meminfo"),
@@ -270,10 +301,33 @@ def test_capability_missing_is_unavailable(tmp_path):
     assert observer.capability_digest() is None
 
 
-def test_capability_owner_mismatch_is_untrusted(tmp_path):
+def test_capability_owner_mismatch_is_untrusted(tmp_path, monkeypatch):
+    install_sandbox_trust(monkeypatch, tmp_path / "owner", overflowuid="12345678")
     observer = make_observer(tmp_path)
-    # 生产默认 capability_uid=0；测试文件属主是当前用户 → 必须 UNTRUSTED。
-    observer.capability_uid = 0
+    # 沙箱里「host root」等价于 overflow uid；文件属主是当前用户 → 必须 UNTRUSTED。
+    assert observer.capability() == {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
+
+
+def test_capability_writable_mount_is_untrusted(tmp_path, monkeypatch):
+    install_sandbox_trust(
+        monkeypatch,
+        tmp_path / "rw",
+        mountinfo="36 1 8:1 / / rw,relatime - ext4 /dev/root rw\n",
+    )
+    observer = make_observer(tmp_path)
+    assert observer.capability() == {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
+
+
+def test_capability_writable_by_user_is_untrusted(tmp_path, monkeypatch):
+    install_sandbox_trust(monkeypatch, tmp_path / "wok", writable=True)
+    observer = make_observer(tmp_path)
+    assert observer.capability() == {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
+
+
+def test_capability_requires_uid_zero_when_namespace_maps_root(tmp_path, monkeypatch):
+    install_sandbox_trust(monkeypatch, tmp_path / "mapped", uid_map="0 0 4294967295\n")
+    observer = make_observer(tmp_path)
+    # uid 0 已映射时只认 st_uid == 0；属主是当前用户的文件不可信。
     assert observer.capability() == {"status": "UNKNOWN", "reason": "CAPABILITY_STATUS_UNTRUSTED"}
 
 

@@ -49,6 +49,12 @@ from .state import (
     ensure_state_dir,
 )
 from .tasks import TaskExecutor
+from .trust import (
+    REASON_MOUNT_NOT_READONLY,
+    REASON_UID_MISMATCH,
+    REASON_WRITABLE_BY_USER,
+    host_root_owned,
+)
 
 EXIT_OK = 0
 EXIT_CONFIG = 2
@@ -145,6 +151,14 @@ def load_node_uid(path: str) -> str:
     return node_uid
 
 
+# trust 原因码 → verify_config_trust 的稳定 detail（错误码始终是 AGENT_CONFIG_UNTRUSTED）。
+CONFIG_TRUST_DETAILS = {
+    REASON_UID_MISMATCH: "CONFIG_ROOT_NOT_PROVEN",
+    REASON_MOUNT_NOT_READONLY: "CONFIG_MOUNT_NOT_READONLY",
+    REASON_WRITABLE_BY_USER: "CONFIG_WRITABLE_BY_USER",
+}
+
+
 def verify_token_trust(path: str, *, euid: int | None = None) -> None:
     """凭据信任闸门：常规文件、属主本人、mode 恰好 0600。
 
@@ -171,10 +185,14 @@ def verify_config_trust(
     euid: int | None = None,
     default_path: str = DEFAULT_CONFIG_PATH,
 ) -> None:
-    """配置信任闸门：默认 /etc 配置必须 root:root 0644。
+    """配置信任闸门：默认 /etc 配置必须是 host root 拥有的 0644 常规文件。
+
+    「host root 拥有」是 namespace-aware 的判据（见 trust.host_root_owned）：
+    uid 0 已映射时要求 st_uid == 0；未映射（只映射自身 UID，systemd 硬化沙箱的
+    常态）时要求 overflow uid + 只读挂载 + 当前用户不可写。
 
     --config 覆盖只用于排障/验收，要求属主是当前用户且组/其他不可写；
-    两种形态都必须是常规文件（拒绝符号链接）。
+    两种形态都必须是常规文件（拒绝符号链接）。只回稳定 detail 码，不回文件内容。
     """
     expected_uid = os.geteuid() if euid is None else int(euid)
     try:
@@ -185,10 +203,12 @@ def verify_config_trust(
         raise CredentialError(AGENT_CONFIG_UNTRUSTED, "config", "CONFIG_NOT_REGULAR_FILE")
     mode = stat.S_IMODE(info.st_mode)
     if os.path.abspath(path) == os.path.abspath(default_path):
-        if info.st_uid != 0:
-            raise CredentialError(AGENT_CONFIG_UNTRUSTED, "config", "CONFIG_OWNER_NOT_ROOT")
         if mode != 0o644:
             raise CredentialError(AGENT_CONFIG_UNTRUSTED, "config", "CONFIG_MODE_NOT_0644")
+        trusted, reason = host_root_owned(path, info)
+        if not trusted:
+            detail = CONFIG_TRUST_DETAILS.get(reason, "CONFIG_ROOT_NOT_PROVEN")
+            raise CredentialError(AGENT_CONFIG_UNTRUSTED, "config", detail)
         return
     if info.st_uid != expected_uid:
         raise CredentialError(AGENT_CONFIG_UNTRUSTED, "config", "CONFIG_OWNER_MISMATCH")
