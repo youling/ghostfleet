@@ -69,17 +69,19 @@ def write_fixture(directory):
 
 
 def install_sandbox_trust(monkeypatch, directory, *, uid_map=None, mountinfo=None, overflowuid=None, writable=False):
-    """模拟 systemd 硬化沙箱的 proc 视图：只映射自身 UID + / 只读。
+    """模拟 systemd 硬化沙箱的 proc 视图：只映射别的 UID + / 只读。
 
-    ADR §9：这种沙箱里 host root 拥有的文件显示为 overflow uid，可信判据退化为
-    「overflow uid + 只读挂载 + 当前用户不可写」。测试把四项事实全部注入。
+    ADR §9：这种沙箱里 host root 拥有的文件显示为 overflow uid。测试文件实际
+    属于当前用户，因此把 uid_map 造成「映射了另一个 UID」，让 st_uid 未被覆盖、
+    走 overflow 分支；overflowuid 注入成当前用户的 uid。测试把四项事实全部注入。
     """
     trust = importlib.import_module("ghostfleet_agent.trust")
     proc = directory / "fake-proc"
     proc.mkdir(parents=True, exist_ok=True)
     euid = os.geteuid()
     if uid_map is None:
-        uid_map = f"          {euid}        {euid}          1\n"
+        other = euid + 1000
+        uid_map = f"          {other}        {other}          1\n"
     if mountinfo is None:
         mountinfo = "36 1 8:1 / / ro,relatime - ext4 /dev/root rw\n"
     if overflowuid is None:

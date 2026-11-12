@@ -259,7 +259,9 @@ def install_config_trust(monkeypatch, directory, *, uid_map=None, mountinfo=None
     proc.mkdir(parents=True, exist_ok=True)
     euid = os.geteuid()
     if uid_map is None:
-        uid_map = f"          {euid}        {euid}          1\n"
+        # 只映射别的 UID：测试文件（属主是当前用户）落进 overflow 分支。
+        other = euid + 1000
+        uid_map = f"          {other}        {other}          1\n"
     if mountinfo is None:
         mountinfo = "36 1 8:1 / / ro,relatime - ext4 /dev/root rw\n"
     if overflowuid is None:

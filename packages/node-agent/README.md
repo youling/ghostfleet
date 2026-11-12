@@ -44,15 +44,21 @@ The package is stdlib-only and ships as a deterministic zipapp for `python3 -I`.
 ### host-root 判据（user namespace aware）
 
 systemd 硬化过的 user unit 里 `PrivateUsers=` 等选项会启用 user namespace：host root 拥有的文件在沙箱内显示为 overflow uid（通常 65534），
-单纯的 `st_uid == 0` 会必然失败并让服务无限重启。判据因此分两支（`src/ghostfleet_agent/trust.py`，Agent 与能力投影共用同一实现）：
+单纯的 `st_uid == 0` 会必然失败并让服务无限重启。判据因此做**反查映射**（`src/ghostfleet_agent/trust.py`，Agent 与能力投影共用同一实现）：
+把观测到的 `st_uid` 用 `/proc/self/uid_map` 的 `inside outside length` 三元组换回 host uid。
 
-1. **uid 0 已映射**（`/proc/self/uid_map` 内某行 inside == 0）：要求 `st_uid == 0`。
-2. **uid 0 未映射**：要求 `st_uid == overflowuid`（读 `/proc/sys/kernel/overflowuid`，读不到用 65534）**且**该路径在 `/proc/self/mountinfo`
-   最长前缀匹配的挂载带 `ro` 选项 **且** `os.access(path, os.W_OK)` 为假。
+1. **st_uid 被某行覆盖**（`inside <= st_uid < inside + length` 且 `length > 0`）：`host_uid = outside + (st_uid - inside)`，
+   可信当且仅当 `host_uid == 0`。
+2. **st_uid 未被覆盖**（未映射，典型是 overflow uid）：要求 `st_uid == overflowuid`（读 `/proc/sys/kernel/overflowuid`，读不到用 65534）
+   **且**该路径在 `/proc/self/mountinfo` 最长前缀匹配的挂载带 `ro` 选项 **且** `os.access(path, os.W_OK)` 为假。
+
+只看「uid 0 是否出现在 uid_map 里」是不安全的：嵌套命名空间 `0 1002 1`（inside 0 ↔ host 1002）下，托管账户自己拥有的文件
+在 ns 内就显示为 uid 0，会被误判成 host root 拥有；反查 host uid 得到 1002 后直接拒绝。
 
 第 2 支不是放宽：只映射自身 UID 的 namespace 里「host root 拥有」与「host 65534 拥有」在 uid 上无法区分，唯一内核级等价不变量是只读挂载；
 `RestrictNamespaces=yes` 阻止服务自建可写视图，因此门禁真正保证的是「托管账户改不了这个文件」。
-解析失败（`/proc` 不可读、mountinfo 无匹配项）一律 fail closed，按不可信处理。
+解析失败（`uid_map` 不可读/格式错/数字溢出）一律 fail closed **到第 2 支**；mountinfo 不可读或无匹配挂载则判不可信。
+mountinfo 读取上限 1 MiB（真实机器挂载项可能很多），超限按不可信处理。
 
 不可信时的稳定 detail 码：`CONFIG_ROOT_NOT_PROVEN`（uid 不匹配）、`CONFIG_MOUNT_NOT_READONLY`（挂载可写）、`CONFIG_WRITABLE_BY_USER`（当前用户可写）、
 `CONFIG_MODE_NOT_0644`；能力投影侧统一收敛为 `CAPABILITY_STATUS_UNTRUSTED`。

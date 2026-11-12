@@ -1,24 +1,34 @@
-"""host-root 归属判据（user-namespace aware）。
+"""host-root 归属判据（user-namespace aware，反查映射）。
 
 ADR §9 的信任判据：默认路径（/etc/ghostfleet/node-agent.json、
 /etc/ghostfleet/capability-status.json）的文件必须「host root 拥有」。但在
 systemd user manager 的 mount 类硬化（PrivateTmp/ProtectSystem/ProtectHome/
-ReadOnlyPaths 等隐式开启 PrivateUsers=）沙箱里，进程只映射自身 UID，host root
-拥有的文件在沙箱内显示为 overflow uid（默认 65534），所以「st_uid == 0」不可靠。
+ReadOnlyPaths 等隐式开启 PrivateUsers=）沙箱里，进程只映射了自身的 UID，
+host root 拥有的文件在沙箱内显示为 overflow uid（默认 65534），所以
+「st_uid == 0」不可靠。
 
-可信必须满足其一：
+正确做法是**反查映射**：把观测到的 st_uid 用 /proc/self/uid_map 的
+inside / outside / length 三元组换回 host uid。
 
-  (a) uid 0 在当前 user namespace 已映射（/proc/self/uid_map）→ st_uid == 0；
-  (b) uid 0 未映射（只映射自身 UID）→ st_uid == overflowuid（默认 65534），
-      且该路径在 /proc/self/mountinfo 最长前缀匹配的挂载带 ro 选项，
-      且当前进程对该路径没有写权限（os.access(path, W_OK) 为假）。
+  (a) st_uid 被某行覆盖（inside <= st_uid < inside + length，且 length > 0）：
+      host_uid = outside + (st_uid - inside)，可信当且仅当 host_uid == 0。
+  (b) st_uid 未被任何行覆盖（未映射，典型是 overflow uid）：要求
+      st_uid == overflowuid，且该路径在 /proc/self/mountinfo 最长前缀匹配的
+      挂载带 ro 选项，且当前进程写不了该文件。
 
-(b) 不是放宽：只映射自身 UID 的 namespace 里，「host root 拥有」与「host 65534
-拥有」在 uid 上无法区分；唯一可用的内核级等价不变量是「该路径所在挂载只读 +
-当前用户写不了」。unit 里的 RestrictNamespaces=yes 阻止服务自造可写挂载视图，
-因此这个判据真正保证的是：「托管账户改不了这个文件」。
+为什么不能只看「uid 0 是否出现在 uid_map 里」：嵌套命名空间 0 1002 1
+（inside 0 ↔ host 1002）下，托管账户自己拥有的文件在 ns 内就显示为 uid 0，
+那会把「用户自己的文件」误判成 host root 拥有。反查 host uid 后得到 1002，
+判据直接拒绝。
 
-任何解析失败一律 fail closed（不可信）。本模块零依赖、只读 /proc 与文件元数据。
+(b) 不是放宽：只映射自身 UID 的 namespace 里，「host root 拥有」与「host
+65534 拥有」在 uid 上无法区分；唯一可用的内核级等价不变量是「该路径所在
+挂载只读 + 当前用户写不了」。unit 里的 RestrictNamespaces=yes 阻止服务自造
+可写挂载视图，因此这个判据真正保证的是：「托管账户改不了这个文件」。
+
+解析失败（uid_map 不可读、行格式错、数字溢出）一律 fail closed：只走 (b)，
+即只有 overflow uid + 只读挂载 + 不可写才可信。本模块零依赖、只读 /proc
+与文件元数据。
 """
 from __future__ import annotations
 
@@ -31,7 +41,10 @@ MOUNTINFO_PATH = "/proc/self/mountinfo"
 OVERFLOWUID_PATH = "/proc/sys/kernel/overflowuid"
 
 DEFAULT_OVERFLOWUID = 65534
-MAX_PROC_BYTES = 256 * 1024
+MAX_UID_MAP_BYTES = 64 * 1024
+# 真实机器的 mountinfo 可以很大（容器/快照挂载很多），给到 1 MiB。
+MAX_MOUNTINFO_BYTES = 1024 * 1024
+UID_SPACE = 2 ** 32
 
 REASON_ROOT_MAPPED = "ROOT_MAPPED"
 REASON_OVERFLOW_ON_READONLY_MOUNT = "OVERFLOW_ON_READONLY_MOUNT"
@@ -42,7 +55,7 @@ REASON_WRITABLE_BY_USER = "WRITABLE_BY_USER"
 _ESCAPE_RE = re.compile(r"\\([0-7]{3})")
 
 
-def _read_bounded(path: str, limit: int = MAX_PROC_BYTES) -> str:
+def _read_bounded(path: str, limit: int) -> str:
     """读一个 /proc 文本文件；超限按读取失败处理（fail closed）。"""
     with open(path, "rb") as handle:
         raw = handle.read(limit + 1)
@@ -51,47 +64,65 @@ def _read_bounded(path: str, limit: int = MAX_PROC_BYTES) -> str:
     return raw.decode("utf-8", "replace")
 
 
-def uid_zero_mapped(*, uid_map_path: str | None = None) -> bool:
-    """uid 0 是否已在当前 user namespace 被映射。
+def _parse_uid_map(text: str) -> list[tuple[int, int, int]] | None:
+    """解析 uid_map 行为 (inside, outside, length)。
 
-    /proc/self/uid_map 每行三列：inside outside length。只要有一行 inside 列
-    等于 0 且 length > 0，就说明 uid 0 已映射。读取或解析失败时返回 True（保守：
-    退回「必须 st_uid == 0」这条最严格判据）。
+    任何格式问题（列数不对、非十进制、负数、越界、区间溢出）都返回 None，
+    调用方据此 fail closed 到 overflow 分支。
     """
-    target = UID_MAP_PATH if uid_map_path is None else uid_map_path
-    try:
-        text = _read_bounded(target)
-    except (OSError, ValueError):
-        return True
-    ambiguous = False
+    entries: list[tuple[int, int, int]] = []
     for line in text.splitlines():
         fields = line.split()
         if not fields:
             continue
-        if len(fields) < 3:
-            ambiguous = True
-            continue
+        if len(fields) != 3:
+            return None
         try:
-            length = int(fields[2])
+            inside, outside, length = (int(field, 10) for field in fields)
         except ValueError:
-            ambiguous = True
-            continue
-        # 内核格式为「inside outside length」，两列都可能等于 0；
-        # 任一侧出现 0 就按「uid 0 已映射」处理（更严格，fail closed）。
-        if length > 0 and ("0" in (fields[0].strip(), fields[1].strip())):
-            return True
-    return True if ambiguous else False
+            return None
+        for value in (inside, outside, length):
+            if value < 0 or value >= UID_SPACE:
+                return None
+        if inside + length > UID_SPACE or outside + length > UID_SPACE:
+            return None
+        entries.append((inside, outside, length))
+    if not entries:
+        return None
+    return entries
+
+
+def map_to_host_uid(uid: int, *, uid_map_path: str | None = None) -> int | None:
+    """把 namespace 内观测到的 uid 反查成 host uid。
+
+    返回 None 表示「未被任何映射行覆盖」或「uid_map 不可读/不可解析」；
+    两种情况都交由 overflow 分支判断（fail closed）。
+    """
+    if not isinstance(uid, int) or isinstance(uid, bool) or uid < 0 or uid >= UID_SPACE:
+        return None
+    target = UID_MAP_PATH if uid_map_path is None else uid_map_path
+    try:
+        text = _read_bounded(target, MAX_UID_MAP_BYTES)
+    except (OSError, ValueError):
+        return None
+    entries = _parse_uid_map(text)
+    if entries is None:
+        return None
+    for inside, outside, length in entries:
+        if length > 0 and inside <= uid < inside + length:
+            return outside + (uid - inside)
+    return None
 
 
 def overflowuid(*, overflowuid_path: str | None = None) -> int:
     """沙箱内「未映射 UID」的占位值；读不到时用内核默认 65534。"""
     target = OVERFLOWUID_PATH if overflowuid_path is None else overflowuid_path
     try:
-        text = _read_bounded(target, limit=64).strip()
+        text = _read_bounded(target, 64).strip()
         value = int(text)
     except (OSError, ValueError):
         return DEFAULT_OVERFLOWUID
-    if value < 0 or value > 4294967294:
+    if value < 0 or value >= UID_SPACE - 1:
         return DEFAULT_OVERFLOWUID
     return value
 
@@ -125,7 +156,7 @@ def path_on_readonly_mount(path: str, *, mountinfo_path: str | None = None) -> b
     target = MOUNTINFO_PATH if mountinfo_path is None else mountinfo_path
     normalized = os.path.normpath(path)
     try:
-        text = _read_bounded(target)
+        text = _read_bounded(target, MAX_MOUNTINFO_BYTES)
     except (OSError, ValueError):
         return False
     best_option: str | None = None
@@ -168,8 +199,9 @@ def host_root_owned(
     ROOT_MAPPED / OVERFLOW_ON_READONLY_MOUNT 表示可信；UID_MISMATCH /
     MOUNT_NOT_READONLY / WRITABLE_BY_USER 表示不可信。
     """
-    if uid_zero_mapped(uid_map_path=uid_map_path):
-        if st.st_uid == 0:
+    host_uid = map_to_host_uid(st.st_uid, uid_map_path=uid_map_path)
+    if host_uid is not None:
+        if host_uid == 0:
             return True, REASON_ROOT_MAPPED
         return False, REASON_UID_MISMATCH
     expected = overflowuid(overflowuid_path=overflowuid_path)
