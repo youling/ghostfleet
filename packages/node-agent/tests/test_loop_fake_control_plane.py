@@ -16,6 +16,7 @@ import pytest
 
 from agent_test_support import TEST_AGENT_VERSION, TEST_TOKEN, AgentSandbox, make_task
 from ghostfleet_agent import protocol
+from ghostfleet_agent.client import TransportResponse
 from ghostfleet_agent.cli import build_loop, load_node_uid, load_token
 from ghostfleet_agent.config import DEFAULT_REQUEST_TIMEOUT_S, load_config
 from ghostfleet_agent.ledger import MAX_LEDGER_ENTRIES, RESULT_DROPPED, LedgerWriteError
@@ -35,6 +36,7 @@ from ghostfleet_agent.protocol import (
     AGENT_EXECUTION_UNKNOWN,
     AGENT_NETWORK_ERROR,
     NODE_BOOT_ID_CAPACITY_REACHED,
+    NODE_NONCE_REPLAY,
     NODE_RATE_LIMITED,
     OUTCOME_NETWORK_ERROR,
     OUTCOME_OK,
@@ -42,6 +44,7 @@ from ghostfleet_agent.protocol import (
     TASK_OPERATION_MISMATCH,
     TASK_RESULT_SCHEMA_UNSUPPORTED,
     RESULT_FAILED,
+    RESULT_REFUSED,
     RESULT_STATUSES,
     RESULT_SUCCEEDED,
     RESULT_UNKNOWN,
@@ -391,6 +394,9 @@ def test_pending_outbox_is_flushed_before_new_work(sandbox, control_plane):
             "result_digest": digest_of(result),
         }
     )
+    loop.ledger.complete(
+        "task-pending", RESULT_SUCCEEDED, result_digest=digest_of(result), operation="node.observe"
+    )
     assert loop.run_once() == 0
     paths = [record["path"] for record in control_plane.records]
     assert paths[0].endswith("/tasks/task-pending/result")
@@ -414,6 +420,13 @@ def test_startup_replays_persisted_outbox_drops_as_result_dropped(sandbox, contr
                 "result": result,
                 "result_digest": digest_of(result),
             }
+        )
+    for item in loop.outbox.pending():
+        loop.ledger.complete(
+            item["task_id"],
+            RESULT_SUCCEEDED,
+            result_digest=item["body"]["result_digest"],
+            operation="node.observe",
         )
     # 崩溃后重启：丢弃事实必须从 outbox.json 重放成 ledger 的 RESULT_DROPPED。
     assert loop.outbox.pending_dropped() == ["task-0000", "task-0001"]
@@ -527,6 +540,13 @@ def _enqueue_pending_result(loop, sandbox, task_id="task-rate-limited"):
             "result": result,
             "result_digest": digest_of(result),
         }
+    )
+    # 真实路径里 outbox 里的结果一定伴随已提交的 ledger 终态摘要（发送前闸门）。
+    loop.ledger.complete(
+        task_id,
+        RESULT_SUCCEEDED,
+        result_digest=digest_of(result),
+        operation="agent.self.test",
     )
     return result
 
@@ -657,6 +677,9 @@ def test_shutdown_flushes_pending_results(sandbox, control_plane):
             "result": result,
             "result_digest": digest_of(result),
         }
+    )
+    loop.ledger.complete(
+        "task-pending", RESULT_SUCCEEDED, result_digest=digest_of(result), operation="agent.self.test"
     )
     loop.shutdown(reason="test")
     assert loop.outbox.depth() == 0
@@ -816,9 +839,16 @@ def test_stop_budget_is_a_runtime_deadline_not_a_constant_sum(sandbox, control_p
     assert all(later <= earlier + 1e-9 for earlier, later in zip(timeouts, timeouts[1:]))
     # 睡眠块必须小于两个喂狗周期，否则主循环块间喂狗也救不了 WatchdogSec=60。
     assert MAX_SLEEP_CHUNK_S < 2 * WATCHDOG_INTERVAL_S
-    # 静态上界仍然成立（哨兵：任何常量被改大立刻红）。
+    # 逐段上界 + 余量下限：只断言"总和 ≤ 30"是不敏感的哨兵——把 STOP_SLICE_S 改成 9.0
+    # 仍然能加出 ≤30，却已经违反"每 ≤1 s 检查一次 stop_event"。因此每一段单独钉住。
+    assert STOP_SLICE_S <= 1.0
+    assert DEFAULT_REQUEST_TIMEOUT_S <= 10.0
+    assert SHUTDOWN_FLUSH_BUDGET_S <= 8.0
+    assert SHUTDOWN_RESERVE_S >= 2.0
     worst = STOP_SLICE_S + DEFAULT_REQUEST_TIMEOUT_S + SHUTDOWN_FLUSH_BUDGET_S + SHUTDOWN_RESERVE_S
     assert worst <= TIMEOUT_STOP_SEC
+    # 余量下限：任何一段被改大都要么触发上面的分支断言，要么至少留下 ≥SHUTDOWN_RESERVE_S。
+    assert TIMEOUT_STOP_SEC - worst >= SHUTDOWN_RESERVE_S
 
 
 # -- P1：停止后不得再发起任何新请求（真机 PROBE1 的 loop 级复现） -------------
@@ -1073,4 +1103,129 @@ def test_unknown_operations_do_not_exhaust_the_ledger(sandbox, control_plane):
     assert loop.ledger.is_exhausted() is False
     assert len(loop.ledger.entries) <= MAX_LEDGER_ENTRIES
     assert loop.ledger.begin("task-after-unknown", "node.observe") == "NEW"
+
+
+# -- P2-1b：非字符串 operation 不许把常驻进程打成 exit 5 ----------------------
+@pytest.mark.parametrize("operation", [[], {}, ["node.observe"], None, 7])
+def test_non_string_operation_is_refused_before_any_fence(sandbox, control_plane, operation):
+    """JSON list/dict 不能进 frozenset 成员判断（TypeError 会穿透 run_forever → exit 5）。"""
+    control_plane.respond = idle_responder(control_plane)
+    loop, _ = build_agent(sandbox, control_plane)
+    begun = []
+    real_begin = loop.ledger.begin
+    loop.ledger.begin = lambda *args, **kwargs: begun.append(args) or real_begin(*args, **kwargs)
+    envelope = make_task(node_uid=sandbox.node_uid, task_id="task-non-string-op")
+    envelope["operation"] = operation
+
+    loop._process_task(envelope)  # 不得抛 TypeError
+
+    # 没有栅栏：实现从未被调用，控制面可以安全重投（REFUSED 语义）。
+    assert begun == []
+    entry = loop.ledger.get("task-non-string-op")
+    assert entry["state"] == RESULT_REFUSED
+    assert entry.get("reconciled") is True
+    assert loop.outbox.has("task-non-string-op")
+
+
+# -- P1-1：账本终态提交失败 → 这条结果永远不发送（一个 task 只能有一个摘要） ---
+def test_uncommitted_result_is_never_sent_and_restart_reports_unknown(sandbox, control_plane):
+    """rev-core 探针：complete() 失败后 shutdown 仍把真实摘要发出去，重启又补发 UNKNOWN
+    → 同一 task 两个摘要、控制面只能 TASK_RESULT_CONFLICT。这里断言结果被撤回、
+    零次 POST，重启后恰好一条 UNKNOWN。"""
+    control_plane.respond = idle_responder(control_plane)
+    control_plane.heartbeat_tasks = [make_task(node_uid=sandbox.node_uid, task_id="task-digest-race")]
+    loop, stream = build_agent(sandbox, control_plane)
+
+    def failing_complete(*_args, **_kwargs):
+        raise LedgerWriteError("ledger write failed", path=loop.ledger.path)
+
+    loop.ledger.complete = failing_complete
+    # 终态提交失败 → 本轮降级（不崩溃），且刚入队的结果必须已被撤回。
+    assert loop.iteration() == "retry"
+    assert loop.outbox.depth() == 0
+    assert loop.outbox.has("task-digest-race") is False
+    assert control_plane.requests_to("/result") == []
+    assert "result_retracted_before_send" in stream.getvalue()
+
+    # 旧实现在这里会把真实摘要发出去（rev-core 的 digest 6cf0a718）。
+    stats = loop.shutdown(reason="test")
+    assert stats["sent"] == 0
+    assert control_plane.requests_to("/result") == []
+
+    # 重启：reconcile 只补 UNKNOWN 这一个事实，且只发这一个摘要。
+    control_plane.heartbeat_tasks = []
+    restarted, _ = build_agent(sandbox, control_plane)
+    assert restarted.reconcile() == 1
+    assert restarted.run_once() == 0
+    posts = control_plane.requests_to("/result")
+    assert len(posts) == 1
+    body = posts[0]["body"]
+    assert body["result"]["status"] == RESULT_UNKNOWN
+    assert body["result_digest"] == restarted.ledger.get("task-digest-race")["result_digest"]
+
+
+# -- P1-2：停机 flush 里 409 重试绝不翻倍预算 ---------------------------------
+@pytest.mark.parametrize(
+    "cost, expected_calls, expected_retry_timeout",
+    [(2.8, 1, None), (1.5, 2, 1.5)],
+)
+def test_shutdown_flush_never_doubles_the_retry_budget(
+    sandbox, control_plane, monkeypatch, cost, expected_calls, expected_retry_timeout
+):
+    """flush 预算 3 s：第一次 409 花 2.8 s → 剩余 0.2 s < MIN_SEND_WINDOW_S，不重试；
+    花 1.5 s → 重试只拿剩余 1.5 s（旧实现会再拿一整份 3 s，最坏 2× 预算）。"""
+    monkeypatch.setattr("ghostfleet_agent.loop.SHUTDOWN_FLUSH_BUDGET_S", 3.0)
+    loop, _ = build_agent(sandbox, control_plane)
+    _enqueue_pending_result(loop, sandbox, task_id="task-retry-budget")
+    clock = {"now": 1000.0}
+    loop._monotonic = lambda: clock["now"]
+    loop.client._monotonic = lambda: clock["now"]
+
+    class SlowConflictTransport:
+        def __init__(self):
+            self.calls = []
+
+        def post(self, url, *, headers, body, timeout_s):
+            self.calls.append(timeout_s)
+            clock["now"] += cost
+            return TransportResponse(409, json.dumps({"code": NODE_NONCE_REPLAY}).encode())
+
+    transport = SlowConflictTransport()
+    loop.client.transport = transport
+    stats = loop.shutdown(reason="test")
+
+    assert len(transport.calls) == expected_calls
+    assert stats["pending"] == 1
+    assert stats["elapsed_s"] <= 3.0 + 0.5
+    if expected_retry_timeout is not None:
+        assert transport.calls[1] == pytest.approx(expected_retry_timeout)
+
+
+# -- 发送闸的边界：已收敛并被驱逐的终态（只剩墓碑）仍要照常发送 --------------
+def test_evicted_terminal_result_is_still_sendable_via_its_tombstone(sandbox, control_plane):
+    """驱逐只留墓碑的已收敛只读终态，其待发结果不能被闸门误撤回。
+
+    闸门只认"现存条目"时，账本一压满就会把合法待发的 result 撤掉：控制面永远收不到
+    该 result，而墓碑又只让 begin() 返回 DONE、不会补发 → 该 task 的结果永久丢失。
+    """
+    control_plane.respond = idle_responder(control_plane)
+    loop, _ = build_agent(sandbox, control_plane)
+    loop.ledger.save = lambda: None
+    loop.ledger.save_tombstones = lambda: None
+    result = _enqueue_pending_result(loop, sandbox, task_id="task-tombstoned-result")
+    digest = digest_of(result)
+
+    # 512 条在途栅栏不可驱逐；第 513 条触发 _prune，能驱逐的只有上面那条已收敛终态。
+    for index in range(MAX_LEDGER_ENTRIES):
+        loop.ledger.begin(f"task-busy-{index:04d}", "node.observe")
+    loop.ledger.complete("task-prune-trigger", RESULT_SUCCEEDED, result_digest="0" * 64, operation="node.observe")
+    assert loop.ledger.get("task-tombstoned-result") is None
+    assert loop.ledger.tombstones["task-tombstoned-result"]["result_digest"] == digest
+
+    stats = loop.shutdown(reason="test")
+    assert stats["sent"] == 1
+    posts = control_plane.requests_to("/result")
+    assert len(posts) == 1
+    assert posts[0]["body"]["result_digest"] == digest
+
 

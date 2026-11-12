@@ -283,6 +283,23 @@ class Outbox:
                 return True
         return False
 
+    def retract(self, task_id: str) -> bool:
+        """撤回一条"账本终态没提交"的结果；返回是否真的移除了条目。
+
+        账本写入失败时，真实结果绝不能发出：否则 shutdown flush 会成功送出一个
+        摘要，重启 reconcile 又会补发 UNKNOWN，同一个 task 出现两个摘要
+        （控制面只能回 TASK_RESULT_CONFLICT，ADR §5.2/§7 的"一 task 一摘要"被破坏）。
+        先从内存移除（保证本进程内绝不可能再发出），再原子落盘；落盘失败向上抛
+        OutboxWriteError 由调用方 fail closed（不发送 + 结构化错误），重启后磁盘上
+        的条目会被 reconcile 以"事实"补齐终态，仍然只发一个摘要。
+        """
+        for index, item in enumerate(self._items):
+            if item["task_id"] == task_id:
+                del self._items[index]
+                self.save()
+                return True
+        return False
+
     def flush(self, send, *, stop_event=None, deadline=None, clock=None) -> FlushReport:
         """按顺序回传；send(item) 返回带 kind/code 属性的分类结果。
 

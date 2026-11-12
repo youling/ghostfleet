@@ -178,6 +178,8 @@ boot 重放换新 boot_id 重试一次，`NODE_BOOT_ID_CAPACITY_REACHED` 无法�
   `begin()` 命中墓碑按 `DONE` 处理，绝不因驱逐而重跑。墓碑满或账本达上限且无可驱逐条目时 `begin()` 拒绝、
   停止 poll（heartbeat 继续，health=`DEGRADED`、`health_reason=AGENT_LEDGER_EXHAUSTED`），对账腾出空间后自动恢复取任务。
 - `SIGTERM` 收尾的 flush 预算固定 8 秒并计入下面的停机上界；该预算**逐条检查**（每条 result POST 之前算一次剩余预算、单请求超时钳到剩余预算），耗尽即停，未发出的条目留在 outbox 下次启动优先重发。
+- 409 冲突（nonce/seq/boot 回放）的自动重试与第一次尝试**共用同一份超时预算**：第一次花掉的时间从重试预算里扣除，剩余不足 `MIN_SEND_WINDOW_S` 就直接放弃重试、把第一次的 409 交给上层。因此一次请求的总耗时永远不超过它的预算，最坏也不是 2×。
+- 账本终态（result 摘要）没提交成功时，刚入队的结果会被**从 outbox 撤回**，绝不发送；撤回本身失败则 fail closed（记 `result_uncommitted_unsendable`，宁可不发）。发送前还有一道闸：outbox 条目的 `result_digest` 必须与账本已提交的终态摘要逐字相同，否则同样撤回不发送。已收敛并被有界驱逐的终态只在墓碑里留下 `result_digest`，墓碑摘要同样算「已提交」——否则账本压满时会把合法待发的结果误撤回，而墓碑只让 `begin()` 返回 `DONE`、不会补发，该 result 就永久丢了（回归测试 `test_evicted_terminal_result_is_still_sendable_via_its_tombstone`）。这样同一 task 只可能有一个会被发出的摘要（重启后是 `UNKNOWN`），不会出现"真实结果 + UNKNOWN"两条摘要被控制面判成 `TASK_RESULT_CONFLICT`。
 
 ### 停机预算（`TimeoutStopSec=30` 内，三段相加）
 
@@ -194,11 +196,20 @@ boot 重放换新 boot_id 重试一次，`NODE_BOOT_ID_CAPACITY_REACHED` 无法�
 这个上界是**运行时逐请求检查**的结果，不是常量相加的自我声明：`stop_event` 在心跳之前、poll 之前、以及
 `outbox.flush()` 的**每一条 send 之前**检查；停机路径只带 deadline（不带 `stop_event`，保证已完成的 result
 仍尝试发出），每条 send 的单请求超时被钳到「剩余预算」，`remaining < MIN_SEND_WINDOW_S` 立即停止并保留 pending。
+客户端在 `send()` 入口取一次单调起点，409 冲突重试只拿「预算 − 已花时间」，剩余不足 `MIN_SEND_WINDOW_S` 时
+**完全不重试**——表中「在途 HTTP 请求 10 s」因此是整次 send（含重试）的上界，不是每次尝试的上界。
 测试：`test_stop_budget_is_a_runtime_deadline_not_a_constant_sum`
 （64 条 pending + 假时钟、每条 send 0.2 s，断言 elapsed ≤8 s + 一次 send 颗粒、逐条拿到递减的剩余预算、
 pending 可见）；`tests/test_outbox.py` 的 `test_flush_stops_before_any_send_when_stop_event_is_set`、
-`test_flush_checks_stop_event_before_every_send`、`test_flush_honours_deadline_and_passes_remaining_budget_as_timeout`。
-静态哨兵仍保留：常量全部从模块导入，任何人改大其中一项、或 `TimeoutStopSec` 变小，测试立刻红。
+`test_flush_checks_stop_event_before_every_send`、`test_flush_honours_deadline_and_passes_remaining_budget_as_timeout`；
+`test_shutdown_flush_never_doubles_the_retry_budget`（flush 预算 3 s 的对照装置：第一次 409 花 2.8 s → 不重试、
+只发 1 次；花 1.5 s → 重试只拿剩余 1.5 s），`tests/test_client.py` 的
+`test_conflict_retry_is_skipped_when_the_timeout_budget_is_spent`、
+`test_conflict_retry_gets_only_the_remaining_budget`（假 transport + 假时钟，断言单次 send 总耗时 ≤ 预算）。
+静态哨兵不是"总和 ≤30"了事：`test_stop_budget_is_a_runtime_deadline_not_a_constant_sum` 用模块常量逐段断言
+（`STOP_SLICE_S ≤ 1`、`DEFAULT_REQUEST_TIMEOUT_S ≤ 10`、`SHUTDOWN_FLUSH_BUDGET_S ≤ 8`、
+`SHUTDOWN_RESERVE_S ≥ 2`），并额外断言总和之外仍留出 ≥ `SHUTDOWN_RESERVE_S` 的余量——只把某一段偷偷
+改大（例如 `STOP_SLICE_S=9`）也会立刻红，而不是靠总和碰巧还 ≤30 混过去。
 注意：生产默认值满足上表；若运维显式把 `request_timeout_s` 调大，必须自行保持三段之和 + 2 s ≤ 30 s。
 
 ## 运行行为（真机取证）
