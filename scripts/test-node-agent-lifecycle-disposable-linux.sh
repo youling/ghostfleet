@@ -943,10 +943,28 @@ loginctl enable-linger "${ACCOUNT}" || fail_check "could not enable lingering fo
 LINGER_ENABLED=1
 assert_eq "$(loginctl show-user "${ACCOUNT}" -p Linger --value)" "yes" "lingering must be enabled for boot recovery without a login"
 wait_value 60 "user-manager-running" "active" systemctl is-active "user@${ACCOUNT_UID}.service"
-wait_until 60 "user-manager-bus" run_as_account systemctl --user is-system-running
-record_ok "enabled lingering and started the user manager for ${ACCOUNT_UID} without any login session"
+# is-system-running exits non-zero on "degraded", and a fresh user manager on a
+# runner image can be degraded because some unrelated user unit failed at boot.
+# The property this harness needs is a reachable user bus, so wait on that and
+# then record the state plus any failed units instead of demanding "running".
+wait_until 60 "user-manager-bus" run_as_account systemctl --user show-environment
+USER_MANAGER_STATE="$(run_as_account systemctl --user is-system-running 2>/dev/null || true)"
+case "${USER_MANAGER_STATE}" in
+  running|degraded) : ;;
+  "") fail_check "systemctl --user is-system-running produced no state for ${ACCOUNT_UID}" ;;
+  *) fail_check "unexpected user manager state [${USER_MANAGER_STATE}] for ${ACCOUNT_UID}" ;;
+esac
+USER_MANAGER_FAILED="$(run_as_account systemctl --user list-units --failed --no-legend 2>/dev/null | awk '{print $1}' | tr '\n' ' ' || true)"
+if [[ -n "${USER_MANAGER_FAILED// /}" ]]; then
+  evidence "account.user_manager_failed_units=${USER_MANAGER_FAILED}"
+  case "${USER_MANAGER_FAILED}" in
+    *"${UNIT_NAME}"*) fail_check "the installed unit ${UNIT_NAME} is failed inside the user manager: ${USER_MANAGER_FAILED}" ;;
+  esac
+fi
+record_ok "enabled lingering and reached the user manager bus for ${ACCOUNT_UID} without any login session (state ${USER_MANAGER_STATE})"
 evidence "account.linger=$(loginctl show-user "${ACCOUNT}" -p Linger --value)"
 evidence "account.user_manager=user@${ACCOUNT_UID}.service"
+evidence "account.user_manager_state=${USER_MANAGER_STATE}"
 
 run_as_account systemctl --user daemon-reload
 set +e
