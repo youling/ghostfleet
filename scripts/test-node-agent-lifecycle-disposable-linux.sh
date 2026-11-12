@@ -2792,7 +2792,7 @@ if [[ "${PAYLOAD_IS_PRODUCT}" != "yes" ]]; then
   printf '%s\n' "STUB: the agent payload under test was built by ${BUILD_ENTRY_LABEL}, not by the product build entry packages/node-agent/tools/build_pyz.py, so every agent-level arm above exercised a fixture payload instead of the product agent" >> "${WORK}/result-lines.txt"
 fi
 if [[ "${SLOW_PLANE_RAN}" != "yes" ]]; then
-  printf '%s\n' "NOT_RUN: the slow-control-plane stop arm (SIGTERM while a heartbeat is in flight; zero new requests after the signal) is implemented in S6c but disabled on this build with GHOSTFLEET_ACCEPTANCE_SLOW_PLANE=1 the only switch; the frozen payload 20ef4f8a still starts a poll after the stop signal (rev-core P1, na-core fix in flight), so the arm is not counted as product evidence here" >> "${WORK}/result-lines.txt"
+  printf '%s\n' "NOT_RUN: the slow-control-plane stop arm (SIGTERM while a node-plane request is in flight; zero new node-plane requests after the signal) is implemented in S6c but this run kept it disabled; GHOSTFLEET_ACCEPTANCE_SLOW_PLANE=1 enables it, so this run is not evidence about the stop path" >> "${WORK}/result-lines.txt"
 fi
 if [[ "${CAPABILITY_STATUS_POSITIVE}" != "yes" ]]; then
   printf '%s\n' "NOT_RUN: a positive /etc/ghostfleet/capability-status.json needs the courier lane's pinned rows (fleet_privctl.py, privileged-ops.pub, managed-linux-privileged-operations.sh) and its reviewed template digest; this lifecycle job installs only the unit and the payload, and the published writer is proven to refuse that partial set (exit ${EMITTER_STATUS}, EMIT_CAPABILITY_STATUS_INPUT_INVALID)" >> "${WORK}/result-lines.txt"

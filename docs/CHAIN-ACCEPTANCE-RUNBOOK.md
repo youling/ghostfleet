@@ -33,7 +33,7 @@ machine.
    its ownership, its bytes matching the pinned artifact and its enablement.
 6. `FLEET_CONTROL_ORDINARY_USER` equals the Human; the unit and Linger belong to
    the template's `control_account`; neither is root; a second run is zero delta.
-6. The run account is created by the courier inside the same ceremony and is
+7. The run account is created by the courier inside the same ceremony and is
    least privilege: `sudo -l -U <control_account>` reports no grant, its groups
    contain no root-equivalent group, and `su -s /bin/sh <control_account> -c
    'sudo -n /usr/local/libexec/youling-fleet/fleet-privctl'` fails, while the
@@ -267,12 +267,20 @@ GitHub-hosted Ubuntu VM, with the same fork protection and
 
 The script builds the artifacts the courier is supposed to install instead of
 trusting a checked-in copy: it discovers the agent's build entry, builds the
-zipapp twice and requires byte equality, then asserts the pinned systemd user
-unit against `docs/architecture/NODE_AGENT_V0.md` section 8 (no shell, no
-`curl`/`wget`, no `/bin/sh`, writes only under `%h`,
-`ProtectHome=read-only` present and `read-write` absent, `ExecStart`
-path character-equal to the install path, `StateDirectory` and
-`ConfigurationDirectory` covering the two `ReadWritePaths`), and runs
+zipapp twice and requires byte equality, then checks the pinned systemd user
+unit directive by directive. It does **not** read
+`docs/architecture/NODE_AGENT_V0.md` section 8; those requirements are
+hard-coded in the script (the comments cite "ADR section 8" and its e438231
+amendment), so editing the ADR alone changes nothing here. The directives it
+asserts are `ExecStart` exactly `/usr/bin/python3 -I <install path> run` and
+character-equal to the install path, `Type=notify`, `NotifyAccess=main`,
+`Restart=on-failure`, `RestartSec=5`, `WatchdogSec=60`,
+`TimeoutStopSec=30`, `WantedBy=default.target`, `NoNewPrivileges=yes`,
+`MemoryMax=` and `TasksMax=` present, `ProtectHome=read-only` present with
+`read-write` absent, no `sh -c`, `curl`, `wget` or `/bin/sh`,
+`ReadWritePaths` exactly the two home-scoped directories,
+`StateDirectory=ghostfleet-agent` and `ConfigurationDirectory=ghostfleet`
+with their `*DirectoryMode=0700` counterparts. It also runs
 `python3 -I <pyz> check-config` against both the missing-configuration and
 the installed-configuration shapes.
 
@@ -322,9 +330,12 @@ What the job proves, measured on the host rather than read off a config:
   a duplicate result is idempotent, a conflicting result is
   `409 TASK_RESULT_CONFLICT`,
   `node.exec` and forbidden parameter keys are rejected, a wrongly shaped
-  request is refused at submission rather than by the agent (a string `want`,
-  a too-short nonce and an illegal task id are all 400 with a task-request
-  code, and nothing is queued), and a task left at
+  request is refused at submission rather than by the agent (the operator CLI
+  refuses a string `want` and a too-short nonce with exit `3` and
+  `TASK_PARAMS_INVALID`; only the raw HTTP probe that carries an illegal
+  caller-supplied task id is expected to answer `400`, with one of
+  `NODE_REQUEST_INVALID`, `TASK_REQUEST_INVALID` or `TASK_ID_INVALID`;
+  nothing is queued in any of the three cases), and a task left at
   `MAY_HAVE_EXECUTED` by a crash is reported as `UNKNOWN` exactly once
   and never re-run;
 - an independent read-only consumer, holding a token that is neither the
@@ -342,7 +353,10 @@ acceptance-only: the operator/observer bearer split lives in the harness because
 fixture is synthetic (it is admitted through the real controller calls but has
 no enrollment ticket and no public bridge). The `ActiveState` the timeline
 carries is the agent's own `service.status.read` observation, not a
-control-plane measurement.
+control-plane measurement. Two further items are conditional rather than fixed:
+the positive capability projection (it needs the courier lane's pinned rows) and,
+unless `GHOSTFLEET_ACCEPTANCE_SLOW_PLANE=1`, the S6c slow-plane arm, so the
+report's `NOT_RUN` count is seven with that switch off and six with it on.
 
 Two install-line facts this job refuses to fake. First, the capability
 projection at `/etc/ghostfleet/capability-status.json` must be produced by
@@ -353,24 +367,35 @@ itself, because a hand-written projection only proves the script can write JSON.
 The emitter takes paired arguments (`--artifact name=sha256:<64 hex>:<octal
 mode>` per pinned row, `--template-digest`, `--installer`, `--privileged-key`,
 `--unit`, `--unit-artifact`, `--payload-artifact`, `--control-account`,
-`--privileged-account`, `--output`, `--payload-path`), and a legitimate
-projection pins rows this lifecycle job does not install (the privileged helper
+`--privileged-account`, `--output`, `--applied-at`, and `--payload-path`,
+which defaults to the product payload path), and a legitimate projection pins
+rows this lifecycle job does not install (the privileged helper
 `fleet_privctl.py`, the release `privileged-ops.pub` key and the reviewed
 installer script) plus a real template digest. So the job calls the real CLI
 with only the two rows it owns (the unit and the payload) and requires exit
-`2` with `EMIT_CAPABILITY_STATUS_INPUT_INVALID`, which proves the product
-writer refuses a partial projection; the positive projection is printed as
-`NOT_RUN` with that reason rather than faked. Second, the unit asset must carry
+`2` with `EMIT_CAPABILITY_STATUS_INPUT_INVALID`. Its `--template-digest` is
+the measured sha256 of the installed unit: that digest only seeds
+`release_pin`, the call is refused before anything is written, so it is a
+stand-in here and never a fabricated release pin. Two negative assertions keep
+the arm honest: the refusal must name an artifact row this job does not own
+("not one of the pinned --artifact rows"), and no `capability-status.json`
+may be left behind. The positive projection is printed as `NOT_RUN` with that
+reason rather than faked. Second, the unit asset must carry
 `ConfigurationDirectoryMode=0700` and `StateDirectoryMode=0700`; the job fails
 closed when either line is absent, since the systemd defaults (`0755`) leave the
 agent configuration and state directories readable beyond the control account.
 
 The job also records the mount-hardening facts a naive agent gets wrong: the
 unit runs in an implicit `PrivateUsers` namespace (`/proc/<pid>/uid_map` is the
-single self-mapping of the control account), the host configuration appears
-inside that namespace as the overflow uid at mode `0644`, `/` is mounted
-read-only, and the unit still reaches `READY` under `Type=notify` with a first
-heartbeat. The namespace values are measured from inside it with
+single self-mapping of the control account), `/` is mounted read-only, and the
+unit still reaches `READY` under `Type=notify` with a first heartbeat. The
+configuration's owner inside that namespace follows the mapping rather than a
+fixed constant: the script reads `/proc/sys/kernel/overflowuid` and the sandbox
+`uid_map`, requires owner `0` when host root is mapped, and otherwise requires
+the overflow uid, with the configuration still at mode `0644` on the read-only
+view of `/`. On the Debian/systemd-257 lane where this arm was measured host
+root was unmapped and the view read `65534:65534:644`; that is the observed
+value there, not the rule. The namespace values are measured from inside it with
 `nsenter -t <MainPID> -U -m --preserve-credentials`, not by statting
 `/proc/<pid>/root`: a host-side `stat` reports the uid the reader resolves, and
 `nsenter` without `--preserve-credentials` fails with `setgid failed: Invalid
@@ -428,3 +453,48 @@ The job prints `OK <n>: <fact>` for every assertion and
 `EVIDENCE <key>=<value>` for every measured value, then a
 `REAL`/`STUB`/`NOT_RUN` block assembled from those measured values.
 Quote that block in the PR.
+
+### Run switches and gates
+
+The CI job sets the runner gates and runs the two pre-checks below; a frozen
+acceptance pass sets the rest itself. The script refuses to start without the
+runner gates:
+
+- `GITHUB_ACTIONS=true`, `RUNNER_ENVIRONMENT=github-hosted`,
+  `GHOSTFLEET_DISPOSABLE_TEST_CONFIRMED=1` and a non-empty `GITHUB_WORKSPACE`:
+  the disposable-runner gates, on top of root (`id -u` is `0`) and a real
+  systemd PID 1.
+- `GHOSTFLEET_EXPECTED_PYZ_SHA256` and `GHOSTFLEET_EXPECTED_UNIT_SHA256`: the
+  frozen release tuple. When set, a payload or unit that does not hash to the
+  pinned value stops the run with `FROZEN_ARTIFACT_MISMATCH` before any arm can
+  measure the wrong bytes. The CI job leaves them unset, so CI runs record
+  `not_requested` and are a mechanism smoke, not a frozen-payload acceptance.
+- `GHOSTFLEET_NA_CORE_HEAD` and `GHOSTFLEET_NA_PLANE_HEAD`: recorded as
+  `frozen.na_core_head`/`frozen.na_plane_head` and repeated in the summary and
+  the `REAL` line, so the report names the revisions the numbers belong to.
+- `GHOSTFLEET_NODE_AGENT_ACCEPTANCE_WORK_BASE` (default `/tmp`) and
+  `GHOSTFLEET_NODE_AGENT_ACCEPTANCE_KEEP_WORK=1`: where the throwaway work
+  directory is created and whether it survives for forensics; it is deleted
+  unless `_KEEP_WORK` is `1`.
+- `GHOSTFLEET_ACCEPTANCE_SLOW_PLANE=1`, with
+  `GHOSTFLEET_ACCEPTANCE_SLOW_PLANE_MS` (default `3500`), enables the S6c arm.
+  While it is enabled the harness holds every node-plane request for that many
+  milliseconds (through `POST /acceptance/delay`), the script restarts the
+  unit, waits until `GET /acceptance/inflight` reports at least one request on
+  the wire, sends `SIGTERM`, and then requires zero new node-plane requests
+  after the signal, `ExecMainStatus=0`, `Result=success`, `NRestarts`
+  unchanged, a stop within 15 s, and no heartbeat, poll or result event after
+  `signal_received` in the unit journal. With the switch unset the arm prints
+  `NOT_RUN`, and the run is no evidence about the stop path. The report's
+  `NOT_RUN` count therefore depends on the switch: seven items with the arm
+  disabled, six with it enabled.
+- The two CI pre-checks run before the acceptance step: `npm run --silent
+  verify:node-agent-pyz` (rebuilds the committed payload from source and fails
+  when the bytes differ or the artifact will not start under `python3 -I`) and
+  `sha256sum` plus `systemd-analyze verify` on
+  `packages/bootstrap/assets/ghostfleet-managed.service`, so a bad artifact
+  fails under its own name instead of as a lifecycle failure.
+- The summary is also a pass gate: the run fails when it produced fewer than
+  40 `OK` assertions or fewer than 15 `EVIDENCE` lines, whatever the
+  individual arms said.
+
