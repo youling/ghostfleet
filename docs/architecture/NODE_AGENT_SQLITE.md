@@ -115,9 +115,10 @@ SIGKILL -> one restart, original ACKED task not repeated, clean stop 0.029s,
 zero new requests after stop. These numbers are one environment's measurements,
 not service-level guarantees. Sanitized machine-readable evidence is adjacent.
 
-NOT_PROVEN: distinct managed OS account, newly enabled Linger, physical/WSL
-reboot on final bytes, full shipped sandbox, real Cloudflare/DO, OMV8 hardware,
-independent security approval and protected release merge.
+NOT_PROVEN: physical host reboot, full production Cloudflare/DO, OMV8 hardware,
+independent useful-work consumer outside the disposable harness, fresh parent PR #83
+exact-head review, protected release merge and production authorization. The child
+PR #84 independent review is PASS; it does not approve the whole parent PR.
 
 ## Primary references / 一手依据
 
@@ -130,7 +131,10 @@ independent security approval and protected release merge.
 
 `NODE_AGENT_SQLITE_TEST_MIGRATION.json` maps all 58 retired test functions to concrete SQLite tests.
 The mapping distinguishes preserved invariants from intentionally retired automatic
-drop/eviction/rebuild behavior. It is author evidence, not independent review.
+drop/eviction/rebuild behavior. The independent exact-head review of child PR #84 verified
+58/58 mappings, zero dangling targets, and the 40 equivalent-invariant / 18 deliberate
+preserve-or-quarantine policy split. The review is scoped to PR #84; parent PR #83 still
+requires a fresh exact-head integration review.
 已补齐鉴权失败保留正文、顺序 ACK、预算包含本地提交、停止后不发送、
 执行栅栏失败零执行、超大正文保留栅栏、缺失任务身份零写入。
 本轮全量结果为 534 passed / 0 failed / 0 skipped。旧测试数量不冒充新覆盖，
