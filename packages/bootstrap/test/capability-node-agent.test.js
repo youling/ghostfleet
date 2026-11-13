@@ -289,6 +289,8 @@ test("the courier installs the pinned payload, unit, credential and public proje
     assert.equal((await stat(projectionPath)).mode & 0o777, 0o644);
     assert.equal(projection.schema, "ghostfleet-capability-status/v1");
     assert.equal(projection.selection_schema, SELECTED_CAPABILITY_SCHEMA);
+    assert.match(projection.selection_digest, /^sha256:[0-9a-f]{64}$/);
+    assert.equal(projection.payload_sha256, payloadSha);
     assert.equal(projection.release_pin, selection.template_digest.slice("sha256:".length, "sha256:".length + 40));
     assert.equal(projection.control_account, CONTROL_ACCOUNT);
     assert.equal(projection.artifacts.length, 5);
