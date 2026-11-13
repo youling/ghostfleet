@@ -300,7 +300,7 @@ def test_capability_projects_published_v1_bootstrap_shape(tmp_path):
         "user_unit": {
             "name": "ghostfleet-managed.service",
             "sha256": "b" * 64,
-            "payload_sha256": "d" * 64,
+            "payload_sha256": "e" * 64,
             "payload_path": "/usr/local/libexec/ghostfleet/node-agent.pyz",
         },
     }
