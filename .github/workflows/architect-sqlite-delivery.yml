@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          fetch-depth: 2
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
@@ -35,7 +35,7 @@ jobs:
           python - <<'PY'
           import base64, hashlib, json, lzma, os, pathlib, subprocess
           base = 'a85d6c292aff5feb92c492023c063c07597de02d'
-          assert subprocess.check_output(['git','rev-parse','HEAD^'], text=True).strip() == base
+          subprocess.run(['git','merge-base','--is-ancestor',base,'HEAD'], check=True)
           blob = json.loads(subprocess.check_output(['gh','api','repos/youling/ghostfleet/git/blobs/c7ed18f8354c42ab43149596f35283f44891e03e'], text=True))
           packed = base64.b64decode(blob['content'])
           assert hashlib.sha256(packed).hexdigest() == '9f4b1373058aee12242d36fd4512d15ee6985c6407636889a239066bb8385c8d'
@@ -92,6 +92,7 @@ jobs:
                   path.parent.mkdir(parents=True, exist_ok=True)
                   path.write_bytes(data)
           pathlib.Path(os.environ['RUNNER_TEMP'], 'sqlite-transfer.json').write_bytes(raw)
+          subprocess.run(['git','add','-A','--',*sorted(allowed)], check=True)
           print('SOURCE_DELTA_VERIFIED files=23 base=' + base)
           PY
       - name: Rebuild and verify the already-tested artifact
@@ -104,6 +105,7 @@ jobs:
           assert hashlib.sha256(data).hexdigest()=='3ee59187c94c20072e59335017fd8df0ce0cb610c1502af69915fca5be9ca036'
           print('EXACT_TESTED_PYZ_VERIFIED')
           PY
+          git add -f -- packages/node-agent/dist/node-agent.pyz
           node scripts/verify-node-agent-pyz.mjs
       - name: Re-run candidate checks without production privileges
         run: |
@@ -128,8 +130,8 @@ jobs:
               p=pathlib.Path(f['path']);data=p.read_bytes() if p.exists() else None
               assert (hashlib.sha256(data).hexdigest() if data is not None else None)==f['after_sha256'], str(p)
               paths.append(str(p))
-          subprocess.run(['git','add','-A','--',*paths],check=True)
-          subprocess.run(['git','add','-f','--','packages/node-agent/dist/node-agent.pyz'],check=True)
+          staged=set(subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines())
+          assert staged==set(paths)|{'packages/node-agent/dist/node-agent.pyz'}, sorted(staged)
           PY
           git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'refactor(node-agent): deliver verified SQLite task repository and tests'
           git push origin "HEAD:refs/heads/$branch"
