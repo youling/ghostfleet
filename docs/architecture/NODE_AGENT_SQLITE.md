@@ -1,7 +1,7 @@
 # Node Agent SQLite persistence / 节点代理 SQLite 持久化
 
-Status: IMPLEMENTED_CANDIDATE; independent review and full disposable release CI remain required.
-状态：实现候选；不是合并批准，不是生产部署或 REQ-01 验收。
+Status: INTEGRATED_CANDIDATE; child PR #84 exact-head independent review PASS; parent PR #83 integrated-head CI 6/6 SUCCESS; fresh parent exact-head review and Human release gate remain required.
+状态：已集成到父 PR 候选；子 PR #84 精确版本独立审查通过，父 PR #83 集成 HEAD CI 六项全绿；父 PR 新精确版本独立审查与人类发布门仍未完成。
 Base: PR #83 source `8975b7259c20b03e280755af32b0c5dad17653b4`.
 
 ## Decision / 决策
