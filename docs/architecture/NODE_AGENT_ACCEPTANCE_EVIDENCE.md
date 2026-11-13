@@ -1,6 +1,6 @@
 ## 当前 SQLite 集成候选证据（PR #83 exact HEAD dafee5e，2026-11-13）
 
-**当前被测字节必须以本节为准。** 下方旧 §0–§10 的 WSL Ubuntu/systemd 255 数据属于 SQLite 合入前的历史候选，旧 pyz 为 b2b2acea… / 225,102 B；它不是当前 SQLite 候选的制品证据，不得用于声称当前字节已通过 systemd 255 真机测试。
+**当前被测字节必须以本节为准。** 下方旧 §0–§10 均属于 SQLite 合入前的历史候选，旧 pyz 为 b2b2acea… / 225,102 B；其中既包括 WSL Ubuntu/systemd 255，也包括另一台 Debian/systemd 257 的旧制品验收。它们都不是当前 SQLite 候选的制品证据，不得用于声称当前字节已在 systemd 255/257 上完成对应真机验收。
 
 | 项 | 当前精确值 |
 |---|---|
@@ -34,7 +34,7 @@
 
 ## 历史候选证据说明
 
-下方原始 WSL systemd 255 记录测量的是 SQLite 合入前的 b2b2acea… / 225,102 B 候选。仅保留作历史比较，不代表当前 SQLite pyz 3ee59187… 已在 systemd 255 上重跑。
+下方原始 WSL systemd 255 与 Debian systemd 257 记录均测量 SQLite 合入前的 b2b2acea… / 225,102 B 候选。仅保留作历史比较，不代表当前 SQLite pyz 3ee59187… 已在 systemd 255/257 上重跑。当前 SQLite 候选的 systemd 259 disposable 证据见上方。
 
 
 ## 0. English abstract
