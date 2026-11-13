@@ -1,5 +1,7 @@
 # NODE_AGENT_V0 — 常驻节点代理（ADR）
 
+> Persistence update / 持久化更新：SQLite candidate replaces the JSON ledger/outbox/archive portions of this ADR. See [NODE_AGENT_SQLITE.md](NODE_AGENT_SQLITE.md) for the active storage contract, migration and evidence limits. Other node/auth/systemd contracts are unchanged.
+
 | 字段 | 值 |
 | --- | --- |
 | 状态 | PROPOSED（AI 工头起草，等待独立 exact-head Review） |

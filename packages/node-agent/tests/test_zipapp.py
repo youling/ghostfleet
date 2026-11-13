@@ -67,7 +67,7 @@ def _write_agent_files(root: Path) -> Path:
     meta.write_text(json.dumps({"node_uid": NODE_UID, "platform": "linux"}), encoding="utf-8")
     os.chmod(meta, 0o600)
     state = root / "state"
-    state.mkdir(exist_ok=True)
+    state.mkdir(mode=0o700, exist_ok=True)
     config = root / "node-agent.json"
     config.write_text(
         json.dumps(
@@ -80,6 +80,7 @@ def _write_agent_files(root: Path) -> Path:
         ),
         encoding="utf-8",
     )
+    os.chmod(config, 0o600)
     return config
 
 
@@ -154,3 +155,16 @@ def test_zipapp_exit_codes_for_missing_inputs(tmp_path):
     status = _run(pyz, tmp_path, "status", "--json")
     assert status.returncode == 0
     assert _last_json_line(status.stdout)["ok"] is True
+
+
+def test_fixture_permissions_do_not_depend_on_caller_umask(tmp_path):
+    for mask in (0, 0o002, 0o077):
+        root = tmp_path / str(mask)
+        root.mkdir(mode=0o700)
+        previous = os.umask(mask)
+        try:
+            config = _write_agent_files(root)
+        finally:
+            os.umask(previous)
+        assert config.stat().st_mode & 0o777 == 0o600
+        assert (root / "state").stat().st_mode & 0o777 == 0o700

@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import hashlib
+try:
+    import fcntl
+except ImportError:  # Linux-only daemon; permit read-only tools/imports elsewhere.
+    fcntl = None
 import json
 import os
 from pathlib import Path
@@ -102,6 +106,10 @@ class TaskRepository:
     def __init__(self, path: str | Path, node_uid: str, *, max_pending: int = 64,
                  max_bytes: int = 64*1024*1024, timeout: float = 1.0,
                  _fault: Callable[[str], None] | None = None) -> None:
+        if sqlite3.sqlite_version_info < (3, 37, 0):
+            raise RepositoryError('SQLITE_3_37_OR_NEWER_REQUIRED')
+        if fcntl is None:
+            raise RepositoryError('POSIX_FILE_LOCK_REQUIRED')
         self.path = Path(path).absolute()
         self.node_uid = _text(node_uid, 'node_uid')
         if type(max_pending) is not int or max_pending < 1:
@@ -111,49 +119,65 @@ class TaskRepository:
         self.max_pending = max_pending
         self._fault = _fault or (lambda point: None)
         self._db: sqlite3.Connection | None = None
+        self._lock_fd: int | None = None
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         _private(self.path.parent, directory=True)
         # Unknown legacy state must never silently become a new empty queue.
         if not self.path.exists() and any((self.path.parent / p).exists() for p in
                 ('ledger.json', 'outbox.json', 'tombstones.json', 'tasks')):
             raise RepositoryError('LEGACY_STATE_REQUIRES_EXPLICIT_IMPORT')
-        created = False
+        # SQLite serializes writes, not the external task execution between them.
+        # A lifetime OS lock prevents two agents from recovering each other's live fence.
+        lock_path = Path(str(self.path) + '.lock')
+        lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
-            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        except FileExistsError:
-            _private(self.path)
-        else:
-            os.close(fd)
-            created = True
-        for suffix in ('-journal', '-wal', '-shm'):
-            sidecar = Path(str(self.path) + suffix)
-            if sidecar.exists() or sidecar.is_symlink():
-                _private(sidecar)
+            _private(lock_path)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, RepositoryError) as exc:
+            os.close(lock_fd)
+            raise RepositoryError('TASK_REPOSITORY_ALREADY_OWNED_OR_UNTRUSTED') from exc
+        self._lock_fd = lock_fd
         try:
-            self._db = sqlite3.connect(self.path, isolation_level=None, timeout=timeout)
-            self._db.row_factory = sqlite3.Row
-            if self._db.execute('PRAGMA journal_mode').fetchone()[0] != 'delete':
-                raise RepositoryError('unexpected journal mode; do not convert a live database')
-            self._db.execute('PRAGMA synchronous=EXTRA')
-            self._db.execute('PRAGMA foreign_keys=ON')
-            self._db.execute('PRAGMA trusted_schema=OFF')
-            if self._db.execute('PRAGMA synchronous').fetchone()[0] != 3:
-                raise RepositoryError('EXTRA durability unavailable')
-            if created:
-                with self._transaction() as db:
-                    for sql in _SCHEMA:
-                        db.execute(sql)
-                    db.execute('PRAGMA user_version=1')
-                    db.execute(f'PRAGMA application_id={APPLICATION_ID}')
-                    db.execute('INSERT INTO meta VALUES (?,?)', ('schema', 'ghostfleet-task-db/v1'))
-            elif (self._db.execute('PRAGMA user_version').fetchone()[0] != SCHEMA_VERSION or
-                  self._db.execute('PRAGMA application_id').fetchone()[0] != APPLICATION_ID):
-                raise RepositoryError('database schema not recognized; no automatic reset')
-            if self._db.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
-                raise RepositoryError('database integrity failure')
-            page_size = self._db.execute('PRAGMA page_size').fetchone()[0]
-            self._db.execute(f'PRAGMA max_page_count={max_bytes // page_size}')
-            self.validate_all()
+            created = False
+            try:
+                fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            except FileExistsError:
+                _private(self.path)
+            else:
+                os.close(fd)
+                created = True
+            for suffix in ('-journal', '-wal', '-shm'):
+                sidecar = Path(str(self.path) + suffix)
+                if sidecar.exists() or sidecar.is_symlink():
+                    _private(sidecar)
+            try:
+                self._db = sqlite3.connect(self.path, isolation_level=None, timeout=timeout)
+                self._db.row_factory = sqlite3.Row
+                if self._db.execute('PRAGMA journal_mode').fetchone()[0] != 'delete':
+                    raise RepositoryError('unexpected journal mode; do not convert a live database')
+                self._db.execute('PRAGMA synchronous=EXTRA')
+                self._db.execute('PRAGMA foreign_keys=ON')
+                self._db.execute('PRAGMA trusted_schema=OFF')
+                if self._db.execute('PRAGMA synchronous').fetchone()[0] != 3:
+                    raise RepositoryError('EXTRA durability unavailable')
+                if created:
+                    with self._transaction() as db:
+                        for sql in _SCHEMA:
+                            db.execute(sql)
+                        db.execute('PRAGMA user_version=1')
+                        db.execute(f'PRAGMA application_id={APPLICATION_ID}')
+                        db.execute('INSERT INTO meta VALUES (?,?)', ('schema', 'ghostfleet-task-db/v1'))
+                elif (self._db.execute('PRAGMA user_version').fetchone()[0] != SCHEMA_VERSION or
+                      self._db.execute('PRAGMA application_id').fetchone()[0] != APPLICATION_ID):
+                    raise RepositoryError('database schema not recognized; no automatic reset')
+                if self._db.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+                    raise RepositoryError('database integrity failure')
+                page_size = self._db.execute('PRAGMA page_size').fetchone()[0]
+                self._db.execute(f'PRAGMA max_page_count={max_bytes // page_size}')
+                self.validate_all()
+            except BaseException:
+                self.close()
+                raise
         except BaseException:
             self.close()
             raise
@@ -165,9 +189,14 @@ class TaskRepository:
         return self._db
 
     def close(self) -> None:
-        if self._db is not None:
-            self._db.close()
+        try:
+            if self._db is not None:
+                self._db.close()
+        finally:
             self._db = None
+            if self._lock_fd is not None:
+                os.close(self._lock_fd)
+                self._lock_fd = None
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
@@ -200,6 +229,22 @@ class TaskRepository:
 
     @staticmethod
     def _validate(row: dict) -> dict:
+        state, delivery = row['execution_state'], row['delivery_state']
+        if not isinstance(state, str) or state not in TERMINAL | {FENCED}:
+            raise Conflict('invalid execution state')
+        if not isinstance(delivery, str) or delivery not in {'NONE','PENDING','ACKED','QUARANTINED'}:
+            raise Conflict('invalid delivery state')
+        if type(row.get('attempt')) is not int or row['attempt'] < 1:
+            raise Conflict('invalid attempt')
+        sha = row.get('result_digest')
+        if sha is not None and (not isinstance(sha,str) or len(sha)!=64 or any(c not in '0123456789abcdef' for c in sha)):
+            raise Conflict('invalid digest')
+        if delivery == 'NONE' and (state != FENCED or row['result_body'] is not None or sha is not None):
+            raise Conflict('invalid execution fence')
+        if delivery == 'PENDING' and (state == FENCED or row['result_body'] is None or sha is None):
+            raise Conflict('incomplete pending result')
+        if delivery == 'ACKED' and (state == FENCED or row['result_body'] is not None or sha is None):
+            raise Conflict('invalid acknowledgement')
         _text(row['task_id'], 'task_id')
         _text(row['node_uid'], 'node_uid')
         _text(row['operation'], 'operation')
@@ -440,3 +485,28 @@ class TaskRepository:
                             VALUES(?,?,?,?,?,?,?,?,?,?,?)''',tuple(row[k] for k in ('task_id','node_uid','operation','attempt','execution_state','delivery_state','result_body','result_digest','reason'))+(now,now))
             db.execute('INSERT INTO imports VALUES(?,?,?)',(source_key,manifest,now))
         return len(records)
+
+
+def read_status(path: str | Path, node_uid: str | None = None) -> dict:
+    """Read-only inspection of a live DB. Never use immutable=1 on a changing DB."""
+    path = Path(path).absolute()
+    _private(path.parent, directory=True)
+    _private(path)
+    db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, isolation_level=None, timeout=1)
+    db.row_factory = sqlite3.Row
+    try:
+        db.execute('PRAGMA query_only=ON')
+        db.execute('BEGIN')
+        if (db.execute('PRAGMA user_version').fetchone()[0] != SCHEMA_VERSION or
+            db.execute('PRAGMA application_id').fetchone()[0] != APPLICATION_ID):
+            raise RepositoryError('database schema not recognized')
+        counts = dict(db.execute('SELECT delivery_state,count(*) FROM tasks GROUP BY delivery_state'))
+        pending = db.execute("SELECT count(*) FROM tasks WHERE delivery_state='PENDING' AND (? IS NULL OR node_uid=?)", (node_uid,node_uid)).fetchone()[0]
+        quarantined = [dict(row) for row in db.execute("SELECT task_id,node_uid AS original_node_uid,reason,result_body IS NOT NULL AS has_body,result_digest FROM tasks WHERE delivery_state='QUARANTINED' ORDER BY task_id LIMIT 64")]
+        return {'task_store':'sqlite/v1','ledger_entries':sum(counts.values()),
+                'outbox_depth':pending,'task_counts':counts,'quarantined':quarantined,
+                'quarantine_list_truncated':counts.get('QUARANTINED',0)>len(quarantined)}
+    except sqlite3.Error as exc:
+        raise RepositoryError('status read failed; do not reset database') from exc
+    finally:
+        db.close()

@@ -1,0 +1,421 @@
+{
+  "schema": "ghostfleet.sqlite-test-migration/v1",
+  "base": "8975b7259c20b03e280755af32b0c5dad17653b4",
+  "removed_test_functions": 58,
+  "new_test_file_functions": 57,
+  "method": "AST inventory + manual invariant mapping; references prove existence, not independent semantic review",
+  "policy_changes": [
+    "Old automatic eviction/drop/rebuild semantics are retired: results are preserved or quarantined, never silently regenerated.",
+    "No JSON tombstone cap: ACKED digest rows remain, admission backpressures pending/fenced work.",
+    "Storage failure stops dispatch and requires reload; heartbeat liveness is not a license to continue on uncertain state.",
+    "SIGTERM begins no new HTTP request; completed in-flight ACK may commit."
+  ],
+  "mappings": [
+    {
+      "old_file": "packages/node-agent/tests/test_ledger.py",
+      "old_test": "test_absent_dropped_results_are_evictable_and_keep_a_tombstone",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_no_auto_delete_quarantine",
+      "classification": "intentional-policy-change-preserve-or-quarantine-not-drop"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_ledger.py",
+      "old_test": "test_begin_fences_before_returning",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_sqlite_fence_write_failure_prevents_execution",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_ledger.py",
+      "old_test": "test_complete_records_terminal_facts",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_result_and_delivery_commit_together",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_ledger.py",
+      "old_test": "test_complete_rejects_a_second_digest_for_a_terminal_task",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_terminal_digest_is_immutable",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_ledger.py",
+      "old_test": "test_complete_rejects_unknown_terminal_status",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_bad_status_types_never_typeerror",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_ledger.py",
+      "old_test": "test_corrupt_ledger_fails_closed",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_does_not_silently_reset_unknown_database",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_ledger.py",
+      "old_test": "test_crash_recovery_records_unknown_not_new_execution",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_unknown_recovery_is_atomic_and_not_reexecution",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_ledger.py",
+      "old_test": "test_duplicate_begin_is_not_new",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_lost_http_ack_keeps_same_body_then_ack",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_ledger.py",
+      "old_test": "test_failed_evictable_but_unknown_and_fenced_are_not",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_capacity_includes_execution_fences_and_never_evicts",
+      "classification": "intentional-policy-change-preserve-or-quarantine-not-drop"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_ledger.py",
+      "old_test": "test_failed_is_a_valid_terminal_state",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_sqlite_all_terminal_outcomes_commit_body_and_pending",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_ledger.py",
+      "old_test": "test_fences_are_never_evicted_and_exhaustion_blocks_new_work",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_capacity_includes_execution_fences_and_never_evicts",
+      "classification": "intentional-policy-change-preserve-or-quarantine-not-drop"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_ledger.py",
+      "old_test": "test_ledger_roundtrip",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_result_and_delivery_commit_together",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_ledger.py",
+      "old_test": "test_pending_reconcile_only_reports_fenced",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_unknown_recovery_is_atomic_and_not_reexecution",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_ledger.py",
+      "old_test": "test_prune_keeps_bounded_entries_even_with_dropped_results",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_more_than_4096_tombstones_does_not_stop_node",
+      "classification": "intentional-policy-change-preserve-or-quarantine-not-drop"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_ledger.py",
+      "old_test": "test_reconciled_terminals_are_evictable_so_exhaustion_clears",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_backpressure_reopens_when_pending_is_acknowledged",
+      "classification": "intentional-policy-change-preserve-or-quarantine-not-drop"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_ledger.py",
+      "old_test": "test_result_dropped_is_recorded_without_overwriting_terminal_state",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_permanent_rejection_quarantines_original_bytes",
+      "classification": "intentional-policy-change-preserve-or-quarantine-not-drop"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_ledger.py",
+      "old_test": "test_tombstone_capacity_is_fail_closed",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_more_than_4096_tombstones_does_not_stop_node",
+      "classification": "intentional-policy-change-preserve-or-quarantine-not-drop"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_duplicate_task_delivery_is_not_executed_twice",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_actual_http_readonly_work_then_ack",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_evicted_terminal_result_is_still_sendable_via_its_tombstone",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_more_than_4096_tombstones_does_not_stop_node",
+      "classification": "intentional-policy-change-preserve-or-quarantine-not-drop"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_failed_retract_is_reported_and_deletes_nothing",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_quarantine_write_failure_never_discards_body",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_first_unknown_operation_is_still_refused",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_unknown_operation_is_refused_and_idempotent",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_known_in_flight_task_is_reconciled_not_refused",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_fenced_task_redelivery_with_changed_operation_cannot_rewrite_identity",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_known_terminal_task_is_not_refused_again",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_actual_http_readonly_work_then_ack",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_ledger_exhaustion_stops_polling_and_resumes_after_reconcile",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_backpressure_reopens_when_pending_is_acknowledged",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_ledger_write_error_during_batch_degrades_instead_of_crashing",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_commit_failure_stops_before_any_result_send",
+      "classification": "intentional-policy-change-preserve-or-quarantine-not-drop"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_legacy_unknown_body_is_rebuilt_with_the_ledger_operation",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_legacy_mismatched_digest_aborts",
+      "classification": "intentional-policy-change-preserve-or-quarantine-not-drop"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_non_string_operation_is_refused_before_any_fence",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_malformed_operation_is_refused_without_execution",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_outbox_drops_are_marked_before_being_drained",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_permanent_rejection_quarantines_original_bytes",
+      "classification": "intentional-policy-change-preserve-or-quarantine-not-drop"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_outbox_overflow_is_counted_and_dropped_oldest",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_capacity_includes_execution_fences_and_never_evicts",
+      "classification": "intentional-policy-change-preserve-or-quarantine-not-drop"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_pending_outbox_is_flushed_before_new_work",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_pending_result_precedes_heartbeat_and_poll",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_permanently_rejected_result_is_dropped_not_retried",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_permanent_rejection_quarantines_original_bytes",
+      "classification": "intentional-policy-change-preserve-or-quarantine-not-drop"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_queued_result_with_a_foreign_operation_is_rebuilt_not_sent",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_fenced_task_redelivery_with_changed_operation_cannot_rewrite_identity",
+      "classification": "intentional-policy-change-preserve-or-quarantine-not-drop"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_reconcile_marks_unknown_without_rerunning",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_restart_reconciles_fence_without_reexecution",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_reconcile_uses_existing_outbox_result_instead_of_guessing",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_existing_committed_body_survives_restart_without_unknown",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_reconciled_unknown_uses_the_operation_recorded_at_fence_time",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_fenced_task_redelivery_with_changed_operation_cannot_rewrite_identity",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_replayed_task_is_executed_and_reported",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_actual_http_readonly_work_then_ack",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_shutdown_flushes_pending_results",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_sqlite_stop_after_first_send_preserves_second_result",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_startup_replays_persisted_outbox_drops_as_result_dropped",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_legacy_import_transaction_and_idempotence",
+      "classification": "intentional-policy-change-preserve-or-quarantine-not-drop"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_tombstoned_task_is_skipped_not_refused",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_more_than_4096_tombstones_does_not_stop_node",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_uncommitted_result_is_never_sent_and_restart_reports_unknown",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_commit_failure_stops_before_any_result_send",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_unknown_operations_do_not_exhaust_the_ledger",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_unknown_operation_is_refused_and_idempotent",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_loop_fake_control_plane.py",
+      "old_test": "test_unverifiable_succeeded_body_is_dropped_not_sent",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_corrupt_body_is_rejected_not_repaired",
+      "classification": "intentional-policy-change-preserve-or-quarantine-not-drop"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_outbox.py",
+      "old_test": "test_add_and_persist",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_result_and_delivery_commit_together",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_outbox.py",
+      "old_test": "test_add_requires_task_id",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_sqlite_missing_task_identity_is_refused_without_write",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_outbox.py",
+      "old_test": "test_conflict_different_digest_keeps_first",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_terminal_digest_is_immutable",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_outbox.py",
+      "old_test": "test_corrupt_outbox_fails_closed",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_corrupt_body_is_rejected_not_repaired",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_outbox.py",
+      "old_test": "test_duplicate_same_digest_is_idempotent",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_terminal_digest_is_immutable",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_outbox.py",
+      "old_test": "test_flush_auth_fatal_marks_fatal",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_sqlite_auth_failure_keeps_all_bodies_and_stops_batch",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_outbox.py",
+      "old_test": "test_flush_checks_stop_event_before_every_send",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_sqlite_stop_after_first_send_preserves_second_result",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_outbox.py",
+      "old_test": "test_flush_honours_deadline_and_passes_remaining_budget_as_timeout",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_sqlite_flush_budget_counts_commit_time",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_outbox.py",
+      "old_test": "test_flush_rejected_is_permanent_but_logged",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_permanent_rejection_quarantines_original_bytes",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_outbox.py",
+      "old_test": "test_flush_removes_acknowledged_items_in_order",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_sqlite_flush_acknowledges_in_stable_order",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_outbox.py",
+      "old_test": "test_flush_retryable_stops_and_keeps_item",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_network_failure_preserves_original_body",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_outbox.py",
+      "old_test": "test_flush_stops_before_any_send_when_stop_event_is_set",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_stop_before_flush_leaves_body_and_sends_nothing",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_outbox.py",
+      "old_test": "test_overflow_drops_survive_reload_until_replayed",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_no_auto_delete_quarantine",
+      "classification": "intentional-policy-change-preserve-or-quarantine-not-drop"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_outbox.py",
+      "old_test": "test_overflow_keeps_newest_and_reports_dropped",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_capacity_includes_execution_fences_and_never_evicts",
+      "classification": "intentional-policy-change-preserve-or-quarantine-not-drop"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_outbox.py",
+      "old_test": "test_remove",
+      "new_file": "packages/node-agent/tests/test_repository.py",
+      "new_test": "test_ack_wrong_digest_cannot_remove_body",
+      "classification": "replaced-equivalent-invariant"
+    },
+    {
+      "old_file": "packages/node-agent/tests/test_outbox.py",
+      "old_test": "test_too_large_is_rejected",
+      "new_file": "packages/node-agent/tests/test_sqlite_loop.py",
+      "new_test": "test_sqlite_oversize_result_preserves_durable_fence",
+      "classification": "replaced-equivalent-invariant"
+    }
+  ]
+}

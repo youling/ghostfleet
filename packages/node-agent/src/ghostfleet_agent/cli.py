@@ -27,11 +27,10 @@ import threading
 from . import __version__
 from .client import ControlPlaneClient
 from .config import DEFAULT_CONFIG_PATH, ConfigError, load_config
-from .ledger import Ledger, LedgerCorruptError, LedgerWriteError
+from .repository import RepositoryError
 from .logging import get_logger, register_secret, clear_secrets
 from .loop import AgentLoop, AuthFatalError
 from .observe import Observer
-from .outbox import Outbox, OutboxCorruptError, OutboxWriteError
 from .protocol import (
     AGENT_CONFIG_UNTRUSTED,
     AGENT_CREDENTIAL_PERMISSIVE,
@@ -328,6 +327,12 @@ def status_report(config_or_none) -> dict:
     entries = ledger.get("entries") if isinstance(ledger.get("entries"), dict) else {}
     items = outbox.get("items") if isinstance(outbox.get("items"), list) else []
 
+    database = os.path.join(state_dir, "tasks.db")
+    repository_summary = None
+    if os.path.lexists(database):
+        from .repository import read_status
+        repository_summary = read_status(database, node_uid)
+
     def _int(value):
         return int(value) if isinstance(value, int) and not isinstance(value, bool) else 0
 
@@ -351,6 +356,7 @@ def status_report(config_or_none) -> dict:
         "outbox_overflow": _int(state.get("outbox_overflow")),
         "outbox_depth": len(items),
         "ledger_entries": len(entries),
+        **(repository_summary or {"task_store":"legacy-json-read-only"}),
     }
 
 
@@ -372,49 +378,9 @@ def install_signal_handlers(stop_event: threading.Event, logger) -> bool:
 
 
 def build_loop(config, token: str, node_uid: str, *, logger=None):
-    logger = logger or get_logger()
-    ensure_state_dir(config.state_dir, logger=logger)
-    state_store = StateStore(os.path.join(config.state_dir, "state.json"), logger=logger)
-    state_store.load()
-    ledger = Ledger(os.path.join(config.state_dir, "ledger.json"), logger=logger)
-    ledger.load()
-    outbox = Outbox(os.path.join(config.state_dir, "outbox.json"), logger=logger)
-    outbox.load()
-    observer = Observer(
-        node_uid=node_uid,
-        agent_version=config.agent_version,
-        allowed_units=config.allowed_units,
-        logger=logger,
-    )
-    executor = TaskExecutor(
-        node_uid=node_uid,
-        agent_version=config.agent_version,
-        observer=observer,
-        allowed_units=config.allowed_units,
-        logger=logger,
-    )
-    client = ControlPlaneClient(
-        base_url=config.control_plane_url,
-        node_uid=node_uid,
-        agent_version=config.agent_version,
-        token=token,
-        timeout_s=config.request_timeout_s,
-        logger=logger,
-    )
-    notifier = Notifier(logger=logger)
-    return AgentLoop(
-        config=config,
-        node_uid=node_uid,
-        token=token,
-        state_store=state_store,
-        ledger=ledger,
-        outbox=outbox,
-        observer=observer,
-        executor=executor,
-        client=client,
-        notifier=notifier,
-        logger=logger,
-    )
+    # One production backend, no automatic JSON fallback or state reset.
+    from .sqlite_loop import build_loop as sqlite_build_loop
+    return sqlite_build_loop(config, token, node_uid, logger=logger)
 
 
 def main(argv=None) -> int:
@@ -501,10 +467,10 @@ def main(argv=None) -> int:
         StateCorruptError,
         StateReadError,
         StateWriteError,
-        LedgerCorruptError,
-        LedgerWriteError,
-        OutboxCorruptError,
-        OutboxWriteError,
+        RepositoryError,
+        RepositoryError,
+        RepositoryError,
+        RepositoryError,
     ) as error:
         logger.error("state_failure", code=error.code)
         return EXIT_RUNTIME

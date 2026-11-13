@@ -129,7 +129,7 @@ r.complete({'schema':'ghostfleet-node-task/v0','task_id':sys.argv[3],'node_uid':
 """
         for index,boundary in enumerate(['before_commit','after_commit']):
             task=f'task-kill-{index}'
-            p=subprocess.run([sys.executable,'-c',child,str(self.path),NODE,task,boundary],timeout=10)
+            p=subprocess.run([sys.executable,'-c',child,str(self.path),NODE,task,boundary], timeout=10, env={**os.environ,'PYTHONPATH':str(Path(__file__).resolve().parents[1]/'src')})
             self.assertEqual(p.returncode,-signal.SIGKILL)
             r=TaskRepository(self.path,NODE); self.assertEqual(r.get(task)['delivery_state'],'NONE' if boundary=='before_commit' else 'PENDING'); r.close()
         self.repo=TaskRepository(self.path,NODE)

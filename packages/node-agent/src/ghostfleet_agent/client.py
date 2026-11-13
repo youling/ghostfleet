@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 
 from .logging import get_logger
-from .outbox import MIN_SEND_WINDOW_S
+from .delivery import MIN_SEND_WINDOW_S
 from .protocol import (
     AGENT_CONTROL_PLANE_UNREACHABLE,
     AGENT_INVALID_RESPONSE,

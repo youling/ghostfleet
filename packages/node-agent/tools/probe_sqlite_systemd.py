@@ -7,6 +7,7 @@ Requires a running systemd user manager; NOT a substitute for target acceptance.
 """
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -53,6 +54,11 @@ def probe(parent):
     sandbox=AgentSandbox(root/'agent');plane=FakeControlPlane();plane.start()
     sandbox.write_config(plane.url)
     plane.poll_tasks=[make_task(node_uid=sandbox.node_uid,task_id='task-systemd-useful',operation='agent.self.test')]
+    runtime=Path('/run/user')/str(os.geteuid())
+    if not runtime.is_dir() or runtime.stat().st_uid!=os.geteuid() or not (runtime/'bus').is_socket():
+        raise RuntimeError('current user manager bus is unavailable; no manager will be started')
+    os.environ['XDG_RUNTIME_DIR']=str(runtime)
+    os.environ['DBUS_SESSION_BUS_ADDRESS']='unix:path='+str(runtime/'bus')
     started=False
     evidence={'schema':'ghostfleet.sqlite-systemd/v1','scope':'rootless transient user service; synthetic localhost control plane','unit':unit}
     def status():
@@ -65,10 +71,11 @@ def probe(parent):
             time.sleep(.2)
         raise RuntimeError('probe condition deadline')
     try:
+        started=True  # cleanup even if the run command times out after unit creation
         run(['systemd-run','--user','--unit='+unit,'--property=Type=notify','--property=NotifyAccess=main',
              '--property=Restart=on-failure','--property=RestartSec=1','--property=WatchdogSec=60',
              '--property=TimeoutStopSec=30','--property=RuntimeMaxSec=90','--property=NoNewPrivileges=true',
-             '--property=MemoryMax=256M','--property=TasksMax=32',sys.executable,str(Path(__file__).resolve()),'--child',str(sandbox.config_path)])
+             '--property=MemoryMax=256M','--property=TasksMax=32','--setenv=GHOSTFLEET_AGENT_TEST_LOOPBACK_HTTP=1',sys.executable,'-I',str(PACKAGE/'dist/node-agent.pyz'),'--config',str(sandbox.config_path),'run'])
         started=True
         wait(lambda:status().get('ActiveState')=='active')
         wait(lambda:len(plane.requests_to('/result'))==1)
@@ -94,6 +101,8 @@ def probe(parent):
         evidence['result_post_count']=len(plane.requests_to('/result'))
         evidence['database_terminal_state']=row[1]
         evidence['systemd_version']=run(['systemctl','--version']).splitlines()[0]
+        evidence['pyz_sha256']=hashlib.sha256((PACKAGE/'dist/node-agent.pyz').read_bytes()).hexdigest()
+        evidence['entrypoint']='python3 -I <pinned pyz> --config <synthetic config> run'
         evidence['overall']='PASS'
         evidence['not_proven']=['distinct managed account','Linger enablement','host reboot','production Cloudflare','OMV8 hardware','full shipped sandbox policy']
         (root/'journal.log').write_text(run(['journalctl','--user','-u',unit,'--no-pager','-n','200','-o','cat']))

@@ -2574,45 +2574,22 @@ TASK_CRASH_JSON="$(create_task node.observe '{"want":["uptime"]}')"
 TASK_CRASH_ID="$(printf '%s' "${TASK_CRASH_JSON}" | json_value task_id)"
 [[ -n "${TASK_CRASH_ID}" ]] || fail_check "the operator could not create the crash-fence task"
 STATE_DIR="${ACCOUNT_HOME}/.local/state/ghostfleet-agent"
-LEDGER_PATH="${STATE_DIR}/ledger.json"
-CRASH_STARTED_AT="2026-01-01T00:00:00Z"
-install -d -m 0700 -o "${ACCOUNT}" -g "${ACCOUNT}" "${STATE_DIR}"
-python3 - "${LEDGER_PATH}" "${TASK_CRASH_ID}" "${CRASH_STARTED_AT}" <<'PY' || fail_check "could not inject the MAY_HAVE_EXECUTED ledger record"
-import json
-import sys
-
-# The exact ledger shape from packages/node-agent/src/ghostfleet_agent/ledger.py:
-# {schema: ghostfleet-node-agent-ledger/v0, entries: {task_id: {state, operation,
-# attempt, started_at, reconciled}}}. A wrong schema key is refused on load, so
-# this also proves the agent validates the ledger instead of trusting it.
-LEDGER_SCHEMA = "ghostfleet-node-agent-ledger/v0"
-path, task_id, started_at = sys.argv[1:4]
-try:
-    with open(path, "r", encoding="utf-8") as handle:
-        document = json.load(handle)
-    if not isinstance(document, dict):
-        document = {}
-except (FileNotFoundError, ValueError):
-    document = {}
-entries = document.get("entries")
-if not isinstance(entries, dict):
-    entries = {}
-document["schema"] = LEDGER_SCHEMA
-document["entries"] = entries
-entries[task_id] = {
-    "state": "MAY_HAVE_EXECUTED",
-    "operation": "node.observe",
-    "attempt": 1,
-    "started_at": started_at,
-    "reconciled": False,
-}
-with open(path, "w", encoding="utf-8") as handle:
-    json.dump(document, handle, indent=2, sort_keys=True)
-    handle.write("\n")
-PY
-chown "${ACCOUNT}:${ACCOUNT}" "${LEDGER_PATH}"
-chmod 0600 "${LEDGER_PATH}"
-assert_eq "$(stat -c '%U:%G:%a' "${LEDGER_PATH}")" "${ACCOUNT}:${ACCOUNT}:600" "injected ledger ownership and mode"
+TASK_DB_PATH="${STATE_DIR}/tasks.db"
+CRASH_STARTED_AT="1767225600.0"
+[[ -f "${TASK_DB_PATH}" ]] || fail_check "SQLite task database missing before crash-fence injection"
+run_as_account python3 - "${TASK_DB_PATH}" "${TASK_CRASH_ID}" "${SERVER_NODE_UID}" "${CRASH_STARTED_AT}" <<'PYSQL' || fail_check "could not commit the MAY_HAVE_EXECUTED SQLite fence"
+import sqlite3, sys
+path, task_id, node_uid, stamp = sys.argv[1:5]
+c=sqlite3.connect(path,isolation_level=None)
+assert c.execute('PRAGMA user_version').fetchone()[0] == 1
+assert c.execute('PRAGMA application_id').fetchone()[0] == 0x47465431
+assert c.execute('PRAGMA journal_mode').fetchone()[0] == 'delete'
+c.execute('PRAGMA synchronous=EXTRA')
+c.execute('BEGIN IMMEDIATE')
+c.execute("INSERT INTO tasks(task_id,node_uid,operation,attempt,execution_state,delivery_state,created_at,updated_at) VALUES (?,?,?,1,'MAY_HAVE_EXECUTED','NONE',?,?)",(task_id,node_uid,'node.observe',float(stamp),float(stamp)))
+c.execute('COMMIT');c.close()
+PYSQL
+assert_eq "$(stat -c '%U:%G:%a' "${TASK_DB_PATH}")" "${ACCOUNT}:${ACCOUNT}:600" "injected SQLite database ownership and mode"
 
 crash_result_seen() { [[ "$(journal_result_for "${TASK_CRASH_ID}")" != "[]" ]]; }
 CRASH_FENCE_STARTED=$SECONDS
@@ -2632,26 +2609,25 @@ evidence "task_safety.crash_fence_seconds=${CRASH_FENCE_SECONDS}"
 evidence "task_safety.crash_outcome=${CRASH_OUTCOME}"
 evidence "task_safety.crash_result_count=${CRASH_ROW_COUNT}"
 
-LEDGER_AFTER="$(python3 - "${LEDGER_PATH}" "${TASK_CRASH_ID}" <<'PY'
-import json
-import sys
-
-path, task_id = sys.argv[1:3]
-with open(path, "r", encoding="utf-8") as handle:
-    document = json.load(handle)
-entries = document.get("entries") if isinstance(document.get("entries"), dict) else {}
-entry = entries.get(task_id)
-print(json.dumps(entry if isinstance(entry, dict) else {"state": None}, sort_keys=True))
-PY
+LEDGER_AFTER="$(run_as_account python3 - "${TASK_DB_PATH}" "${TASK_CRASH_ID}" <<'PYSQL'
+import json, sqlite3, sys
+from pathlib import Path
+path, task_id=sys.argv[1:3]
+c=sqlite3.connect(Path(path).as_uri()+'?mode=ro',uri=True)
+c.row_factory=sqlite3.Row
+row=c.execute('SELECT execution_state AS state,created_at AS started_at,delivery_state,attempt,result_body,result_digest FROM tasks WHERE task_id=?',(task_id,)).fetchone()
+assert row is not None
+print(json.dumps(dict(row),sort_keys=True));c.close()
+PYSQL
 )"
-assert_eq "$(printf '%s' "${LEDGER_AFTER}" | json_value state)" "UNKNOWN" "a fenced task must be recorded as UNKNOWN, never as SUCCEEDED"
-assert_eq "$(printf '%s' "${LEDGER_AFTER}" | json_value started_at)" "${CRASH_STARTED_AT}" "the ledger must keep the original started_at, proving the task was not re-executed"
-assert_eq "$(printf '%s' "${LEDGER_AFTER}" | json_value reconciled)" "true" "the ledger must mark the reconciled entry reconciled=true"
-assert_eq "$(printf '%s' "${LEDGER_AFTER}" | json_value attempt)" "1" "reconciliation must not start a new attempt"
-record_ok "the ledger holds the fenced task as UNKNOWN with reconciled=true and keeps the original started_at ${CRASH_STARTED_AT}: the task was not re-run"
-evidence "task_safety.ledger_state=$(printf '%s' "${LEDGER_AFTER}" | json_value state)"
-evidence "task_safety.ledger_started_at=$(printf '%s' "${LEDGER_AFTER}" | json_value started_at)"
-evidence "task_safety.ledger_reconciled=$(printf '%s' "${LEDGER_AFTER}" | json_value reconciled)"
+assert_eq "$(printf '%s' "${LEDGER_AFTER}" | json_value state)" "UNKNOWN" "fenced task stays UNKNOWN, never SUCCEEDED"
+assert_eq "$(printf '%s' "${LEDGER_AFTER}" | json_value started_at)" "${CRASH_STARTED_AT}" "original durable fence timestamp retained"
+assert_eq "$(printf '%s' "${LEDGER_AFTER}" | json_value delivery_state)" "ACKED" "result acknowledgement committed"
+assert_eq "$(printf '%s' "${LEDGER_AFTER}" | json_value attempt)" "1" "recovery must not begin another attempt"
+record_ok "SQLite atomically retained UNKNOWN + ACKED and the original fence timestamp; no re-execution"
+evidence "task_safety.ledger_state=UNKNOWN"
+evidence "task_safety.ledger_started_at=${CRASH_STARTED_AT}"
+evidence "task_safety.delivery_state=ACKED"
 
 HEARTBEATS_BEFORE_WATCH="$(health_json | json_value heartbeats)"
 wait_until 240 "heartbeat-after-crash-fence" health_at_least_heartbeats "$((HEARTBEATS_BEFORE_WATCH + 1))"

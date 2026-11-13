@@ -11,7 +11,7 @@ import time
 from types import SimpleNamespace
 
 from .loop import AgentLoop
-from .outbox import FlushReport, MIN_SEND_WINDOW_S
+from .delivery import FlushReport, MIN_SEND_WINDOW_S
 from .protocol import (
     AGENT_EXECUTION_UNKNOWN, OUTCOME_AUTH_FATAL, OUTCOME_OK,
     OUTCOME_RATE_LIMITED, OUTCOME_REJECTED, ProtocolError,
@@ -85,15 +85,11 @@ class _OutboxView:
 class SqliteAgentLoop(AgentLoop):
     """Reuse reviewed observer/client/systemd orchestration, not JSON persistence.
 
-    Existing entrypoint is not switched until independent review. This factory
-    has no backend fallback and never instantiates a JSON Ledger or Outbox.
+    The CLI uses this factory; no backend fallback instantiates JSON task stores.
     """
     def __init__(self, *, repository: TaskRepository, **kwargs):
         self.repository = repository
         super().__init__(ledger=_LedgerView(repository), outbox=_OutboxView(repository), **kwargs)
-
-    def _replay_outbox_dropped(self):
-        return 0  # SQLite never evicts an unsent result.
 
     def reconcile(self):
         quarantined = self.repository.quarantine_foreign()

@@ -1,0 +1,114 @@
+{
+  "schema": "ghostfleet-sqlite-evidence/v1",
+  "base": "8975b7259c20b03e280755af32b0c5dad17653b4",
+  "python_tests": {
+    "passed": 518,
+    "failed": 0,
+    "skipped": 0
+  },
+  "database_probe": {
+    "schema": "ghostfleet.sqlite-spike/v1",
+    "python": "3.13.5",
+    "sqlite": "3.46.1",
+    "source_id": "2024-08-13 09:16:08 c9c2ab54ba1f5f46360f1b4f35d849cd3f080e6fc2b6c60e91b16c63f69aalt1",
+    "filesystem": "ext4",
+    "modes": [
+      {
+        "mode": "DELETE",
+        "sync": "EXTRA",
+        "pragmas": {
+          "journal_mode": "delete",
+          "synchronous": 3,
+          "foreign_keys": 1
+        },
+        "transactions": 1000,
+        "elapsed_seconds": 4.7547,
+        "crash_tests": [
+          {
+            "boundary": "before",
+            "row_present": false
+          },
+          {
+            "boundary": "after",
+            "row_present": true
+          }
+        ],
+        "second_writer_busy": true,
+        "read_only_write_rejected": true,
+        "capacity_failure_atomic": true,
+        "backup_rows_equal": true,
+        "integrity_check": "ok",
+        "database_mode": "0600"
+      },
+      {
+        "mode": "WAL",
+        "sync": "FULL",
+        "pragmas": {
+          "journal_mode": "wal",
+          "synchronous": 2,
+          "foreign_keys": 1
+        },
+        "transactions": 1000,
+        "elapsed_seconds": 1.2559,
+        "crash_tests": [
+          {
+            "boundary": "before",
+            "row_present": false
+          },
+          {
+            "boundary": "after",
+            "row_present": true
+          }
+        ],
+        "second_writer_busy": true,
+        "read_only_write_rejected": true,
+        "capacity_failure_atomic": true,
+        "backup_rows_equal": true,
+        "integrity_check": "ok",
+        "database_mode": "0600"
+      }
+    ],
+    "limits": [
+      "SIGKILL is process-crash evidence, not a physical power cut",
+      "SQLITE_FULL uses max_page_count, not real disk exhaustion",
+      "WAL test is single-writer and makes no claim about concurrent checkpoint races"
+    ],
+    "overall": "PASS",
+    "probe_sha256": "a2f0a9cf401d57f4323505810208aa8d193d1ca3eb84ee124ad6208b94019765",
+    "scope": "rootless disposable local database probe"
+  },
+  "systemd_probe": {
+    "schema": "ghostfleet.sqlite-systemd/v1",
+    "scope": "rootless transient user service; synthetic localhost control plane",
+    "stop_seconds": 0.029,
+    "requests_after_stop_command": 0,
+    "result_post_count": 1,
+    "database_terminal_state": "ACKED",
+    "systemd_version": "systemd 257 (257.13-1~deb13u1)",
+    "pyz_sha256": "3ee59187c94c20072e59335017fd8df0ce0cb610c1502af69915fca5be9ca036",
+    "entrypoint": "python3 -I <pinned pyz> --config <synthetic config> run",
+    "overall": "PASS",
+    "not_proven": [
+      "distinct managed account",
+      "Linger enablement",
+      "host reboot",
+      "production Cloudflare",
+      "OMV8 hardware",
+      "full shipped sandbox policy"
+    ],
+    "crash_restart_count": 1,
+    "service_active_before_and_after_crash": true,
+    "stopped_exit_code": 0
+  },
+  "milestone_1": {
+    "tests": 534,
+    "failures": 0,
+    "skipped": 0,
+    "retired_functions_mapped": 58,
+    "publication": "PASS",
+    "docs": "PASS",
+    "pyz_byte_equality": "PASS",
+    "scope": "author-side rerun; independent review and full release CI remain required",
+    "full_rerun_seconds": 47.374
+  }
+}

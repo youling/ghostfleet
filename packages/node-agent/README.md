@@ -1,5 +1,7 @@
 # ghostfleet-node-agent
 
+> SQLite candidate / SQLite 实现候选：the production CLI now uses tasks.db; JSON task backends and automatic result dropping are removed. Historical JSON storage notes below are superseded by [the SQLite ADR](../../docs/architecture/NODE_AGENT_SQLITE.md). state.json remains metrics only. 旧 JSON 文件须显式离线迁移，不能自动清空。
+
 GhostFleet 节点侧常驻运行时（ADR: `docs/architecture/NODE_AGENT_V0.md`）。这是一个
 **只出站、只读、无 shell** 的最小 Agent：拉取任务、在本地白名单内执行、把结果回传。
 
