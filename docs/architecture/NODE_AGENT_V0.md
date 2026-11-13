@@ -35,7 +35,7 @@ REQ-01 requires a managed node to run a dedicated, non-root, long-lived manageme
 | D5 | 复用 `transport_contract` 的 `MAY_HAVE_EXECUTED` 栅栏语义：Agent 在执行任何任务前先把 `MAY_HAVE_EXECUTED` 落盘并 fsync，重启后对未收敛项上报 `UNKNOWN` 而不重跑。 |
 | D6 | Agent 载荷是**确定性构建的 zipapp**，与 user unit 各为独立 pin 的内容寻址 capability artifact，安装到 `/usr/local/libexec/ghostfleet/node-agent.pyz`（`root:root 0755`）与 `~/.config/systemd/user/ghostfleet-managed.service`；发布选择置 `user_service_required=true`。 |
 | D7 | 不允许任意远程 Shell：协议里没有 shell/argv/script 字段，Agent 只按 allowlist 分派本地实现函数；带禁用键或未知 operation 的任务一律拒绝并留下本地审计记录。 |
-| D8 | 离线安全：所有出站请求可安全重试（结果按 `task_id` 幂等），本地队列有容量上限与丢弃策略，丢包不改变已执行事实。 |
+| D8 | 离线安全：SQLite 事务保存唯一任务事实，未确认结果按 task_id/digest 幂等重发；容量满则背压，绝不丢弃未发结果；隔离证据保留。 |
 
 ## 3. 非目标
 
@@ -67,8 +67,8 @@ systemd --user (control account, Linger=yes)
 | `%h/.config/ghostfleet/node-token` | `0600`（账户自身） | 注册时铸造的节点 token，仅本账户可读 |
 | `%h/.config/ghostfleet/node.json` | `0600` | `node_uid`、平台、注册时间（非秘密但按最小暴露存放） |
 | `%h/.local/state/ghostfleet-agent/state.json` | `0600` | 游标、序列号、退避状态、上次成功时间 |
-| `%h/.local/state/ghostfleet-agent/ledger.json` | `0600` | 任务派发栅栏与结果摘要（跨重启存活） |
-| `%h/.local/state/ghostfleet-agent/outbox.json` | `0600` | 待回传结果，上限 64 条 |
+| `%h/.local/state/ghostfleet-agent/tasks.db` | `0600` | SQLite 任务真值：栅栏、正文/摘要、投递状态与隔离历史 |
+| `%h/.local/state/ghostfleet-agent/tasks.db.lock` | `0600` | 运行进程独占锁，避免两个 Agent 交叉执行任务 |
 
 日志边界：只写 stdout（journald 捕获），结构化 JSON 行，字段白名单；**永不**写入 token、`resume_session`、短码、完整控制面响应体或任何私有部署事实。日志速率由循环周期天然限制，错误路径按退避降频。
 
@@ -154,13 +154,19 @@ systemd --user (control account, Linger=yes)
 
 ## 7. 耐用状态与崩溃语义
 
-任务执行前：`ledger[task_id] = {state: MAY_HAVE_EXECUTED, operation, started_at}` → `fsync` 目录项 → 才调用实现函数。完成后写 `{state: SUCCEEDED|REFUSED|FAILED, finished_at, result_digest}`（`REFUSED` = 校验拒绝且**副作用为零**，`FAILED` = 尝试过但失败，`UNKNOWN` = 无法判定是否已执行；结果信封复用任务信封的 `schema` 并附加 `{task_id, operation, result, result_digest}`）。三者不可混用：**实现函数调用期间抛出的异常绝不报 `REFUSED`**——那等于向控制面承诺「可以安全重投」。规则由每个 operation 的显式声明决定：声明 `effect: none`（v0 的四个 operation 全部是只读观测/回显）→ 抛异常报 `FAILED` + 具体错误码；声明 `effect: may_mutate`（v0 不存在，预留给后续写操作）→ 抛异常一律报 `UNKNOWN`，宁可让控制面按未知副作用处理，也不猜。启动时扫描 ledger：任何 `MAY_HAVE_EXECUTED` 且无终态的任务，先补写一条 `UNKNOWN` 结果进 outbox（只报事实，不重跑），再标 `RECONCILED`。
+当前权威设计见 [SQLite 持久化合同](NODE_AGENT_SQLITE.md)。此前 JSON ledger/outbox 分文件提交、`RESULT_DROPPED` 自动驱逐及跨文件撤回/重建机制已废弃。
 
-有界驱逐绝不丢未对账条目：超过上限时只驱逐「可证明幂等」的条目——`RESULT_DROPPED` 记录优先（即使 ledger 里原本没有该 `task_id`，它也只是一条可驱逐的事实记录；驱逐时留墓碑，`begin()` 不会把同一 `task_id` 当 NEW 重执行），其次是 `read_only` operation 的**已对账**终态；**`FENCED`（`MAY_HAVE_EXECUTED`）、`UNKNOWN` 以及任何 `may_mutate` operation 的终态永不驱逐**（首版本文写过「最后才 `FENCED`」，与实现和安全语义矛盾，已按「永不驱逐」定稿）。库容因此仍可能被这类条目吃满：此时 agent 停止接收新任务并以 `AGENT_LEDGER_EXHAUSTED` fail closed（心跳继续、`health=DEGRADED`），直到下一次成功对账——`不重复执行` 优先于 `有界`，宁可停摆也不猜。为不让「实现从未被调用」的条目白占容量：operation 的 allowlist 校验必须在写栅栏**之前**完成（未知 operation 直接 `REFUSED`，不写栅栏），且批处理中途写账本失败（`AGENT_LEDGER_EXHAUSTED`）必须转成同一个「停止 poll、继续心跳、`health=DEGRADED`」状态，不许以脏退出收场。
+唯一任务真值是当前非 root 账户持有的本地 SQLite `tasks.db`。一个任务行同时包含 task_id、node_uid、operation、attempt、执行栅栏、结果正文/摘要和投递状态。采用 `BEGIN IMMEDIATE`、`journal_mode=DELETE`、`synchronous=EXTRA`、进程排它锁及 0600 文件权限：
 
-启动闸门：`run` 在进入循环前校验凭据文件是常规文件（非符号链接）、权限 `0600`、属主等于当前 euid，节点配置 `/etc/ghostfleet/node-agent.json` 为 root 拥有的 `0644`；任一不符 → 退出 3（不进入循环，不打印文件内容）。载荷完整性是**安装期**属性（root 拥有的 `/usr/local/libexec/ghostfleet` 路径 + bootstrap 逐字节校验 + unit `ProtectSystem=strict` 使其运行期不可写），运行期不做自哈希——能改写载荷的人同样能改写载荷里的常量，自哈希只增加仪式感。
+1. **执行前**：提交 `MAY_HAVE_EXECUTED` 栅栏后才执行；没有成功的持久化栅栏就不能运行任务。
+2. **执行结果**：终态与唯一 body/digest、`PENDING` 在一个事务中提交。`REFUSED` 只表示实现未调用；只读执行中错误为 `FAILED`；可能已执行而事实未知为 `UNKNOWN`。
+3. **崩溃恢复**：只剩栅栏则事务内生成 UNKNOWN 正文，不重跑。已有 PENDING 按原摘要/原正文重试；服务端按 task_id + digest 幂等吸收。
+4. **确认**：服务端接受后才标 `ACKED`、清除正文并保留 identity/digest 墓碑，防止再次执行。
+5. **隔离**：正文冲突、永久拒收、身份更换只标 `QUARANTINED`，原始证据不被删除或重算。
+6. **容量**：未完成栅栏和 PENDING 共用 64 条上限；满则停止 poll 新任务、继续 heartbeat/回传。ACKED 紧凑保留，数据库有实际容量上限；磁盘/锁/提交异常均 fail closed。
+7. **迁移**：旧 JSON 原件只通过受控停机、备份、显式导入及哈希校验迁移，不静默当作空库重建。没有 HTTP 发生在 SQLite 事务内。
 
-写盘一律 `tmp + os.replace` 并 `fsync` 文件与目录，避免半写状态。outbox 上限 64 条：溢出时保留最新 64 条并把被丢弃条目的 `task_id` 记入 ledger 的 `RESULT_DROPPED`（这是事实记录，不是静默丢弃）。顺序固定为**先写 ledger 的 `RESULT_DROPPED`、再清空 outbox 的 dropped 清单**：崩溃只会导致重复标记（幂等），绝不会在「清单已清空、账本还没写」的窗口里丢掉事实。
+安装时验证 pyz 内容摘要并使用 root-owned 安装目录。运行期继续检查 token 0600 和 root-owned 配置，不依赖自哈希建立信任。
 
 ## 8. systemd 生命周期
 
@@ -274,7 +280,7 @@ WantedBy=default.target
 | 身份安全 | 三账户隔离（Human / ops / managed）；managed 无 sudo、无 ops 组 | 真实 systemd + 断言 |
 | 权限安全 | managed 直接调用 Helper → 被 `dedicated_caller_identity` 拒；`sudo -n` 被拒 | 负向证明 |
 | 任务安全 | 重放 nonce → 409；重复 result → 幂等；崩溃在 `MAY_HAVE_EXECUTED` → 上报 UNKNOWN 且不重跑；越权 operation → 400 | 确定性测试 + 真机 |
-| 结果唯一性 | 同一 `task_id` 只允许出现一个结果摘要：`ledger.complete()` 写失败（磁盘满/fsync 失败）后该任务**不得**再发出实际结果，outbox 里那条必须变成不可发送（删除并留墓碑或持久化 not-sendable 标记），唯一允许的结果是重启对账产生的 UNKNOWN。测试注入 `LedgerWriteError`：shutdown 后该任务零发送，重启后恰好一条 UNKNOWN 且摘要唯一 | 确定性测试 |
+| 结果唯一性 | SQLite 提交终态/正文/摘要/PENDING 失败后绝不可发送未提交正文；重启后只可把执行栅栏恢复为唯一 UNKNOWN。服务端 ACK 后本地提交失败，仍保留同正文/摘要重发而非冒充已送达；以故障注入断言 | 确定性测试 |
 | 停止语义 | `SIGTERM` 后主循环零 heartbeat/poll；`shutdown()` 仅在预算内 flush 已完成结果；409 重试共享同一剩余预算（假 transport 两次 0.2 s、预算 0.25 s 时总耗时不超 0.25 s）；三段预算的**每一项**都有上限断言，改大任一项即红 | 确定性测试 + 真实 systemd |
 | 结果词汇不塌陷 | 真 agent + 真控制面：operator 读到的 `result_outcome` 必须等于 agent 上报的 `status`（四值词汇 `SUCCEEDED`/`REFUSED`/`FAILED`/`UNKNOWN`），禁止全部投影成 `UNKNOWN`；缺失/非法值才 fail-closed 到 `UNKNOWN`，且**读取投影时也要白名单**——durable 里被塞入历史/外来词汇的记录，`GET /v0/node-tasks` 必须归一化为 `UNKNOWN`，不得原样透出第二套词汇 | 端到端 + 契约测试 |
 | 入站鉴权完整性 | 缺 `x-ghostfleet-node-uid` → 401；节点 token 打 operator 路由 → 401；无 authorizer 直接构造 handler 调 operator 动作 → 全拒；`rotate` 与 `/v1/enroll/complete` 响应带 `cache-control: no-store`；明文 token 只在一次性响应里出现；`rotate` 与 `complete` 的 `node_credential` 同形（`{token, node_uid, handoff_id}`），按 ADR 读 `.token` 必须有效；凭据重投递预算必须**真的跑到 `EXPIRED`**（第 21 次取回不带 token，24 h TTL 到期同样），只断言常量不算证据 | 确定性测试 |
@@ -299,7 +305,7 @@ WantedBy=default.target
 - v0 已提供轮换端点（`POST /v0/node-credential/rotate`，operator 鉴权，旧 token 立即失效并重置该节点 nonce/seq 状态）与吊销；节点侧非对称密钥对（可复用 `PRIVILEGE_LEASE_VALIDATOR_V0` 的签名风格）留给 v1。
 - 控制面 ↔ 节点的时间同步仅靠 ±300 s 窗口；真机上需要 chrony/systemd-timesyncd 在位（disposable 验收会断言）。
 - 日志目前只进 journald，不集中上传；跨节点日志聚合留给后续版本。
-- `AGENT_LEDGER_EXHAUSTED` 是有意选择的 fail-closed 停摆：控制面长期 5xx 导致对账永不成功时，节点会停止取新任务并持续 `DEGRADED`。这是**接受的**取舍（不重复执行优先于持续取任务），但代价是可用性面——控制面必须能看见 `health=DEGRADED`/`health_reason`，并由 operator 介入（修控制面或 `rotate` 后重启）。v1 再考虑「超时后允许丢弃最旧 `UNKNOWN`」的显式阈值。
+- `AGENT_LEDGER_EXHAUSTED` 是兼容保留的健康原因码；现指 SQLite 中未完成栅栏/PENDING 达到背压上限。此时继续心跳、暂停取新任务并保存全部结果，旧 JSON 驱逐策略不再适用。
 - `capability.inspect` 新鲜度由安装器契约保证（rollback 删投影），agent 只校验文件属主与权限、不判 `applied_at` 陈旧；真出现陈旧投影，上报的是「安装器说的事实」，责任在安装器而非 agent。
 - 常驻 watchdog 线程引入了进程内并发：它只做一件事（定时 `sd_notify(WATCHDOG=1)`），不读状态、不写文件、不加锁，异常自吞并记 warning，`shutdown()` 用 `Event` 立即唤醒并 `join(≤2 s)`；因此不会掩盖主线程卡死（不共享进度加锁是关键）。若未来需要把喂狗与「主线程确有推进」绑定，必须另加进度计数器，而不是把喂狗搬回主线程——首版这样就正是离线自杀的成因。
 - 子进程环境剥离 `NOTIFY_SOCKET`/`LISTEN_*`/`WATCHDOG_*` 只作用于 agent 调起的子进程；agent 自身仍从 systemd 收到的环境里读这些变量，二者不冲突（剥离只发生在 `CommandRunner.run()` 的 spawn 环境副本上）。
