@@ -2,9 +2,10 @@
   "schema": "ghostfleet-sqlite-evidence/v1",
   "base": "8975b7259c20b03e280755af32b0c5dad17653b4",
   "python_tests": {
-    "passed": 518,
+    "passed": 534,
     "failed": 0,
-    "skipped": 0
+    "skipped": 0,
+    "source": "independent exact-head review PR #84 @ f36d12312bcb2e6a877e54b82fc30f1e1574be1b; Debian 13 / Python 3.13.5"
   },
   "database_probe": {
     "schema": "ghostfleet.sqlite-spike/v1",
