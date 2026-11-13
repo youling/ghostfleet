@@ -2,7 +2,7 @@
   "schema": "ghostfleet.sqlite-test-migration/v1",
   "base": "8975b7259c20b03e280755af32b0c5dad17653b4",
   "removed_test_functions": 58,
-  "new_test_file_functions": 57,
+  "new_test_file_functions": 58,
   "method": "AST inventory + manual invariant mapping; references prove existence, not independent semantic review",
   "policy_changes": [
     "Old automatic eviction/drop/rebuild semantics are retired: results are preserved or quarantined, never silently regenerated.",
