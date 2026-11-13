@@ -36,7 +36,8 @@
     "check:all": "npm run check && npm run check:typed && npm run check:bootstrap && npm run check:assets && npm run check:publication && npm run check:docs",
     "verify:python-artifact": "python scripts/verify-python-artifact.py",
     "verify:node-agent-pyz": "node scripts/verify-node-agent-pyz.mjs",
-    "verify:ai-client-neutral": "node scripts/verify-ai-client-neutral.mjs"
+    "verify:ai-client-neutral": "node scripts/verify-ai-client-neutral.mjs",
+    "test:node-agent": "python -m pytest packages/node-agent/tests"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.0",
