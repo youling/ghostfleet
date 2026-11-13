@@ -1,4 +1,41 @@
+## 当前 SQLite 集成候选证据（PR #83 exact HEAD dafee5e，2026-11-13）
+
+**当前被测字节必须以本节为准。** 下方旧 §0–§10 的 WSL Ubuntu/systemd 255 数据属于 SQLite 合入前的历史候选，旧 pyz 为 b2b2acea… / 225,102 B；它不是当前 SQLite 候选的制品证据，不得用于声称当前字节已通过 systemd 255 真机测试。
+
+| 项 | 当前精确值 |
+|---|---|
+| 集成 PR | https://github.com/youling/ghostfleet/pull/83 |
+| 集成 HEAD | dafee5e683b2cffd76a7314f9280b62a71ec8fa1（#84 merge commit） |
+| 基线 | 0cbb9c17bdd298634e4ccebf2c1a9c50d9f09fe1 |
+| 完整 CI | https://github.com/youling/ghostfleet/actions/runs/43446581056，6/6 SUCCESS |
+| pyz | 216,146 B / SHA-256 3ee59187c94c20072e59335017fd8df0ce0cb610c1502af69915fca5be9ca036 |
+| systemd unit | 979 B / SHA-256 e3b06cf3e1d421b4ea356bf619794995a0de906f69607889c62c96576ef0aadf |
+| 生命周期 job | https://github.com/youling/ghostfleet/actions/runs/43446581056/job/131957487998 |
+| 运行环境 | GitHub-hosted disposable Linux，systemd 259，真实 root/user manager；本地 synthetic control-plane harness |
+| 断言 | 86 OK、297 EVIDENCE、0 FAIL |
+
+本轮真实 systemd disposable 证据：
+- ghostfleet-managed 独立非 root 账户；无登录会话；Linger=yes。
+- 精确 pyz 与 unit 安装；systemd-analyze --user verify exit 0；服务 Type=notify 达到 active/running。
+- 删除 state/config 目录后由 systemd 自愈为 0700。
+- loginctl terminate-user 销毁 user manager 后，Linger 自动恢复服务，无登录会话；这证明 user-manager 重建，不是物理内核重启。
+- kill -9 主进程后 NRestarts 0→1 并恢复；SIGTERM 正常退出 0 且不自动重启。
+- 控制面不可达 241 秒期间服务持续 active、watchdog 推进、NRestarts 不变；恢复后心跳恢复。
+- 真实只读任务观察 ghostfleet-managed.service 状态；node.observe 两次结果有变化；SQLite crash fence 恢复为 UNKNOWN 且不重执行；结果最终 ACKED。
+- managed 账户无 sudo；sandbox 的 PrivateUsers、只读根挂载、配置/凭据权限均有实测断言。
+
+**明确未证明：** 物理主机重启、OMV8 硬件/真实磁盘、生产 Cloudflare/DO、真实 tailnet、凭据轮换、多节点租约竞争、正向完整 capability-status（本 job 只安装 pyz+unit，缺少完整特权制品）。控制面为合成测试服务，不是生产控制面。
+
+本节仅证明该 exact candidate 在 disposable Linux/systemd 259 环境中的生命周期与合成任务工作。它不等于生产部署授权，也不将 REQ-01 提升为已完成。仍需父 PR #83 新 exact-head 独立审查、Human 受保护合并及目标 OMV8 单独验收。
+
+---
+
 # Node Agent 验收证据（REQ-01 / v0）
+
+## 历史候选证据说明
+
+下方原始 WSL systemd 255 记录测量的是 SQLite 合入前的 b2b2acea… / 225,102 B 候选。仅保留作历史比较，不代表当前 SQLite pyz 3ee59187… 已在 systemd 255 上重跑。
+
 
 ## 0. English abstract
 
