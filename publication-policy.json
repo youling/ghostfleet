@@ -639,9 +639,9 @@
     },
     {
       "path": "packages/node-agent/dist/node-agent.pyz",
-      "sha256": "598aa22db3b5147455229b40fe44d2a8772c553fa2d17880e23efb6d2349bf28",
+      "sha256": "3ee59187c94c20072e59335017fd8df0ce0cb610c1502af69915fca5be9ca036",
       "purpose": "Deterministically built GhostFleet node agent zipapp payload (sources under packages/node-agent/src, builder packages/node-agent/tools/build_pyz.py). Contains no credentials, endpoints or host-specific data; CI rebuilds it and asserts byte equality.",
-      "review": "Reviewed by the coordinating Foreman for the node agent M4 round together with the source it is built from."
+      "review": "Architect SQLite candidate: deterministic source-to-archive equality and rootless tests verified; independent release review remains required."
     }
   ],
   "public_contacts": [],
@@ -1293,6 +1293,24 @@
       "sha256": "79dea2111efd5b332dbbfac7afc0ad82494e927b1d5f66e71562c396efd1b9e6",
       "reason": "Public upstream documentation on rclone.org; research citation, not an instance locator or runtime endpoint.",
       "review": "2026-11-12 Architect reconnaissance: exact citation URL reviewed against upstream sources; scope limited to this document and URL digest."
+    },
+    {
+      "path": "docs/architecture/NODE_AGENT_SQLITE.md",
+      "sha256": "6b5690426c7e1c5c730218656b786182337371b4bdabc519a0c2cba02237cbc9",
+      "reason": "Official SQLite reference cited by the storage ADR; documentation only, not a runtime endpoint.",
+      "review": "Architect checked the exact public SQLite documentation URL during the SQLite reuse audit."
+    },
+    {
+      "path": "docs/architecture/NODE_AGENT_SQLITE.md",
+      "sha256": "288e40bbc086f7801718272c0f0a01eb955255e77056a9428e58ede497a7abbf",
+      "reason": "Official SQLite reference cited by the storage ADR; documentation only, not a runtime endpoint.",
+      "review": "Architect checked the exact public SQLite documentation URL during the SQLite reuse audit."
+    },
+    {
+      "path": "docs/architecture/NODE_AGENT_SQLITE.md",
+      "sha256": "05cae033cedcdc829e2c930a4fd66e4e72cb3286f6ba0fd16dc574636404c6c9",
+      "reason": "Official SQLite reference cited by the storage ADR; documentation only, not a runtime endpoint.",
+      "review": "Architect checked the exact public SQLite documentation URL during the SQLite reuse audit."
     }
   ]
 }

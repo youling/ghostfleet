@@ -1,5 +1,7 @@
 # ghostfleet-node-agent
 
+> SQLite v1：任务执行栅栏、结果正文、投递状态统一写入 `tasks.db`；旧 JSON 任务账本和自动丢弃已取消，`state.json` 只记录观测统计。旧状态必须离线验证、显式导入并保留原件。参见 [SQLite 合同](../../docs/architecture/NODE_AGENT_SQLITE.md)。
+
 GhostFleet 节点侧常驻运行时（ADR: `docs/architecture/NODE_AGENT_V0.md`）。这是一个
 **只出站、只读、无 shell** 的最小 Agent：拉取任务、在本地白名单内执行、把结果回传。
 
@@ -21,7 +23,7 @@ The package is stdlib-only and ships as a deterministic zipapp for `python3 -I`.
 | 启动信任闸门 | `run` 前校验 token 为常规文件、属主本人、mode 0600；默认配置必须 host root 拥有（user namespace 内按只读挂载判据）且 0644；不符退出 3 且不联网 |
 | 公开投影 | `capability.inspect` 只读 `/etc/ghostfleet/capability-status.json` 的白名单字段，属主判据与配置相同，绝不读 root-only 私有 state |
 | 凭据不落日志 | 日志与结构化事件只写固定字段，token/nonce/完整 params 绝不出现在 stdout |
-| 运行期状态 fail-closed | state 目录必须 0700 且属主为当前用户，`state.json`/`ledger.json`/`outbox.json` 必须 0600 且属主为当前用户；不符拒绝启动/写入（`STATE_DIR_UNTRUSTED`） |
+| 运行期状态 fail-closed | state 目录必须属当前用户且权限 0700；`state.json`、`tasks.db`、`tasks.db.lock` 属主为当前用户且权限 0600。SQLite schema、完整性和进程独占锁异常时停止执行。 |
 
 ## 文件布局（与 ADR §4 一致）
 
@@ -32,11 +34,11 @@ The package is stdlib-only and ships as a deterministic zipapp for `python3 -I`.
 | `/etc/ghostfleet/capability-status.json` | root:root 0644 | 公开能力投影（bootstrap 原子写入）：schema、selection 摘要、artifact/user_unit 名+sha256、payload sha256、账户与 release pin；不含 token/私有路径 |
 | `~/.config/ghostfleet/node-token` | 0600 | 节点 bearer token 原文（单行） |
 | `~/.config/ghostfleet/node.json` | 0600 | `node_uid` / `platform` / `issued_at`（不含 origin） |
-| `~/.local/state/ghostfleet-agent/` | 0700 | `state.json` / `ledger.json` / `outbox.json`（均 0600） |
+| `~/.local/state/ghostfleet-agent/` | 0700 | `state.json`（观测统计）、`tasks.db`（任务唯一真值）、`tasks.db.lock`（进程锁），文件均 0600 |
 
 控制面 origin 只能由 root-owned 配置给出，普通用户无法把 Agent 指向攻击者端点。
 运行期状态文件同样按 fail-closed 校验：`ensure_state_dir` 要求目录属主 `== os.geteuid()` 且 mode `0700`，
-三个状态文件读/写前要求属主 `== os.geteuid()` 且 mode `0600`；目录过宽时先记一次 `state_dir_permissions_loose`
+状态文件和数据库读写前要求属主 `== os.geteuid()` 且 mode `0600`；目录过宽时先记一次 `state_dir_permissions_loose`
 告警再以 `StateWriteError` 拒绝（不静默放宽）。
 
 启动信任闸门（任一不符即退出码 3，只报稳定错误码，不打印文件内容）：
@@ -110,7 +112,7 @@ python3 -I /usr/local/libexec/ghostfleet/node-agent.pyz status --json
 `status --json` 示例（只读本地状态，单行 JSON）：
 
 ```json
-{"ok":true,"command":"status","agent_version":"0.1.0.dev0","node_uid":"node-...","state_dir":"%h/.local/state/ghostfleet-agent","initialised":true,"boot_id":"...","seq":42,"last_start":"...","last_stop":null,"last_heartbeat_at":"...","last_health":"OK","stopping":false,"consecutive_failures":0,"polls":42,"tasks_executed":3,"outbox_overflow":0,"outbox_depth":0,"ledger_entries":3}
+{"ok":true,"command":"status","agent_version":"0.1.0.dev0","node_uid":"node-...","state_dir":"%h/.local/state/ghostfleet-agent","initialised":true,"boot_id":"...","seq":42,"last_start":"...","last_stop":null,"last_heartbeat_at":"...","last_health":"OK","stopping":false,"consecutive_failures":0,"polls":42,"tasks_executed":3,"outbox_overflow":0,"outbox_depth":0,"ledger_entries":3,"task_store":"sqlite/v1","task_counts":{"ACKED":3},"quarantined":[]}
 ```
 
 ## 退出码
@@ -166,22 +168,15 @@ boot 重放换新 boot_id 重试一次，`NODE_BOOT_ID_CAPACITY_REACHED` 无法�
 
 ## 崩溃安全与幂等
 
-- 执行前先把 `ledger[task_id] = MAY_HAVE_EXECUTED` 落盘（tmp+fsync+rename），然后才调用实现。
-- 进程重启后只对栅栏任务上报 `UNKNOWN`，绝不重跑；已有 outbox 结果则按已有结果补账。
-- outbox 上限 64 条，溢出时丢最旧并把丢弃记成 `RESULT_DROPPED` 与 `outbox_overflow` 计数；丢弃清单与 items
-  **同一次原子写**持久化，重启 load 时重放为 `RESULT_DROPPED`；未发出的结果下次启动优先重发，同 task_id 同 `result_digest` 幂等。
-- 所有状态文件写入均为原子替换（文件 fsync → rename → 目录 fsync），损坏或目录 fsync 失败都 fail-closed 而非静默重置。
-- ledger 上限 512：只驱逐已收敛的条目——`RESULT_DROPPED` 记录（含 task_id 根本不在账本里的丢弃事件，否则 512 个
-  不存在的 task 就能永久耗尽账本）最先，其次是「已对账且 read_only」的终态、以及 dispatch 前就产生的 `REFUSED`
-  （实现从未被调用，副作用可证明为零）。`MAY_HAVE_EXECUTED`、待对账条目、`UNKNOWN` 与任何 `may_mutate` 终态
-  **永不驱逐**；被驱逐的 task_id 写入独立有界墓碑文件（上限 4096），
-  `begin()` 命中墓碑按 `DONE` 处理，绝不因驱逐而重跑。墓碑满或账本达上限且无可驱逐条目时 `begin()` 拒绝、
-  停止 poll（heartbeat 继续，health=`DEGRADED`、`health_reason=AGENT_LEDGER_EXHAUSTED`），对账腾出空间后自动恢复取任务。
-- `SIGTERM` 收尾的 flush 预算固定 8 秒并计入下面的停机上界；该预算**逐条检查**（每条 result POST 之前算一次剩余预算、单请求超时钳到剩余预算），耗尽即停，未发出的条目留在 outbox 下次启动优先重发。
-- 409 冲突（nonce/seq/boot 回放）的自动重试与第一次尝试**共用同一份超时预算**，且预算是 `send()` 入口处的**绝对截止点**：本地构包/序列化（`next_seq` + fsync）、transport 往返、`retry_hook` 的耗时全部从里面扣，每次 POST 之前都按截止点重算剩余超时。重试还要额外满足「剩余 ≥ `MIN_SEND_WINDOW_S` + 上一次的本地构包开销」，否则直接放弃重试、把第一次的 409 交给上层。**第一次尝试同样受一条硬规则约束**：构包与序列化之后剩余 < `MIN_SEND_WINDOW_S` 时一个字节都不发（返回网络错误形态交给退避），绝不靠把超时抬到 0.05 s 地板硬发——否则剩余 0.001 s 也会 POST 0.05 s，凭空多烧掉一个最小发送窗口。**这份预算是「网络 POST 的预算」，不是 `send()` 的墙钟上界**：重试既不会拿到第二份预算，也不会靠本地构包时间吃穿预算（本地耗时先被扣掉），但本地构包/序列化（`next_seq` + fsync）与 `retry_hook` **不可中断**，它们跑起来就无法被预算打断，因此一次 `send()` 的实际墙钟可能超过预算（rev-core 实测预算 1.0 s + 1.2 s 慢构包 → 墙钟 1.2 s、一个 POST 都没发）。回归测试 `test_local_build_cost_is_charged_before_the_first_attempt`、`test_every_attempt_fits_the_remaining_window`、`test_request_is_not_sent_when_the_local_build_consumes_the_budget`。
-- 账本终态（result 摘要）没提交成功时，刚入队的结果会被**从 outbox 撤回**，绝不发送；撤回只认**真实返回值**：条目不在队列（`removed=False`）或落盘失败都算撤回失败，一律 fail closed（记 `result_retract_failed` / `result_uncommitted_unsendable`），既不发出去，也绝不把「撤回失败」当成功让 flush 删掉条目——那等于静默丢结果。
-- 发送前还有一道**逐字段闸**，拿 outbox body 与账本事实（含墓碑）对账：`body.task_id`、`body.operation`、嵌套的 `result.task_id` / `result.node_uid` / `result.schema` / `result.operation` 分别必须等于任务 id、本节点 uid、`ghostfleet-node-task/v0`、账本 operation；`result.status` 必须是合法状态且等于账本终态；`body.result_digest` 必须等于 `result` 的规范摘要，也必须等于账本已提交的摘要。任一不符就**绝不原样发送**：账本终态是 `UNKNOWN` 时撤回旧 body、按**账本 operation** 重建 `UNKNOWN`（重算摘要并覆盖同一条账本终态；`complete()` 对终态异摘要仍然 fail closed）；其它终态（`SUCCEEDED`/`FAILED`/`REFUSED`）时撤回条目并在账本记 `result_state=RESULT_DROPPED`，日志 `result_body_unverifiable` 给出字段级原因，执行终态与摘要保持原样、同一 task 重投被 `inspect()` 跳过——结局确定、不重试、不自旋。已收敛并被有界驱逐的终态只在墓碑里留下 `result_digest`，墓碑摘要同样算「已提交」——否则账本压满时会把合法待发的结果误撤回，而墓碑只让 `begin()` 返回 `DONE`、不会补发，该 result 就永久丢了（回归测试 `test_evicted_terminal_result_is_still_sendable_via_its_tombstone`）。这样同一 task 只可能有一个会被发出的摘要（重启后是 `UNKNOWN`），不会出现"真实结果 + UNKNOWN"两条摘要被控制面判成 `TASK_RESULT_CONFLICT`。升级路径（账本里已是 `UNKNOWN`、队列里却是旧版本用错 operation 写的 body）的回归测试：`test_legacy_unknown_body_is_rebuilt_with_the_ledger_operation`（只发一条、operation 与摘要都等于账本）、`test_unverifiable_succeeded_body_is_dropped_not_sent`（零 POST、`RESULT_DROPPED`、重投无第二条结果）、`test_failed_retract_is_reported_and_deletes_nothing`（撤回失败 → 拒发、条目仍在、结构化原因）。
-- 「dispatch 前就拒绝」的路径同样**先读账本历史再下结论**（`ledger.inspect()`，只读）：`MAY_HAVE_EXECUTED` → 按既有语义对账成 `UNKNOWN`；已有终态或只剩墓碑 → 记 `task_duplicate_skipped` 后跳过；只有完全没见过的 task_id 才写 `REFUSED`。否则同一 task_id 第二次到达（内容被改成未知 operation）会覆盖第一个摘要，甚至把已排队的 `UNKNOWN` 撤回。账本 `complete()` 自身也有 backstop：已有终态但 `result_digest` 不同时直接抛 `LedgerWriteError`（同摘要幂等）。**对账出来的 `UNKNOWN` 绑定账本里 `begin()` 记录的 operation，绝不使用重投 envelope 的 operation**：控制面按 ADR:109 校验 `result.operation` 等于任务 operation，用新 operation 回 `UNKNOWN`（同一 task_id 从 `node.observe` 重投成 `capability.inspect`）会被 409 `TASK_OPERATION_MISMATCH` 永久丢弃，而账本已是终态、下一次重投又被 `inspect()` 跳过——`MAY_HAVE_EXECUTED` 的任务就永远没有可接受的结果。outbox 里已有 body 时用的是与发送闸**同一套逐字段校验**（一条实现、两处调用：`_outbox_body_problems`），与账本不一致就撤回并按账本 operation 重建 `UNKNOWN`（撤不回则 fail closed，发送闸拒发），绝不原样发送。回归测试 `test_known_terminal_task_is_not_refused_again`、`test_known_in_flight_task_is_reconciled_not_refused`、`test_reconciled_unknown_uses_the_operation_recorded_at_fence_time`、`test_queued_result_with_a_foreign_operation_is_rebuilt_not_sent`、`test_tombstoned_task_is_skipped_not_refused`、`test_first_unknown_operation_is_still_refused`、`tests/test_ledger.py::test_complete_rejects_a_second_digest_for_a_terminal_task`。
+- 任务唯一权威状态是本地 SQLite `tasks.db`，不再存在独立 JSON ledger/outbox/tombstones 或自动丢弃、驱逐流程。详见 [SQLite 持久化合同](../../docs/architecture/NODE_AGENT_SQLITE.md)。
+- **执行前**：`BEGIN IMMEDIATE` 在一个事务里提交 `MAY_HAVE_EXECUTED` 栅栏；COMMIT 成功后才调用本地实现。
+- **执行后**：同一事务一次写入执行终态、原始规范化结果正文、唯一摘要与 `PENDING`。网络请求绝不在事务中进行。
+- **重启**：对只有栅栏、没有结果的任务生成一条 `UNKNOWN` + `PENDING`，不再执行；已有 PENDING 正文/摘要保持不变并重发。
+- **ACK**：仅在服务端明确接受后才把记录改成 `ACKED` 并删除正文，保留 task_id/operation/digest 防重放。响应丢失时重发同一正文和摘要。
+- **隔离**：不可信结果、永久拒收或 node_uid 更换均标记 `QUARANTINED`，完整保留原正文、摘要和节点身份；不发送、不删除、不自动改摘要。
+- **背压**：同时未完成的栅栏/PENDING 默认上限 64，达到后暂停领取新任务，继续心跳与回传旧结果；绝不驱逐未发结果。数据库真实大小上限默认 64 MiB，空间不足会 fail closed。
+- **存储恢复**：本地文件系统、`journal_mode=DELETE`、`synchronous=EXTRA`、排它进程锁。无法确认 COMMIT 结果时立即停止并重启重读数据库；旧 JSON 须停机后显式离线导入，原件及哈希清单保留。
+- **停机**：SIGTERM 后停止新任务与新轮询；有界 flush 只尝试已完成结果，未发正文下次继续发送。发送预算计入本地构包、网络和重试。
 
 ### 停机预算（`TimeoutStopSec=30` 内，三段相加）
 
@@ -209,8 +204,8 @@ boot 重放换新 boot_id 重试一次，`NODE_BOOT_ID_CAPACITY_REACHED` 无法�
 所以 19 s 基线 + 余量仍成立的前提是「单次本地构包/`retry_hook` ≤ 2 s」。
 测试：`test_stop_budget_is_a_runtime_deadline_not_a_constant_sum`
 （64 条 pending + 假时钟、每条 send 0.2 s，断言 elapsed ≤8 s + 一次 send 颗粒、逐条拿到递减的剩余预算、
-pending 可见）；`tests/test_outbox.py` 的 `test_flush_stops_before_any_send_when_stop_event_is_set`、
-`test_flush_checks_stop_event_before_every_send`、`test_flush_honours_deadline_and_passes_remaining_budget_as_timeout`；
+pending 可见）；`tests/test_sqlite_loop.py` 的 `test_stop_before_flush_leaves_body_and_sends_nothing`、
+`test_sqlite_stop_after_first_send_preserves_second_result`、`test_sqlite_expired_deadline_does_not_start_delivery`；
 `test_shutdown_flush_never_doubles_the_retry_budget`（flush 预算 3 s 的对照装置：第一次 409 花 2.8 s → 不重试、
 只发 1 次；花 1.5 s → 重试只拿剩余 1.5 s），`tests/test_client.py` 的
 `test_conflict_retry_is_skipped_when_the_timeout_budget_is_spent`、
@@ -243,7 +238,7 @@ pending 可见）；`tests/test_outbox.py` 的 `test_flush_stops_before_any_send
 - **SIGTERM 能打断睡眠，退出不撞 `TimeoutStopSec`**：主循环所有睡眠（poll 间隔、指数退避、Retry-After）都按
   ≤1 s 的片等待 `stop_event`，因此信号到达后 ≤1 s 脱离睡眠；随后**不再发起任何新请求**（心跳之前、poll 之前、
   每条 result send 之前都查 stop：真机上曾出现 signal 之后又打一条 poll 的缺陷，已由 loop 级测试锁定）、停止取新任务
-  （同一批里尚未开始的 task 不进 ledger，控制面可安全重投）、停喂狗线程、发 `STOPPING=1`、执行 ≤8 s 有界 flush、
+  （同一批里尚未开始的 task 不进入 SQLite 执行栅栏，控制面可安全重投）、停喂狗线程、发 `STOPPING=1`、执行 ≤8 s 有界 flush、
   写 last_stop、以 0 退出。
   睡眠中的 `SIGTERM` 总时延 ≤1 s（+flush ≤9 s）；计入在途 HTTP 与余量的最坏上界见上一节「停机预算」= 21 s < 30 s。
   **不可中断的边界**（诚实声明）：阻塞中的 HTTP 请求由 `request_timeout_s`（默认 10 s）封顶；正在执行的只读任务在
