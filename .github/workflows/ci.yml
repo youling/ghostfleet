@@ -32,12 +32,19 @@ jobs:
           python-version: '3.12'
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: python -m pip install -e "packages/runtime-python[test]"
+      - if: runner.os == 'Linux'
+        run: python -m pip install -e "packages/node-agent[test]"
       - run: python scripts/verify-python-artifact.py
       # The Console launcher must hand the Human identity into the elevated
       # bootstrap; the suite needs a real /run workspace, so it runs as root.
       - if: runner.os == 'Linux'
         run: sudo -n env "PATH=$PATH" node --test test/enrollment-launcher-composition.test.js
       - run: npm run test:all
+      # The Node Agent is a shipped runtime package, not only a disposable systemd harness.
+      # Run its full pytest suite on Linux so persistence/protocol/observer tests are required CI.
+      - if: runner.os == 'Linux'
+        name: Test the Node Agent package
+        run: npm run test:node-agent
       - run: npm run check:all
       # The node agent zipapp is a pinned release artifact: rebuild it from the
       # committed build entry and require byte equality, then smoke the entry
