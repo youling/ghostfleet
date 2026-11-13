@@ -280,6 +280,45 @@ def test_capability_returns_projection_without_raw_content(tmp_path):
     assert "/var/lib/fleet" not in rendered
 
 
+def test_capability_projects_published_v1_bootstrap_shape(tmp_path):
+    # Mirrors capability_status_projection() in packages/bootstrap/src/bootstrap.js:
+    # selection_digest and payload_sha256 are top-level; user_unit also retains
+    # the payload digest/path for the installer's unit-to-payload assertion.
+    document = {
+        "schema": "ghostfleet-capability-status/v1",
+        "selection_schema": "ghostfleet-selected-capability/v2",
+        "selection_digest": "sha256:" + "a" * 64,
+        "release_pin": "a" * 40,
+        "applied_at": "2026-11-13T00:00:00Z",
+        "control_account": "ghostfleet-managed",
+        "privileged_account": "ghostfleet-ops",
+        "artifacts": [
+            {"name": "ghostfleet-managed.service", "sha256": "b" * 64, "mode": "0644", "kind": "unit"},
+            {"name": "node-agent.pyz", "sha256": "d" * 64, "mode": "0755", "kind": "payload"},
+        ],
+        "payload_sha256": "d" * 64,
+        "user_unit": {
+            "name": "ghostfleet-managed.service",
+            "sha256": "b" * 64,
+            "payload_sha256": "d" * 64,
+            "payload_path": "/usr/local/libexec/ghostfleet/node-agent.pyz",
+        },
+    }
+    observer = make_observer(tmp_path, capability=json.dumps(document))
+    summary = observer.capability()
+    assert summary["status"] == "READ"
+    assert summary["schema"] == "ghostfleet-capability-status/v1"
+    assert summary["selection_digest"] == "sha256:" + "a" * 64
+    assert summary["payload_sha256"] == "d" * 64
+    assert summary["user_unit"] == {
+        "name": "ghostfleet-managed.service",
+        "sha256": "b" * 64,
+    }
+    rendered = json.dumps(summary)
+    assert "payload_path" not in rendered
+    assert "selection_schema" not in rendered
+
+
 def test_capability_projection_drops_unknown_and_malformed_fields(tmp_path):
     document = {
         "schema": "ghostfleet-capability-status/v0",
