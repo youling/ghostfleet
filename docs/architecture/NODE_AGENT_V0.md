@@ -4,7 +4,7 @@
 
 | 字段 | 值 |
 | --- | --- |
-| 状态 | PROPOSED（AI 工头起草，等待独立 exact-head Review） |
+| 状态 | IMPLEMENTED_CANDIDATE（SQLite 子 PR #84 exact-head APPROVED；父 PR #83 集成 CI 6/6 PASS；父 PR 新 exact-head 独立审查与 Human release gate pending） |
 | 日期 | 2026-11-12 |
 | 关联 | GhostFleet #11（实施真实 Node Agent）、ai-hub REQ-01《托管服务生命周期》、REQ-01~REQ-04 全部满足前 `FULLY_MANAGED` 不可宣称 |
 | 基线 | `0cbb9c17bdd298634e4ccebf2c1a9c50d9f09fe1`（M3 源码冻结） |
