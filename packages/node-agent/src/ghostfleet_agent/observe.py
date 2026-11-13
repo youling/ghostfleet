@@ -314,7 +314,12 @@ class Observer:
         user_unit = Observer._project_artifact(document.get("user_unit"))
         if user_unit is not None:
             projected["user_unit"] = user_unit
-        payload = bounded_text(document.get("payload_sha256"), limit=64)
+        payload_value = document.get("payload_sha256")
+        if payload_value is None:
+            user_unit_document = document.get("user_unit")
+            if isinstance(user_unit_document, dict):
+                payload_value = user_unit_document.get("payload_sha256")
+        payload = bounded_text(payload_value, limit=64)
         if payload is not None and _SHA256_RE.fullmatch(payload):
             projected["payload_sha256"] = payload
         for key in ("control_account", "privileged_account", "release_pin", "applied_at"):
