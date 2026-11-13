@@ -639,9 +639,9 @@
     },
     {
       "path": "packages/node-agent/dist/node-agent.pyz",
-      "sha256": "3ee59187c94c20072e59335017fd8df0ce0cb610c1502af69915fca5be9ca036",
+      "sha256": "221cd9fe84c9d73ae3df83bbe6a9b26f478ee7fbf765e1bdad7cb47a8e05ab03",
       "purpose": "Deterministically built GhostFleet node agent zipapp payload (sources under packages/node-agent/src, builder packages/node-agent/tools/build_pyz.py). Contains no credentials, endpoints or host-specific data; CI rebuilds it and asserts byte equality.",
-      "review": "Architect SQLite candidate: deterministic source-to-archive equality and rootless tests verified; independent release review remains required."
+      "review": "Architect rebuilt the deterministic zipapp from exact source HEAD 5f3d988ffb576e621e73eadfce404a4f93681b77 on Debian 13 / Python 3.13.5; byte size and SHA-256 matched the expected rebuild (216403 B / 221cd9fe…). Exact-head CI re-verifies byte equality. This records artifact provenance, not parent PR approval."
     }
   ],
   "public_contacts": [],
