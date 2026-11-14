@@ -16,3 +16,6 @@ Out of scope:
 - a custom SSH implementation or tunnel protocol.
 
 Use upstream tools directly. Never commit tunnel tokens, auth keys, SSH private keys, real hostnames or device identifiers. Config changes are examples only; production changes require owner authorization.
+
+
+Before submitting, run `node scripts/publication-guard.mjs`, `node --test test/publication-guard.test.mjs`, OpenSSH client/server configuration checks and systemd unit verification.
