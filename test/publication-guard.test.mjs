@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { scanText } from "../scripts/publication-guard.mjs";
 test("accepts reserved placeholders and reviewed public documentation URLs", () => {
   const text = ["ssh://127.0.0.1:22","https://developers.cloudflare.com/cloudflare-one/","https://tailscale.com/docs/install/linux","ssh.example.invalid","node.tailnet-name.example.invalid"].join("\n");
-  assert.deepEqual(scanText(text), []);
+  const withOmvDocs = text + "\\nhttps://docs.openmediavault.org/en/8.x/administration/services/ssh.html";
+  assert.deepEqual(scanText(withOmvDocs), []);
 });
 test("rejects realistic Tailscale MagicDNS locators", () => {
   const locator = ["node","private-tailnet","ts","net"].join(".");
