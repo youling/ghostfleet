@@ -1,23 +1,25 @@
 # GhostFleet — transport-only project rules
 
-GhostFleet is a deliberately thin remote-access profile. Its job is to make an owner-authorized SSH session reach a managed machine reliably through Cloudflare Tunnel and/or Tailscale.
+GhostFleet provides stable, owner-authorized network paths to a machine's native OpenSSH service. It is not a device-management agent or command policy engine.
 
 ## Product boundary
-
-1. **Transport only.** Use the maintained upstream daemons: `cloudflared`, `tailscaled`, OpenSSH and systemd.
-2. **No custom command plane.** GhostFleet does not inspect, monitor, parse, filter, rewrite, approve, deny or record remote commands.
-3. **No custom device agent.** No Node Agent, task queue, job lease, SQLite task store, command executor, privileged Helper, HumanGate or per-command JIT approval.
-4. **Full administrator session after owner authorization.** The owner chooses the SSH identity and OS account. The reference profile uses root with public-key authentication. Once the SSH session is authenticated, OpenSSH executes the administrator's requested commands without GhostFleet policy interception.
-5. **Session/network authentication remains.** Cloudflare Access and Tailscale identity/ACL may decide who can establish a connection to TCP/22. They do not impose command-level restrictions.
-6. **OS-native lifecycle and logs.** systemd supervises upstream transport daemons; sshd, cloudflared, tailscaled and journald provide their native service/authentication logs. GhostFleet does not build a parallel monitoring or audit pipeline.
-7. **Two independent paths.** Cloudflare and Tailscale are alternative routes to the same OpenSSH server. No custom failover daemon. The operator chooses `omv8-cf` or `omv8-ts`; a broken TCP session must reconnect over the other route.
-8. **No secrets in Git.** Tunnel tokens, SSH private keys and Tailscale credentials stay in owner-controlled local credential storage. Commit only placeholders and public configuration examples.
-9. **No production changes from this repository.** Config examples are not deployment authorization. Cloudflare DNS/Access, Tailscale policy, SSH/root and NAS changes require the owner's explicit target-specific authorization.
-10. **No new runtime framework.** Prefer OpenSSH configuration and vendor systemd units over custom code. Add code only when an upstream tool cannot provide the transport behavior.
+1. Use maintained upstream components: cloudflared, tailscaled, OpenSSH and systemd.
+2. GhostFleet must not monitor host state or commands, inspect/filter/rewrite/block commands, approve operations, execute commands through a custom agent, or maintain a parallel command-audit service.
+3. No custom Node Agent, task queue, job/lease engine, SQLite task store, command executor, privileged Helper, HumanGate or per-command JIT.
+4. After the owner authorizes the device and the operator authenticates the session, the selected OS account has its normal full authority. The reference profile uses root with SSH public-key authentication.
+5. Keep the boundaries distinct: network reachability is not SSH authentication; SSH authentication selects the OS account; the OS account determines authority. Capability/reachability is not authority.
+6. Cloudflare Access and Tailscale policy decide who can establish a connection. They must not impose command-level filtering or approval.
+7. Cloudflare and Tailscale are alternative paths to the same sshd. No custom failover daemon. An established TCP session cannot migrate; reconnect through the other path.
+8. Use OS-native systemd, sshd, cloudflared, tailscaled and journald logs. Do not add a parallel monitor or command-audit pipeline.
+9. Never commit real hostnames, IPs, endpoint URLs, tailnet locators, node IDs, tunnel tokens, Tailscale auth keys, SSH private keys or account identifiers. Use reserved .invalid placeholders.
+10. Never write directly to main. Use a branch and PR; bind security/semantic review and CI evidence to the exact HEAD.
+11. Public docs are bilingual where they describe owner-facing installation or operational procedures. Keep deterministic tests and publication-boundary checks in CI.
+12. Human/owner decisions govern production topology, Cloudflare/Tailscale policy and target-specific SSH/root deployment. A config example is not deployment authorization.
 
 ## Contribution rules
-
-- Keep the default product surface to docs and small config examples.
-- Validate SSH config syntax with the system OpenSSH client.
+- Keep the product surface to documentation, generic config examples and small validators.
+- Validate shipped SSH config with OpenSSH; validate sshd effective settings, not only file syntax.
+- Validate shipped systemd units with systemd-analyze.
+- Run node scripts/publication-guard.mjs and node --test test/publication-guard.test.mjs.
 - Do not reintroduce command allowlists, remote execution APIs, monitoring agents, approval state machines or custom audit logs.
-- Keep examples generic; never commit real hostnames, node IDs, tunnel tokens, auth keys, private keys or account details.
+- Preserve historical source in Git; explain product-scope migrations in docs/MIGRATION.md.
