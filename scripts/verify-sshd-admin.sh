@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
-SSHD_BIN=\${SSHD_BIN:-sshd}
-SSHD_CONFIG=\${SSHD_CONFIG:-}
-SSH_TEST_CONTEXT=\${SSH_TEST_CONTEXT:-user=root,host=localhost,addr=127.0.0.1}
+SSHD_BIN=${SSHD_BIN:-/usr/sbin/sshd}
+SSHD_CONFIG=${SSHD_CONFIG:-}
+SSH_TEST_CONTEXT=${SSH_TEST_CONTEXT:-user=root,host=localhost,addr=127.0.0.1}
 if ! command -v "$SSHD_BIN" >/dev/null 2>&1; then
   echo "ERROR: sshd not found; install OpenSSH server first." >&2
   exit 2
@@ -27,12 +27,12 @@ methods=$(value authenticationmethods)
 failed=0
 case "$permit_root" in
   prohibit-password|without-password) ;;
-  *) echo "FAIL permitrootlogin: expected prohibit-password/without-password; got '\${permit_root:-missing}'" >&2; failed=1 ;;
+  *) echo "FAIL permitrootlogin: expected prohibit-password/without-password; got '${permit_root:-missing}'" >&2; failed=1 ;;
 esac
-[ "$pubkey" = yes ] || { echo "FAIL pubkeyauthentication: got '\${pubkey:-missing}'" >&2; failed=1; }
-[ "$password" = no ] || { echo "FAIL passwordauthentication: got '\${password:-missing}'" >&2; failed=1; }
-[ "$keyboard" = no ] || { echo "FAIL kbdinteractiveauthentication: got '\${keyboard:-missing}'" >&2; failed=1; }
-[ "$methods" = publickey ] || { echo "FAIL authenticationmethods: got '\${methods:-missing}'" >&2; failed=1; }
+[ "$pubkey" = yes ] || { echo "FAIL pubkeyauthentication: got '${pubkey:-missing}'" >&2; failed=1; }
+[ "$password" = no ] || { echo "FAIL passwordauthentication: got '${password:-missing}'" >&2; failed=1; }
+[ "$keyboard" = no ] || { echo "FAIL kbdinteractiveauthentication: got '${keyboard:-missing}'" >&2; failed=1; }
+[ "$methods" = publickey ] || { echo "FAIL authenticationmethods: got '${methods:-missing}'" >&2; failed=1; }
 if [ "$failed" -ne 0 ]; then
   echo "ERROR: effective sshd policy does not match GhostFleet admin profile." >&2
   echo "Inspect Include order, earlier drop-ins, Match rules and OS/vendor-managed config." >&2
