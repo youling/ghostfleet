@@ -17,8 +17,8 @@ test("rejects GitHub and Tailscale credential shapes", () => {
   assert.ok(findings.some((x) => x.rule === "tailscale-auth-key"));
 });
 test("rejects private repository links and unreviewed endpoints", () => {
-  const privateUrl = ["https://github.com","youling","ghostfleet"].join("/");
-  const unreviewedUrl = ["https://","unreviewed.example.test/path"].join("");
+  const privateUrl = ["https:", "", "github.com", "youling", "ghostfleet"].join("/");
+  const unreviewedUrl = ["https:", "", "unreviewed.example.test/path"].join("/");
   const findings = scanText(privateUrl + "\n" + unreviewedUrl);
   assert.ok(findings.some((x) => x.rule === "private-repository-link"));
   assert.ok(findings.some((x) => x.rule === "unreviewed-endpoint"));
@@ -29,4 +29,9 @@ test("rejects private key headers and bearer credentials", () => {
   const findings = scanText(privateKey + "\n" + bearer);
   assert.ok(findings.some((x) => x.rule === "private-key"));
   assert.ok(findings.some((x) => x.rule === "bearer-credential"));
+});
+
+test("rejects a node UUID locator", () => {
+  const identifier = ["node","12345678","1234","abcd","9876","1234567890ab"].join("-");
+  assert.ok(scanText(identifier).some((x) => x.rule === "node-identifier"));
 });
