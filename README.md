@@ -2,6 +2,19 @@
 
 GhostFleet is a thin, owner-authorized remote administration setup. It uses **Cloudflare Tunnel** and **Tailscale** to carry ordinary **OpenSSH** sessions to a machine. It does not run a custom device agent or command-control plane.
 
+## 文档与当前候选 / Documentation and current candidate
+
+当前传输架构在 [PR #85](https://github.com/youling/ghostfleet/pull/85) 中，尚未合入默认分支。源码检查与真实部署验收分别记录；实例测试保持 `NOT_RUN`，直至有实际证据。
+
+The transport architecture is an unmerged candidate in PR #85. Source checks and live acceptance are separate; instance tests remain `NOT_RUN` until supported by actual evidence.
+
+- [架构与拓扑图 / Architecture and topology](docs/ARCHITECTURE.md)：双路到同一 sshd，身份与共同故障域 / Both paths, identity and shared failure domains.
+- [安装与连接 / Setup and connection](docs/REMOTE_ACCESS.md)：原生组件、两路配置及主机密钥 / Upstream components, path configuration and host keys.
+- [实例验收 / Instance acceptance](docs/ACCEPTANCE.md)：新会话、传输、撤销和恢复矩阵 / Fresh sessions, transfer, revocation and recovery.
+- [迁移与历史 / Migration and provenance](docs/MIGRATION.md)：旧基线、被取代实现与既有资源收口 / Previous baseline, superseded implementation and existing-resource closeout.
+- [技术调研 / Technical reconnaissance](docs/research/TRANSPORT_RECONNAISSANCE_2026-11-14.md)：2026-11-14 的来源、采用裁决和未验证问题 / Sources, adoption decisions and unverified questions as of 2026-11-14.
+- [完整文档索引 / Full documentation index](docs/README.md)。
+
 ## 中文
 
 ### 产品定位

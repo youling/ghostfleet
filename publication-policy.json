@@ -2,10 +2,46 @@
   "schema": "ghostfleet-publication-policy/v1",
   "allowed_public_hosts": [
     "developers.cloudflare.com",
+    "tailscale.com",
     "docs.openmediavault.org",
     "fsf.org",
     "gnu.org",
-    "tailscale.com"
+    "discuss.hashicorp.com",
+    "docs.meshcentral.com",
+    "docs.netbird.io",
+    "docs.zerotier.com",
+    "gofrp.org",
+    "goteleport.com",
+    "headscale.net",
+    "man.openbsd.org",
+    "packages.debian.org",
+    "rustdesk.com",
+    "sources.debian.org",
+    "www.freedesktop.org",
+    "www.harding.motd.ca",
+    "www.openssh.org"
+  ],
+  "allowed_public_github_repositories": [
+    "youling/ghostfleet",
+    "youling/ai-use",
+    "cloudflare/cloudflared",
+    "ekzhang/bore",
+    "fatedier/frp",
+    "gravitational/teleport",
+    "hashicorp/boundary",
+    "jpillora/chisel",
+    "juanfont/headscale",
+    "netbirdio/netbird",
+    "openssh/openssh-portable",
+    "rathole-org/rathole",
+    "rustdesk/rustdesk",
+    "rustdesk/rustdesk-server",
+    "slackhq/nebula",
+    "systemd/systemd",
+    "tailscale/tailcat",
+    "tailscale/tailscale",
+    "ylianst/meshcentral",
+    "zerotier/zerotierone"
   ],
   "reserved_placeholder_domains": [
     "example.invalid",
@@ -15,5 +51,5 @@
     "localhost",
     "127.0.0.1"
   ],
-  "notes": "New public documentation hosts require explicit review. Never allow private repository URLs, real tailnet locators, node IDs, credentials or personal hostnames."
+  "notes": "New public documentation hosts and GitHub repository paths require explicit review. No real tailnet locators, node IDs, credentials or personal hostnames. The repository ships UTF-8 text only; unsupported tracked file types fail closed."
 }
