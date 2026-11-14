@@ -17,10 +17,11 @@ The example in [90-ghostfleet-admin.conf.example](../config/sshd/90-ghostfleet-a
 
 ```sh
 sudo sshd -t
+sudo sshd -T | grep -E '^(permitrootlogin|pubkeyauthentication|passwordauthentication|kbdinteractiveauthentication|authenticationmethods) '
 sudo systemctl reload ssh
 ```
 
-Keep host-key verification enabled on the client. Do not copy the private key to the server, repository or chat.
+Confirm the effective values are `permitrootlogin prohibit-password`, `pubkeyauthentication yes`, `passwordauthentication no`, `kbdinteractiveauthentication no` and `authenticationmethods publickey`. Debian/OMV may have earlier drop-in files; the effective `sshd -T` output is authoritative. Keep host-key verification enabled on the client. Do not copy the private key to the server, repository or chat.
 
 Once authenticated as root, the SSH session has root authority. GhostFleet does not add command restrictions or per-command approvals.
 
@@ -99,3 +100,11 @@ Revocation at the network layer blocks new sessions. Removing the SSH key blocks
 ## Boundaries
 
 This is a remote-access transport profile, not a complete device-management agent. It does not monitor disks, RAID, processes or services; it does not filter commands; it does not ask for per-command approval; it does not promise command-level audit records. It also does not modify storage, RAID, shares, packages or application services automatically.
+
+## Upstream references
+
+- Cloudflare SSH/Tunnel: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/use-cases/ssh/
+- Cloudflare client-side SSH: https://developers.cloudflare.com/cloudflare-one/access-controls/applications/non-http/cloudflared-authentication/
+- Cloudflare Tunnel token-file run parameter: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/run-parameters/
+- Tailscale Linux install: https://tailscale.com/docs/install/linux
+- Tailscale network access policy: https://tailscale.com/docs/features/access-control
