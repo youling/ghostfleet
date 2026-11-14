@@ -1,25 +1,60 @@
 name: transport-config
-
 on:
   push:
   pull_request:
   workflow_dispatch:
-
 permissions:
   contents: read
-
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  ssh-config:
+  transport-config:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - name: Validate Cloudflare SSH client config
-        run: ssh -G -F config/ssh/ghostfleet.conf.example omv8-cf >/dev/null
-      - name: Validate Tailscale SSH client config
-        run: ssh -G -F config/ssh/ghostfleet.conf.example omv8-ts >/dev/null
-      - name: Ensure examples contain no command filter
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install OpenSSH and systemd validators
         run: |
-          if grep -R -nE '^[[:space:]]*(ForceCommand|PermitOpen|command=)' config/; then
-            echo "Command filtering is outside the GhostFleet transport contract."
+          sudo apt-get update
+          sudo apt-get install --yes openssh-server systemd
+      - name: Validate SSH client aliases
+        run: |
+          ssh -G -F config/ssh/ghostfleet.conf.example node-cf >/dev/null
+          ssh -G -F config/ssh/ghostfleet.conf.example node-ts >/dev/null
+      - name: Validate sshd syntax and effective policy
+        run: |
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          mkdir -p "$tmp/sshd_config.d"
+          ssh-keygen -q -t ed25519 -N '' -f "$tmp/ssh_host_ed25519_key"
+          cat > "$tmp/sshd_config" <<EOF
+          Port 2222
+          ListenAddress 127.0.0.1
+          HostKey $tmp/ssh_host_ed25519_key
+          PidFile $tmp/sshd.pid
+          Include $tmp/sshd_config.d/*.conf
+          UsePAM no
+          EOF
+          cp config/sshd/00-ghostfleet-admin.conf.example "$tmp/sshd_config.d/00-ghostfleet-admin.conf"
+          sudo env SSHD_CONFIG="$tmp/sshd_config" SSH_TEST_CONTEXT='user=root,host=localhost,addr=127.0.0.1' scripts/verify-sshd-admin.sh
+          cat > "$tmp/sshd_config.d/00-cloud-init.conf" <<EOF
+          PasswordAuthentication yes
+          EOF
+          if sudo env SSHD_CONFIG="$tmp/sshd_config" SSH_TEST_CONTEXT='user=root,host=localhost,addr=127.0.0.1' scripts/verify-sshd-admin.sh; then
+            echo "Expected the verifier to reject the earlier conflicting vendor setting."
             exit 1
           fi
+      - name: Validate cloudflared systemd unit syntax
+        run: |
+          if [ ! -x /usr/bin/cloudflared ]; then sudo install -m 0755 /bin/true /usr/bin/cloudflared; fi
+          sudo groupadd --system --force cloudflared
+          sudo useradd --system --gid cloudflared --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin cloudflared 2>/dev/null || true
+          cp config/systemd/cloudflared-ssh.service.example /tmp/cloudflared-ssh.service
+          systemd-analyze verify /tmp/cloudflared-ssh.service
+      - name: Run publication boundary guard
+        run: node scripts/publication-guard.mjs
+      - name: Test publication boundary guard
+        run: node --test test/publication-guard.test.mjs

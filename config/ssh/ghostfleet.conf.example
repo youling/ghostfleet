@@ -1,27 +1,26 @@
-# Copy into ~/.ssh/config or Include this file.
-# Replace the example hostnames and local private-key path.
-# Both routes reach the same sshd and use the same OS account/key.
+# Replace both reserved hostnames and the local private-key path.
+# Enroll the server host key out of band in ~/.ssh/known_hosts as "ghostfleet-node".
 
-Host omv8-cf
-    HostName ssh.example.com
+Host node-cf
+    HostName ssh.example.invalid
     User root
     ProxyCommand cloudflared access ssh --hostname %h
     IdentityFile ~/.ssh/ghostfleet_admin
     IdentitiesOnly yes
-    HostKeyAlias ghostfleet-omv8
-    StrictHostKeyChecking accept-new
+    HostKeyAlias ghostfleet-node
+    StrictHostKeyChecking yes
     ServerAliveInterval 20
     ServerAliveCountMax 3
     ConnectTimeout 15
     TCPKeepAlive yes
 
-Host omv8-ts
-    HostName omv8.tailnet-name.ts.net
+Host node-ts
+    HostName node.tailnet-name.example.invalid
     User root
     IdentityFile ~/.ssh/ghostfleet_admin
     IdentitiesOnly yes
-    HostKeyAlias ghostfleet-omv8
-    StrictHostKeyChecking accept-new
+    HostKeyAlias ghostfleet-node
+    StrictHostKeyChecking yes
     ServerAliveInterval 20
     ServerAliveCountMax 3
     ConnectTimeout 15

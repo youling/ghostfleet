@@ -1,0 +1,6 @@
+{
+  "schema": "ghostfleet-publication-policy/v1",
+  "allowed_public_hosts": ["developers.cloudflare.com", "tailscale.com"],
+  "reserved_placeholder_domains": ["example.invalid", "example.com", "example.net", "example.org", "localhost", "127.0.0.1"],
+  "notes": "New public documentation hosts require explicit review. Never allow private repository URLs, real tailnet locators, node IDs, credentials or personal hostnames."
+}
