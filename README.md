@@ -6,7 +6,7 @@ GhostFleet is a thin, owner-authorized remote administration setup. It uses **Cl
 
 ### 产品定位
 
-GhostFleet 只负责让管理员稳定地通过 Cloudflare Tunnel 或 Tailscale 到达目标机器的 OpenSSH。设备安装并授权后，管理员通过 SSH 获得所选 OS 账户的完整权限；参考配置使用 root 公钥登录。
+GhostFleet 只负责让管理员稳定地通过 Cloudflare Tunnel 或 Tailscale 到达目标机器的 OpenSSH。设备所有者按部署指南安装并授权网络入口后，管理员通过 SSH 获得所选 OS 账户的完整权限；参考配置使用 root 公钥登录。仓库不提供独立的设备注册向导或一键部署器，设备授权由所有者在 Cloudflare Access、Tailscale 和 OpenSSH 配置中完成。
 
 GhostFleet 本身：
 
@@ -42,7 +42,7 @@ ssh node-ts   # Tailscale path
 
 ### Product scope
 
-GhostFleet only provides stable paths to the target machine's ordinary OpenSSH server through Cloudflare Tunnel and/or Tailscale. After owner-authorized enrollment, an authenticated administrator receives the full authority of the selected OS account; the reference profile uses root public-key login.
+GhostFleet only provides stable paths to the target machine's ordinary OpenSSH server through Cloudflare Tunnel and/or Tailscale. After the owner installs the upstream services and authorizes the network/SSH entry points, an authenticated administrator receives the full authority of the selected OS account; the reference profile uses root public-key login. The repository does not provide a separate enrollment wizard or one-click deployment agent; the owner configures Cloudflare Access, Tailscale and OpenSSH directly.
 
 GhostFleet itself does not monitor hosts or commands, inspect/filter/rewrite/intercept commands, require per-command approvals, run a custom Node Agent/task queue/SQLite store/privileged Helper, or maintain a parallel command-audit system.
 
