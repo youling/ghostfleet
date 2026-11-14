@@ -26,6 +26,7 @@ jobs:
           ssh -G -F config/ssh/ghostfleet.conf.example node-ts >/dev/null
       - name: Validate sshd syntax and effective policy
         run: |
+          sudo install -d -m 0755 /run/sshd
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
           mkdir -p "$tmp/sshd_config.d"
