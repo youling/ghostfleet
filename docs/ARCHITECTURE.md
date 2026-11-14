@@ -19,7 +19,7 @@ Use mature OS/network components:
                  Cloudflare Access
 Operator/AI  ----------------------------.
    |                                      |
-   | ssh omv8-cf                          v
+   | ssh node-cf                          v
    +---- cloudflared client ---- Cloudflare edge
                                       |
                                       | outbound tunnel
@@ -35,7 +35,7 @@ Operator/AI  ----------------------------.
                                       |
    +---- OpenSSH client ---------------'
    |
-   | ssh omv8-ts
+   | ssh node-ts
    v
 Operator/AI on authorized tailnet
 ```
