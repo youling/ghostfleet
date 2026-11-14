@@ -5,6 +5,8 @@ set -f
 SSHD_BIN=${SSHD_BIN:-/usr/sbin/sshd}
 SSHD_CONFIG=${SSHD_CONFIG:-}
 SSH_TEST_CONTEXT=${SSH_TEST_CONTEXT:-user=root,host=localhost,addr=127.0.0.1}
+# Evaluate the effective root context, including Match User root. Non-root
+# authentication policy is deliberately left to the operating system.
 if ! printf '%s\n' "$SSH_TEST_CONTEXT" | awk -F, '
   { for (i=1; i<=NF; i++) if ($i ~ /^user=/) { count++; user=$i } }
   END { exit !(count == 1 && user == "user=root") }'; then
@@ -99,4 +101,5 @@ if [ "$failed" -ne 0 ]; then
   exit 1
 fi
 printf '%s\n' "SSHD_ADMIN_PROFILE_OK context=$SSH_TEST_CONTEXT permitrootlogin=$permit_root"
+printf '%s\n' "NON_ROOT_AUTH_POLICY=OS_OWNED_NOT_ASSERTED"
 printf '%s\n' "LOGIN_NOT_TESTED: authorized_keys, PAM/account state, forced commands and live sessions require separate evidence."
