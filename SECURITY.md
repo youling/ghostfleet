@@ -27,7 +27,7 @@ GhostFleet creates no parallel command log. OpenSSH records authentication/sessi
 - Do not publish an unauthenticated public root SSH listener.
 - Do not open router port-forwarding for TCP/22.
 - Use Cloudflare Access or Tailscale network identity to control who can establish a session.
-- Keep SSH host-key verification enabled.
+- Keep SSH host-key verification enabled and enroll host keys out of band before first connection.
 - A tunnel is transport, not OS authentication or privilege by itself.
 
-Report security issues through the repository's configured GitHub private vulnerability reporting channel.
+If GitHub private vulnerability reporting is enabled for this repository, use its Security tab to submit a private report. If it is unavailable, contact the repository owner through an existing private channel; do not publish exploit details in a public issue.
