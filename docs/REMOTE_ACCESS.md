@@ -42,6 +42,7 @@ Use a remotely-managed Cloudflare Tunnel:
 3. Create a Cloudflare Access self-hosted application for that hostname and allow the owner's identity.
 4. Install cloudflared on the target and run it as a systemd service. The service example uses a token file (cloudflared 2025.4.0+):
    ```sh
+   # Run these commands from the GhostFleet repository root.
    sudo groupadd --system cloudflared
    sudo useradd --system --gid cloudflared --home-dir /var/lib/cloudflared --create-home --shell /usr/sbin/nologin cloudflared
    sudo install -d -o root -g cloudflared -m 0750 /etc/cloudflared
@@ -109,6 +110,139 @@ Revocation at the network layer blocks new sessions. Removing the SSH key blocks
 ## Boundaries
 
 This is a remote-access transport profile, not a complete device-management agent. It does not monitor disks, RAID, processes or services; it does not filter commands; it does not ask for per-command approval; it does not promise command-level audit records. It also does not modify storage, RAID, shares, packages or application services automatically.
+
+
+
+---
+
+# 远控部署指南（中文版）
+
+本指南只是安装模板，不会自动部署。只有设备所有者明确授权目标机器及 Cloudflare/Tailscale 配置变更后，才执行相应步骤。
+
+## 1. 安装系统原生服务
+
+在 Debian / OpenMediaVault 上安装：
+- OpenSSH Server（通常为 `ssh.service`）；
+- Tailscale（`tailscaled.service`）；
+- Cloudflare 官方 `cloudflared`。
+
+**不需要安装 GhostFleet Node Agent。GhostFleet 没有自定义常驻守护进程。**
+
+## 2. 配置 OpenSSH 管理员登录
+
+使用 [00-ghostfleet-admin.conf.example](../config/sshd/00-ghostfleet-admin.conf.example) 作为配置模板。它允许 root 使用公钥登录，并关闭密码和键盘交互认证。
+
+将模板复制到 `/etc/ssh/sshd_config.d/00-ghostfleet-admin.conf`，把管理员的**公钥**加入 `/root/.ssh/authorized_keys`。然后在仓库根目录执行：
+
+```sh
+sudo SSH_TEST_CONTEXT='user=root,host=localhost,addr=127.0.0.1' scripts/verify-sshd-admin.sh
+```
+
+验证脚本会执行 `sshd -t` 和带连接上下文的 `sshd -T -C`，并检查最终生效值：
+- `permitrootlogin prohibit-password`（OpenSSH 也可能规范化输出为等价的 `without-password`）；
+- `pubkeyauthentication yes`；
+- `passwordauthentication no`；
+- `kbdinteractiveauthentication no`；
+- `authenticationmethods publickey`。
+
+如果存在更早加载的配置或 `Match` 规则覆盖了这些值，脚本会失败退出。它不会修改配置文件，也不会重载或重启 sshd。若 `Match` 依赖实际主机名或客户端地址，应通过 `SSH_TEST_CONTEXT` 设置真实测试上下文。
+
+**OMV / cloud-init 配置边界：** Debian 通常在主配置的 `Include /etc/ssh/sshd_config.d/*.conf` 位置按文件名字典序加载 drop-in；OpenSSH 对大多数配置采用 first-obtained-value 规则。因此 `00-` 前缀只是提高优先级，不保证一定胜出。不要盲目修改 OMV 或云镜像生成的主配置；先检查 Include 顺序、已有 drop-in 和 Match 规则。OMV Apply、系统升级或 cloud-init 可能重新生成配置，之后必须重新执行上述验证。若厂商配置仍然优先，应在其支持的配置来源中调整，而不是删除生成文件。
+
+认证成功后，SSH 会话拥有 root 的正常系统权限。GhostFleet 不会限制、检查或逐条审批命令。
+
+## 3. 带外登记 SSH 主机密钥
+
+在目标机器可信的本地控制台读取主机公钥指纹：
+
+```sh
+sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+sudo cat /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+通过独立可信渠道核对指纹，再把已核验的公钥加入管理端的 `~/.ssh/known_hosts`，主机别名使用 `ghostfleet-node`。客户端设置 `StrictHostKeyChecking yes`，不会接受未登记的主机密钥。不要把未经核验的 `ssh-keyscan` 结果当作信任依据。
+
+## 4. Cloudflare 连接路径
+
+使用 Cloudflare Zero Trust 中的 Remote-managed Tunnel：
+1. 创建或选择一个 Tunnel。
+2. 添加 Published Application Route，例如 `ssh.example.invalid`，源站服务指向 `ssh://127.0.0.1:22`。
+3. 为该主机名创建 Cloudflare Access Self-hosted Application，并只允许所有者指定的身份。
+4. 在目标机安装 `cloudflared`，并以 systemd 服务运行。示例服务使用 token file（要求 cloudflared 支持 `--token-file`）：
+
+```sh
+# 以下命令从 GhostFleet 仓库根目录执行
+sudo groupadd --system cloudflared
+sudo useradd --system --gid cloudflared --home-dir /var/lib/cloudflared --create-home --shell /usr/sbin/nologin cloudflared
+sudo install -d -o root -g cloudflared -m 0750 /etc/cloudflared
+sudo install -o root -g cloudflared -m 0640 /dev/null /etc/cloudflared/ssh-tunnel.token
+sudoedit /etc/cloudflared/ssh-tunnel.token
+sudo chown root:cloudflared /etc/cloudflared/ssh-tunnel.token
+sudo chmod 0640 /etc/cloudflared/ssh-tunnel.token
+sudo install -D -m 0644 config/systemd/cloudflared-ssh.service.example /etc/systemd/system/cloudflared-ssh.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now cloudflared-ssh.service
+```
+
+如果 `command -v cloudflared` 不在 `/usr/bin/cloudflared`，需要相应调整 unit 的二进制路径。Tunnel token 只能放在目标机受控文件中，不能提交到 Git、写进 shell 历史或发送到 AI 对话。
+
+5. 在管理端安装 cloudflared，使用 `ssh node-cf` 连接。客户端的 `cloudflared access ssh` 会在需要时引导完成 Cloudflare Access 登录。
+
+使用普通 Access Self-hosted Application 即可。Access 负责认证连接，不会检查或过滤 SSH 命令。若目标是普通、不受命令策略限制的 SSH 会话，不要选用会引入逐目标命令策略或命令录制的 Access for Infrastructure 模式。
+
+## 5. Tailscale 连接路径
+
+1. 按官方 Linux 安装说明安装 Tailscale。
+2. 执行 `sudo tailscale up`，通过所有者控制的浏览器身份完成设备加入。
+3. 确认现有 tailnet policy 允许获授权的管理端访问目标 TCP/22。
+4. 保持 Tailscale SSH 关闭（`sudo tailscale set --ssh=false`），让连接进入与 Cloudflare 路径相同的 OpenSSH 服务。
+5. 使用 `ssh node-ts` 和同一把 OpenSSH 密钥连接。
+
+Tailscale 只负责网络连通，OpenSSH 仍然负责 OS 登录身份和权限。无需 GhostFleet 自己实现 Tailscale 控制器或 ACL 引擎。
+
+## 6. 客户端配置
+
+将 [ghostfleet.conf.example](../config/ssh/ghostfleet.conf.example) 复制到管理端的 `~/.ssh/config`，或通过 `Include` 引入。替换：
+- `ssh.example.invalid`：Cloudflare Access 主机名；
+- `node.tailnet-name.example.invalid`：目标机器的 Tailscale MagicDNS 名称；
+- `~/.ssh/ghostfleet_admin`：管理端本地私钥路径。
+
+连接命令：
+
+```sh
+ssh node-cf
+ssh node-ts
+```
+
+两个别名共用一个 `HostKeyAlias`，因此两条路径都会校验同一台服务器的主机密钥。
+
+## 7. 日志与故障恢复
+
+使用操作系统原生日志：
+
+```sh
+journalctl -u ssh --since today
+journalctl -u cloudflared-ssh --since today
+journalctl -u tailscaled --since today
+systemctl status ssh cloudflared-ssh tailscaled
+```
+
+这些日志记录服务和连接认证事件，但不保证记录每一条 Shell 命令。GhostFleet 不另建命令日志或监控系统。
+
+如果 Cloudflare 不可用，新建会话时使用 `ssh node-ts`；如果 Tailscale 不可用，使用 `ssh node-cf`。已经建立的 TCP 会话需要重新连接，不能在两条路径之间无损迁移。
+
+## 8. 撤销访问
+
+- 从 Cloudflare Access 允许策略中移除管理身份，或关闭对应 Tunnel route；
+- 从 Tailscale policy 中移除身份/设备，或撤销该节点；
+- 从 `/root/.ssh/authorized_keys` 删除对应公钥；
+- 如需关闭整条路径，再停止对应服务。
+
+网络层撤销会阻止新连接；移除 SSH 公钥则会同时阻止两条路径的 OS 登录。
+
+## 边界
+
+本方案是远程访问传输层，不是完整设备管理 Agent。它不会监控硬盘、RAID、进程或服务，不会过滤命令，不会逐条审批操作，也不承诺命令级审计。它不会自动修改存储、RAID、共享目录、软件包或业务服务。
 
 ## Upstream references
 
