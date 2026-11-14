@@ -19,11 +19,15 @@ The example in [00-ghostfleet-admin.conf.example](../config/sshd/00-ghostfleet-a
 sudo SSH_TEST_CONTEXT='user=root,host=localhost,addr=127.0.0.1' scripts/verify-sshd-admin.sh
 ```
 
-The verifier runs `sshd -t` and `sshd -T -C` and requires `permitrootlogin prohibit-password` (OpenSSH may print the equivalent `without-password`), `pubkeyauthentication yes`, `passwordauthentication no`, `kbdinteractiveauthentication no` and `authenticationmethods publickey`. Replace the context host/address when Match rules depend on them. A conflict or missing value fails closed; the verifier never reloads sshd. Do not copy the private key to the server, repository or chat.
+The verifier runs `sshd -t` and `sshd -T -C` and requires enabled root login (`prohibit-password`, its normalized `without-password` alias, or OMV-managed `yes`), `pubkeyauthentication yes`, `passwordauthentication no`, `kbdinteractiveauthentication no`, and the complete `AuthenticationMethods` value to be exactly `publickey`. Replace the context host/address when Match rules depend on them. A conflict or missing value fails closed; the verifier never reloads sshd. Do not copy the private key to the server, repository or chat.
 
 **OMV/cloud-init boundary:** do not edit a generated main sshd config as the durable source of truth. Inspect Include order, drop-ins and Match rules. OMV/cloud-init may regenerate configuration on Apply/upgrade; after such an operation rerun `sshd -t` and the effective-policy verifier. If a vendor-managed setting wins, reconcile it at its supported source rather than deleting generated files.
 
-**OMV 8 root-session choice:** OMV's own guidance normally recommends a non-privileged user in `_ssh` and `sudo`, and recommends disabling root SSH after installation. This GhostFleet profile intentionally chooses direct root administration with SSH public-key-only authentication. In OMV `Services → SSH`, enable root login, disable password authentication and enable public-key authentication. Preserve the OMV-managed `AllowGroups` rule only if it admits root (the usual `root _ssh` list does); do not add root to `_ssh` just to satisfy a generic rule. If OMV's effective `AuthenticationMethods` is not exactly `publickey`, set it through OMV's supported SSH **Extra options** field, not by editing the generated file. The verifier accepts OMV's `PermitRootLogin yes` only when public-key authentication is enabled, password and keyboard-interactive authentication are disabled, `AuthenticationMethods publickey` is effective, and any `AllowGroups` rule admits root. See [OMV 8 SSH documentation](https://docs.openmediavault.org/en/8.x/administration/services/ssh.html).
+**OMV 8 root-session choice:** OMV's own guidance normally recommends a non-privileged user in `_ssh` and `sudo`, and recommends disabling root SSH after installation. This GhostFleet profile intentionally chooses direct root administration with SSH public-key-only authentication. In OMV `Services → SSH`, enable root login, disable password authentication and enable public-key authentication. Preserve the OMV-managed `AllowGroups` rule only if it admits root (the usual `root _ssh` list does); do not add root to `_ssh` just to satisfy a generic rule. If OMV's effective `AuthenticationMethods` is not exactly `publickey`, set it through OMV's supported SSH **Extra options** field, not by editing the generated file. The verifier accepts OMV's `PermitRootLogin yes` only when public-key authentication is enabled, password and keyboard-interactive authentication are disabled, `AuthenticationMethods publickey` is effective, and the supported static admission checks pass. See [OMV 8 SSH documentation](https://docs.openmediavault.org/en/8.x/administration/services/ssh.html).
+
+**Static-check boundary:** all repeated Allow/Deny entries are read. Exact user/group names and a standalone `*` are supported; patterns such as `user@host`, partial wildcards or negation return `UNKNOWN` and a nonzero exit. Do not weaken a valid complex policy to satisfy this small checker. Inspect it through OpenSSH and record real login evidence. A successful result still does not prove `authorized_keys`, PAM/account state, forced-command options, SFTP or a live login. The test context must contain exactly one `user=root`; evaluate both the Cloudflare-origin and Tailscale connection contexts.
+
+After an authorized configuration change, keep the existing session or local console available. On ordinary Debian, once syntax and supported effective checks pass, use the platform's SSH reload (`sudo systemctl reload ssh` where that is the installed unit). On OMV, Apply through its supported configuration source and rerun the checks. Open a separate new connection, confirm the intended account and normal session behavior, then close the old session. If checks fail or login remains unknown, retain the recovery path. See the [acceptance matrix](ACCEPTANCE.md).
 
 Once authenticated as root, the SSH session has root authority. GhostFleet does not add command restrictions or per-command approvals.
 
@@ -84,7 +88,7 @@ ssh node-cf
 ssh node-ts
 ```
 
-The two aliases share one `HostKeyAlias`, so the same server host key is checked on either route.
+The two aliases for one machine share one `HostKeyAlias`, so either route checks the same server host key. Choose a different stable alias for every other machine; do not reuse `ghostfleet-node` for the whole fleet. During route acceptance, disable connection reuse with `-o ControlPath=none -o ControlMaster=no`.
 
 ## 7. Logs and recovery
 
@@ -107,7 +111,7 @@ If Cloudflare is unavailable, create a new SSH session with `ssh node-ts`. If Ta
 - Remove the corresponding public key from `/root/.ssh/authorized_keys`.
 - Disable the relevant service if the route itself must be taken offline.
 
-Revocation at the network layer blocks new sessions. Removing the SSH key blocks OS authentication regardless of route.
+Revocation must be verified with a fresh connection through each path. Removing an SSH authorized key prevents new authentication with that key; it does not terminate an already authenticated shell. Network-policy propagation and existing-session termination depend on the selected provider and configuration. Test and record them separately; stop existing sessions explicitly only when that action is authorized.
 
 ## Boundaries
 
@@ -141,7 +145,7 @@ sudo SSH_TEST_CONTEXT='user=root,host=localhost,addr=127.0.0.1' scripts/verify-s
 ```
 
 验证脚本会执行 `sshd -t` 和带连接上下文的 `sshd -T -C`，并检查最终生效值：
-- `permitrootlogin prohibit-password`（OpenSSH 也可能规范化输出为等价的 `without-password`）；
+- root 登录已启用：`prohibit-password` / 等价的 `without-password`，或配合下列全部公钥约束的 OMV `yes`；
 - `pubkeyauthentication yes`；
 - `passwordauthentication no`；
 - `kbdinteractiveauthentication no`；
@@ -151,7 +155,11 @@ sudo SSH_TEST_CONTEXT='user=root,host=localhost,addr=127.0.0.1' scripts/verify-s
 
 **OMV / cloud-init 配置边界：** Debian 通常在主配置的 `Include /etc/ssh/sshd_config.d/*.conf` 位置按文件名字典序加载 drop-in；OpenSSH 对大多数配置采用 first-obtained-value 规则。因此 `00-` 前缀只是提高优先级，不保证一定胜出。不要盲目修改 OMV 或云镜像生成的主配置；先检查 Include 顺序、已有 drop-in 和 Match 规则。OMV Apply、系统升级或 cloud-init 可能重新生成配置，之后必须重新执行上述验证。若厂商配置仍然优先，应在其支持的配置来源中调整，而不是删除生成文件。
 
-**OMV 8 的 root 会话选择：** OMV 官方通常建议使用加入 `_ssh` 组的普通用户，再通过 `sudo` 提权，并建议安装后关闭 root SSH。本 GhostFleet 配置按所有者的产品决定，选择直接 root 管理，但只允许 SSH 公钥认证。在 OMV 的 `Services → SSH` 中启用 root 登录、关闭密码认证、启用公钥认证。OMV 管理的 `AllowGroups` 必须允许 root（常见的 `root _ssh` 列表满足要求）；不要为了满足通用规则而把 root 加入 `_ssh`。如果生效的 `AuthenticationMethods` 不是严格的 `publickey`，应通过 OMV 支持的 SSH **Extra options** 字段设置，不要编辑生成文件。验证脚本只有在公钥认证开启、密码和键盘交互认证关闭、`AuthenticationMethods publickey` 生效且 `AllowGroups` 允许 root 时，才接受 OMV 的 `PermitRootLogin yes`。参见 [OMV 8 SSH 官方文档](https://docs.openmediavault.org/en/8.x/administration/services/ssh.html)。
+**OMV 8 的 root 会话选择：** OMV 官方通常建议使用加入 `_ssh` 组的普通用户，再通过 `sudo` 提权，并建议安装后关闭 root SSH。本 GhostFleet 配置按所有者的产品决定，选择直接 root 管理，但只允许 SSH 公钥认证。在 OMV 的 `Services → SSH` 中启用 root 登录、关闭密码认证、启用公钥认证。OMV 管理的 `AllowGroups` 必须允许 root（常见的 `root _ssh` 列表满足要求）；不要为了满足通用规则而把 root 加入 `_ssh`。如果生效的 `AuthenticationMethods` 不是严格的 `publickey`，应通过 OMV 支持的 SSH **Extra options** 字段设置，不要编辑生成文件。验证脚本只有在公钥认证开启、密码和键盘交互认证关闭、`AuthenticationMethods publickey` 生效且受支持的静态准入检查通过时，才接受 OMV 的 `PermitRootLogin yes`。参见 [OMV 8 SSH 官方文档](https://docs.openmediavault.org/en/8.x/administration/services/ssh.html)。
+
+**静态验证范围：** 脚本读取所有重复的 Allow/Deny 项，支持准确的用户/组名和单独的 `*`。`user@host`、部分通配符、否定模式等返回 `UNKNOWN` 并非零退出，不冒充 OpenSSH 的完整匹配引擎。不要为了通过小型验证器而放宽原本有效的复杂策略；应由 OpenSSH 与真实登录证据判断。静态成功仍不证明 `authorized_keys`、PAM/账户状态、forced-command 选项、SFTP 或真实登录可用。上下文必须且只能包含一个 `user=root`；分别检查 CF 源站路径和 Tailscale 路径的真实上下文。
+
+获授权修改配置后，保留已有会话或本地控制台。普通 Debian 在语法与受支持的有效配置检查通过后，使用系统支持的重载方式（安装单元为 `ssh` 时执行 `sudo systemctl reload ssh`）；OMV 通过支持的配置来源 Apply，再回查有效配置。随后另开新连接，确认 OS 账户及正常会话能力，再关闭旧会话。检查失败或登录仍不确定时保留恢复入口，详见 [验收矩阵](ACCEPTANCE.md)。
 
 认证成功后，SSH 会话拥有 root 的正常系统权限。GhostFleet 不会限制、检查或逐条审批命令。
 
@@ -218,7 +226,7 @@ ssh node-cf
 ssh node-ts
 ```
 
-两个别名共用一个 `HostKeyAlias`，因此两条路径都会校验同一台服务器的主机密钥。
+同一机器的两个别名共用一个 `HostKeyAlias`，两路校验同一主机密钥；每台其他机器必须使用自己的稳定别名，不能全舰队照抄 `ghostfleet-node`。路径验收时使用 `-o ControlPath=none -o ControlMaster=no`，避免复用已有连接而误判另一条路径可用。
 
 ## 7. 日志与故障恢复
 
@@ -242,7 +250,7 @@ systemctl status ssh cloudflared-ssh tailscaled
 - 从 `/root/.ssh/authorized_keys` 删除对应公钥；
 - 如需关闭整条路径，再停止对应服务。
 
-网络层撤销会阻止新连接；移除 SSH 公钥则会同时阻止两条路径的 OS 登录。
+撤销效果须通过两路新连接验证。删除 authorized_keys 中的公钥会阻止该密钥的新认证，不会自动终止已经认证的 Shell。网络策略传播与已有连接终止取决于具体 provider 和配置，应分别实测；只有获授权时才主动终止已有会话。
 
 ## 边界
 

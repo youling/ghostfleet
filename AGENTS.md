@@ -1,4 +1,10 @@
-# GhostFleet — transport-only project rules
+# GhostFleet — 项目规则 / Project rules
+
+任何 Agent 先读取当前 [ai-use AGENTS.md](https://github.com/youling/ai-use/blob/main/AGENTS.md)，再适用本仓规则。Human 当前裁决优先；角色或 GitHub 写权限本身不产生合并、部署或主机操作授权。人类可见记录默认简体中文。
+
+当前方向见 [PR #85 产品裁决](https://github.com/youling/ghostfleet/pull/85#issuecomment-6875500332)：只提供到原生 OpenSSH 的连接配置、文档和小型验证器。图为可追溯的派生导航，源码检查、真实连接、部署与发行各自需要相应证据。原有实现与部署的迁移见 [MIGRATION](docs/MIGRATION.md)。
+
+Every agent first reads the current ai-use kernel linked above. Human rulings govern authority; repository access does not grant deployment or host authority. This project retains only upstream transport profiles, documentation and bounded validators. Diagrams are derived navigation; source checks do not prove live deployment.
 
 GhostFleet provides stable, owner-authorized network paths to a machine's native OpenSSH service. It is not a device-management agent or command policy engine.
 

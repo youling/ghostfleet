@@ -1,5 +1,6 @@
 # Replace both reserved hostnames and the local private-key path.
-# Enroll the server host key out of band in ~/.ssh/known_hosts as "ghostfleet-node".
+# Enroll the host key out of band; use one unique HostKeyAlias per machine.
+# This machine shares "ghostfleet-node" across both routes; other machines need other aliases.
 
 Host node-cf
     HostName ssh.example.invalid
@@ -7,6 +8,7 @@ Host node-cf
     ProxyCommand cloudflared access ssh --hostname %h
     IdentityFile ~/.ssh/ghostfleet_admin
     IdentitiesOnly yes
+    ForwardAgent no
     HostKeyAlias ghostfleet-node
     StrictHostKeyChecking yes
     ServerAliveInterval 20
@@ -19,6 +21,7 @@ Host node-ts
     User root
     IdentityFile ~/.ssh/ghostfleet_admin
     IdentitiesOnly yes
+    ForwardAgent no
     HostKeyAlias ghostfleet-node
     StrictHostKeyChecking yes
     ServerAliveInterval 20
