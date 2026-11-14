@@ -13,23 +13,32 @@ Do not install a GhostFleet Node Agent. There is no custom GhostFleet daemon.
 
 ## 2. Configure OpenSSH for owner-authorized administrator access
 
-The example in [90-ghostfleet-admin.conf.example](../config/sshd/90-ghostfleet-admin.conf.example) allows root public-key login and disables password/keyboard-interactive login. Copy it to `/etc/ssh/sshd_config.d/90-ghostfleet-admin.conf`, add the owner's **public** key to `/root/.ssh/authorized_keys`, then validate before reloading:
+The example in [00-ghostfleet-admin.conf.example](../config/sshd/00-ghostfleet-admin.conf.example) allows root public-key login and disables password/keyboard-interactive login. Copy it to `/etc/ssh/sshd_config.d/00-ghostfleet-admin.conf`, add the owner's **public** key to `/root/.ssh/authorized_keys`, then validate before reloading:
 
 ```sh
-sudo sshd -t
-sudo sshd -T | grep -E '^(permitrootlogin|pubkeyauthentication|passwordauthentication|kbdinteractiveauthentication|authenticationmethods) '
-sudo systemctl reload ssh
+sudo SSH_TEST_CONTEXT='user=root,host=localhost,addr=127.0.0.1' scripts/verify-sshd-admin.sh
 ```
 
-Confirm the effective values are `permitrootlogin prohibit-password`, `pubkeyauthentication yes`, `passwordauthentication no`, `kbdinteractiveauthentication no` and `authenticationmethods publickey`. Debian/OMV may have earlier drop-in files; the effective `sshd -T` output is authoritative. Keep host-key verification enabled on the client. Do not copy the private key to the server, repository or chat.
+The verifier runs `sshd -t` and `sshd -T -C` and requires `permitrootlogin prohibit-password` (OpenSSH may print the equivalent `without-password`), `pubkeyauthentication yes`, `passwordauthentication no`, `kbdinteractiveauthentication no` and `authenticationmethods publickey`. Replace the context host/address when Match rules depend on them. A conflict or missing value fails closed; the verifier never reloads sshd. Do not copy the private key to the server, repository or chat.
+
+**OMV/cloud-init boundary:** do not edit a generated main sshd config as the durable source of truth. Inspect Include order, drop-ins and Match rules. OMV/cloud-init may regenerate configuration on Apply/upgrade; after such an operation rerun `sshd -t` and the effective-policy verifier. If a vendor-managed setting wins, reconcile it at its supported source rather than deleting generated files.
 
 Once authenticated as root, the SSH session has root authority. GhostFleet does not add command restrictions or per-command approvals.
 
-## 3. Cloudflare path
+## 3. Enroll the SSH host key / 带外登记主机密钥
+
+On the target's trusted local console, obtain the public host-key fingerprint and key:
+```sh
+sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+sudo cat /etc/ssh/ssh_host_ed25519_key.pub
+```
+Verify the fingerprint through a separate trusted channel. Add the verified public key to the operator's `~/.ssh/known_hosts` using the alias `ghostfleet-node`. The client config uses `StrictHostKeyChecking yes` and refuses an un-enrolled key. Do not trust an unverified ssh-keyscan result.
+
+## 4. Cloudflare path
 
 Use a remotely-managed Cloudflare Tunnel:
 1. Create/select a tunnel in Cloudflare Zero Trust.
-2. Add a published application route for a hostname such as `ssh.example.com` to `ssh://127.0.0.1:22`.
+2. Add a published application route for a hostname such as `ssh.example.invalid` to `ssh://127.0.0.1:22`.
 3. Create a Cloudflare Access self-hosted application for that hostname and allow the owner's identity.
 4. Install cloudflared on the target and run it as a systemd service. The service example uses a token file (cloudflared 2025.4.0+):
    ```sh
@@ -45,36 +54,36 @@ Use a remotely-managed Cloudflare Tunnel:
    sudo systemctl enable --now cloudflared-ssh.service
    ```
    Adjust the binary path in the unit if `command -v cloudflared` is not `/usr/bin/cloudflared`. Do not put the token in Git, shell history or an AI prompt.
-5. Install cloudflared on the client and connect using the `omv8-cf` SSH alias. The client-side `cloudflared access ssh` flow prompts for Cloudflare Access login when needed.
+5. Install cloudflared on the client and connect using the `node-cf` SSH alias. The client-side `cloudflared access ssh` flow prompts for Cloudflare Access login when needed.
 
 Use a normal Access self-hosted application. Access authenticates the connection; it does not inspect or filter SSH commands. Do not use Access for Infrastructure if the deployment goal is a plain unrestricted SSH session without per-target command policy or command recording.
 
-## 4. Tailscale path
+## 5. Tailscale path
 
 1. Install Tailscale from its official Linux package instructions.
 2. Run `sudo tailscale up` and complete the owner-controlled browser authentication.
 3. Ensure the tailnet's existing policy permits the authorized administrator/device to reach this node on TCP/22.
 4. Leave Tailscale SSH disabled (`tailscale set --ssh=false`) so the connection uses the same OpenSSH daemon as the Cloudflare path.
-5. Connect using the `omv8-ts` alias and the same OpenSSH key.
+5. Connect using the `node-ts` alias and the same OpenSSH key.
 
 Tailscale is the network path; OpenSSH remains the SSH server and OS login authority. No custom Tailscale controller or GhostFleet ACL engine is installed.
 
-## 5. Client configuration
+## 6. Client configuration
 
 Copy [ghostfleet.conf.example](../config/ssh/ghostfleet.conf.example) into the operator's SSH config or include it from `~/.ssh/config`. Replace:
-- `ssh.example.com` with the Cloudflare Access hostname;
-- `omv8.tailnet-name.ts.net` with the target's Tailscale MagicDNS name;
+- `ssh.example.invalid` with the Cloudflare Access hostname;
+- `node.tailnet-name.example.invalid` with the target's Tailscale MagicDNS name;
 - `~/.ssh/ghostfleet_admin` with the owner's local private-key path.
 
 Connect:
 ```sh
-ssh omv8-cf
-ssh omv8-ts
+ssh node-cf
+ssh node-ts
 ```
 
 The two aliases share one `HostKeyAlias`, so the same server host key is checked on either route.
 
-## 6. Logs and recovery
+## 7. Logs and recovery
 
 Use the OS's native logs:
 ```sh
@@ -86,9 +95,9 @@ systemctl status ssh cloudflared-ssh tailscaled
 
 These logs show service and connection/authentication events. They do not necessarily record every shell command. GhostFleet does not add command logging or monitoring.
 
-If Cloudflare is unavailable, create a new SSH session with `ssh omv8-ts`. If Tailscale is unavailable, use `ssh omv8-cf`. Existing TCP sessions require reconnecting; no custom session migration is promised.
+If Cloudflare is unavailable, create a new SSH session with `ssh node-ts`. If Tailscale is unavailable, use `ssh node-cf`. Existing TCP sessions require reconnecting; no custom session migration is promised.
 
-## 7. Revocation
+## 8. Revocation
 
 - Remove the operator from the Cloudflare Access allow policy or disable the tunnel route.
 - Remove the operator/device from the Tailscale network policy or revoke the node.
