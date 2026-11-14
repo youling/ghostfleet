@@ -31,12 +31,19 @@ Use a remotely-managed Cloudflare Tunnel:
 2. Add a published application route for a hostname such as `ssh.example.com` to `ssh://127.0.0.1:22`.
 3. Create a Cloudflare Access self-hosted application for that hostname and allow the owner's identity.
 4. Install cloudflared on the target and run it as a systemd service. The service example uses a token file (cloudflared 2025.4.0+):
-   - create a dedicated `cloudflared` system user;
-   - create `/etc/cloudflared/ssh-tunnel.token` owned by `root:cloudflared`, mode `0640`;
-   - put the tunnel token in that local file using a secure editor;
-   - install [cloudflared-ssh.service.example](../config/systemd/cloudflared-ssh.service.example) as `/etc/systemd/system/cloudflared-ssh.service`;
-   - adjust the binary path if `command -v cloudflared` is not `/usr/bin/cloudflared`;
-   - run `systemctl daemon-reload` and `systemctl enable --now cloudflared-ssh`.
+   ```sh
+   sudo groupadd --system cloudflared
+   sudo useradd --system --gid cloudflared --home-dir /var/lib/cloudflared --create-home --shell /usr/sbin/nologin cloudflared
+   sudo install -d -o root -g cloudflared -m 0750 /etc/cloudflared
+   sudo install -o root -g cloudflared -m 0640 /dev/null /etc/cloudflared/ssh-tunnel.token
+   sudoedit /etc/cloudflared/ssh-tunnel.token
+   sudo chown root:cloudflared /etc/cloudflared/ssh-tunnel.token
+   sudo chmod 0640 /etc/cloudflared/ssh-tunnel.token
+   sudo install -D -m 0644 config/systemd/cloudflared-ssh.service.example /etc/systemd/system/cloudflared-ssh.service
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now cloudflared-ssh.service
+   ```
+   Adjust the binary path in the unit if `command -v cloudflared` is not `/usr/bin/cloudflared`. Do not put the token in Git, shell history or an AI prompt.
 5. Install cloudflared on the client and connect using the `omv8-cf` SSH alias. The client-side `cloudflared access ssh` flow prompts for Cloudflare Access login when needed.
 
 Use a normal Access self-hosted application. Access authenticates the connection; it does not inspect or filter SSH commands. Do not use Access for Infrastructure if the deployment goal is a plain unrestricted SSH session without per-target command policy or command recording.
