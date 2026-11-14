@@ -19,24 +19,50 @@ if ! effective=$("$SSHD_BIN" -T "$@" -C "$SSH_TEST_CONTEXT" 2>&1); then
   exit 1
 fi
 value() { printf '%s\n' "$effective" | awk -v key="$1" '$1 == key { print $2; exit }'; }
+value_list() { printf '%s\n' "$effective" | awk -v key="$1" '$1 == key { $1=""; sub(/^[[:space:]]+/, ""); print; exit }'; }
 permit_root=$(value permitrootlogin)
 pubkey=$(value pubkeyauthentication)
 password=$(value passwordauthentication)
 keyboard=$(value kbdinteractiveauthentication)
 methods=$(value authenticationmethods)
+allowgroups=$(value_list allowgroups)
+allowusers=$(value_list allowusers)
+denyusers=$(value_list denyusers)
+denygroups=$(value_list denygroups)
+root_groups=$(id -Gn root 2>/dev/null || true)
 failed=0
 case "$permit_root" in
-  prohibit-password|without-password) ;;
-  *) echo "FAIL permitrootlogin: expected prohibit-password/without-password; got '${permit_root:-missing}'" >&2; failed=1 ;;
+  prohibit-password|without-password|yes)
+    # "yes" is accepted only because the independent checks below require
+    # publickey as the sole AuthenticationMethods entry and disable password
+    # and keyboard-interactive authentication. This supports OMV's UI-managed
+    # PermitRootLogin=yes setting without pretending a later drop-in wins.
+    ;;
+  *) echo "FAIL permitrootlogin: expected prohibit-password/without-password, or yes with publickey-only AuthenticationMethods; got '${permit_root:-missing}'" >&2; failed=1 ;;
 esac
 [ "$pubkey" = yes ] || { echo "FAIL pubkeyauthentication: got '${pubkey:-missing}'" >&2; failed=1; }
 [ "$password" = no ] || { echo "FAIL passwordauthentication: got '${password:-missing}'" >&2; failed=1; }
 [ "$keyboard" = no ] || { echo "FAIL kbdinteractiveauthentication: got '${keyboard:-missing}'" >&2; failed=1; }
-[ "$methods" = publickey ] || { echo "FAIL authenticationmethods: got '${methods:-missing}'" >&2; failed=1; }
+[ "$methods" = publickey ] || { echo "FAIL authenticationmethods: expected exactly publickey; got '${methods:-missing}'" >&2; failed=1; }
+if [ -n "$allowgroups" ]; then
+  allowed=0
+  for group in $allowgroups; do
+    case " $root_groups " in *" $group "*) allowed=1 ;; esac
+    [ "$group" = "*" ] && allowed=1
+  done
+  [ "$allowed" -eq 1 ] || { echo "FAIL allowgroups: root is not a member of any allowed group ('$allowgroups'; root groups: '$root_groups')" >&2; failed=1; }
+fi
+if [ -n "$allowusers" ]; then
+  case " $allowusers " in *" root "*) ;; *) echo "FAIL allowusers: root is not explicitly allowed ('$allowusers')" >&2; failed=1 ;; esac
+fi
+case " $denyusers " in *" root "*) echo "FAIL denyusers: root is explicitly denied" >&2; failed=1 ;; esac
+for group in $denygroups; do
+  case " $root_groups " in *" $group "*) echo "FAIL denygroups: root belongs to denied group '$group'" >&2; failed=1 ;; esac
+done
 if [ "$failed" -ne 0 ]; then
-  echo "ERROR: effective sshd policy does not match GhostFleet admin profile." >&2
-  echo "Inspect Include order, earlier drop-ins, Match rules and OS/vendor-managed config." >&2
+  echo "ERROR: effective sshd policy does not admit a root public-key-only session." >&2
+  echo "Inspect Include order, OMV Services > SSH settings, AllowGroups/AllowUsers, DenyUsers/DenyGroups and Match rules." >&2
   echo "No file was changed and no sshd reload/restart was attempted." >&2
   exit 1
 fi
-printf '%s\n' "SSHD_ADMIN_PROFILE_OK context=$SSH_TEST_CONTEXT"
+printf '%s\n' "SSHD_ADMIN_PROFILE_OK context=$SSH_TEST_CONTEXT permitrootlogin=$permit_root"
