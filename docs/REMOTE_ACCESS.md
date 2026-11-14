@@ -23,6 +23,8 @@ The verifier runs `sshd -t` and `sshd -T -C` and requires `permitrootlogin prohi
 
 **OMV/cloud-init boundary:** do not edit a generated main sshd config as the durable source of truth. Inspect Include order, drop-ins and Match rules. OMV/cloud-init may regenerate configuration on Apply/upgrade; after such an operation rerun `sshd -t` and the effective-policy verifier. If a vendor-managed setting wins, reconcile it at its supported source rather than deleting generated files.
 
+**OMV 8 root-session choice:** OMV's own guidance normally recommends a non-privileged user in `_ssh` and `sudo`, and recommends disabling root SSH after installation. This GhostFleet profile intentionally chooses direct root administration with SSH public-key-only authentication. In OMV `Services → SSH`, enable root login, disable password authentication and enable public-key authentication. Preserve the OMV-managed `AllowGroups` rule only if it admits root (the usual `root _ssh` list does); do not add root to `_ssh` just to satisfy a generic rule. If OMV's effective `AuthenticationMethods` is not exactly `publickey`, set it through OMV's supported SSH **Extra options** field, not by editing the generated file. The verifier accepts OMV's `PermitRootLogin yes` only when public-key authentication is enabled, password and keyboard-interactive authentication are disabled, `AuthenticationMethods publickey` is effective, and any `AllowGroups` rule admits root. See [OMV 8 SSH documentation](https://docs.openmediavault.org/en/8.x/administration/services/ssh.html).
+
 Once authenticated as root, the SSH session has root authority. GhostFleet does not add command restrictions or per-command approvals.
 
 ## 3. Enroll the SSH host key / 带外登记主机密钥
@@ -40,7 +42,7 @@ Use a remotely-managed Cloudflare Tunnel:
 1. Create/select a tunnel in Cloudflare Zero Trust.
 2. Add a published application route for a hostname such as `ssh.example.invalid` to `ssh://127.0.0.1:22`.
 3. Create a Cloudflare Access self-hosted application for that hostname and allow the owner's identity.
-4. Install cloudflared on the target and run it as a systemd service. The service example uses a token file (cloudflared 2025.4.0+):
+4. Install cloudflared on the target and run it as a systemd service. The service example uses a token file; use a cloudflared build whose `tunnel run --help` lists `--token-file` (verified with 2026.11.0):
    ```sh
    # Run these commands from the GhostFleet repository root.
    sudo groupadd --system cloudflared
@@ -149,6 +151,8 @@ sudo SSH_TEST_CONTEXT='user=root,host=localhost,addr=127.0.0.1' scripts/verify-s
 
 **OMV / cloud-init 配置边界：** Debian 通常在主配置的 `Include /etc/ssh/sshd_config.d/*.conf` 位置按文件名字典序加载 drop-in；OpenSSH 对大多数配置采用 first-obtained-value 规则。因此 `00-` 前缀只是提高优先级，不保证一定胜出。不要盲目修改 OMV 或云镜像生成的主配置；先检查 Include 顺序、已有 drop-in 和 Match 规则。OMV Apply、系统升级或 cloud-init 可能重新生成配置，之后必须重新执行上述验证。若厂商配置仍然优先，应在其支持的配置来源中调整，而不是删除生成文件。
 
+**OMV 8 的 root 会话选择：** OMV 官方通常建议使用加入 `_ssh` 组的普通用户，再通过 `sudo` 提权，并建议安装后关闭 root SSH。本 GhostFleet 配置按所有者的产品决定，选择直接 root 管理，但只允许 SSH 公钥认证。在 OMV 的 `Services → SSH` 中启用 root 登录、关闭密码认证、启用公钥认证。OMV 管理的 `AllowGroups` 必须允许 root（常见的 `root _ssh` 列表满足要求）；不要为了满足通用规则而把 root 加入 `_ssh`。如果生效的 `AuthenticationMethods` 不是严格的 `publickey`，应通过 OMV 支持的 SSH **Extra options** 字段设置，不要编辑生成文件。验证脚本只有在公钥认证开启、密码和键盘交互认证关闭、`AuthenticationMethods publickey` 生效且 `AllowGroups` 允许 root 时，才接受 OMV 的 `PermitRootLogin yes`。参见 [OMV 8 SSH 官方文档](https://docs.openmediavault.org/en/8.x/administration/services/ssh.html)。
+
 认证成功后，SSH 会话拥有 root 的正常系统权限。GhostFleet 不会限制、检查或逐条审批命令。
 
 ## 3. 带外登记 SSH 主机密钥
@@ -251,3 +255,4 @@ systemctl status ssh cloudflared-ssh tailscaled
 - Cloudflare Tunnel token-file run parameter: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/run-parameters/
 - Tailscale Linux install: https://tailscale.com/docs/install/linux
 - Tailscale network access policy: https://tailscale.com/docs/features/access-control
+- OpenMediaVault 8 SSH behavior: https://docs.openmediavault.org/en/8.x/administration/services/ssh.html
