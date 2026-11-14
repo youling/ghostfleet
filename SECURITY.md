@@ -1,47 +1,33 @@
-# Security reporting / 安全报告
+# Security model
 
-## 中文
+GhostFleet is a thin transport configuration project. It does not implement a command execution service, command monitor, command filter, approval engine or custom audit store.
 
-<!-- topic:report -->
-### 报告渠道
+## Authority model
 
-当前是开发版本。不要在公开工单、PR 或聊天中提供密码、令牌、私钥、真实节点或提供方定位信息、账户清单，以及可重放的授权。若仓库启用了 GitHub 私有漏洞报告（Private Vulnerability Reporting），请使用仓库 Security 界面的原生私有报告入口；本文件不声称该入口已配置或可用。
+1. The device owner authorizes the machine to be reachable through the chosen network path.
+2. Cloudflare Access and/or Tailscale identity policy authenticate the remote session/network connection.
+3. OpenSSH authenticates the OS account using an owner-managed SSH key.
+4. Once the session is authenticated, the selected OS account has its normal operating-system authority. The reference profile uses root public-key authentication. GhostFleet does not intercept or approve individual commands.
 
-若没有私有报告入口，可先在公开工单提出不含敏感数据的“需要私有安全报告渠道”请求。维护者确认受控渠道后再提交必要材料。不要虚构安全邮箱或将秘密发送到未经验证的地址。
+This means an authorized administrator can perform any operation permitted to that OS account, including destructive disk/filesystem operations. The transport layer will not prevent them.
 
-<!-- topic:contents -->
-### 最小必要信息
+## Credentials
 
-使用独立合成测试数据，报告公开版本或提交、受影响模块、预期边界、脱敏复现步骤、影响及已知副作用。真实原始证据保留在所有者控制的存储中，通过不透露内容的引用供后续获授权核验；受保护引用不默认公开。
+- Never commit tunnel tokens, Tailscale auth keys, SSH private keys or real endpoint identifiers.
+- Keep the private SSH key on the operator/AI execution host in an owner-controlled credential store.
+- Keep Cloudflare tunnel credentials in a root-controlled local file readable only by the cloudflared service account.
+- Revoke access at the relevant session boundary: Cloudflare Access policy/tunnel, Tailscale tailnet policy/device, and OpenSSH `authorized_keys`.
 
-若疑似实际秘密已暴露，先停止传播并通知凭据所有者，由所有者核对撤销、轮换及影响范围；TTL 到期不等于撤销或清理已完成。不要盲目重试有副作用的操作来验证漏洞。
+## Logging
 
-<!-- topic:model -->
-### 安全模型与支持
+GhostFleet creates no parallel command log. OpenSSH records authentication/session events according to the OS configuration; systemd/journald and the cloudflared/tailscaled services expose their own service logs. **OpenSSH/journald do not necessarily record every shell command.** Do not claim command-level auditing unless the owner separately enables an OS-native audit/session-recording facility.
 
-详见 [安全模型](docs/SECURITY.md) 与 [公开边界](docs/PUBLICATION.md)。默认 MCP 只提供检查工具，操作员 Bearer 令牌用于管理生命周期对象；生产 RBAC、OAuth 与设备执行接入必须另行审查。当前没有正式发布版的支持承诺，修复和披露时间按实际个案协商。
+## Network exposure
 
-真机单节点验证、合成 CI 或依赖审计不构成完整安全认证。第二台独立硬件及重建验证、威胁模型审查、凭据托管与恢复仍是正式发布的验收条件。
+- Do not publish an unauthenticated public root SSH listener.
+- Do not open router port-forwarding for TCP/22.
+- Use Cloudflare Access or Tailscale network identity to control who can establish a session.
+- Keep SSH host-key verification enabled.
+- A tunnel is transport, not OS authentication or privilege by itself.
 
-## English
-
-<!-- topic:report -->
-### Reporting channel
-
-This is a development version. Do not provide passwords, tokens, private keys, real node/provider locators, account inventories or replayable authorization in public issues/PRs or chat. If the repository enables GitHub Private Vulnerability Reporting, use its native private entry under Security; this document does not claim that the feature is configured or available.
-
-If no private entry exists, open a public request for a private security-reporting channel without sensitive data. Submit necessary material only after maintainers confirm a controlled channel. Do not invent a security mailbox or send secrets to an unverified address.
-
-<!-- topic:contents -->
-### Minimum necessary information
-
-Report the public version/commit, affected module, expected boundary, sanitized reproduction, impact and known effects using independent synthetic fixtures. Keep real raw evidence in owner-controlled storage and use an opaque pointer for later authorized verification; protected references are not automatically public.
-
-For suspected secret exposure, stop propagation and notify the credential owner to assess revocation/rotation and impact. TTL expiry does not prove revocation or cleanup. Do not blindly replay effects to verify a vulnerability.
-
-<!-- topic:model -->
-### Security model and support
-
-See the [security model](docs/SECURITY.md) and [publication boundary](docs/PUBLICATION.md). Default MCP exposes inspection only; operator bearer manages lifecycle objects. Production RBAC/OAuth and device execution integrations require separate review. There is no formal release support commitment; remediation/disclosure timing is agreed for each actual case.
-
-A single-device canary, synthetic CI or dependency audit is not complete security certification. Independent second-device/rebuild evidence, threat-model review and credential custody/recovery remain formal release gates.
+Report security issues through the repository's configured GitHub private vulnerability reporting channel.

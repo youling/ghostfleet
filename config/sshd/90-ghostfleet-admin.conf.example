@@ -1,0 +1,10 @@
+# Install as /etc/ssh/sshd_config.d/90-ghostfleet-admin.conf
+# Add the owner's public key to /root/.ssh/authorized_keys first.
+# This grants the authenticated SSH key full root-shell authority.
+# There is intentionally no ForceCommand, command= restriction or per-command gate.
+
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+AuthenticationMethods publickey

@@ -1,8 +1,0 @@
-{
-  "name": "@ghostfleet/privilege-broker",
-  "version": "0.1.0-dev",
-  "private": true,
-  "type": "module",
-  "exports": "./src/index.js",
-  "license": "AGPL-3.0-only"
-}

@@ -1,17 +1,23 @@
-# AGENTS.md — GhostFleet 最低项目规则
+# GhostFleet — transport-only project rules
 
-任何进入 `youling/ghostfleet` 的 Agent 必须先遵守 current `youling/ai-use`，再应用本文件。
+GhostFleet is a deliberately thin remote-access profile. Its job is to make an owner-authorized SSH session reach a managed machine reliably through Cloudflare Tunnel and/or Tailscale.
 
-1. **本仓是通用远控产品的 canonical implementation owner。** Core/API/MCP/Console、Enrollment/NodeIdentity/Capability/HumanGate/Evidence/Event、consumer acceptance、typed-control/jobs/sessions/reconcile、通用 Linux/Windows/Android runtime 与可选客户端适配的后续开发进入本仓。
-2. `youling/ai-hub` 的 Fleet 管理域是礼宏的 PRIVATE deployment / instance owner，不是本仓的第二实现：真实 inventory、provider/account locator、credential/secret、private policy、生产 deployment、host-specific recovery、真实设备 evidence 只留该管理域/相应私有 owner。旧 `youling/fleet` 保留历史来源，不再承接新工程主线；仓库迁移不改变 Fleet 的领域语义或扩大权限。
-3. 从私有 Fleet 发现问题时先分类：
-   - reusable product bug / generic protocol / generic UX / generic adapter -> GhostFleet 修复；
-   - private binding / deployment / account / device-specific state -> Fleet 修复；
-   - mixed -> GhostFleet 先完成 generic seam，Fleet 再做 thin deployment integration。
-4. 禁止把真实节点名/IP/endpoint/account ID、secret value、private key/token、私有策略、原始日志/拓扑复制到公开仓。公开证据必须 synthetic 或经过脱敏/边界审查。
-5. `ACTIVE` / core admission != independent consumer cutover。消费者必须独立完成 durable custody、auth/config/call route、positive+negative authority、executor-independence 与 node-scoped rollback acceptance。
-6. Capability != Authority；tool description != security boundary；generic implementation merge != production deployment authority。
-7. 不直接写受保护的 `main`。用 branch + PR；语义/安全边界变化绑定 exact-head Review。历史 Fleet 代码只能作为 migration/provenance 输入，不得无审查整包搬入。
-8. 主流程保持 AI-client-neutral。ChatGPT/OpenAI/Tailscale/Cloudflare 可以是可选/reference integration，但不得成为 core 必需依赖或把某个私有部署事实硬编码进协议。
-9. 新 generic feature 默认必须有 deterministic tests、fail-closed UNKNOWN/reconcile 行为、秘密泄漏检查和中英文公共文档；真机/生产证明另行记录，不能由 synthetic PASS 冒充。
-10. 通用机制与私有实例的语义边界沿用 Human 2026-10-05 ruling、历史 Fleet ADR-009 与 current GhostFleet public boundary；私有实例的当前仓库定位采用已接受的 `ai-hub ADR-0035`。历史 Fleet 引用继续作为 provenance，冲突文本按当前 owner 修正，不建立双 SSOT。
+## Product boundary
+
+1. **Transport only.** Use the maintained upstream daemons: `cloudflared`, `tailscaled`, OpenSSH and systemd.
+2. **No custom command plane.** GhostFleet does not inspect, monitor, parse, filter, rewrite, approve, deny or record remote commands.
+3. **No custom device agent.** No Node Agent, task queue, job lease, SQLite task store, command executor, privileged Helper, HumanGate or per-command JIT approval.
+4. **Full administrator session after owner authorization.** The owner chooses the SSH identity and OS account. The reference profile uses root with public-key authentication. Once the SSH session is authenticated, OpenSSH executes the administrator's requested commands without GhostFleet policy interception.
+5. **Session/network authentication remains.** Cloudflare Access and Tailscale identity/ACL may decide who can establish a connection to TCP/22. They do not impose command-level restrictions.
+6. **OS-native lifecycle and logs.** systemd supervises upstream transport daemons; sshd, cloudflared, tailscaled and journald provide their native service/authentication logs. GhostFleet does not build a parallel monitoring or audit pipeline.
+7. **Two independent paths.** Cloudflare and Tailscale are alternative routes to the same OpenSSH server. No custom failover daemon. The operator chooses `omv8-cf` or `omv8-ts`; a broken TCP session must reconnect over the other route.
+8. **No secrets in Git.** Tunnel tokens, SSH private keys and Tailscale credentials stay in owner-controlled local credential storage. Commit only placeholders and public configuration examples.
+9. **No production changes from this repository.** Config examples are not deployment authorization. Cloudflare DNS/Access, Tailscale policy, SSH/root and NAS changes require the owner's explicit target-specific authorization.
+10. **No new runtime framework.** Prefer OpenSSH configuration and vendor systemd units over custom code. Add code only when an upstream tool cannot provide the transport behavior.
+
+## Contribution rules
+
+- Keep the default product surface to docs and small config examples.
+- Validate SSH config syntax with the system OpenSSH client.
+- Do not reintroduce command allowlists, remote execution APIs, monitoring agents, approval state machines or custom audit logs.
+- Keep examples generic; never commit real hostnames, node IDs, tunnel tokens, auth keys, private keys or account details.
