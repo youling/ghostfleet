@@ -40,11 +40,11 @@ jobs:
           UsePAM no
           EOF
           cp config/sshd/00-ghostfleet-admin.conf.example "$tmp/sshd_config.d/00-ghostfleet-admin.conf"
-          sudo env SSHD_CONFIG="$tmp/sshd_config" SSH_TEST_CONTEXT='user=root,host=localhost,addr=127.0.0.1' scripts/verify-sshd-admin.sh
+          sudo env SSHD_BIN=/usr/sbin/sshd SSHD_CONFIG="$tmp/sshd_config" SSH_TEST_CONTEXT='user=root,host=localhost,addr=127.0.0.1' scripts/verify-sshd-admin.sh
           cat > "$tmp/sshd_config.d/00-cloud-init.conf" <<EOF
           PasswordAuthentication yes
           EOF
-          if sudo env SSHD_CONFIG="$tmp/sshd_config" SSH_TEST_CONTEXT='user=root,host=localhost,addr=127.0.0.1' scripts/verify-sshd-admin.sh; then
+          if sudo env SSHD_BIN=/usr/sbin/sshd SSHD_CONFIG="$tmp/sshd_config" SSH_TEST_CONTEXT='user=root,host=localhost,addr=127.0.0.1' scripts/verify-sshd-admin.sh; then
             echo "Expected the verifier to reject the earlier conflicting vendor setting."
             exit 1
           fi
