@@ -48,6 +48,29 @@ jobs:
             echo "Expected the verifier to reject the earlier conflicting vendor setting."
             exit 1
           fi
+          # OMV-style generated main config: settings before Include win.
+          # PermitRootLogin=yes is acceptable only with AuthenticationMethods=publickey
+          # and password/keyboard-interactive disabled; AllowGroups must admit root.
+          cat > "$tmp/omv_sshd_config" <<EOF
+          Port 2222
+          ListenAddress 127.0.0.1
+          HostKey $tmp/ssh_host_ed25519_key
+          PidFile $tmp/omv-sshd.pid
+          PermitRootLogin yes
+          AllowGroups root _ssh
+          PasswordAuthentication no
+          PubkeyAuthentication yes
+          KbdInteractiveAuthentication no
+          AuthenticationMethods publickey
+          Include $tmp/sshd_config.d/*.conf
+          UsePAM no
+          EOF
+          sudo env SSHD_BIN=/usr/sbin/sshd SSHD_CONFIG="$tmp/omv_sshd_config" SSH_TEST_CONTEXT='user=root,host=localhost,addr=127.0.0.1' scripts/verify-sshd-admin.sh
+          sed 's/AllowGroups root _ssh/AllowGroups _ssh/' "$tmp/omv_sshd_config" > "$tmp/omv-deny-root.conf"
+          if sudo env SSHD_BIN=/usr/sbin/sshd SSHD_CONFIG="$tmp/omv-deny-root.conf" SSH_TEST_CONTEXT='user=root,host=localhost,addr=127.0.0.1' scripts/verify-sshd-admin.sh; then
+            echo "Expected the verifier to reject an OMV AllowGroups rule that excludes root."
+            exit 1
+          fi
       - name: Validate cloudflared systemd unit syntax
         run: |
           if [ ! -x /usr/bin/cloudflared ]; then sudo install -m 0755 /bin/true /usr/bin/cloudflared; fi
