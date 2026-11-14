@@ -22,18 +22,18 @@ GhostFleet 本身：
 
 | 路径 | 用途 | SSH 目标 |
 |---|---|---|
-| `omv8-cf` | 通过 Cloudflare Access + Tunnel | 同一台机器的 `sshd:22` |
-| `omv8-ts` | 通过 Tailscale/WireGuard 网络 | 同一台机器的 `sshd:22` |
+| `node-cf` | 通过 Cloudflare Access + Tunnel | 同一台机器的 `sshd:22` |
+| `node-ts` | 通过 Tailscale/WireGuard 网络 | 同一台机器的 `sshd:22` |
 
 两条路径都进入同一个 OpenSSH 服务，使用同一把管理员 SSH key 和同一个 OS 用户。GhostFleet 不做自研自动切换；CF 路径不可用时，新建会话改用 TS 路径即可。已经建立的 TCP/SSH 会话不能无损迁移到另一条网络。
 
 ### 快速使用
 
-复制 [SSH 客户端配置模板](config/ssh/ghostfleet.conf.example)，替换域名、Tailnet MagicDNS 名称和本地私钥路径：
+复制 [SSH 客户端配置模板](config/ssh/ghostfleet.conf.example)，替换保留域名、Tailnet MagicDNS 名称和本地私钥路径；首次连接前通过带外渠道核对主机密钥指纹：
 
 ```sh
-ssh omv8-cf   # Cloudflare Access + Tunnel
-ssh omv8-ts   # Tailscale path
+ssh node-cf   # Cloudflare Access + Tunnel
+ssh node-ts   # Tailscale path
 ```
 
 完整安装与配置见 [远控部署指南](docs/REMOTE_ACCESS.md)。
@@ -52,9 +52,9 @@ Connection identity is still authenticated at the session boundary: Cloudflare A
 
 | Alias | Route | SSH target |
 |---|---|---|
-| `omv8-cf` | Cloudflare Access + Tunnel | The same machine's `sshd:22` |
-| `omv8-ts` | Tailscale/WireGuard | The same machine's `sshd:22` |
+| `node-cf` | Cloudflare Access + Tunnel | The same machine's `sshd:22` |
+| `node-ts` | Tailscale/WireGuard | The same machine's `sshd:22` |
 
 Both paths reach the same OpenSSH daemon and use the same administrator SSH key and OS account. There is no custom failover daemon. If one route is unavailable, reconnect using the other alias. An established TCP/SSH session cannot migrate losslessly between paths.
 
-Copy the [SSH client config example](config/ssh/ghostfleet.conf.example), replace the hostnames and local key path, then run `ssh omv8-cf` or `ssh omv8-ts`. See the [deployment guide](docs/REMOTE_ACCESS.md).
+Copy the [SSH client config example](config/ssh/ghostfleet.conf.example), replace the hostnames and local key path, then run `ssh node-cf` or `ssh node-ts`. See the [deployment guide](docs/REMOTE_ACCESS.md).
