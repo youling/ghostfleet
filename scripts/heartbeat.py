@@ -206,8 +206,11 @@ def systemctl(*args: str) -> None:
 
 def install(args) -> None:
     if os.geteuid() != 0: raise ClientError('INSTALL_REQUIRES_OWNER_ROOT_CEREMONY')
+    if sys.platform != 'linux' or not sys.stdin.isatty():
+        raise ClientError('LINUX_INTERACTIVE_TERMINAL_REQUIRED')
     origin = check_origin(args.origin)
     check_owned_files()
+    if CONFIG.is_symlink() or MANIFEST.is_symlink(): raise ClientError('TARGET_SYMLINK_REFUSED')
     existing = load_config(CONFIG) if CONFIG.exists() else None
     if existing and not args.replace: raise ClientError('ALREADY_INSTALLED_USE_REPAIR_OR_EXPLICIT_REPLACE')
     units = {'ssh': args.ssh_unit, 'cloudflared': args.cloudflared_unit, 'tailscaled': args.tailscaled_unit}
@@ -278,7 +281,7 @@ def main() -> int:
     except ClientError as error:
         print('GF_ERROR ' + str(error), file=sys.stderr); return 1
     except (OSError, ValueError, subprocess.TimeoutExpired):
-        print('GF_ERROR LOCAL_OPERATION_FAILED; RETAIN_CONFIG_AND_USE_REPAIR', file=sys.stderr); return 1
+        print('GF_ERROR LOCAL_OPERATION_FAILED; CHECK_CONFIG_THEN_REPAIR_OR_REISSUE_SAME_NODE', file=sys.stderr); return 1
     except KeyboardInterrupt:
         print('GF_ERROR INTERRUPTED; DO_NOT_BLINDLY_REPEAT_CLAIM', file=sys.stderr); return 130
 

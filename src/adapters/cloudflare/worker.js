@@ -7,7 +7,11 @@ export class GhostFleetState {
   constructor(state, env) { this.state = state; this.env = env; }
   async fetch(request) {
     const prepared = await prepare(request, this.env);
-    if (prepared.response) return prepared.response;
+    if (prepared.response) {
+      // Cancel an unread upload on early auth/MIME rejection before responding.
+      await request.body?.cancel().catch(() => {});
+      return prepared.response;
+    }
     return this.state.storage.transaction(async txn => {
       const snapshot = (await txn.get('ghostfleet-state')) ?? { nodes: {} };
       const result = dispatch(prepared.input, snapshot);
@@ -28,7 +32,7 @@ export default {
   async fetch(request, env) {
     const u = new URL(request.url);
     const panel = env.GHOSTFLEET_PANEL_ORIGIN, node = env.GHOSTFLEET_NODE_ORIGIN;
-    if (!validOrigin(panel) || !validOrigin(node) || (panel === node && !panel.startsWith('http://127.0.0.1:') && !panel.startsWith('http://[::1]:'))) {
+    if (!validOrigin(panel) || !validOrigin(node) || (panel === node && new URL(panel).protocol !== 'http:')) {
       return denied('ORIGINS_NOT_CONFIGURED', 503);
     }
     const isPanel = u.origin === panel, isNode = u.origin === node;
@@ -37,7 +41,17 @@ export default {
       /^\/v1\/nodes\/node-[0-9a-f-]+\/heartbeat$/.test(u.pathname);
     if ((isPanel && u.pathname.startsWith('/v0/')) || (isNode && nodeRoute)) {
       if (!env.GHOSTFLEET_STATE) return denied('STORE_NOT_CONFIGURED', 503);
-      try { return await env.GHOSTFLEET_STATE.get(env.GHOSTFLEET_STATE.idFromName('global')).fetch(request); }
+      // Bound and authorize at the edge before opening a DO upload. The DO
+      // repeats validation at its own boundary; neither trusts client role headers.
+      const prepared = await prepare(request, env);
+      if (prepared.response) {
+        await request.body?.cancel().catch(() => {});
+        return prepared.response;
+      }
+      const headers = new Headers(request.headers); headers.delete('content-length');
+      const forwarded = new Request(request.url, { method: request.method, headers,
+        ...(request.method === 'POST' ? { body: JSON.stringify(prepared.input.body) } : {}) });
+      try { return await env.GHOSTFLEET_STATE.get(env.GHOSTFLEET_STATE.idFromName('global')).fetch(forwarded); }
       catch { return denied('STATE_UNAVAILABLE', 503); }
     }
     if (isNode && request.method === 'GET' && /^[0-9a-f]{64}$/.test(env.GHOSTFLEET_INSTALLER_SHA256 ?? '') &&

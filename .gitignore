@@ -4,6 +4,13 @@
 !.env.example
 .dev.vars
 
+# Generated dependencies, bundles and local runtime state
+node_modules/
+dist/
+.wrangler/
+__pycache__/
+*.pyc
+
 # Logs and editor/OS artifacts
 *.log
 .DS_Store

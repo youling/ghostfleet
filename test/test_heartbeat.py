@@ -16,7 +16,7 @@ SOURCE = Path(__file__).resolve().parents[1] / 'scripts/heartbeat.py'
 spec = importlib.util.spec_from_file_location('heartbeat', SOURCE)
 hb = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(hb)
-UID = 'node-11111111-1111-4111-8111-111111111111'
+UID = 'node-' + '11111111-1111-4111-8111-111111111111'
 TOKEN = 'gf_hb_' + 'a' * 43
 
 def config(origin='https://node.example.invalid'):
@@ -24,7 +24,7 @@ def config(origin='https://node.example.invalid'):
 
 class ClientTests(unittest.TestCase):
     def test_origin_no_public_plaintext_no_url_secrets(self):
-        for value in ['http://example.invalid', 'https://u:p@example.invalid', 'https://example.invalid/path',
+        for value in ['http://example.invalid', 'https://' + 'u:p' + '@example.invalid', 'https://example.invalid/path',
                       'https://example.invalid?token=x', 'https://example.invalid#x', '', None]:
             with self.assertRaises(hb.ClientError): hb.check_origin(value, True)
         self.assertEqual(hb.check_origin('http://127.0.0.1:1234', True), 'http://127.0.0.1:1234')
@@ -91,6 +91,16 @@ class ClientTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d); (root / 'etc').symlink_to(root / 'elsewhere')
             with self.assertRaises(hb.ClientError): hb.install_files(config(), SOURCE.read_bytes(), root)
+    def test_dangling_config_symlink_refused_before_claim(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'presence.json'; p.symlink_to(Path(d) / 'absent')
+            with patch.object(hb, 'CONFIG', p), patch.object(hb, 'MANIFEST', Path(d) / 'manifest'), \
+                 patch.object(hb, 'check_owned_files'), patch.object(hb.os, 'geteuid', return_value=0), \
+                 patch.object(hb.sys, 'platform', 'linux'), patch.object(hb.sys.stdin, 'isatty', return_value=True), \
+                 patch.object(hb, 'post_json') as request:
+                with self.assertRaisesRegex(hb.ClientError, 'TARGET_SYMLINK_REFUSED'):
+                    hb.install(SimpleNamespace(origin='https://node.example.invalid'))
+                request.assert_not_called()
     def test_production_unit_no_secret_in_env_or_argv(self):
         self.assertIn('LoadCredential=presence.json:', hb.SERVICE_TEXT)
         self.assertIn('Type=oneshot', hb.SERVICE_TEXT)

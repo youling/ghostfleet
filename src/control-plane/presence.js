@@ -76,7 +76,7 @@ export function dispatch(input, state, now = Date.now()) {
     }
     if (method === 'POST' && path === '/v0/enrollment-tickets') {
       shape(body, ['label', 'node_uid'], []);
-      if (body.node_uid !== undefined && !UID.test(body.node_uid)) reject('INVALID_NODE_UID');
+      if (body.node_uid !== undefined && (typeof body.node_uid !== 'string' || !UID.test(body.node_uid))) reject('INVALID_NODE_UID');
       if (body.label !== undefined && (typeof body.label !== 'string' || !body.label.trim() ||
           body.label.length > 80 || /[\x00-\x1f\x7f]/.test(body.label))) reject('INVALID_LABEL');
       if (!body.node_uid && !body.label) reject('LABEL_REQUIRED');
@@ -122,7 +122,7 @@ export function dispatch(input, state, now = Date.now()) {
     match = /^\/v1\/enrollment-tickets\/([^/]+)\/claim$/.exec(path);
     if (method === 'POST' && match) {
       shape(body, ['short_code', 'expected_node_uid'], ['short_code']);
-      if (body.expected_node_uid !== undefined && !UID.test(body.expected_node_uid)) reject('INVALID_NODE_UID');
+      if (body.expected_node_uid !== undefined && (typeof body.expected_node_uid !== 'string' || !UID.test(body.expected_node_uid))) reject('INVALID_NODE_UID');
       const t = TICKET.test(match[1]) && own(state.presence_tickets, match[1]) ? state.presence_tickets[match[1]] : null;
       if (!t) reject('TICKET_NOT_FOUND', 404);
       if (t.state !== 'ISSUED') reject('TICKET_NOT_CLAIMABLE', 409);

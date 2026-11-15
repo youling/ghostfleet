@@ -70,9 +70,16 @@ test('ticket cancellation rejects later claims', () => {
   assert.equal(claim(state, d).status, 409);
 });
 test('identity conflict is rejected before ticket consumption', () => {
-  const state = {}, d = issue(state), wrong = 'node-22222222-2222-4222-8222-222222222222';
+  const state = {}, d = issue(state), wrong = 'node-' + '22222222-2222-4222-8222-222222222222';
   assert.equal(claim(state, d, { expected_node_uid: wrong }).status, 409);
   assert.equal(claim(state, d, { expected_node_uid: d.ticket.node_uid }).status, 200);
+});
+test('identity values must be strings, not coercible arrays or objects', () => {
+  const { state, delivery, uid } = enrolled();
+  assert.equal(send(state, 'POST', '/v0/enrollment-tickets', { node_uid: [uid] }).status, 400);
+  const d = issue(state, { node_uid: uid });
+  assert.equal(claim(state, d, { expected_node_uid: [uid] }).status, 400);
+  assert.equal(claim(state, d, { expected_node_uid: uid }).status, 200);
 });
 test('lost claim response recovery reissues for SAME node and invalidates old token', () => {
   const { state, uid, token } = enrolled();

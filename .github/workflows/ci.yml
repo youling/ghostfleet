@@ -1,4 +1,4 @@
-name: transport-config
+name: transport-and-presence
 on:
   push:
   pull_request:
@@ -9,13 +9,30 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  transport-config:
+  transport-and-presence:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      WRANGLER_SEND_METRICS: "false"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: Locked development dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Protocol and publication regressions
+        run: npm test
+      - name: Python client regressions
+        run: npm run test:python
+      - name: Deterministic installer and Console build
+        run: npm run build
+      - name: Real local Worker and Durable Object integration
+        run: npm run test:live
+      - name: Worker build only (never deploy)
+        run: npx --no-install wrangler deploy --dry-run --config dist/wrangler.json
       - name: Install OpenSSH and systemd validators
         run: |
           sudo apt-get update
@@ -24,18 +41,16 @@ jobs:
         run: |
           ssh -G -F config/ssh/ghostfleet.conf.example node-cf >/dev/null
           ssh -G -F config/ssh/ghostfleet.conf.example node-ts >/dev/null
-      - name: Validate sshd syntax, effective authentication and root admission
+      - name: Preserve root-scoped SSH regression matrix
         run: |
           sudo install -d -m 0755 /run/sshd
           sudo env SSHD_BIN=/usr/sbin/sshd sh test/verify-sshd-admin.test.sh
-      - name: Validate cloudflared systemd unit syntax
+      - name: Validate cloudflared unit syntax
         run: |
           if [ ! -x /usr/bin/cloudflared ]; then sudo install -m 0755 /bin/true /usr/bin/cloudflared; fi
           sudo groupadd --system --force cloudflared
           sudo useradd --system --gid cloudflared --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin cloudflared 2>/dev/null || true
           cp config/systemd/cloudflared-ssh.service.example /tmp/cloudflared-ssh.service
           systemd-analyze verify /tmp/cloudflared-ssh.service
-      - name: Run publication boundary guard
-        run: node scripts/publication-guard.mjs
-      - name: Test publication boundary guard
-        run: node --test test/publication-guard.test.mjs
+      - name: Public boundary scan
+        run: npm run check:publication
