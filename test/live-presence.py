@@ -6,6 +6,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -16,6 +17,15 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+
+
+def assert_reporter_ok(result):
+    # Emit only fixed reporter diagnostic codes, never raw output or credentials.
+    codes = re.findall(r'^GF_ERROR ([A-Z0-9_]+)', result.stderr, re.MULTILINE)
+    stdout_ok = result.stdout.strip() == 'GF_HEARTBEAT_OK'
+    assert result.returncode == 0 and stdout_ok, (
+        'REPORTER_FAILED exit=' + str(result.returncode) +
+        ' stdout_match=' + str(stdout_ok) + ' codes=' + ','.join(codes))
 
 
 def main():
@@ -131,7 +141,7 @@ def main():
             python = shutil.which('python3')
             command = [python, '-I', str(root / 'scripts/heartbeat.py'), 'report', '--config', str(credential), '--allow-loopback-http']
             result = subprocess.run(command, capture_output=True, text=True, timeout=35)
-            assert result.returncode == 0 and result.stdout.strip() == 'GF_HEARTBEAT_OK'
+            assert_reporter_ok(result)
             assert token not in result.stdout + result.stderr
             n = current(uid)
             assert n['presence'] == 'ONLINE' and n['lifecycle'] == 'PROVISIONAL'
@@ -139,7 +149,7 @@ def main():
             check('actual_Python_reporter_HTTP_and_truthful_missing_unit')
             stop(); start()
             assert current(uid)['presence'] == 'ONLINE'
-            assert subprocess.run(command, capture_output=True, timeout=35).returncode == 0
+            assert_reporter_ok(subprocess.run(command, capture_output=True, text=True, timeout=35))
             check('real_DO_persistence_after_runtime_restart')
             if args.with_user_systemd:
                 name = 'ghostfleet-presence-test-' + uuid.uuid4().hex[:10]
