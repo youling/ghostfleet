@@ -1,14 +1,19 @@
-# 实例验收 / Instance acceptance
+# 原生传输实例验收 / Native transport instance acceptance
 
 | 字段 / Field | 值 / Value |
 | --- | --- |
-| 文档性质 / Classification | `DERIVED`：供人工或已获授权的实例 owner 执行的通用矩阵 / Generic matrix for a human or already authorized instance owner |
-| `source_pointer` | [Human 产品范围 / product scope](https://github.com/youling/ghostfleet/pull/85#issuecomment-6875500332)；[#11 执行口径 / execution scope](https://github.com/youling/ghostfleet/issues/11#issuecomment-6875523241)；[部署说明 / setup guide](REMOTE_ACCESS.md) |
-| 候选入口 / Candidate | [PR #85](https://github.com/youling/ghostfleet/pull/85)，整理时尚未合并，最终 HEAD 未冻结 / Unmerged at this checkpoint, with no final HEAD frozen |
-| `verified_at` | `2026-11-14`：核对文档范围和上游语义，不是执行了下面测试 / Documentation scope and upstream semantics checked; the tests below were not executed |
-| 初始结果 / Initial result | 所有项目 `NOT_RUN` / Every item is `NOT_RUN` |
+| 文档性质 / Classification | `DERIVED`：原生传输的可复用验收模板，不是实例状态表 / Reusable native-transport acceptance template, not an instance status register |
+| `source_pointer` | [当前产品与实施入口 / Current product and implementation](https://github.com/youling/ghostfleet/issues/11)；[ADR004](adr/004-lightweight-enrollment-presence.md)；[原生传输指南 / Native transport guide](REMOTE_ACCESS.md) |
+| 实际状态 / Actual status | 读取 #11 最新裁决及其引用的实例回执，不从本模板推断 / Read the latest #11 disposition and linked instance receipts; do not infer status from this template |
+| 使用版本 / Version under test | 每次执行填写实际提交、版本和实例记录 / Record the actual commit, versions and instance record for each execution |
+| 模板修订 / Template revision | `2026-11-16`：仅核对文档范围，不表示执行了下表测试 / Documentation scope reconciliation only, not execution of the tests below |
+| 空白结果 / Blank results | `NOT_RUN` 是未填写的模板占位，不覆盖已接受的现场证据 / `NOT_RUN` is an unfilled template value and does not supersede accepted live evidence |
 
 ## 1. 使用与证据 / Use and evidence
+
+本页只验收原生网络与 SSH 传输。面板、票据、心跳、系统级安装和受保护浏览器首次使用按 [PRESENCE](PRESENCE.md) 与 [阶段交付](DELIVERY.md) 分别记录。心跳在线不替代本页任何连接测试；已接受的连接证据也不替代面板首次使用。
+
+This page covers native network and SSH transport only. Record panel, ticket, heartbeat, system installation and protected-browser first use separately through [PRESENCE](PRESENCE.md) and [staged delivery](DELIVERY.md). Presence does not replace a transport test, and accepted transport evidence does not establish panel first-use acceptance.
 
 本页可以直接用于已有授权范围内的实例验收，不新增审批仪式。先填写实际候选提交、实例私有记录指针、版本和测试日期，再逐项填写实测结果。无法执行的项保持 `NOT_RUN` 并说明原因；只配置一路时，另一路填 `NOT_APPLICABLE`，不能宣称双路通过。`PASS` 必须有该实例、该版本的实际证据。
 
@@ -88,7 +93,7 @@ Every result below is a template, not a claim of execution in this round. Record
 
 | ID | 检查与通过条件 / Check and pass condition | result | evidence |
 | --- | --- | --- | --- |
-| A01 | 配置来源、实际候选/版本明确；`sshd -t` 通过；两路真实上下文的完整有效配置符合实例选定的账户与公钥策略 / Record source, candidate and versions; pass syntax checks and inspect the complete effective configuration for each real path context against the selected account and key policy | `NOT_RUN` | — |
+| A01 | 配置来源、实际候选/版本明确；`sshd -t` 通过；两路真实上下文的完整有效配置符合所选策略：root 仅公钥，普通用户保留 OS 原有认证 / Record source, candidate and versions; pass syntax checks and inspect each real path context: root is public-key-only and ordinary users retain OS-owned authentication | `NOT_RUN` | — |
 | A02 | 同节点两路使用同一带外核验主机身份和同一 `HostKeyAlias`；不同节点 alias 唯一；严格主机密钥校验启用 / Share one verified host identity and alias per node across paths; keep aliases unique between nodes and enforce strict host-key checking | `NOT_RUN` | — |
 | A03 | `ssh -G` 与无复用的新连接证实 CF 经所选代理、TS 经其私网地址，均到预期原生 sshd；Tailscale SSH 关闭 / Configuration and fresh non-multiplexed connections establish the intended CF proxy and TS private route to native sshd, with Tailscale SSH disabled | `NOT_RUN` | — |
 | A04 | 两路分别完成交互 shell；参考 root 配置显示实际 UID 0，未依赖旧连接 / Open an interactive shell on each path; verify UID 0 for the root reference profile without relying on an old connection | `NOT_RUN` | — |
@@ -100,7 +105,7 @@ Every result below is a template, not a claim of execution in this round. Record
 | A10 | 在可恢复的测试条件下使单一路径中断；另一可用路径以新会话连接；已建立会话不被宣称迁移，结果未知命令不自动重放 / Interrupt one path under recoverable test conditions; connect through the other available path with a new session, without claiming session migration or replaying commands with unknown outcomes | `NOT_RUN` | — |
 | A11 | 分别记录已授权测试中的 `cloudflared`、`tailscaled`、OpenSSH 服务恢复和新连接结果；使用实际 upstream unit/OS 恢复方式，不新增守护进程 / Record recovery of cloudflared, tailscaled and OpenSSH and subsequent fresh connections in the authorized test, using actual upstream units/OS facilities without another daemon | `NOT_RUN` | — |
 | A12 | 配置检查通过后使用 OS 支持的 reload/apply；旧会话/带外入口保留；两路新会话重新确认；OMV 从支持的来源调整 / Pass configuration checks, use supported reload/apply, retain the old session/recovery entry, recheck fresh sessions and use supported OMV configuration sources | `NOT_RUN` | — |
-| A13 | 核对实例实际服务/安装与旧实例记录，确认未安装本产品的自建 Agent、Helper、命令队列或旧命令控制面，且无其运行服务；若发现遗留项，记录并由原 owner 收口，不能写为通过；源码删除不能替代此检查 / Reconcile actual services/installations and prior instance records; establish that no custom GhostFleet Agent, Helper, command queue or old command control plane is installed or running; record any remnant for original-owner closeout instead of passing this item; source deletion is insufficient | `NOT_RUN` | — |
+| A13 | 核对实际服务/安装与旧实例记录，确认无被取代的常驻命令 Agent、Helper、命令队列或旧命令控制面；遗留项由原 owner 收口，源码删除不能替代检查。ADR004 的 oneshot reporter 和 timer 属于当前范围 / Reconcile services/installations and prior records; establish that no superseded resident command agent, Helper, command queue or old command control plane is installed or running. Retain remnants for original-owner closeout; source deletion is insufficient. The ADR004 oneshot reporter and timer remain in scope | `NOT_RUN` | — |
 | A14 | 验收后恢复测试用的准入/密钥状态、清理测试文件，记录最终可连接状态和剩余限制 / Restore the intended post-test key/admission state, clean up test files, and record final connectivity and remaining limitations | `NOT_RUN` | — |
 
 ## 5. 撤销与恢复的解释边界 / Revocation and recovery interpretation
