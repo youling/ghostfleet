@@ -1,0 +1,16 @@
+{
+  "name": "ghostfleet",
+  "version": "0.2.0-dev",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22"},
+  "scripts": {
+    "test": "node --test test/presence.test.mjs test/publication-guard.test.mjs",
+    "test:python": "python3 -m unittest discover -s test -p 'test_heartbeat.py'",
+    "test:live": "python3 test/live-presence.py",
+    "build": "node scripts/build-presence.mjs",
+    "check:publication": "node scripts/publication-guard.mjs"
+  },
+  "devDependencies": {"wrangler": "4.147.0"},
+  "license": "AGPL-3.0-only"
+}

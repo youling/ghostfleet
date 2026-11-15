@@ -1,31 +1,20 @@
 # GhostFleet — 项目规则 / Project rules
 
-任何 Agent 先读取当前 [ai-use AGENTS.md](https://github.com/youling/ai-use/blob/main/AGENTS.md)，再适用本仓规则。Human 当前裁决优先；角色或 GitHub 写权限本身不产生合并、部署或主机操作授权。人类可见记录默认简体中文。
+先读取当前 [ai-use AGENTS.md](https://github.com/youling/ai-use/blob/main/AGENTS.md)，再应用本仓规则。Human 当前方向、明确授权和实时 GitHub 事实优先。GitHub 写权限或架构师身份不自动授予生产部署、凭据、设备或破坏性操作权限。
 
-当前方向见 [PR #85 产品裁决](https://github.com/youling/ghostfleet/pull/85#issuecomment-6875500332)：只提供到原生 OpenSSH 的连接配置、文档和小型验证器。图为可追溯的派生导航，源码检查、真实连接、部署与发行各自需要相应证据。原有实现与部署的迁移见 [MIGRATION](docs/MIGRATION.md)。
+当前产品：**原生 SSH 传输 + 轻量首次注册与节点心跳面板**。依据 [#11](https://github.com/youling/ghostfleet/issues/11) 与 [ADR 004](docs/adr/004-lightweight-enrollment-presence.md)。它取代 transport-only 阶段对面板和心跳的排除，不恢复旧命令执行平台。
 
-Every agent first reads the current ai-use kernel linked above. Human rulings govern authority; repository access does not grant deployment or host authority. This project retains only upstream transport profiles, documentation and bounded validators. Diagrams are derived navigation; source checks do not prove live deployment.
+1. 复用 OpenSSH、cloudflared、tailscaled、systemd/journald 和标准库；不自建 SSH server、任务队列、常驻命令 Agent、Helper/JIT、逐命令审批或平行命令审计。
+2. 传输入口和 SSH 认证独立于面板。root 使用公钥专用策略；普通用户保留系统原有认证策略。既有 SSH 不因面板中断或撤销 reporting token 而被切断。
+3. 唯一 UI 目录是 `console/`。复用既有 `node_uid`、节点记录和 Worker/DO 存储身份；presence 是最后心跳的派生展示，不是 NodeLifecycle.ACTIVE 或消费者远控验收。
+4. 节点端只安装自己的 oneshot 上报程序和 timer；不解析或执行远端命令，不修改 SSH/provider/其他用户配置。日志留 journald，不上传全量 journal。
+5. 真正的节点、域名/IP、tailnet、账号、策略、凭据、私钥、原始日志只留实例 owner。公共源码、文档和 CI 只使用合成材料及保留示例域名。
+6. 普通仓库工作使用隔离分支和 PR，重要变更绑定 exact HEAD、确定性测试、公开边界检查和适用审查。不直接写 main，不把作者自检称为独立审查。
+7. 双语安装/运维文档、可恢复失败语义和实际行为测试随实现更新。测试结论不外推为生产部署；临时 user-unit 不冒充生产 root system-unit 验收。
+8. 不增加与当前可用目标无关的部署门禁、等待期、数据库或框架。只阻断真正受影响的操作，其他合法工作继续。
 
-GhostFleet provides stable, owner-authorized network paths to a machine's native OpenSSH service. It is not a device-management agent or command policy engine.
+## English
 
-## Product boundary
-1. Use maintained upstream components: cloudflared, tailscaled, OpenSSH and systemd.
-2. GhostFleet must not monitor host state or commands, inspect/filter/rewrite/block commands, approve operations, execute commands through a custom agent, or maintain a parallel command-audit service.
-3. No custom Node Agent, task queue, job/lease engine, SQLite task store, command executor, privileged Helper, HumanGate or per-command JIT.
-4. After the owner authorizes the device and the operator authenticates the session, the selected OS account has its normal full authority. The reference profile uses root with SSH public-key authentication.
-5. Keep the boundaries distinct: network reachability is not SSH authentication; SSH authentication selects the OS account; the OS account determines authority. Capability/reachability is not authority.
-6. Cloudflare Access and Tailscale policy decide who can establish a connection. They must not impose command-level filtering or approval.
-7. Cloudflare and Tailscale are alternative paths to the same sshd. No custom failover daemon. An established TCP session cannot migrate; reconnect through the other path.
-8. Use OS-native systemd, sshd, cloudflared, tailscaled and journald logs. Do not add a parallel monitor or command-audit pipeline.
-9. Never commit real hostnames, IPs, endpoint URLs, tailnet locators, node IDs, tunnel tokens, Tailscale auth keys, SSH private keys or account identifiers. Use reserved .invalid placeholders.
-10. Never write directly to main. Use a branch and PR; bind security/semantic review and CI evidence to the exact HEAD.
-11. Public docs are bilingual where they describe owner-facing installation or operational procedures. Keep deterministic tests and publication-boundary checks in CI.
-12. Human/owner decisions govern production topology, Cloudflare/Tailscale policy and target-specific SSH/root deployment. A config example is not deployment authorization.
+Read current ai-use first. GhostFleet combines native SSH transport with a thin enrollment/presence panel. ADR004 supersedes the previous exclusion of all panel/reporting code; it does not revive the old execution platform. Reuse native components and the existing Console/node_uid/DO identity. Reporting is not SSH authority, ACTIVE lifecycle or inbound connectivity proof.
 
-## Contribution rules
-- Keep the product surface to documentation, generic config examples and small validators.
-- Validate shipped SSH config with OpenSSH; validate sshd effective settings, not only file syntax.
-- Validate shipped systemd units with systemd-analyze.
-- Run node scripts/publication-guard.mjs and node --test test/publication-guard.test.mjs.
-- Do not reintroduce command allowlists, remote execution APIs, monitoring agents, approval state machines or custom audit logs.
-- Preserve historical source in Git; explain product-scope migrations in docs/MIGRATION.md.
+No resident command agent, queue, custom SSH server, Helper/JIT, command approval/filter or parallel audit pipeline. Keep actual instance configuration, credentials and raw evidence private. Use isolated branches and exact-head tests/review; source acceptance is not production authority. Retain explicit failure/recovery behavior, bilingual operations docs and publication checks. Avoid new machinery unrelated to the accepted minimal product.
