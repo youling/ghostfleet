@@ -1,13 +1,20 @@
+# Local secrets and environment
+.env
+.env.*
+!.env.example
+.dev.vars
+
+# Generated dependencies, bundles and local runtime state
 node_modules/
 dist/
 .wrangler/
-.dev.vars
-.env
+__pycache__/
+*.pyc
+
+# Logs and editor/OS artifacts
 *.log
 .DS_Store
-.venv/
-__pycache__/
-*.py[cod]
-*.egg-info/
-.pytest_cache/
-build/
+Thumbs.db
+*~
+*.swp
+*.swo

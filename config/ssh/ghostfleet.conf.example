@@ -1,0 +1,30 @@
+# Replace both reserved hostnames and the local private-key path.
+# Enroll the host key out of band; use one unique HostKeyAlias per machine.
+# This machine shares "ghostfleet-node" across both routes; other machines need other aliases.
+
+Host node-cf
+    HostName ssh.example.invalid
+    User root
+    ProxyCommand cloudflared access ssh --hostname %h
+    IdentityFile ~/.ssh/ghostfleet_admin
+    IdentitiesOnly yes
+    ForwardAgent no
+    HostKeyAlias ghostfleet-node
+    StrictHostKeyChecking yes
+    ServerAliveInterval 20
+    ServerAliveCountMax 3
+    ConnectTimeout 15
+    TCPKeepAlive yes
+
+Host node-ts
+    HostName node.tailnet-name.example.invalid
+    User root
+    IdentityFile ~/.ssh/ghostfleet_admin
+    IdentitiesOnly yes
+    ForwardAgent no
+    HostKeyAlias ghostfleet-node
+    StrictHostKeyChecking yes
+    ServerAliveInterval 20
+    ServerAliveCountMax 3
+    ConnectTimeout 15
+    TCPKeepAlive yes

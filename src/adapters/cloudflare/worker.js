@@ -1,94 +1,76 @@
-import { GhostFleetController } from "../../control-plane/controller.js";
-import { createHttpHandler } from "../../control-plane/http.js";
-import { InMemoryStore } from "../../control-plane/store.js";
-import { authorizeApi, getAccessLevel } from "./auth.js";
-import { handleMcpRequest } from "../../integrations/mcp-http.js";
-import { createEnrollmentClaimMaterializer, createEnrollmentClaimPreparer } from "./enrollment-materializer.js";
-import { createCapabilitySelectionProvider } from "../../control-plane/capability-selection.js";
-import { createDeploymentEnrollmentTemplateCatalog } from "./deployment-templates.js";
-import { configureTailscaleProvider, providerSetupSnapshot } from "./provider-setup.js";
+import { dispatch } from '../../control-plane/presence.js';
+import { prepare, json } from '../../control-plane/http.js';
 
+// Retain the original class, namespace name and snapshot key. Legacy nodes and
+// their lifecycle fields survive; obsolete command/helper routes are not mounted.
 export class GhostFleetState {
   constructor(state, env) { this.state = state; this.env = env; }
-
   async fetch(request) {
-    return this.state.storage.transaction(async (txn) => {
-      const snapshot = (await txn.get("ghostfleet-state")) || null;
-      const store = new InMemoryStore(snapshot);
-      const controller = new GhostFleetController({
-        store,
-        enrollmentTemplates: createDeploymentEnrollmentTemplateCatalog(this.env),
-        enrollmentClaimPreparer: createEnrollmentClaimPreparer(this.env),
-        enrollmentClaimMaterializer: createEnrollmentClaimMaterializer(this.env),
-        // Deployment-owned pinned artifacts. Absent configuration keeps every
-        // template claimable but the node refuses to install a privileged lane
-        // it cannot verify.
-        capabilitySelectionProvider: createCapabilitySelectionProvider({
-          bundle_base64: typeof this.env?.GHOSTFLEET_CAPABILITY_SELECTION_B64 === "string" ? this.env.GHOSTFLEET_CAPABILITY_SELECTION_B64 : "",
-        }),
-        // Deployment-owned public coordinates. The asset origin serves the
-        // digest-addressed bootstrap; the enrollment bridge owns the ticket URL.
-        // Absent configuration keeps every ticket unclaimable rather than
-        // delivering a command whose bootstrap cannot be verified.
-        enrollmentDelivery: {
-          assets_origin: this.env?.GHOSTFLEET_ASSETS_ORIGIN,
-          bootstrap_sha256: this.env?.GHOSTFLEET_BOOTSTRAP_SHA256,
-          enroll_origin: this.env?.GHOSTFLEET_ENROLL_ORIGIN,
-        },
-      });
-      if (new URL(request.url).pathname.replace(/\/+$/, "") === "/mcp") return handleMcpRequest(controller, request);
-      const handler = createHttpHandler(controller);
-      const response = await handler(request);
-      if (request.method !== "GET" && response.status < 500) await txn.put("ghostfleet-state", store.snapshot());
-      return response;
+    const prepared = await prepare(request, this.env);
+    if (prepared.response) {
+      // Cancel an unread upload on early auth/MIME rejection before responding.
+      await request.body?.cancel().catch(() => {});
+      return prepared.response;
+    }
+    return this.state.storage.transaction(async txn => {
+      const snapshot = (await txn.get('ghostfleet-state')) ?? { nodes: {} };
+      const result = dispatch(prepared.input, snapshot);
+      if (result.dirty) await txn.put('ghostfleet-state', snapshot);
+      return json(result.data, result.status);
     });
   }
 }
-
+function validOrigin(value) {
+  try {
+    const u = new URL(value);
+    return u.origin === value && !u.username && !u.password &&
+      (u.protocol === 'https:' || (u.protocol === 'http:' && ['127.0.0.1', '[::1]'].includes(u.hostname)));
+  } catch { return false; }
+}
+const denied = (error, status) => json({ ok: false, error }, status);
 export default {
   async fetch(request, env) {
-    const path = new URL(request.url).pathname;
-    const isMcp = path.replace(/\/+$/, "") === "/mcp";
-    const isEnrollmentClaim = request.method === "POST" && /^\/v1\/enrollment-tickets\/[^/]+\/claim$/.test(path);
-    const isEnrollmentComplete = request.method === "POST" && path === "/v1/enroll/complete";
-    if (request.method === "GET" && path === "/v1/bootstrap.sh") {
-      // Retired: this was an unpinned second entrance to the courier. The only
-      // supported delivery is the Console-generated command, which pins the
-      // asset origin and the bootstrap SHA-256 and verifies it before execution.
-      return Response.json({
-        ok: false,
-        error: "BOOTSTRAP_ENTRYPOINT_RETIRED",
-        remediation: "Use the Console-generated one-click command; it downloads the courier from the asset origin by SHA-256 and verifies it before execution.",
-      }, { status: 410, headers: { "cache-control": "no-store" } });
+    const u = new URL(request.url);
+    const panel = env.GHOSTFLEET_PANEL_ORIGIN, node = env.GHOSTFLEET_NODE_ORIGIN;
+    if (!validOrigin(panel) || !validOrigin(node) || (panel === node && new URL(panel).protocol !== 'http:')) {
+      return denied('ORIGINS_NOT_CONFIGURED', 503);
     }
-    if (path === "/v0/providers/setup" && request.method === "GET") {
-      const denial = await authorizeApi(request, env, { readOnly: true });
-      if (denial) return denial;
-      return Response.json(await providerSetupSnapshot(env), { headers: { "cache-control": "no-store" } });
+    const isPanel = u.origin === panel, isNode = u.origin === node;
+    if ((!isPanel && !isNode) || u.search) return denied('NOT_FOUND', 404);
+    const nodeRoute = /^\/v1\/enrollment-tickets\/ticket-[0-9a-f-]+\/claim$/.test(u.pathname) ||
+      /^\/v1\/nodes\/node-[0-9a-f-]+\/heartbeat$/.test(u.pathname);
+    if ((isPanel && u.pathname.startsWith('/v0/')) || (isNode && nodeRoute)) {
+      if (!env.GHOSTFLEET_STATE) return denied('STORE_NOT_CONFIGURED', 503);
+      // Bound and authorize at the edge before opening a DO upload. The DO
+      // repeats validation at its own boundary; neither trusts client role headers.
+      const prepared = await prepare(request, env);
+      if (prepared.response) {
+        await request.body?.cancel().catch(() => {});
+        return prepared.response;
+      }
+      const headers = new Headers(request.headers); headers.delete('content-length');
+      const forwarded = new Request(request.url, { method: request.method, headers,
+        ...(request.method === 'POST' ? { body: JSON.stringify(prepared.input.body) } : {}) });
+      try { return await env.GHOSTFLEET_STATE.get(env.GHOSTFLEET_STATE.idFromName('global')).fetch(forwarded); }
+      catch { return denied('STATE_UNAVAILABLE', 503); }
     }
-    if (path === "/v0/providers/tailscale/setup" && request.method === "POST") {
-      const denial = await authorizeApi(request, env);
-      if (denial) return denial;
-      const length = Number(request.headers.get("content-length") || "0");
-      if (length > 4096) return Response.json({ ok: false, error: "PROVIDER_SETUP_INPUT_INVALID" }, { status: 400, headers: { "cache-control": "no-store" } });
-      let body;
-      try { body = await request.json(); }
-      catch { return Response.json({ ok: false, error: "PROVIDER_SETUP_INPUT_INVALID" }, { status: 400, headers: { "cache-control": "no-store" } }); }
-      const result = await configureTailscaleProvider(env, body);
-      return Response.json(result.payload, { status: result.status, headers: { "cache-control": "no-store" } });
+    if (isNode && request.method === 'GET' && /^[0-9a-f]{64}$/.test(env.GHOSTFLEET_INSTALLER_SHA256 ?? '') &&
+        u.pathname === '/bootstrap/' + env.GHOSTFLEET_INSTALLER_SHA256 + '.py') {
+      if (!env.ASSETS) return denied('INSTALLER_NOT_BUILT', 503);
+      return env.ASSETS.fetch(request);
     }
-    if (path.startsWith("/v0/") || isMcp) {
-      const denial = await authorizeApi(request, env, { readOnly: isMcp });
-      if (denial) return denial;
+    // Explicit static allowlist: node ingress can never serve the panel or any
+    // admin API, and arbitrary paths cannot fall through to a SPA or old routes.
+    if (isPanel && ['GET', 'HEAD'].includes(request.method) &&
+        ['/', '/index.html', '/app.js', '/presence.css', '/shared/console.css', '/shared/appearance.js', '/shared/first-use.js'].includes(u.pathname)) {
+      if (!env.ASSETS) return denied('PANEL_NOT_BUILT', 503);
+      const original = await env.ASSETS.fetch(request);
+      const headers = new Headers(original.headers);
+      headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+      headers.set('Referrer-Policy', 'no-referrer'); headers.set('X-Content-Type-Options', 'nosniff');
+      headers.set('Cache-Control', 'no-store');
+      return new Response(original.body, { status: original.status, headers });
     }
-    if (path === "/v0/access" && request.method === "GET") {
-      return Response.json({ ok: true, access: await getAccessLevel(request, env) }, { headers: { "cache-control": "no-store" } });
-    }
-    if (path === "/healthz" || path.startsWith("/v0/") || isMcp || isEnrollmentClaim || isEnrollmentComplete) {
-      const id = env.GHOSTFLEET_STATE.idFromName("global");
-      return env.GHOSTFLEET_STATE.get(id).fetch(request);
-    }
-    if (env.ASSETS) return env.ASSETS.fetch(request);
-    return new Response("GhostFleet Console is not built.", { status: 404 });
+    return denied('NOT_FOUND', 404);
   },
 };

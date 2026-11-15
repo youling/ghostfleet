@@ -1,142 +1,66 @@
-# Migration and cutover / 迁移与切换
+# 迁移与历史出处 / Migration and provenance
 
-## 中文
-
-<!-- topic:ownership -->
-### 唯一规范实现与当前状态
-
-本仓维护通用核心/API/MCP、插件契约、校验器和可选设备运行时。实例责任方保留提供方/节点事实、私有策略与投影、秘密托管、原始回执、现役调用方和生产操作。公开源码预览不等于生产发布；[导出清单](export-manifest.json) 记录模块、入口、测试及部署方仍需完成的验收。
-
-公开迁移不导入私有 Git 历史、实例清单或原始真机证明。旧通用实现删除必须等逐项调用方切换验收，不因公开代码能够构建而删除现役路径。
-
-<!-- topic:matrix -->
-### 机制覆盖和剩余工作
-
-| 能力 | 公开源码位置与模式 | 切换/发布前需完成 |
-| --- | --- | --- |
-| 生命周期、证据、节点、Console | `src/core`、`src/control-plane`、`console` | 精确身份、源绑定、持久化和调用方行为一致性 |
-| MCP | `src/integrations`，四个只读工具 | 实际标准客户端握手及权限/Origin 验证，不开放设备变更 |
-| 类型化控制、策略、传输 | `packages/typed-control`，显式可选库 | 调用主体/身份/主机指纹/版本/截止时间负测、真实后端与托管 |
-| 任务、交互会话、特权 | 类型化 RPC 与 Python 包内资源 | 安装程序及 SHA、普通/特权分离、句柄/代次/输入序号、未知结果恢复 |
-| Bootstrap/Linux 收敛 | `packages/bootstrap` 与 Python Linux 模块 | 单次派发记录、精确主机/软件包、独立观察器、实际立即重复零差异 |
-| Windows/Android | Python 平台模块与资源 | 平台依赖、授权、真实适配器、跨平台负测及各自真机试验 |
-| Profile/校验器/投影 | Python 核心与包内资源 | 责任方/派生视图边界、源版本、秘密字段拒绝和安装产物资源 |
-| OAuth/access | 可选 `./authorization` | 已实现精确配置、PKCE、注册/当前权限上限重验、v2 origin 同意证明；生产签发方存储和调用方另验 |
-| 生产 Console/Pages/身份 | 参考 Worker/DO/assets | 生产托管、身份、安全及 Pages 切换，尚未完成 |
-| 第二独立硬件/重建 | 不能靠复制源码完成 | 单节点证据不能替代，另做独立硬件/恢复验收 |
-
-未覆盖 SDK 或平台家族要列具体依赖与下一检查。辅助模块编译不等于完整 OAuth 服务接入；生产 broker 未迁也不意味着所有 OAuth 机制只有文档。
-
-<!-- topic:retained -->
-### 保留或暂缓的技术原因
-
-生产提供方 broker、凭据托管、实例 OAuth 与 Worker 主入口包含真实授权和配置，留在实例责任方。后续用公开模块和显式提供方适配器接线，核对 binding、scope、redirect 和撤销。工单派发、工作图和私有治理是部署协调，不迁为公开设备协议。
-
-硬件专属散热/root/解锁/恢复、原始证明包、历史 registry 和当前投影包含非公开事实或特殊平台副作用，不直接复制。可复用部分另需通用契约、独立合成样本、平台负测与硬件验收。旧调用方保持可用直到替代通过；现有 Linux/Windows/Android 源码不自动支持 Apple 或未测 SDK 家族。
-
-<!-- topic:checklist -->
-### 控制面准入与消费者接入
-
-`ACTIVE` 和 `catalog.admitted` 属于本控制面的身份准入与纳管目录投影。它们不证明独立消费者已经登记设备、更新鉴权或客户端配置、连接调用路由、获得操作权限或完成回滚验证。独立控制面的 canary 通过，也不能代替用户实际插件的端到端验收。
-
-调用方目录缺少设备时，先核对它读取的数据源、投影、过滤规则、身份绑定与版本。仅凭目录缺失不能判断需要重新安装、加入网络或生成身份；不能用第二份身份掩盖旧绑定问题。复用已验收身份并核对其当前有效性，再按下表验收每个消费者。
-
-| 接入项 | 需要从实际消费者取得的证据 |
+| 字段 / Field | 值 / Value |
 | --- | --- |
-| 目录与身份 | 能发现目标；消费者记录解析到同一已准入身份与当前源版本 |
-| 鉴权与配置 | 实际客户端、凭据、权限范围和重定向精确绑定；轮换或失效配置拒绝 |
-| 路由与允许调用 | 在其授权范围内的调用走预期后端，并回读同一身份与当前结果 |
-| 权限负测 | 缺少、错误或权限不足的凭据不能调用未授权能力；目录可见不授予执行权限 |
-| 回滚 | 能恢复已验收的旧消费者和访问路径，未知副作用先对账而非重发 |
+| 文档性质 / Classification | `DERIVED`：当前产品范围的迁移解释 / Migration guidance derived from the current product scope |
+| `source_pointer` | [当前产品与实施入口 / Current product and implementation](https://github.com/youling/ghostfleet/issues/11)；[ADR004](adr/004-lightweight-enrollment-presence.md) |
+| 旧基线 / Previous baseline | [`0cbb9c17bdd298634e4ccebf2c1a9c50d9f09fe1`](https://github.com/youling/ghostfleet/tree/0cbb9c17bdd298634e4ccebf2c1a9c50d9f09fe1) |
+| 当前版本 / Current revision | 读取 #11 引用的当前 PR、提交与裁决，不从本页推断分支状态 / Read the current PR, commit and disposition linked from #11; do not infer branch state from this page |
+| `verified_at` | `2026-11-16`；文档范围核对日期，不是部署完成日期 / Documentation scope check date, not a deployment completion date |
+| 真实迁移结果 / Live migration result | 由 #11 引用的实例回执提供；本文不覆盖已接受的现场证据，也不触发变更 / Established by instance receipts linked from #11; this page neither supersedes accepted live evidence nor initiates mutations |
 
-只有实际使用的消费者完成这些检查，才算该消费者的端到端纳管或切换完成。
+## 1. 当前方向与旧基线 / Current direction and previous baseline
 
-### 切换检查清单
+当前产品是原生 SSH 传输、轻量首次注册与节点心跳面板。Cloudflare Tunnel 和/或 Tailscale 连接同一 OpenSSH；面板与 oneshot reporter 仅管理注册、上报凭据和最新状态。ADR004 取代 2026-11-14 transport-only 阶段对全部面板与状态上报的排除，不恢复旧命令执行平台。旧基线的完整源树仍可通过上表固定提交访问；历史代码保留不等于当前版本已经部署或通过验收。
 
-1. 冻结一项能力的公开包/版本、旧代码与配置版本、调用方清单和责任方，不扩大到其它平台/节点。
-2. 在独立公开仓库克隆执行完整测试、构建、安装产物及公开/文档检查，明确实际执行和平台跳过项。
-3. 私有调用方引用公开包，不复制源码。重建投影，核对精确节点/主体/权限/指纹/版本和协议、安装路径与存储兼容性。
-4. 先在无副作用后端验行为一致性、权限负测、截止时间和恢复，再进行明确授权的受限真机试验；不能用新身份掩盖旧绑定问题。
-5. 控制面/API/Console/MCP 回读同一身份。新 FAIL/UNKNOWN 覆盖旧 PASS，真实派发记录由责任方对账。
-6. 完成调用方切换与回滚演练，留下已接受的持久记录。旧机制改为薄兼容引用后，另在私仓 PR 删除重复通用实现。
-7. 保留实例配置、证据、凭据托管和恢复访问。删除旧源码不等于撤销设备或销毁数据。
+The current product combines native SSH transport with lightweight enrollment and presence. Cloudflare Tunnel and/or Tailscale reach the same OpenSSH service; the panel and oneshot reporter manage registration, reporting credentials and the latest observations only. ADR004 supersedes the 2026-11-14 transport-only exclusion of every panel and status-reporting feature, without restoring the former command-execution platform. The pinned source tree remains historical evidence, not proof of current deployment or acceptance.
 
-<!-- topic:rollback -->
-### 回滚和状态
+[PR #83](https://github.com/youling/ghostfleet/pull/83) 的 Node Agent/SQLite 方向已被取代；历史关闭时未合并，候选为 [`95346d0546065dd39920f78eb526348114f9156f`](https://github.com/youling/ghostfleet/commit/95346d0546065dd39920f78eb526348114f9156f)。[PR #85](https://github.com/youling/ghostfleet/pull/85) 承接产品收敛，后续集成与接受记录由 #11 索引。本页不把移动分支头写成最终接受版本，也不保存 PR 的实时状态副本。
 
-回滚要求状态/schema 兼容、精确新旧包版本和已发生副作用的回执，不是简单 reset 分支。先停新派发，只读对账，核对待确认任务、会话、纳管或重启，再切回已验收的旧调用方。未知变更不重新提交，普通执行权限不包含特权。
+The Node Agent/SQLite direction in [PR #83](https://github.com/youling/ghostfleet/pull/83) is superseded. It was closed without merging, at candidate [`95346d0546065dd39920f78eb526348114f9156f`](https://github.com/youling/ghostfleet/commit/95346d0546065dd39920f78eb526348114f9156f). [PR #85](https://github.com/youling/ghostfleet/pull/85) carries the product convergence; #11 indexes subsequent integration and acceptance. This page neither freezes a moving branch as an accepted version nor duplicates live PR status.
 
-新的所有者同意证明是 v2，拒绝旧无 origin 证明；注册、授权和 token/refresh 权限须按可信存储与当前客户端配置重验。私有签发方仍未自动切换，不能以迁移文件宣称兼容旧授权。
+## 2. 迁移映射 / Migration map
 
-源码预览已进入公开 `main`。该仓内合并不执行私有代码删除、生产部署或提供方变更。源码迁入、合成测试、单机试验与正式发布分别记录，避免把“代码已迁”说成“全部远控已上线”。
-
-## English
-
-<!-- topic:ownership -->
-### Canonical owners and current status
-
-This repository owns generic core/API/MCP, plugin contracts/validators and optional device runtimes. Instance owners retain provider/node facts, private policy/projection, secret custody, raw receipts, existing consumers and production operations. The source preview is available on public `main` and is not a production release. The [export manifest](export-manifest.json) declares modules, exports, tests and deployment-specific acceptance requirements; use exact-revision PR reviews and CI as evidence.
-
-Publication imports no private Git history, inventory or actual device proof. Removing prior generic implementations is conditional on subsequent capability-specific cutover, not merely a successful public build.
-
-<!-- topic:matrix -->
-### Mechanism coverage and remaining work
-
-| Capability | Public source location/mode | Cutover or release work |
-| --- | --- | --- |
-| Lifecycle/evidence/Node/Console | `src/core`, `src/control-plane`, `console`; default object surface | Exact identity, source binding, persistence and consumer parity |
-| MCP | `src/integrations`; four read-only tools | Actual generic SDK handshakes and scope/origin checks; no device mutation |
-| Typed control/policy/transport | `packages/typed-control`; explicit library/backend | Source/actor/identity/pin/deadline negative tests, deployment custody and real backend |
-| Jobs/sessions/privileged | Typed RPC plus Python resources; optional | Helper installation/hash, normal versus root, handles/generations/input sequence, UNKNOWN recovery and consumer parity |
-| Bootstrap/Linux convergence | `packages/bootstrap` plus Python Linux runtime; optional | One-dispatch fence, exact package/host, fresh observer and actual immediate zero-delta repeat |
-| Windows/Android runtime | Python resources/platform modules; optional | Platform dependencies/authority, real adapters, cross-platform negatives and hardware canaries |
-| Profiles/validators/projection | Python core and packaged resources | Owner/read-model boundaries, source revisions, forbidden inventory/secret fields and installed resources |
-| OAuth/access mechanisms | Optional `./authorization` export | Exact client profiles, PKCE, registered/current scope ceilings and v2 origin-bound consent are implemented; production issuer storage, ingress and consumers need separate acceptance |
-| Production Console/Pages/identity | Reference Worker/DO/assets | Separate production hosting/identity/security and Pages cutover; not completed |
-| Independent second-device/rebuild | Not a source copy | Single-node evidence cannot substitute; perform independent hardware/recovery acceptance |
-
-For uncovered SDK/platform families, state concrete dependencies and the next test. Compiled optional helpers do not establish an integrated OAuth server; an unmigrated production broker does not make every OAuth mechanism documentation-only.
-
-<!-- topic:retained -->
-### Technical reasons for retained/deferred components
-
-Real provider brokers, secret custody, instance OAuth and production Worker entry points include deployed authority/configuration and remain instance-owned. Next, integrate public generic helpers through explicit provider adapters and review concrete bindings/scopes/redirects/revocation. Issue dispatch, owner work graphs and private governance are deployment coordination, not public device protocols.
-
-Hardware-specific thermal/root/unlock/recovery mechanisms, raw legacy proof bundles, historical registries and current projections contain nonpublic facts or special platform effects and are not copied directly. Reusable parts need a generic contract, synthetic fixtures, platform negative tests and hardware acceptance. Existing private consumers remain usable until replacement passes. Linux/Windows/Android source does not automatically support Apple or untested SDK families.
-
-<!-- topic:checklist -->
-### Control-plane admission and consumer integration
-
-`ACTIVE` and `catalog.admitted` represent identity admission and the enrollment catalog projection within this control plane. They do not establish that an independent consumer has registered the device, updated authentication/client configuration, connected call routes, obtained operational permission or validated rollback. An independent control-plane canary cannot substitute for end-to-end acceptance in the user's actual plugin.
-
-When a consumer catalog omits a device, inspect its data source, projection, filters, identity binding and revision. Absence alone does not establish a need to reinstall, rejoin or mint an identity; do not create a second identity to hide old binding problems. Reuse the accepted identity, check currentness and validate each consumer as follows.
-
-| Integration item | Evidence from the actual consumer |
+| 历史域 / Historical area | 当前处置 / Current disposition |
 | --- | --- |
-| Catalog and identity | Discover the target; consumer records resolve to the same accepted identity and current source revision |
-| Authentication and configuration | Bind the actual client, credential, scopes and redirects exactly; reject rotated or stale configuration |
-| Routes and permitted calls | Calls within its authority reach the expected backend and read back the same identity and current result |
-| Negative authority | Missing, incorrect or insufficient credentials cannot invoke unauthorized capabilities; visibility grants no execution authority |
-| Rollback | Restore the accepted previous consumer/access path; reconcile unknown effects rather than replay them |
+| Console 外观、first-use 与应用鉴权 / Console appearance, first-use and application authentication | 按 ADR004 在原目录选择性复用，不整包恢复旧 controller / Selectively reuse in the original directories under ADR004, without restoring the former controller wholesale |
+| Worker/DO 与节点身份 / Worker/DO and node identity | 保留既有类、binding、对象身份、存储键和 node_uid；只增加票据与最新心跳投影 / Preserve the existing class, binding, object identity, storage key and node_uid; add tickets and the latest heartbeat projection only |
+| 旧 bootstrap、capability bundle 与七证据纳管 / Former bootstrap, capability bundle and seven-evidence enrollment | 不恢复；当前安装器只为已有原生传输添加状态上报 / Do not restore; the current installer adds reporting to existing native transport only |
+| Node Agent、SQLite 命令库、任务/租约/队列 / Node Agent, SQLite command store, jobs/leases/queues | 不恢复；会话与命令由原生 OpenSSH 和 OS 处理 / Do not restore; native OpenSSH and the OS handle sessions and commands |
+| Helper、逐命令 HumanGate/JIT/issuer / Helper and per-command HumanGate/JIT/issuer | 不纳入新产品；连接准入与 OS 账户认证使用上游能力 / Excluded from the new product; upstream systems handle connection admission and OS account authentication |
+| 自建命令审计、命令过滤、自动路径切换 / Custom command audit, filtering and automatic path switching | 不迁入；使用已有原生日志与人工新会话选路 / Not carried forward; use existing native logs and manual route selection for new sessions |
+| 原生传输、文件传输与拓扑隔离 / Native transport, file transfer and topology isolation | 复用 OpenSSH、CF/TS、systemd/journald；通过标准 SSH/SFTP/rsync、上游网络策略与密钥管理验收 / Reuse OpenSSH, CF/TS and systemd/journald; validate standard SSH/SFTP/rsync, upstream network policy and key custody |
 
-Only these checks in the actual consumer establish that consumer's end-to-end admission or cutover.
+“被取代”描述产品方向，不能把旧 PR 的未修发现改写成已修复，也不能把历史静态验证、候选审查或旧环境结果复用为新通道的运行验收。
 
-### Cutover checklist
+“Superseded” describes the product direction. It does not resolve outstanding findings in old PRs or convert historical static checks, candidate reviews or old-environment results into runtime acceptance of the new paths.
 
-1. Freeze one capability's public package/revision, previous source/config revisions, consumer list and owner without expanding to other platforms/nodes.
-2. Run full tests/build/artifact/publication/docs checks in a standalone public clone and distinguish executed from skipped platform tests.
-3. Make private consumers reference public packages without copying source. Rebuild projections and check exact node/actor/scopes/pin/currentness and legacy wire/storage ABI.
-4. Validate parity/negative/deadline/recovery with an inert adapter, then exercise all effects in an explicitly authorized bounded canary. Do not mint a new identity to hide old binding problems.
-5. Confirm the same identity through control plane/API/Console/MCP. Fresh FAIL/UNKNOWN supersedes old PASS; owners reconcile real effect fences.
-6. Complete consumer cutover and rollback rehearsal with a durable accepted decision. Convert prior mechanisms to thin compatibility pointers and remove duplicated generic implementations in a separate private PR.
-7. Preserve instance configuration/evidence/credential custody and safe recovery access. Removing old source does not revoke devices or destroy data.
+## 3. 42 个仓库的研究报告保留为固定历史来源 / Preserve the 42-repository report as an immutable source
 
-<!-- topic:rollback -->
-### Rollback and state
+旧研究报告 [REUSE_RECONNAISSANCE_2026-11-12.md](https://github.com/youling/ghostfleet/blob/0cbb9c17bdd298634e4ccebf2c1a9c50d9f09fe1/docs/research/REUSE_RECONNAISSANCE_2026-11-12.md) 固定在旧基线，不随候选树中的文档删除而丢失。原文统计的是 **42 个主要上游仓库，不是 42 个独立项目**：管理面 14 个项目对应 15 个仓库，传输与云存储面另有 27 个仓库；原报告已将同一生态或配合使用的组件按机制分组。这份清单、当时的证据与结论均属于该日期、该产品范围的历史来源。其仓库数不能与本轮按项目统计的增量清单直接相加，也不能据此宣称覆盖了相加后的独立项目总数。
 
-Rollback requires compatible state/schema, exact public/prior package revisions and receipts for effects; resetting a branch alone is insufficient. Stop new dispatch, reconcile read-only, inspect pending jobs/sessions/enrollment/reboot, then restore the accepted prior consumer. Unknown mutations are never re-submitted; privileged authority is not inherited from ordinary exec.
+The historical [REUSE_RECONNAISSANCE_2026-11-12.md](https://github.com/youling/ghostfleet/blob/0cbb9c17bdd298634e4ccebf2c1a9c50d9f09fe1/docs/research/REUSE_RECONNAISSANCE_2026-11-12.md) is pinned to the previous baseline and remains accessible even if omitted from the candidate tree. The source counts **42 primary upstream repositories, not 42 independent projects**: 14 management projects represented by 15 repositories, plus 27 transport and cloud-storage repositories. It already groups related or complementary components by mechanism. Its inventory, evidence and conclusions belong to that date and product scope. Do not add this repository count to the current project-based incremental inventory or present the sum as a total of independent projects.
 
-The source preview is merged into public `main`. That repository merge performs no private-source deletion, production deployment or provider changes. Record formal release conditions, provenance audit and current review separately so “source migrated” cannot mean “all remote control is live”.
+后续调研引用固定历史来源，再单独标注适用领域、日期和增量结论。[2026-11-14 传输侦察](research/TRANSPORT_RECONNAISSANCE_2026-11-14.md) 仍是该日传输域的研究输入，不冒充对当前面板全部机制的核验。不要改写旧报告来制造“当时已经选择当前架构”的印象，也不要因保留研究记录而重新引入其讨论过的运行时依赖。
 
+Later research cites the pinned history and identifies its own domain, date and incremental conclusions. The [2026-11-14 transport reconnaissance](research/TRANSPORT_RECONNAISSANCE_2026-11-14.md) remains dated transport-domain input, not verification of every current panel mechanism. Do not rewrite historical reports to imply they already selected today's architecture, or restore dependencies merely because a report discussed them.
 
-Public owner-consent proof v2 rejects legacy origin-less proofs. Registered-client, authorization and token/refresh scopes are revalidated against trusted stored ceilings and current profiles; private issuers have not automatically cut over.
+## 4. 源码删除与真实卸载分别记录 / Separate source removal from live removal
+
+仓库中的 source-only 删除只改变候选源树，不能证明某台机器、某个账户或 provider 上已经卸载旧服务、删除凭据或释放资源。本文不包含自动卸载脚本，也不触发这些动作。已有实例由其原 owner 在既有授权范围内核对实际安装、服务、网络入口与资源；必要的移除、保留或恢复分别记录结果，不依据仓库路径消失推定完成。
+
+Source-only deletion changes the candidate tree. It does not prove that an old service, credential or resource has been removed from any host, account or provider. This page contains no automatic uninstaller and initiates no such action. The existing instance owner reconciles installed services, entry points and resources within the already authorized scope, recording removal, retention or recovery separately rather than inferring completion from missing repository paths.
+
+对新实例，按 [REMOTE_ACCESS.md](REMOTE_ACCESS.md) 使用上游软件，再按 [ACCEPTANCE.md](ACCEPTANCE.md) 验证原生传输。轻量注册与状态上报按 [PRESENCE.md](PRESENCE.md) 安装，按 [DELIVERY.md](DELIVERY.md) 分阶段交付。已有实例先核对其真实状态、消费者和数据，再选择变更与恢复路径；保留 DO 身份与既有 node_uid，不因重发票据另造节点。这里没有新设审批流程，也不要求把原始密钥、令牌或私有清单搬到公开仓。
+
+For a new instance, follow [REMOTE_ACCESS.md](REMOTE_ACCESS.md) using upstream software and validate native transport with [ACCEPTANCE.md](ACCEPTANCE.md). Install enrollment/reporting through [PRESENCE.md](PRESENCE.md) and deliver by [DELIVERY.md](DELIVERY.md). For existing instances, reconcile actual state, consumers and data before choosing changes and recovery; retain DO identity and existing node_uid rather than creating another node when reissuing a ticket. This adds no approval workflow and requires no raw keys, tokens or private inventories in the public repository.
+
+## 5. #69 的原工作与资源收口 / Close out the original #69 work and resources
+
+[#69](https://github.com/youling/ghostfleet/issues/69) 的旧审批链停止新增产品投入，但已有工作和测试资源不能因产品重置而被视为自动结清。公开记录仍有 [claim](https://github.com/youling/ghostfleet/issues/69#issuecomment-6765779540)、[非终态 checkpoint](https://github.com/youling/ghostfleet/issues/69#issuecomment-6767386302) 和 [RESOURCE_PREP_PARTIAL / STOP BEFORE DEPLOYMENT 审查](https://github.com/youling/ghostfleet/issues/69#issuecomment-6768042463)。本轮没有证明这些资源已被移除，或该工作已经形成终态。
+
+New product investment in the old approval chain of [#69](https://github.com/youling/ghostfleet/issues/69) stops, but the product reset does not automatically close existing work or test resources. Public records retain a [claim](https://github.com/youling/ghostfleet/issues/69#issuecomment-6765779540), a [nonterminal checkpoint](https://github.com/youling/ghostfleet/issues/69#issuecomment-6767386302), and a [RESOURCE_PREP_PARTIAL / STOP BEFORE DEPLOYMENT review](https://github.com/youling/ghostfleet/issues/69#issuecomment-6768042463). This checkpoint does not establish resource removal or a terminal outcome.
+
+原实例 owner 继续负责核对资源是否存在、保留或移除的处置、旧候选的状态与可追溯的终态回执。公开工单仅记录必要摘要和公开证据指针，不添加私有仓库 URL、资源标识或凭据。这个历史收口职责独立于 #85 的通用配置与文档工作；它不恢复新产品的逐命令审批依赖，也不代表已经授权新的主机或 provider 变更。
+
+The original instance owner retains responsibility for resource reconciliation, retention or removal, the old candidate's disposition, and a traceable terminal record. The public issue should contain only the necessary summary and public evidence pointers, without private repository URLs, resource identifiers or credentials. This historical closeout is separate from #85's generic configuration and documentation work; it neither restores a per-command approval dependency nor authorizes new host or provider changes.

@@ -1,47 +1,30 @@
-# Contributing / 参与贡献
+# 贡献 / Contributing
 
 ## 中文
 
-<!-- topic:scope -->
-### 贡献边界
+当前范围由 [ADR004](docs/adr/004-lightweight-enrollment-presence.md) 和 [#11](https://github.com/youling/ghostfleet/issues/11) 持有：原生 SSH、轻量注册/状态面板和 systemd oneshot reporter。可贡献上游通用配置、现有 Console/票据/心跳的修复、准确双语文档和小型验证器；不恢复常驻命令 Agent、远程命令 API、审批状态机、Helper 或任务/审计服务。
 
-通用插件、核心、API、MCP、Console、校验器和可选运行时都在本仓维护。实例账号、设备目录、提供方端点、密钥、凭据引用、原始设备证据与生产操作手册不属于公开贡献。主流程保持与 AI 客户端无关；可以增加显式启用的可选客户端适配器，但不能让 ChatGPT 或 OpenAI 成为必需依赖，也不能放宽客户端重定向地址、配置档案或权限范围的精确匹配。
-
-新的执行能力必须保留身份、授权与当前状态校验、防重复派发记录、超时，以及 `UNKNOWN` 结果的对账机制，不能以“方便 AI”为由绕过策略。先读 [插件开发](docs/PLUGIN_DEVELOPMENT.md)、[安全](docs/SECURITY.md) 和 [公开边界](docs/PUBLICATION.md)。
-
-<!-- topic:workflow -->
-### 实现和 Pull Request
-
-在功能分支提交可审查的源码、测试和文档，不直接修改受保护的 `main`。PR 描述具体问题、行为变化、风险与验证结果。同步更新各篇中英文对应主题、公开导出清单、迁移对照表和许可说明。只提交经过审查的合成证据，不粘贴真实日志或完整环境输出。
-
-执行 `npm ci`、根项目与相关可选包检查、公开边界及文档检查、Console 构建、Worker 构建预演和本地验证。新模块不得依赖私有克隆、真实设备或默认 OAuth 客户端。审查绑定精确提交；范围或提交变化后须重新核验，不能用旧 CI 或模型自述替代验收。
-
-<!-- topic:license -->
-### 许可、依赖与安全报告
-
-项目采用 `AGPL-3.0-only`，保留 `LICENSE`、版权和第三方说明。迁入源码需核对来源许可及可重新分发权，不能仅改命名空间就抹去来源。新增依赖须尽量少、锁定版本，并审查许可与公开审计结果；公开 Actions 固定精确版本，来自外部分叉的 PR 不接收秘密。
-
-安全问题遵循 [SECURITY.md](SECURITY.md)。公开工单只提供脱敏后的影响和复现步骤，不附凭据、真实定位信息或原始载荷。合并不自动授权生产部署、正式发布、删除旧代码或设备操作。
+使用隔离工作区和 branch + PR，复查当前 HEAD。按实际改动运行 [PRESENCE](docs/PRESENCE.md) 的协议、Python、构建/本地集成检查和公开边界扫描；SSH 改动另运行客户端配置检查、`sh test/verify-sshd-admin.test.sh` 和相关 systemd unit 语法验证。sshd 测试需要 OpenSSH server 与本地临时目录，只检查一次性配置，不启动、重载或停止服务。配置模板和测试不产生真实主机或 provider 变更授权；实际交付按 [DELIVERY](docs/DELIVERY.md) 分范围记录。
 
 ## English
 
-<!-- topic:scope -->
-### Contribution scope
+GhostFleet combines native SSH with a thin enrollment/presence panel and a systemd oneshot reporter. [ADR004](docs/adr/004-lightweight-enrollment-presence.md) and [#11](https://github.com/youling/ghostfleet/issues/11) own the current scope.
 
-Generic plugins, core/API/MCP/Console, validators and optional runtimes are maintained here. Instance accounts, registries, provider endpoints, keys, credential references, raw device evidence and production runbooks are not public contributions. Keep the primary flow AI-client-neutral. Explicit optional client adapters are welcome; ChatGPT/OpenAI must not become mandatory or weaken exact client redirects/profiles/scopes.
+Accepted changes:
+- accurate Cloudflare Tunnel, Tailscale, OpenSSH and systemd configuration examples;
+- documentation and compatibility fixes;
+- fixes to the existing Console, one-time tickets and heartbeat-only reporter;
+- small validation checks for shipped SSH/config examples.
 
-New execution capabilities preserve identity/authority/currentness, effect fences, deadlines and UNKNOWN reconciliation. Convenience for AI cannot bypass policy. Read [Plugin development](docs/PLUGIN_DEVELOPMENT.md), [Security](docs/SECURITY.md) and [Publication](docs/PUBLICATION.md) first.
+Out of scope:
+- resident command agents or a new telemetry platform;
+- remote command APIs or command allowlists;
+- per-command approval/HumanGate/JIT;
+- custom task queues, durable command ledgers or a second database;
+- custom privileged helpers or command audit pipelines;
+- a custom SSH implementation or tunnel protocol.
 
-<!-- topic:workflow -->
-### Implementation and pull requests
+Use upstream tools directly. Never commit tunnel tokens, auth keys, SSH private keys, real hostnames or device identifiers. Config changes are examples only; production changes require owner authorization.
 
-Submit reviewable source/tests/documentation on a feature branch, not directly to protected main. PR descriptions explain the concrete problem, behavioral change, risk and validation. Update equivalent Chinese/English topics, public export/migration matrices and licensing. Include reviewed synthetic evidence only; never paste live logs or full environment output.
 
-Run `npm ci`, relevant root/optional package checks, publication/docs checks, Console/Worker dry-run and local verification. New modules cannot depend on a private clone, real device or default OAuth client. Review binds the exact head; scope/head changes require renewed review rather than old CI or model self-reports.
-
-<!-- topic:license -->
-### License, dependencies and security reporting
-
-The project is AGPL-3.0-only; retain LICENSE, copyright and third-party notices. Verify source licensing and redistribution rights for imports; a namespace change must not erase origin. Minimize dependencies, lock versions, review licenses and public audits. Public actions pin exact revisions and fork PRs receive no secrets.
-
-Follow [SECURITY.md](SECURITY.md) for security issues. Public issues contain only sanitized impact/reproduction, never credentials, real locators or raw payloads. Merge does not automatically authorize production deployment, release, prior-code deletion or device operations.
+Before submitting, run the checks relevant to the change: the protocol/Python/build/local integration commands in [PRESENCE](docs/PRESENCE.md), publication checks, and OpenSSH/systemd validation for changed transport configuration. The SSH regression checks disposable configuration; it does not start, reload or stop a service. Use [DELIVERY](docs/DELIVERY.md) to distinguish source results from actual deployment and node acceptance.

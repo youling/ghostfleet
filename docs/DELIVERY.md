@@ -1,0 +1,76 @@
+# 阶段交付 / Staged delivery
+
+| 字段 / Field | 值 / Value |
+| --- | --- |
+| 文档性质 / Classification | `DERIVED`：交付条件与依赖导航，不是状态数据库 / Delivery criteria and dependency navigation, not a status database |
+| `source_pointer` | [#11 当前目标、裁决与回执 / Current goal, decisions and receipts](https://github.com/youling/ghostfleet/issues/11)；[ADR004](adr/004-lightweight-enrollment-presence.md) |
+| 文档核对日期 / Documentation checked | `2026-11-16`；不表示已经部署 / Does not establish deployment |
+
+## 1. 范围与用法 / Scope and use
+
+交付当前最小产品：原生 SSH、薄面板、一次性注册和 systemd/journald 心跳。当前进度、责任人、精确候选与接受结论留在 #11 及其引用的原工单、PR 和实例回执。本页不复制动态状态，不新开父工单。沿既有授权和责任线执行；源码整合不自动扩大生产、凭据或系统级安装权限。
+
+Deliver the current minimal product: native SSH, a thin panel, one-time enrollment and systemd/journald presence. Current progress, owners, exact revisions and acceptance remain in #11 and its linked original work, PRs and instance receipts. This page creates no parallel status register or parent work item. Use existing authority and ownership; source integration does not expand production, credential or system-installation authority.
+
+每阶段完成即可交付其实际覆盖的能力。只解决具体缺口，不新增固定观察期、框架、数据库或命令执行面。已经接受的证据在版本和范围仍适用时复用；有变更就核对变更影响。真实节点、域名、provider 定位符、凭据及原始日志留实例 owner，公开记录只保留脱敏摘要。
+
+Deliver each stage's proven capability when complete. Resolve concrete gaps without adding a fixed observation period, framework, database or command plane. Reuse accepted evidence while its revision and scope remain applicable; assess the actual effect of later changes. Keep real node/domain/provider locators, credentials and raw logs with the instance owner; public records contain sanitized summaries only.
+
+## 2. 交付条件 / Delivery criteria
+
+| 阶段 / Stage | 交付物 / Deliverable | 完成证据 / Completion evidence |
+| --- | --- | --- |
+| M1 源码整合 / Source integration | 在既有候选线整合已审实现，修正文档，形成实际发布源码 / Integrate the reviewed implementation on the existing candidate line, reconcile docs and identify release source | 最终 HEAD/tree、适用审查、对应 CI、构建结果与发布物摘要；旧命令面未恢复；普通合并按当前委托 / Final HEAD/tree, applicable review, matching CI, build and artifact digests; no restored command plane; ordinary merge under current delegation |
+| M2 发布包与 origin / Release package and origins | 一个 Worker、既有 DO 身份、panel/node 两个 HTTPS origin、实例覆盖及回退点 / One Worker, retained DO identity, two HTTPS origins, instance overlay and rollback reference | 按 PRESENCE 构建与 dry-run；实际发布后回读版本/路由；panel 的 Access、Operator/Read 与 node origin 边界正负测；公开安装器实际字节摘要匹配 / Build and dry-run per PRESENCE; after deployment read back version/routes, verify panel Access/Operator/Read and node-origin boundaries, and match the served installer digest |
+| M3 首节点可用 / First node usable | 一个已有原生传输的授权节点完成实际系统级安装和受保护浏览器首用 / Actual system installation and protected-browser first use on one authorized node with existing native transport | 浏览器创建票据→固定哈希安装→系统级 DynamicUser/LoadCredential 服务→真实 heartbeat；按下节记录修复、撤销与回退行为，并确认既有 SSH 保留 / Browser ticket → pinned installer → system DynamicUser/LoadCredential service → real heartbeat; record recovery/revocation/rollback below and confirm existing SSH is preserved |
+| M4 可复制与传输补齐 / Replication and transport completion | 相同发布物部署第二节点；CF 路径独立完成 / Reuse the same release on a second node; complete CF transport separately | 第二节点身份/凭据/服务/回退分别有证据；CF 按 ACCEPTANCE 单独验收，只有两路均通过才声明双路 / Separate second-node identity, credentials, service and rollback evidence; validate CF through ACCEPTANCE and claim dual-path access only when both paths pass |
+
+M2 的 dry-run 是“发布包已准备”，真实版本和鉴权回读才支持“面板已发布”。M3 支持“首节点可用”；它不证明第二节点或双路远控。M4 的第二节点复制与 CF 接线可以并行，CF 也可在源码确定后按原授权提前推进。CF 未完成时保留其未验收状态，不撤销已经成立的单路或面板交付。
+
+M2 dry-run supports “release package prepared”; actual version and authorization readback support “panel released.” M3 supports “first node usable,” not second-node or dual-path acceptance. M4 replication and CF work may proceed in parallel; CF may start once source is established and existing authority permits it. Pending CF acceptance does not invalidate proven single-path or panel delivery.
+
+### 交付依赖图 / Delivery dependency diagram
+
+图源是本节与 ADR004；箭头表示依赖，不表示已经完成。CF 分支独立于面板首用，汇总时分别陈述已证明的范围。
+
+This section and ADR004 are the diagram sources. Edges represent dependencies, not completed work. CF is independent of panel first use; the receipt distinguishes each proven scope.
+
+```mermaid
+flowchart TD
+  Source["M1 源码整合 / Source"] --> Release["M2 发布包与 origin / Release"]
+  Release --> First["M3 首节点首用 / First node"]
+  First --> Second["M4 第二节点复制 / Second node"]
+  Source --> CF["M4 CF 独立验收 / CF path"]
+  Second --> Receipt["#11 分范围交付回执 / Scoped receipts"]
+  CF --> Receipt
+```
+
+## 3. 实例发布与首次使用 / Instance release and first use
+
+操作步骤复用 [PRESENCE](PRESENCE.md)，原生传输复用 [REMOTE_ACCESS](REMOTE_ACCESS.md) 与 [ACCEPTANCE](ACCEPTANCE.md)。每次执行记录实际提交、安装器字节摘要、实例版本和回执指针；不要把另一环境的行尾或构建结果直接套用到本次发布物。
+
+Use [PRESENCE](PRESENCE.md) for operations and [REMOTE_ACCESS](REMOTE_ACCESS.md)/[ACCEPTANCE](ACCEPTANCE.md) for native transport. Record the actual source commit, installer-byte digest, instance version and receipt pointer. Do not substitute a digest from another checkout's line endings or build for the artifact being served.
+
+1. **发布边界 / Release boundary**：核对既有 Worker/DO、对象与 node_uid；保留前一版本、适用数据恢复点和仍在使用的旧消费者。两 origin 的精确路由、panel 全站 Access、不同的 Operator/Read 应用凭据由实例配置承载。实测匿名 panel 拦截、Read 写入拒绝、node origin 管理入口拒绝、错误/撤销凭据拒绝及正确安装器哈希。/ Reconcile existing Worker/DO, object and node_uid identity; retain the previous version, applicable data recovery point and live legacy consumers. Instance configuration owns exact origin routes, whole-panel Access and distinct Operator/Read credentials. Test anonymous-panel denial, Read-write denial, node-admin rejection, invalid/revoked credentials and the served installer digest.
+
+2. **系统级首用 / System first use**：从真实受保护浏览器创建票据，在授权节点本地输入独立短码，验证固定发布物安装、系统 timer/oneshot、DynamicUser 与 LoadCredential 实际工作；检查最后心跳及真实 unit 状态，缺失 unit 应如实显示。仅有临时 user-unit、DOM 夹具或静态 unit 检查时，不声称完成本项。/ Create a ticket in the protected browser, enter the separate code locally on the authorized node, and observe the pinned installer, system timer/oneshot, DynamicUser and LoadCredential working. Check the received heartbeat and actual unit states, including truthful missing-unit status. Temporary user units, DOM fixtures or static unit checks do not establish this result.
+
+3. **恢复与权限边界 / Recovery and authority boundary**：按已有测试范围验证本地 repair 复用已保存凭据、同节点重发不复制身份、旧 reporting 凭据失效，以及面板中断或撤销上报时既有 SSH 仍独立。记录上报恢复和本地 journal 诊断，不上传全量日志。真实系统范围未执行的项注明缺口，不用隔离测试代填。/ Within the existing test scope, verify repair using saved credentials, same-node reissue without identity duplication, invalidation of the old reporting credential, and native SSH independence during panel outage or reporting revocation. Record reporting recovery and local journal diagnostics without uploading the full journal. State any unexecuted live-system item rather than filling it with isolated-test results.
+
+`DynamicUser` 的身份生命周期与 `LoadCredential` 的只读凭据投递由 [systemd 官方文档](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html) 定义。记录实际安装的 systemd 版本；上游手册和临时用户服务测试都不替代该版本的系统级运行证据。
+
+[Official systemd documentation](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html) defines DynamicUser identity lifetime and LoadCredential's read-only credential delivery. Record the installed systemd version; neither the upstream manual nor a temporary user-service test replaces its actual system-service evidence.
+
+## 4. 回退与完成声明 / Rollback and completion claims
+
+面板代码回退与停用 reporter 分别记录。保留既有 DO 数据、node_uid、SSH 密钥和原生连接；安装器按自己的 manifest 处理文件，本地修改的文件不盲删。不要用删除 DO、重建节点或轮换全部 SSH/provider 凭据代替本功能回退。尚在使用的旧消费者必须有明确的切换和恢复安排。
+
+Record panel-code rollback and reporter disablement separately. Retain existing DO data, node_uid, SSH keys and native connections. The installer follows its own manifest and refuses blind deletion of locally modified files. Do not replace feature rollback with DO deletion, node recreation or broad SSH/provider credential rotation. Existing consumers require a concrete cutover and recovery arrangement.
+
+对已有 DO 类仅更新代码时，Cloudflare 不要求新增 class migration；应用仍须兼容已有数据。保留本项目既有 migration 与存储身份，不为当前交付切换存储生命周期机制。官方来源：[既有迁移语义](https://developers.cloudflare.com/durable-objects/reference/durable-object-class-migrations-legacy/)与[事务存储](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)。事务能力是机制依据，实际单消费和重启持久化仍由实现测试证明。
+
+Cloudflare does not require a new class migration for a code-only update to an existing DO class; the application remains responsible for stored-data compatibility. Retain the existing migration and storage identity rather than changing lifecycle mechanisms for this delivery. See the official [legacy migration contract](https://developers.cloudflare.com/durable-objects/reference/durable-object-class-migrations-legacy/) and [transactional storage API](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/). These support the design; implementation tests still establish single consumption and restart persistence.
+
+回执分别说明“源码整合”“发布包准备”“面板发布”“首节点可用”“第二节点复制”“双路传输”的实际结果，并引用证据和剩余限制。达到哪个范围就交付哪个范围；不以 CI、心跳或计划替代未执行的现场能力。
+
+The receipt distinguishes source integration, package preparation, panel release, first-node usability, second-node replication and dual-path transport, with evidence and remaining limits. Deliver each established scope without using CI, heartbeat or plans as substitutes for unexecuted live capability.

@@ -1,0 +1,16 @@
+# Install as /etc/ssh/sshd_config.d/00-ghostfleet-admin.conf
+# This profile restricts root authentication only. Non-root authentication
+# remains governed by the operating system's existing sshd configuration.
+# OpenSSH generally keeps the first value obtained. This early filename helps,
+# but does not guarantee precedence over another earlier drop-in or Match rule.
+# Always run scripts/verify-sshd-admin.sh against the effective sshd config.
+# Add the owner's public key to /root/.ssh/authorized_keys first.
+# No ForceCommand, command= restriction or per-command gate is configured.
+
+PermitRootLogin prohibit-password
+
+Match User root
+    PubkeyAuthentication yes
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    AuthenticationMethods publickey
