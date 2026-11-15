@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GhostFleet · 节点状态</title>
+<link rel="stylesheet" href="/shared/console.css"><link rel="stylesheet" href="/presence.css">
+<script src="/shared/appearance.js"></script><script type="module" src="/app.js"></script>
+</head>
+<body>
+<main class="presence-page">
+<header class="presence-header"><div><h1>GhostFleet</h1><p id="subtitle" class="secondary"></p></div>
+<div class="toolbar"><select id="language" aria-label="Language"><option value="zh">中文</option><option value="en">English</option></select><button id="theme" type="button" aria-label="Toggle theme">◐</button></div></header>
+<section class="presence-card" id="login-card"><h2 id="login-title"></h2><form id="login-form" class="toolbar"><input id="token" class="form-control" type="password" autocomplete="off" required minlength="32" aria-label="GhostFleet access token"><button class="btn btn-primary" id="connect" type="submit"></button></form><p id="first-use" class="secondary"></p><p id="credential-help" class="secondary"></p></section>
+<section class="presence-card" id="fleet-card" hidden>
+<div class="toolbar spread"><div><strong id="summary"></strong><p id="read-time" class="secondary"></p></div><div class="toolbar"><button id="refresh" type="button"></button><button id="disconnect" type="button"></button></div></div>
+<p id="boundary" class="secondary"></p>
+<form id="enroll-form" class="toolbar"><input id="label" class="form-control" required maxlength="80" aria-label="Node label"><button id="create-ticket" type="submit" class="btn btn-primary"></button></form>
+<div class="table-scroll"><table><thead><tr id="columns"></tr></thead><tbody id="nodes"></tbody></table></div>
+</section>
+<section id="delivery" class="presence-card" hidden><h2 id="delivery-title"></h2><p id="delivery-warning"></p><dl><dt>Node UID</dt><dd id="delivery-node"></dd><dt id="code-label"></dt><dd><code id="short-code"></code></dd><dt id="expires-label"></dt><dd id="expires"></dd></dl><pre id="command"></pre><div class="toolbar"><button id="copy-command" type="button"></button><button id="hide-delivery" type="button"></button></div><p id="root-help" class="secondary"></p></section>
+<p id="feedback" role="status" aria-live="polite"></p>
+<footer class="secondary"><code>journalctl -u ghostfleet-heartbeat.service</code><p id="footer-note"></p></footer>
+</main>
+</body></html>
