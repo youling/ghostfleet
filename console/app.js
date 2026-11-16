@@ -67,7 +67,7 @@ async function refresh() {
 }
 const quote = value => "'" + String(value).replaceAll("'", "'\\''") + "'";
 function installCommand(ticket, replace = false) {
-  const program = 'import hashlib,pathlib,subprocess,sys,tempfile,urllib.request\nu,h,o,t,*flags=sys.argv[1:]\nr=urllib.request.urlopen(u,timeout=20)\nif r.url!=u:sys.exit("REDIRECT_REFUSED")\nb=r.read(262145)\nif len(b)>262144 or hashlib.sha256(b).hexdigest()!=h:sys.exit("INSTALLER_HASH_MISMATCH")\nwith tempfile.TemporaryDirectory(prefix="ghostfleet-",dir="/run") as d:\n p=pathlib.Path(d)/"installer.py";p.write_bytes(b)\n subprocess.run(["/usr/bin/python3","-I",str(p),"install","--origin",o,"--ticket",t]+flags,check=True,env={"PATH":"/usr/sbin:/usr/bin:/sbin:/bin","HOME":"/root"})';
+  const program = 'import hashlib,pathlib,subprocess,sys,tempfile,urllib.request\nu,h,o,t,*flags=sys.argv[1:]\nr=urllib.request.urlopen(urllib.request.Request(u,headers={"User-Agent":"GhostFleet-Reporter/1"}),timeout=20)\nif r.url!=u:sys.exit("REDIRECT_REFUSED")\nb=r.read(262145)\nif len(b)>262144 or hashlib.sha256(b).hexdigest()!=h:sys.exit("INSTALLER_HASH_MISMATCH")\nwith tempfile.TemporaryDirectory(prefix="ghostfleet-",dir="/run") as d:\n p=pathlib.Path(d)/"installer.py";p.write_bytes(b)\n subprocess.run(["/usr/bin/python3","-I",str(p),"install","--origin",o,"--ticket",t]+flags,check=True,env={"PATH":"/usr/sbin:/usr/bin:/sbin:/bin","HOME":"/root"})';
   return 'sudo /usr/bin/python3 -I -c ' + quote(program) + ' ' + [installer.url,installer.sha256,nodeOrigin,ticket,...(replace?['--replace']:[])].map(quote).join(' ');
 }
 async function makeTicket(node) {
