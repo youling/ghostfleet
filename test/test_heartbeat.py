@@ -123,9 +123,9 @@ class RepairTests(unittest.TestCase):
             def systemctl(*args):
                 systemctl_calls.append(args)
 
-            with patch.object(hb, 'CONFIG', path), patch.object(hb.os, 'geteuid', return_value=0), \\
-                 patch.object(hb, 'install_files', side_effect=install), \\
-                 patch.object(hb, 'systemctl', side_effect=systemctl), \\
+            with patch.object(hb, 'CONFIG', path), patch.object(hb.os, 'geteuid', return_value=0), \
+                 patch.object(hb, 'install_files', side_effect=install), \
+                 patch.object(hb, 'systemctl', side_effect=systemctl), \
                  patch.object(hb, 'post_json') as request, contextlib.redirect_stdout(output):
                 hb.repair()
 
