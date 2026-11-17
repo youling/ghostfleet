@@ -246,6 +246,58 @@ test('Worker/DO path rejects a revoked reporter token with 401', async () => {
   assert.equal(nodes[0].presence, 'REVOKED');
 });
 
+test('Worker/DO keeps two node identities and reporting credentials isolated', async () => {
+  const bindings = mockBindings();
+  async function enroll(label) {
+    const created = await (await worker.fetch(request('/v0/enrollment-tickets', {
+      method: 'POST', body: { label },
+    }), bindings)).json();
+    const claimed = await (await worker.fetch(request(
+      '/v1/enrollment-tickets/' + created.ticket.ticket_id + '/claim',
+      { method: 'POST', origin: env.GHOSTFLEET_NODE_ORIGIN, token: '', body: { short_code: created.short_code } },
+    ), bindings)).json();
+    return claimed;
+  }
+
+  const first = await enroll('m4-node-one-fixture');
+  const second = await enroll('m4-node-two-fixture');
+  assert.notEqual(first.node_uid, second.node_uid);
+  assert.notEqual(first.reporting_token, second.reporting_token);
+
+  const firstBeat = await worker.fetch(request('/v1/nodes/' + first.node_uid + '/heartbeat', {
+    method: 'POST', origin: env.GHOSTFLEET_NODE_ORIGIN, token: first.reporting_token, body: report,
+  }), bindings);
+  const secondBeat = await worker.fetch(request('/v1/nodes/' + second.node_uid + '/heartbeat', {
+    method: 'POST', origin: env.GHOSTFLEET_NODE_ORIGIN, token: second.reporting_token, body: report,
+  }), bindings);
+  assert.equal(firstBeat.status, 200);
+  assert.equal(secondBeat.status, 200);
+
+  const crossNode = await worker.fetch(request('/v1/nodes/' + second.node_uid + '/heartbeat', {
+    method: 'POST', origin: env.GHOSTFLEET_NODE_ORIGIN, token: first.reporting_token, body: report,
+  }), bindings);
+  assert.equal(crossNode.status, 401);
+
+  const revokeFirst = await worker.fetch(request('/v0/nodes/' + first.node_uid + '/revoke', {
+    method: 'POST', body: {},
+  }), bindings);
+  assert.equal(revokeFirst.status, 200);
+  const firstAfterRevoke = await worker.fetch(request('/v1/nodes/' + first.node_uid + '/heartbeat', {
+    method: 'POST', origin: env.GHOSTFLEET_NODE_ORIGIN, token: first.reporting_token, body: report,
+  }), bindings);
+  const secondAfterRevoke = await worker.fetch(request('/v1/nodes/' + second.node_uid + '/heartbeat', {
+    method: 'POST', origin: env.GHOSTFLEET_NODE_ORIGIN, token: second.reporting_token, body: report,
+  }), bindings);
+  assert.equal(firstAfterRevoke.status, 401);
+  assert.equal(secondAfterRevoke.status, 200);
+
+  const listed = await worker.fetch(request('/v0/nodes', { token: operator }), bindings);
+  const nodes = (await listed.json()).nodes;
+  assert.equal(nodes.length, 2);
+  assert.equal(nodes.find(n => n.node_uid === first.node_uid).presence, 'REVOKED');
+  assert.equal(nodes.find(n => n.node_uid === second.node_uid).presence, 'ONLINE');
+});
+
 test('Worker/DO path commits one of 12 concurrent claims, then authenticated heartbeat', async () => {
   const bindings = mockBindings();
   const created = await (await worker.fetch(request('/v0/enrollment-tickets', { method: 'POST', body: { label: 'concurrent-fixture' } }), bindings)).json();
