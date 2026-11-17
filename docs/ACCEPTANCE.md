@@ -6,7 +6,7 @@
 | `source_pointer` | [当前产品与实施入口 / Current product and implementation](https://github.com/youling/ghostfleet/issues/11)；[ADR004](adr/004-lightweight-enrollment-presence.md)；[原生传输指南 / Native transport guide](REMOTE_ACCESS.md) |
 | 实际状态 / Actual status | 读取 #11 最新裁决及其引用的实例回执，不从本模板推断 / Read the latest #11 disposition and linked instance receipts; do not infer status from this template |
 | 使用版本 / Version under test | 每次执行填写实际提交、版本和实例记录 / Record the actual commit, versions and instance record for each execution |
-| 模板修订 / Template revision | `2026-11-16`：仅核对文档范围，不表示执行了下表测试 / Documentation scope reconciliation only, not execution of the tests below |
+| 模板修订 / Template revision | `2026-11-18`：补充 Cloudflare SSH 客户端前置条件、SSH/TCP route 区分和分层诊断；不表示执行了下表测试 / Added Cloudflare SSH client prerequisites, SSH/TCP route distinction and layered diagnostics; does not imply these tests were run |
 | 空白结果 / Blank results | `NOT_RUN` 是未填写的模板占位，不覆盖已接受的现场证据 / `NOT_RUN` is an unfilled template value and does not supersede accepted live evidence |
 
 ## 1. 使用与证据 / Use and evidence
@@ -95,7 +95,7 @@ Every result below is a template, not a claim of execution in this round. Record
 | --- | --- | --- | --- |
 | A01 | 配置来源、实际候选/版本明确；`sshd -t` 通过；两路真实上下文的完整有效配置符合所选策略：root 仅公钥，普通用户保留 OS 原有认证 / Record source, candidate and versions; pass syntax checks and inspect each real path context: root is public-key-only and ordinary users retain OS-owned authentication | `NOT_RUN` | — |
 | A02 | 同节点两路使用同一带外核验主机身份和同一 `HostKeyAlias`；不同节点 alias 唯一；严格主机密钥校验启用 / Share one verified host identity and alias per node across paths; keep aliases unique between nodes and enforce strict host-key checking | `NOT_RUN` | — |
-| A03 | `ssh -G` 与无复用的新连接证实 CF 经所选代理、TS 经其私网地址，均到预期原生 sshd；Tailscale SSH 关闭 / Configuration and fresh non-multiplexed connections establish the intended CF proxy and TS private route to native sshd, with Tailscale SSH disabled | `NOT_RUN` | — |
+| A03 | CF：确认 Published Route 服务类型；SSH/`ssh://…:22` 必须有客户端 `cloudflared` 可执行文件/版本，`ssh -G` 的 `ProxyCommand` 指向本机二进制并调用 `access ssh`；TCP/`tcp://…` 的 `access tcp` 本地转发不能替代 SSH route 验收。TS：确认私网地址。两路均以关闭连接复用的新会话到达预期原生 sshd；Tailscale SSH 关闭 / CF: confirm the Published Route service type; SSH/`ssh://…:22` requires a client `cloudflared` executable/version and an effective `ssh -G` `ProxyCommand` pointing to that local binary and invoking `access ssh`; TCP/`tcp://…` with `access tcp` local forwarding does not substitute for SSH-route acceptance. TS: confirm the private address. Both paths reach the intended native sshd through fresh non-multiplexed sessions; Tailscale SSH is disabled | `NOT_RUN` | — |
 | A04 | 两路分别完成交互 shell；参考 root 配置显示实际 UID 0，未依赖旧连接 / Open an interactive shell on each path; verify UID 0 for the root reference profile without relying on an old connection | `NOT_RUN` | — |
 | A05 | 两路分别完成显式 exec（如 `id -u`），记录退出状态与期望输出 / Run an explicit exec such as `id -u` on each path and record exit status and expected output | `NOT_RUN` | — |
 | A06 | 两路分别进入 SFTP；在 owner 选定的临时目录上传/下载自备非敏感小文件、比对内容并清理 / Enter SFTP on each path; upload/download a non-sensitive test file in an owner-selected temporary directory, compare contents and clean up | `NOT_RUN` | — |
