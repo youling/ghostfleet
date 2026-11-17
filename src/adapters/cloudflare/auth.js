@@ -1,5 +1,9 @@
 function denied(error, status) {
-  return Response.json({ ok: false, error }, { status, headers: { "cache-control": "no-store" } });
+  return Response.json({ ok: false, error }, { status, headers: {
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "no-referrer",
+  } });
 }
 
 async function matches(value, expected) {
