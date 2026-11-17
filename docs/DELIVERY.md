@@ -4,7 +4,7 @@
 | --- | --- |
 | 文档性质 / Classification | `DERIVED`：交付条件与依赖导航，不是状态数据库 / Delivery criteria and dependency navigation, not a status database |
 | `source_pointer` | [#11 当前目标、裁决与回执 / Current goal, decisions and receipts](https://github.com/youling/ghostfleet/issues/11)；[ADR004](adr/004-lightweight-enrollment-presence.md) |
-| 文档核对日期 / Documentation checked | `2026-11-16`；不表示已经部署 / Does not establish deployment |
+| 文档核对日期 / Documentation checked | `2026-11-17`；不表示已经部署 / Does not establish deployment |
 
 ## 1. 范围与用法 / Scope and use
 
@@ -22,26 +22,28 @@ Deliver each stage's proven capability when complete. Resolve concrete gaps with
 | --- | --- | --- |
 | M1 源码整合 / Source integration | 在既有候选线整合已审实现，修正文档，形成实际发布源码 / Integrate the reviewed implementation on the existing candidate line, reconcile docs and identify release source | 最终 HEAD/tree、适用审查、对应 CI、构建结果与发布物摘要；旧命令面未恢复；普通合并按当前委托 / Final HEAD/tree, applicable review, matching CI, build and artifact digests; no restored command plane; ordinary merge under current delegation |
 | M2 发布包与 origin / Release package and origins | 一个 Worker、既有 DO 身份、panel/node 两个 HTTPS origin、实例覆盖及回退点 / One Worker, retained DO identity, two HTTPS origins, instance overlay and rollback reference | 按 PRESENCE 构建与 dry-run；实际发布后回读版本/路由；panel 的 Access、Operator/Read 与 node origin 边界正负测；公开安装器实际字节摘要匹配 / Build and dry-run per PRESENCE; after deployment read back version/routes, verify panel Access/Operator/Read and node-origin boundaries, and match the served installer digest |
-| M3 首节点可用 / First node usable | 一个已有原生传输的授权节点完成实际系统级安装和受保护浏览器首用 / Actual system installation and protected-browser first use on one authorized node with existing native transport | 浏览器创建票据→固定哈希安装→系统级 DynamicUser/LoadCredential 服务→真实 heartbeat；按下节记录修复、撤销与回退行为，并确认既有 SSH 保留 / Browser ticket → pinned installer → system DynamicUser/LoadCredential service → real heartbeat; record recovery/revocation/rollback below and confirm existing SSH is preserved |
+| M3 首节点可用 / First node usable | 一个已有原生传输的授权节点完成实际系统级安装和受保护浏览器首用 / Actual system installation and protected-browser first use on one authorized node with existing native transport | **核心首用验收**：受保护浏览器签发票据→固定哈希安装/同节点更新→系统级 DynamicUser/LoadCredential timer/oneshot 自动运行→连续真实 heartbeat，journald 无配置权限错误，并确认既有 SSH 保留。repair、revoke、回退及网络中断恢复作为独立韧性验收，不由一次成功心跳推定通过 / **Core first-use acceptance**: protected-browser ticket → pinned install/same-node update → system DynamicUser/LoadCredential timer/oneshot runs automatically → repeated real heartbeats, no credential-permission error in journald, and existing SSH preserved. Repair, revoke, rollback and network-outage recovery are separate resilience checks; a successful heartbeat does not imply they passed |
 | M4 可复制与传输补齐 / Replication and transport completion | 相同发布物部署第二节点；CF 路径独立完成 / Reuse the same release on a second node; complete CF transport separately | 第二节点身份/凭据/服务/回退分别有证据；CF 按 ACCEPTANCE 单独验收，只有两路均通过才声明双路 / Separate second-node identity, credentials, service and rollback evidence; validate CF through ACCEPTANCE and claim dual-path access only when both paths pass |
 
-M2 的 dry-run 是“发布包已准备”，真实版本和鉴权回读才支持“面板已发布”。M3 支持“首节点可用”；它不证明第二节点或双路远控。M4 的第二节点复制与 CF 接线可以并行，CF 也可在源码确定后按原授权提前推进。CF 未完成时保留其未验收状态，不撤销已经成立的单路或面板交付。
+M2 的 dry-run 是“发布包已准备”，真实版本和鉴权回读才支持“面板已发布”。M3 的核心交付是“首节点可用”：必须有真实系统级自动心跳与原生 SSH 保持证据；repair/revoke/rollback/网络中断恢复是独立韧性验收，须单独留证，不能由 happy path 代替。M3 首节点验收不证明第二节点或双路远控。M4 的第二节点复制与 CF 接线可以并行，CF 也可在源码确定后按原授权提前推进。CF 未完成时保留其未验收状态，不撤销已经成立的单路或面板交付。
 
-M2 dry-run supports “release package prepared”; actual version and authorization readback support “panel released.” M3 supports “first node usable,” not second-node or dual-path acceptance. M4 replication and CF work may proceed in parallel; CF may start once source is established and existing authority permits it. Pending CF acceptance does not invalidate proven single-path or panel delivery.
+M2 dry-run supports “release package prepared”; actual version and authorization readback support “panel released.” M3's core delivery is “first node usable”: require real systemd-triggered heartbeats and preserved native SSH. Repair, revoke, rollback and network-outage recovery are separate resilience checks that need their own evidence; do not infer them from the happy path. M3 first-node acceptance does not prove a second node or dual-path remote control. M4 replication and CF work may proceed in parallel; CF may start once source is established and existing authority permits it. Pending CF acceptance does not invalidate proven single-path or panel delivery.
 
 ### 交付依赖图 / Delivery dependency diagram
 
-图源是本节与 ADR004；箭头表示依赖，不表示已经完成。CF 分支独立于面板首用，汇总时分别陈述已证明的范围。
+图源是本节与 ADR004；箭头表示依赖，不表示已经完成。首节点首用与后续韧性验收分开表达；CF 分支独立于面板首用，汇总时分别陈述已证明的范围。
 
-This section and ADR004 are the diagram sources. Edges represent dependencies, not completed work. CF is independent of panel first use; the receipt distinguishes each proven scope.
+This section and ADR004 are the diagram sources. Edges represent dependencies, not completed work. First-node core acceptance and later resilience checks are separate; CF is independent of panel first use. The receipt distinguishes each proven scope.
 
 ```mermaid
 flowchart TD
   Source["M1 源码整合 / Source"] --> Release["M2 发布包与 origin / Release"]
   Release --> First["M3 首节点首用 / First node"]
   First --> Second["M4 第二节点复制 / Second node"]
+  First --> Resilience["Repair / revoke / rollback / outage recovery"]
   Source --> CF["M4 CF 独立验收 / CF path"]
-  Second --> Receipt["#11 分范围交付回执 / Scoped receipts"]
+  Resilience --> Receipt["#11 分范围交付回执 / Scoped receipts"]
+  Second --> Receipt
   CF --> Receipt
 ```
 
@@ -53,7 +55,7 @@ Use [PRESENCE](PRESENCE.md) for operations and [REMOTE_ACCESS](REMOTE_ACCESS.md)
 
 1. **发布边界 / Release boundary**：核对既有 Worker/DO、对象与 node_uid；保留前一版本、适用数据恢复点和仍在使用的旧消费者。两 origin 的精确路由、panel 全站 Access、不同的 Operator/Read 应用凭据由实例配置承载。实测匿名 panel 拦截、Read 写入拒绝、node origin 管理入口拒绝、错误/撤销凭据拒绝及正确安装器哈希。/ Reconcile existing Worker/DO, object and node_uid identity; retain the previous version, applicable data recovery point and live legacy consumers. Instance configuration owns exact origin routes, whole-panel Access and distinct Operator/Read credentials. Test anonymous-panel denial, Read-write denial, node-admin rejection, invalid/revoked credentials and the served installer digest.
 
-2. **系统级首用 / System first use**：从真实受保护浏览器创建票据，在授权节点本地输入独立短码，验证固定发布物安装、系统 timer/oneshot、DynamicUser 与 LoadCredential 实际工作；检查最后心跳及真实 unit 状态，缺失 unit 应如实显示。仅有临时 user-unit、DOM 夹具或静态 unit 检查时，不声称完成本项。/ Create a ticket in the protected browser, enter the separate code locally on the authorized node, and observe the pinned installer, system timer/oneshot, DynamicUser and LoadCredential working. Check the received heartbeat and actual unit states, including truthful missing-unit status. Temporary user units, DOM fixtures or static unit checks do not establish this result.
+2. **系统级首用 / System first use**：从真实受保护浏览器创建票据，在授权节点本地输入独立短码，验证固定发布物安装、systemd timer 自动触发的 oneshot、DynamicUser 与 LoadCredential 实际工作；至少观察多次真实心跳及 journald 无凭据权限错误，并确认原生 SSH 保持。仅有临时 user-unit、DOM 夹具或静态 unit 检查时，不声称完成本项。/ Create a ticket in the protected browser, enter the separate code locally on the authorized node, and observe the pinned installer, automatically triggered systemd timer/oneshot, DynamicUser and LoadCredential working. Observe repeated real heartbeats, no credential-permission error in journald, and preserved native SSH. Temporary user units, DOM fixtures or static unit checks do not establish this result.
 
 3. **恢复与权限边界 / Recovery and authority boundary**：按已有测试范围验证本地 repair 复用已保存凭据、同节点重发不复制身份、旧 reporting 凭据失效，以及面板中断或撤销上报时既有 SSH 仍独立。记录上报恢复和本地 journal 诊断，不上传全量日志。真实系统范围未执行的项注明缺口，不用隔离测试代填。/ Within the existing test scope, verify repair using saved credentials, same-node reissue without identity duplication, invalidation of the old reporting credential, and native SSH independence during panel outage or reporting revocation. Record reporting recovery and local journal diagnostics without uploading the full journal. State any unexecuted live-system item rather than filling it with isolated-test results.
 

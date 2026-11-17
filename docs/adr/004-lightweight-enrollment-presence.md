@@ -1,6 +1,6 @@
 # ADR 004 — Lightweight enrollment and presence / 轻量纳管与心跳
 
-Date: 2026-11-15. Direction accepted by Human in [#11](https://github.com/youling/ghostfleet/issues/11); implementation remains a reviewable candidate, not a production release. Supersedes only the transport-only exclusion of a panel/reporting plane. It does not revive the older command/Helper/JIT program.
+Decision date: 2026-11-15. Direction accepted by Human in [#11](https://github.com/youling/ghostfleet/issues/11). The implementation is integrated into main; the instance owner has reported M2 Worker deployment and M3 first-node systemd acceptance, with exact evidence and remaining gates tracked in [#11](https://github.com/youling/ghostfleet/issues/11). This ADR records the accepted product/architecture decision, not a live deployment ledger. Supersedes only the transport-only exclusion of a panel/reporting plane. It does not revive the older command/Helper/JIT program.
 
 ## 中文
 
@@ -30,7 +30,7 @@ Operator 签发时预留稳定 node_uid；随机票据定位符与独立八位�
 
 ## Derived architecture / 派生架构
 
-Source: this ADR and #11. Scope: implementation candidate, not live deployment. Solid edges describe implemented interfaces, not production acceptance.
+Source: this ADR and #11. Scope: current product architecture. This diagram describes component relationships, not per-instance deployment or acceptance. Solid edges describe implemented interfaces; production release and field acceptance remain evidenced in #11.
 
 ```mermaid
 flowchart LR
