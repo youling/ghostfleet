@@ -1,4 +1,7 @@
 # Replace both reserved hostnames and the local private-key path.
+# Install cloudflared on the operator client as well as on the target; this ProxyCommand runs locally.
+# The executable must be resolvable by the SSH client; if it is not on PATH, use its actual absolute path.
+# This alias expects a Cloudflare Published Application service type SSH (ssh://...:22), not TCP.
 # Enroll the host key out of band; use one unique HostKeyAlias per machine.
 # This machine shares "ghostfleet-node" across both routes; other machines need other aliases.
 
