@@ -150,4 +150,34 @@ class NetworkTests(unittest.TestCase):
             self.mode = mode
             with self.assertRaisesRegex(hb.ClientError, code): hb.report(config(self.origin), True)
 
+class M3FixTests(unittest.TestCase):
+    def test_credential_mode_boundary(self):
+        # systemd 257 LoadCredential 0440 is accepted (group-read allowed);
+        # group write/execute or any others bits are refused.
+        for mode in [0o100440, 0o100400, 0o100600, 0o100640]:
+            self.assertTrue(hb.credential_mode_ok(SimpleNamespace(st_mode=mode)), oct(mode))
+        for mode in [0o100444, 0o100660, 0o100604, 0o100044]:
+            self.assertFalse(hb.credential_mode_ok(SimpleNamespace(st_mode=mode)), oct(mode))
+    def test_post_json_sends_user_agent(self):
+        hits = []
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get('content-length', '0')))
+                hits.append(self.headers.get('User-Agent'))
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
+                self.wfile.write(json.dumps({'ok': True}).encode())
+            def log_message(self, *args): pass
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            hb.post_json('http://127.0.0.1:' + str(server.server_port), '/v1/heartbeat', {'ping': True}, allow_loopback=True)
+        finally:
+            server.shutdown(); server.server_close()
+        self.assertEqual(hits, ['GhostFleet-Reporter/1'])
+    def test_install_command_sends_user_agent(self):
+        js = (Path(__file__).resolve().parents[1] / 'console' / 'app.js').read_text(encoding='utf-8')
+        lines = [line for line in js.splitlines() if 'urllib.request.urlopen' in line]
+        self.assertEqual(len(lines), 1)
+        self.assertIn('GhostFleet-Reporter/1', lines[0])
+
 if __name__ == '__main__': unittest.main()

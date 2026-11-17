@@ -92,7 +92,7 @@ def check_origin(value: str, allow_loopback: bool = False) -> str:
 def post_json(origin: str, path: str, body: dict, token: str | None = None,
               allow_loopback: bool = False) -> dict:
     check_origin(origin, allow_loopback)
-    headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
+    headers = {'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': 'GhostFleet-Reporter/1'}
     if token:
         if not TOKEN.fullmatch(token): raise ClientError('INVALID_REPORTING_TOKEN')
         headers['Authorization'] = 'Bearer ' + token
@@ -127,10 +127,16 @@ def validate_config(config: dict, allow_loopback: bool = False) -> dict:
         raise ClientError('INVALID_UNIT_MAP')
     return config
 
+def credential_mode_ok(info: os.stat_result) -> bool:
+    # systemd 257 delivers LoadCredential files as 0440 under system-level
+    # DynamicUser: allow group-read, still refuse group write/execute and any
+    # access by others.
+    return stat.S_ISREG(info.st_mode) and not info.st_mode & 0o037
+
 def load_config(path: Path, allow_loopback: bool = False) -> dict:
     if path.is_symlink(): raise ClientError('CONFIG_SYMLINK_REFUSED')
     info = path.stat()
-    if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_size > 16384:
+    if not credential_mode_ok(info) or info.st_size > 16384:
         raise ClientError('CONFIG_PERMISSIONS_OR_SIZE')
     try: return validate_config(json.loads(path.read_text()), allow_loopback)
     except (ValueError, UnicodeError): raise ClientError('INVALID_CONFIG') from None
