@@ -30,6 +30,40 @@ python3 test/live-presence.py --with-user-systemd
 
 旧 Worker 的 command/MCP/helper/七证据纳管 API 不再挂载，旧 node 数据和 lifecycle 字段保留。若有旧消费者，先确认切换与回滚；不能直接覆盖仍在使用旧 API 的生产实例。需要回退时回退该 Worker 版本并停用本 reporter；不要为回退删除原节点、DO或 SSH 凭据。
 
+### NAS / appliance 首次安装安全边界
+
+GhostFleet v1 安装器是**心跳上报器安装器，不是 NAS/OMV 配置管理器**。首次 root ceremony 的作用仅是安装 GhostFleet 自己的配置、reporter 与两个 systemd unit；安装器不会先替代 OMV 的本机只读 Phase 0，也不会因为系统基于 Debian 就推断磁盘、RAID、挂载或业务服务状态安全。
+
+安装器当前实际执行的本地操作范围：
+
+- 交互式检查 Linux、root、TTY、HTTPS origin、票据/短码格式，以及 GhostFleet 自有目标的符号链接/归属/权限边界。
+- 在需要时创建 GhostFleet 自有目录：`/etc/ghostfleet`（0700）及 `/usr/local/libexec`（0755）。
+- 仅写入 `/etc/ghostfleet/presence.json`（0600）、`/etc/ghostfleet/presence-install.json`（0600）、`/usr/local/libexec/ghostfleet-heartbeat.py`（0755）、`/etc/systemd/system/ghostfleet-heartbeat.service` 和 `ghostfleet-heartbeat.timer`（0644）。
+- 仅对自己的 timer/service 执行 `systemctl stop / daemon-reload / enable --now / start`；reporter 对 SSH、cloudflared、tailscaled 只读观察，不修改这些服务。
+
+明确不做：安装/升级系统软件包；创建或修改 OS 用户/组/sudoers；修改 sshd/authorized_keys；安装、迁移或重启 Cloudflare/Tailscale provider；修改防火墙、路由、DNS；调用 OMV 配置接口；访问或修改磁盘、分区、文件系统、RAID、挂载、共享、Docker/业务容器；重启主机。它也不提供远程命令执行、常驻 Node Agent、Helper 或 JIT 特权审批。
+
+因此，NAS 真机仍由其 owner 在本机执行独立只读 Phase 0，确认设备身份、OS/systemd、当前权限模型、存储/业务服务提示与恢复条件；Phase 0 未通过或事实为 UNKNOWN 时，不进入安装。Phase 0 与 root ceremony 的授权属于实例 owner，不由 GhostFleet 的票据、面板或 CI 自动授予。
+
+`repair` 只用本地当前脚本与仍有效的已保存配置恢复 GhostFleet 自有文件/unit；`remove` 只在安装 manifest 和文件摘要匹配时移除 GhostFleet 自有文件/unit。移除后仍须在面板单独撤销 reporter 凭据。两者都不清理或更改任何 SSH/provider/OMV/存储配置。
+
+### NAS / appliance first-install safety boundary
+
+The GhostFleet v1 installer is a **presence-reporter installer, not a NAS/OMV configuration manager**. Its one-time root ceremony installs only GhostFleet-owned configuration, reporter and two systemd units. It does not replace OMV's local read-only Phase 0, and it must not infer that disks, RAID, mounts or business services are safe merely because the host is Debian-based.
+
+The installer's current local effect scope is limited to:
+
+- Checking Linux, root, an interactive TTY, HTTPS origin, ticket/short-code shape, and symlink/ownership/permission boundaries for GhostFleet-owned targets.
+- Creating GhostFleet-owned directories when absent: `/etc/ghostfleet` (0700) and `/usr/local/libexec` (0755).
+- Writing only `/etc/ghostfleet/presence.json` (0600), `/etc/ghostfleet/presence-install.json` (0600), `/usr/local/libexec/ghostfleet-heartbeat.py` (0755), `/etc/systemd/system/ghostfleet-heartbeat.service` and `ghostfleet-heartbeat.timer` (0644).
+- Running `systemctl stop / daemon-reload / enable --now / start` only for its own timer/service. SSH, cloudflared and tailscaled are observed read-only, never modified.
+
+It does **not** install/upgrade packages; create or modify OS users/groups/sudoers; change sshd/authorized_keys; install, migrate or restart Cloudflare/Tailscale providers; change firewall/routes/DNS; call OMV configuration APIs; inspect or mutate disks, partitions, filesystems, RAID, mounts, shares, Docker/business containers; or reboot the host. It provides no remote command execution, resident Node Agent, privileged Helper or JIT approval.
+
+A real NAS must still pass its owner-run local read-only Phase 0 for device identity, OS/systemd, current privilege model, storage/business-service hints and recovery conditions. If Phase 0 fails or a material fact is UNKNOWN, installation does not proceed. Phase 0 and the root ceremony are instance-owner authority; a GhostFleet ticket, panel or CI does not grant them.
+
+`repair` restores GhostFleet-owned files/units from the local script and still-valid saved config. `remove` removes GhostFleet-owned files/units only when the install manifest and file digests match. Reporter credentials must still be revoked separately in the Panel after removal. Neither operation cleans up or changes SSH/provider/OMV/storage configuration.
+
 ### 日常使用与修复
 
 Operator 登录面板，输入节点名称，创建票据；在目标机可信终端运行面板给出的哈希固定命令并输入短码。已是 root 时去掉 `sudo`。客户端默认观察 `ssh.service`、`cloudflared-ssh.service`、`tailscaled.service`；实际 unit 名称不同，通过安装器 `--ssh-unit` / `--cloudflared-unit` / `--tailscaled-unit` 指定。不存在的服务显示“未安装/未找到”，不要伪装成活动。
