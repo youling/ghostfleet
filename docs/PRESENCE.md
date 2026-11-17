@@ -34,6 +34,8 @@ python3 test/live-presence.py --with-user-systemd
 
 Operator 登录面板，输入节点名称，创建票据；在目标机可信终端运行面板给出的哈希固定命令并输入短码。已是 root 时去掉 `sudo`。客户端默认观察 `ssh.service`、`cloudflared-ssh.service`、`tailscaled.service`；实际 unit 名称不同，通过安装器 `--ssh-unit` / `--cloudflared-unit` / `--tailscaled-unit` 指定。不存在的服务显示“未安装/未找到”，不要伪装成活动。
 
+**服务观察的管理器范围：** reporter 使用 `systemctl --system show`，因此 `--ssh-unit` / `--cloudflared-unit` / `--tailscaled-unit` 只选择 system manager 中要查询的 unit 名称，不会切换到 `systemctl --user`。如果某服务只存在于某个用户的 systemd user manager，即使该 user unit 正在运行，system-level probe 仍会报告 `not_found`。这是观测范围不匹配，不代表服务或隧道已停止。不要为了让面板徽标变绿而擅自迁移/重建现有 provider unit。若确需 system-level unit 或 user-manager 原生观测，应作为单独的 owner-authorized 变更，保留原有执行用户、环境、凭据和回退路径，并先验证原生连接不中断。
+
 ```sh
 systemctl status ghostfleet-heartbeat.timer
 journalctl -u ghostfleet-heartbeat.service --no-pager
@@ -90,6 +92,8 @@ Run the commands above: locked dependency install, Node/Python tests, determinis
 The build emits static assets, an installer digest and the generated Wrangler configuration. The owner supplies two HTTPS origins routed to one Worker, protects the entire panel with Access, and keeps the node origin limited to authenticated machine endpoints plus the public pinned installer. Configure distinct high-entropy Operator/Read application tokens through native secret tooling. Never commit them or send them to chat/CI. Preserve the existing DO namespace, class, snapshot key and node_uid values; back up before rollout. Do not silently replace a live legacy API used by old consumers. Source/CI success grants no production release authority.
 
 The panel-generated command verifies the installer SHA-256 and prompts for the separate short code locally. The installer touches only its own files and two units, not SSH, provider policy or user authentication. Custom service-unit names are explicit options; absent units remain not_found. Config is0600 and passed with LoadCredential to a DynamicUser service. The reporter has bounded timeouts/responses, refuses redirects and uses no inherited HTTP proxy.
+
+**Service-observation manager scope:** the reporter invokes `systemctl --system show`. The `--ssh-unit`, `--cloudflared-unit` and `--tailscaled-unit` options select unit names within the system manager; they do not switch to `systemctl --user`. A service that exists only in a user's systemd manager will therefore be reported as `not_found` even while that user unit is active. This is an observation-scope mismatch, not proof that the service or tunnel is down. Do not migrate or recreate an existing provider unit merely to improve a Panel badge. A system-unit migration or explicit user-manager probe is a separate owner-authorized change and must preserve the existing execution user, environment, credentials and rollback path while proving native connectivity remains intact.
 
 For an uncertain claim, reissue a ticket for the same node_uid, invalidating its former reporting credential. Do not create another node. Use `repair` only when a saved local credential exists but the local files or units need repair; it is not a software update. Use an explicit same-node reissue with `--replace` to install a newer reporter. Removal validates its manifest and refuses locally modified files. Panel reporting revocation and local uninstall are separate actions, neither revokes SSH. A panel outage does not terminate native SSH.
 
