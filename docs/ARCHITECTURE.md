@@ -1,6 +1,6 @@
 # Architecture / 架构
 
-当前语义由 [ADR004](adr/004-lightweight-enrollment-presence.md) 与 [#11](https://github.com/youling/ghostfleet/issues/11) 持有。本页是 DERIVED 导航，描述集成候选，不表示生产已部署。原 transport-only 图和旧控制平台保留在 Git 历史中。
+当前语义由 [ADR004](adr/004-lightweight-enrollment-presence.md) 与 [#11](https://github.com/youling/ghostfleet/issues/11) 持有。本页是当前集成主干的 DERIVED 架构导航，说明组件职责、接口与边界；它不是实例发布状态库，也不代替生产验收。具体生产版本、节点验收与剩余门禁以 #11 回执为准。原 transport-only 图和旧控制平台保留在 Git 历史中。
 
 ## 中文
 
@@ -20,7 +20,7 @@
 
 ## English
 
-ADR004 is the semantic owner; this index is derived candidate documentation. Native network/SSH transport, panel/API state and Linux reporting are separate domains. One reference Worker uses two HTTPS origins and one existing DO. Instance-owned Access and Operator/Read authorization protect the panel; the machine origin exposes only authenticated claim/heartbeat plus the pinned public installer.
+ADR004 is the semantic owner; this page is derived architecture documentation for the integrated main, not a per-instance release ledger. Production versions, node acceptance and remaining gates are recorded in #11. Native network/SSH transport, panel/API state and Linux reporting are separate domains. One reference Worker uses two HTTPS origins and one existing DO. Instance-owned Access and Operator/Read authorization protect the panel; the machine origin exposes only authenticated claim/heartbeat plus the pinned public installer.
 
 The reporter is scheduled, one-shot, and command-free. Existing node_uid, asset fields and lifecycle are retained. Heartbeat freshness does not promote ACTIVE or prove incoming SSH connectivity. Reporting revocation does not revoke SSH. See ADR004 for the diagram and bounded failure/recovery semantics, PRESENCE for deployment, and REMOTE_ACCESS for native transport setup.
 
