@@ -90,6 +90,82 @@ ssh node-ts
 
 The two aliases for one machine share one `HostKeyAlias`, so either route checks the same server host key. Choose a different stable alias for every other machine; do not reuse `ghostfleet-node` for the whole fleet. During route acceptance, disable connection reuse with `-o ControlPath=none -o ControlMaster=no`.
 
+### 6.1 Diagnose the Cloudflare SSH client path
+
+There are **two distinct cloudflared roles**:
+
+- **Origin-side connector:** the `cloudflared tunnel run` process/service on the target keeps the Tunnel connected to Cloudflare.
+- **Client-side proxy:** the operator's own `cloudflared` executable is launched by OpenSSH through `ProxyCommand` for each new SSH connection.
+
+An active origin-side service on the target does not install the client executable on Windows or ThinkPad. A missing client executable is a client prerequisite failure, not proof that the target Tunnel is down. Install only the client binary on the operator machine; do not run `cloudflared service install` there merely to obtain the SSH client.
+
+**1. Confirm the Published Application service type first.** In Cloudflare Zero Trust, inspect the hostname's Published Application route:
+
+- If Service is `SSH` / `ssh://<origin>:22`, the matching client command is `cloudflared access ssh --hostname %h`. The GhostFleet `node-cf` alias is written for this SSH route.
+- If Service is `TCP` / `tcp://<origin>:<port>`, the client uses `cloudflared access tcp --hostname <host> --url 127.0.0.1:<local-port>`, then connects the SSH client to that local port. This is a different route and client flow.
+
+Do not substitute `access tcp` for `access ssh` (or the reverse). The route's configured service type determines the client command.
+
+**2. Verify the executable on the chosen client.**
+
+Windows PowerShell:
+
+```powershell
+$cmd = Get-Command cloudflared.exe -ErrorAction SilentlyContinue
+if ($null -eq $cmd) {
+    throw 'cloudflared.exe is not on PATH; install the official Windows client binary first.'
+}
+& $cmd.Source --version
+```
+
+If using the downloaded executable before adding it to PATH, run it by its actual path, for example `./cloudflared-windows-amd64.exe --version`. Cloudflare publishes Windows 64-bit executable and MSI packages at its [official downloads page](https://developers.cloudflare.com/tunnel/downloads/). Windows installations do not automatically update; keep the client version recorded.
+
+Linux:
+
+```sh
+command -v cloudflared
+cloudflared --version
+```
+
+If the executable is not on PATH, set the `node-cf` `ProxyCommand` to the actual absolute executable path. On Windows, use the path and quoting accepted by the installed OpenSSH build; a path without spaces avoids an unnecessary quoting variable. Do not guess a path from another machine.
+
+**3. Inspect the effective SSH configuration without connecting.**
+
+Windows PowerShell:
+
+```powershell
+ssh -G node-cf | Select-String '^(hostname|user|proxycommand|identityfile|hostkeyalias|stricthostkeychecking) '
+Resolve-DnsName ssh.example.invalid
+```
+
+Linux:
+
+```sh
+ssh -G node-cf | grep -E '^(hostname|user|proxycommand|identityfile|hostkeyalias|stricthostkeychecking) '
+getent ahosts ssh.example.invalid
+```
+
+Confirm the expected hostname, OS user, identity file, unique per-node `HostKeyAlias`, `StrictHostKeyChecking yes`, and a `ProxyCommand` that invokes the client executable and `access ssh --hostname %h`. `ssh -G` only prints the resolved configuration; it does not launch or validate the proxy executable.
+
+**4. Make one fresh, verbose connection.**
+
+```sh
+ssh -vvv -o ControlPath=none -o ControlMaster=no node-cf
+```
+
+Use the verbose output to identify the first failing layer; wording varies by OpenSSH/cloudflared version:
+
+| First observed failure | Investigate |
+| --- | --- |
+| `cloudflared: command not found`, process creation/permission error, or ProxyCommand exits before Access login | Client binary, PATH, absolute path, quoting and executable permissions |
+| `Could not resolve hostname` / resolver failure | Client DNS and the published hostname |
+| Browser login, Access challenge, or explicit policy denial | Access application, identity-provider login, allowed identity and policy evaluation |
+| Proxy starts but WebSocket/edge connection fails | Client outbound network/proxy/firewall and Cloudflare edge reachability |
+| Edge accepts the client but origin is unreachable | Published route's origin target, Tunnel connector health and origin-side SSH listener; inspect the target's own connector logs without changing its service |
+| SSH host-key warning or `Permission denied` after the proxy has connected | Per-node host-key enrollment, target sshd, OS account and authorized public key |
+
+Do not infer a server-side Tunnel failure from a client-side missing executable. Do not change the target's provider unit, sshd, DNS or Access policy until the failing layer is identified. Keep verbose logs and real hostnames private; publish only a sanitized failure class and an opaque evidence reference.
+
 ## 7. Logs and recovery
 
 Use the OS's native logs:
@@ -227,6 +303,82 @@ ssh node-ts
 ```
 
 同一机器的两个别名共用一个 `HostKeyAlias`，两路校验同一主机密钥；每台其他机器必须使用自己的稳定别名，不能全舰队照抄 `ghostfleet-node`。路径验收时使用 `-o ControlPath=none -o ControlMaster=no`，避免复用已有连接而误判另一条路径可用。
+
+### 6.1 Cloudflare SSH 客户端排障
+
+这里有两种**不同的 cloudflared 角色**：
+
+- **源站连接器：** 目标机上的 `cloudflared tunnel run` 进程/服务，负责维持目标机到 Cloudflare 的 Tunnel 连接。
+- **客户端代理：** 管理员自己电脑上的 `cloudflared` 可执行文件；OpenSSH 每次建立新连接时通过 `ProxyCommand` 启动它。
+
+目标机的源站连接器处于 active，不代表 Windows 或 ThinkPad 已安装客户端程序。客户端缺少可执行文件是客户端前置条件失败，不能据此认定目标机 Tunnel 故障。管理端只需安装客户端二进制；不要为了获得 SSH 客户端而在管理电脑上执行 `cloudflared service install`。
+
+**1. 先确认 Published Application 的服务类型。** 在 Cloudflare Zero Trust 中检查该主机名对应的 Published Application route：
+
+- 如果 Service 类型是 `SSH` / `ssh://<origin>:22`，客户端必须使用 `cloudflared access ssh --hostname %h`。GhostFleet 的 `node-cf` 别名按 SSH route 编写。
+- 如果 Service 类型是 `TCP` / `tcp://<origin>:<port>`，客户端应使用 `cloudflared access tcp --hostname <host> --url 127.0.0.1:<local-port>`，再让 SSH 客户端连接这个本地端口。这是另一种 route 和客户端流程。
+
+不能把 `access tcp` 与 `access ssh` 混用；应按 route 实际配置的服务类型选择命令。
+
+**2. 在选定的客户端检查可执行文件。**
+
+Windows PowerShell：
+
+```powershell
+$cmd = Get-Command cloudflared.exe -ErrorAction SilentlyContinue
+if ($null -eq $cmd) {
+    throw 'PATH 中找不到 cloudflared.exe；请先安装 Cloudflare 官方 Windows 客户端。'
+}
+& $cmd.Source --version
+```
+
+如果刚下载、尚未加入 PATH，可以先用实际文件路径运行，例如 `./cloudflared-windows-amd64.exe --version`。Cloudflare 在[官方下载页](https://developers.cloudflare.com/tunnel/downloads/)提供 Windows 64 位可执行文件和 MSI。Windows 版本不会自动更新，需记录并管理客户端版本。
+
+Linux：
+
+```sh
+command -v cloudflared
+cloudflared --version
+```
+
+如果程序不在 PATH 中，将 `node-cf` 的 `ProxyCommand` 改为该客户端真实的绝对路径。Windows 路径和引号应符合当前 OpenSSH 版本的解析方式；路径不含空格可以减少不必要的转义变量。不要照抄另一台电脑上的安装路径。
+
+**3. 不建立连接，先检查 SSH 最终配置。**
+
+Windows PowerShell：
+
+```powershell
+ssh -G node-cf | Select-String '^(hostname|user|proxycommand|identityfile|hostkeyalias|stricthostkeychecking) '
+Resolve-DnsName ssh.example.invalid
+```
+
+Linux：
+
+```sh
+ssh -G node-cf | grep -E '^(hostname|user|proxycommand|identityfile|hostkeyalias|stricthostkeychecking) '
+getent ahosts ssh.example.invalid
+```
+
+确认主机名、OS 用户、身份文件、每台机器唯一的 `HostKeyAlias`、`StrictHostKeyChecking yes`，以及会调用客户端程序和 `access ssh --hostname %h` 的 `ProxyCommand`。注意：`ssh -G` 只打印最终配置，不会真正启动或验证代理程序。
+
+**4. 使用全新连接和详细日志测试。**
+
+```sh
+ssh -vvv -o ControlPath=none -o ControlMaster=no node-cf
+```
+
+根据第一个失败环节定位；不同版本的报错文字可能不同：
+
+| 首个可观察失败 | 优先检查 |
+| --- | --- |
+| `cloudflared: command not found`、进程创建/权限错误，或 Access 登录前 ProxyCommand 已退出 | 客户端二进制、PATH、绝对路径、引号和执行权限 |
+| `Could not resolve hostname` / DNS resolver 错误 | 客户端 DNS 与 Published hostname |
+| 浏览器登录、Access challenge 或明确的策略拒绝 | Access Application、身份提供方登录、允许身份和策略判定 |
+| 代理已启动，但 WebSocket/edge 连接失败 | 客户端出站网络、代理/防火墙与 Cloudflare edge 连通性 |
+| Edge 接受客户端，但源站不可达 | Published route 的源站目标、Tunnel 连接器健康状态、源站 SSH 监听；只读检查目标机自己的连接器日志，不要擅自修改服务 |
+| 代理连接建立后出现 SSH host-key 警告或 `Permission denied` | 每节点主机密钥登记、目标 sshd、OS 账户和 authorized public key |
+
+不能因为客户端缺少二进制就推断源站 Tunnel 故障。在失败层尚未确定前，不要修改目标机 provider unit、sshd、DNS 或 Access policy。详细日志和真实主机名留在私有记录中；公开记录只写脱敏后的失败层级和不透明证据引用。
 
 ## 7. 日志与故障恢复
 
