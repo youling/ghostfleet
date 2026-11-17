@@ -1,183 +1,6 @@
-# Remote access deployment
+# 原生远控部署 / Native remote access
 
-This guide is a template. It does not deploy anything and contains no real hostnames, keys, tokens or account identifiers. Apply it only after the device owner authorizes the exact target and Cloudflare/Tailscale policy changes.
-
-## 1. Install the native services on the target
-
-On Debian/OMV, install and enable:
-- OpenSSH server (`openssh-server`, service normally `ssh.service`);
-- Tailscale from its official Debian package instructions (`tailscaled.service`);
-- cloudflared from Cloudflare's official package instructions.
-
-Do not install a GhostFleet Node Agent. There is no custom GhostFleet daemon.
-
-## 2. Configure OpenSSH for owner-authorized administrator access
-
-The example in [00-ghostfleet-admin.conf.example](../config/sshd/00-ghostfleet-admin.conf.example) enforces public-key-only authentication for root inside `Match User root`. It does not set global password or keyboard-interactive policy; non-root accounts retain the effective authentication settings supplied by the OS. Copy it to `/etc/ssh/sshd_config.d/00-ghostfleet-admin.conf`, add the owner's **public** key to `/root/.ssh/authorized_keys`, then validate before reloading:
-
-```sh
-sudo SSH_TEST_CONTEXT='user=root,host=localhost,addr=127.0.0.1' scripts/verify-sshd-admin.sh
-```
-
-The verifier runs `sshd -t` and `sshd -T -C` in a root context and requires enabled root login (`prohibit-password`, its normalized `without-password` alias, or OMV-managed `yes`), `pubkeyauthentication yes`, `passwordauthentication no`, `kbdinteractiveauthentication no`, and the complete `AuthenticationMethods` value to be exactly `publickey`. These are effective values for root, not global requirements. Replace the context host/address when Match rules depend on them. A conflict or missing value fails closed; the verifier never reloads sshd. Non-root policy is not asserted or changed by this verifier. Do not copy the private key to the server, repository or chat.
-
-**OMV/cloud-init boundary:** do not edit a generated main sshd config as the durable source of truth. Inspect Include order, drop-ins and Match rules. OMV/cloud-init may regenerate configuration on Apply/upgrade; after such an operation rerun `sshd -t` and the effective-policy verifier. If a vendor-managed setting wins, reconcile it at its supported source rather than deleting generated files.
-
-**OMV 8 root-session choice:** OMV's own guidance normally recommends a non-privileged user in `_ssh` and `sudo`, and recommends disabling root SSH after installation. This GhostFleet profile intentionally chooses direct root administration with SSH public-key-only authentication. In OMV `Services → SSH`, enable root login and public-key authentication. Do not disable password authentication globally just to satisfy GhostFleet; preserve the OS/OMV-wide policy for non-root users. Put the root-only restrictions in OMV's supported SSH **Extra options** field as a `Match User root` block, not in a global toggle or generated file. Preserve the OMV-managed `AllowGroups` rule only if it admits root (the usual `root _ssh` list does); do not add root to `_ssh` just to satisfy a generic rule. The verifier accepts OMV's `PermitRootLogin yes` only when root's effective public-key authentication is enabled, password and keyboard-interactive authentication are disabled, `AuthenticationMethods publickey` is effective, and the supported static admission checks pass. See [OMV 8 SSH documentation](https://docs.openmediavault.org/en/8.x/administration/services/ssh.html).
-
-**Static-check boundary:** all repeated Allow/Deny entries are read. Exact user/group names and a standalone `*` are supported; patterns such as `user@host`, partial wildcards or negation return `UNKNOWN` and a nonzero exit. Do not weaken a valid complex policy to satisfy this small checker. Inspect it through OpenSSH and record real login evidence. A successful result still does not prove `authorized_keys`, PAM/account state, forced-command options, SFTP or a live login. The test context must contain exactly one `user=root`; evaluate both the Cloudflare-origin and Tailscale connection contexts.
-
-After an authorized configuration change, keep the existing session or local console available. On ordinary Debian, once syntax and supported effective checks pass, use the platform's SSH reload (`sudo systemctl reload ssh` where that is the installed unit). On OMV, Apply through its supported configuration source and rerun the checks. Open a separate new connection, confirm the intended account and normal session behavior, then close the old session. If checks fail or login remains unknown, retain the recovery path. See the [acceptance matrix](ACCEPTANCE.md).
-
-Once authenticated as root, the SSH session has root authority. GhostFleet does not add command restrictions or per-command approvals.
-
-## 3. Enroll the SSH host key / 带外登记主机密钥
-
-On the target's trusted local console, obtain the public host-key fingerprint and key:
-```sh
-sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
-sudo cat /etc/ssh/ssh_host_ed25519_key.pub
-```
-Verify the fingerprint through a separate trusted channel. Add the verified public key to the operator's `~/.ssh/known_hosts` using the alias `ghostfleet-node`. The client config uses `StrictHostKeyChecking yes` and refuses an un-enrolled key. Do not trust an unverified ssh-keyscan result.
-
-## 4. Cloudflare path
-
-Use a remotely-managed Cloudflare Tunnel:
-1. Create/select a tunnel in Cloudflare Zero Trust.
-2. Add a published application route for a hostname such as `ssh.example.invalid` to `ssh://127.0.0.1:22`.
-3. Create a Cloudflare Access self-hosted application for that hostname and allow the owner's identity.
-4. Install cloudflared on the target and run it as a systemd service. The service example uses a token file; use a cloudflared build whose `tunnel run --help` lists `--token-file` (verified with 2026.11.0):
-   ```sh
-   # Run these commands from the GhostFleet repository root.
-   sudo groupadd --system cloudflared
-   sudo useradd --system --gid cloudflared --home-dir /var/lib/cloudflared --create-home --shell /usr/sbin/nologin cloudflared
-   sudo install -d -o root -g cloudflared -m 0750 /etc/cloudflared
-   sudo install -o root -g cloudflared -m 0640 /dev/null /etc/cloudflared/ssh-tunnel.token
-   sudoedit /etc/cloudflared/ssh-tunnel.token
-   sudo chown root:cloudflared /etc/cloudflared/ssh-tunnel.token
-   sudo chmod 0640 /etc/cloudflared/ssh-tunnel.token
-   sudo install -D -m 0644 config/systemd/cloudflared-ssh.service.example /etc/systemd/system/cloudflared-ssh.service
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now cloudflared-ssh.service
-   ```
-   Adjust the binary path in the unit if `command -v cloudflared` is not `/usr/bin/cloudflared`. Do not put the token in Git, shell history or an AI prompt.
-5. Install cloudflared on the client and connect using the `node-cf` SSH alias. The client-side `cloudflared access ssh` flow prompts for Cloudflare Access login when needed.
-
-Use a normal Access self-hosted application. Access authenticates the connection; it does not inspect or filter SSH commands. Do not use Access for Infrastructure if the deployment goal is a plain unrestricted SSH session without per-target command policy or command recording.
-
-## 5. Tailscale path
-
-1. Install Tailscale from its official Linux package instructions.
-2. Run `sudo tailscale up` and complete the owner-controlled browser authentication.
-3. Ensure the tailnet's existing policy permits the authorized administrator/device to reach this node on TCP/22.
-4. Leave Tailscale SSH disabled (`tailscale set --ssh=false`) so the connection uses the same OpenSSH daemon as the Cloudflare path.
-5. Connect using the `node-ts` alias and the same OpenSSH key.
-
-Tailscale is the network path; OpenSSH remains the SSH server and OS login authority. No custom Tailscale controller or GhostFleet ACL engine is installed.
-
-## 6. Client configuration
-
-Copy [ghostfleet.conf.example](../config/ssh/ghostfleet.conf.example) into the operator's SSH config or include it from `~/.ssh/config`. Replace:
-- `ssh.example.invalid` with the Cloudflare Access hostname;
-- `node.tailnet-name.example.invalid` with the target's Tailscale MagicDNS name;
-- `~/.ssh/ghostfleet_admin` with the owner's local private-key path.
-
-Connect:
-```sh
-ssh node-cf
-ssh node-ts
-```
-
-The two aliases for one machine share one `HostKeyAlias`, so either route checks the same server host key. Choose a different stable alias for every other machine; do not reuse `ghostfleet-node` for the whole fleet. During route acceptance, disable connection reuse with `-o ControlPath=none -o ControlMaster=no`.
-
-### Cloudflare client-side SSH prerequisites and failure isolation
-
-For this profile the Published Application route is an **SSH** route: its service type is SSH and its origin is typically `ssh://127.0.0.1:22`. The native SSH client launches the client-side `cloudflared access ssh --hostname %h` process through `ProxyCommand`. Cloudflare requires `cloudflared` on both the server side (the Tunnel connector) and the operator's client. The client needs the executable; it does **not** need a second Tunnel service or a server-side token.
-
-Do not confuse the two published service types:
-
-- **SSH / `ssh://…:22`** → SSH `ProxyCommand … access ssh --hostname %h`. This is the route tested by `ssh node-cf`.
-- **TCP / `tcp://…`** → start `cloudflared access tcp --hostname <hostname> --url 127.0.0.1:<local-port>`, then point the TCP client at that local port. This is a different local-forwarding flow. Running `access tcp` does not test an SSH-type Published Application route or the SSH `ProxyCommand`.
-
-Choose the actual client machine before testing. On Windows PowerShell, verify the client executable and version:
-
-```
-$cf = Get-Command cloudflared.exe -ErrorAction Stop
-$cf.Source
-& $cf.Source --version
-Resolve-DnsName ssh.example.invalid
-Test-NetConnection ssh.example.invalid -Port 443
-```
-
-If `Get-Command` fails, the client executable is absent from PATH; install/locate the official Windows client from [Cloudflare downloads](https://developers.cloudflare.com/tunnel/downloads/), then use its absolute path. On Linux/macOS:
-
-```
-command -v cloudflared
-cloudflared --version
-getent ahosts ssh.example.invalid
-```
-
-If the binary is not on PATH, use its verified absolute path in the SSH configuration. For example, a Windows OpenSSH host block may use:
-
-```
-Host node-cf
-    HostName ssh.example.invalid
-    ProxyCommand "C:/Program Files/Cloudflare/cloudflared.exe" access ssh --hostname %h
-```
-
-Keep the existing key, unique per-node `HostKeyAlias` and strict host-key verification. Do not copy a server Tunnel token to the client, and do not run `cloudflared service install` on the operator workstation just to obtain the client executable.
-
-Before connecting, inspect the effective SSH configuration and confirm that `proxycommand` resolves to the intended local binary and uses `access ssh`:
-
-```
-ssh -G node-cf
-ssh -vvv -o ControlPath=none -o ControlMaster=no node-cf
-```
-
-Use the output to isolate the failing layer instead of treating every exit code 1 as a Tunnel failure:
-
-1. **Local client launch:** executable missing, PATH/quoting error, or ProxyCommand cannot start → fix the selected client's binary path first.
-2. **DNS / edge reachability:** hostname resolution fails, or the client cannot establish outbound HTTPS to the Cloudflare edge → investigate the client DNS/egress/hostname layer. A successful TCP/443 check proves only edge reachability, not Access, Tunnel or SSH.
-3. **Access identity / policy:** the local proxy starts but browser authentication is not completed or Access denies the identity → inspect the Access application and policy for the selected hostname.
-4. **Tunnel / published route / origin:** Access succeeds but Cloudflare reports the connector/route/origin unavailable → inspect the selected Tunnel's published route, connector health and configured SSH origin. Do not infer this from the reporter's heartbeat.
-5. **Native OpenSSH authentication:** if the proxy reaches the origin and SSH returns `Permission denied (publickey)`, the network path has reached sshd; inspect the intended OS user, key and the effective `sshd -T -C` context.
-
-Retain full `ssh -vvv` output and provider logs privately; publish only sanitized error class, client OS, client `cloudflared` version, route service type and test time. After a positive fresh SSH session, run the authorized denied-identity/source negative test. An active server-side `cloudflared` unit, a successful outbound heartbeat, or a TCP-only probe is not end-to-end SSH acceptance.
-
-Upstream: [Cloudflare client-side SSH](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/use-cases/ssh/ssh-cloudflared-authentication/), [published application protocol types](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/routing-to-tunnel/protocols/), [arbitrary TCP client flow](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/non-http/cloudflared-authentication/arbitrary-tcp/).
-
-## 7. Logs and recovery
-
-Use the OS's native logs:
-```sh
-journalctl -u ssh --since today
-journalctl -u cloudflared-ssh --since today
-journalctl -u tailscaled --since today
-systemctl status ssh cloudflared-ssh tailscaled
-```
-
-These logs show service and connection/authentication events. They do not necessarily record every shell command. GhostFleet does not add command logging or monitoring.
-
-If Cloudflare is unavailable, create a new SSH session with `ssh node-ts`. If Tailscale is unavailable, use `ssh node-cf`. Existing TCP sessions require reconnecting; no custom session migration is promised.
-
-## 8. Revocation
-
-- Remove the operator from the Cloudflare Access allow policy or disable the tunnel route.
-- Remove the operator/device from the Tailscale network policy or revoke the node.
-- Remove the corresponding public key from `/root/.ssh/authorized_keys`.
-- Disable the relevant service if the route itself must be taken offline.
-
-Revocation must be verified with a fresh connection through each path. Removing an SSH authorized key prevents new authentication with that key; it does not terminate an already authenticated shell. Network-policy propagation and existing-session termination depend on the selected provider and configuration. Test and record them separately; stop existing sessions explicitly only when that action is authorized.
-
-## Boundaries
-
-This is a remote-access transport profile, not a complete device-management agent. It does not monitor disks, RAID, processes or services; it does not filter commands; it does not ask for per-command approval; it does not promise command-level audit records. It also does not modify storage, RAID, shares, packages or application services automatically.
-
-
-
----
-
-# 远控部署指南（中文版）
+## 中文
 
 本指南只是安装模板，不会自动部署。只有设备所有者明确授权目标机器及 Cloudflare/Tailscale 配置变更后，才执行相应步骤。
 
@@ -368,7 +191,186 @@ systemctl status ssh cloudflared-ssh tailscaled
 
 本方案是远程访问传输层，不是完整设备管理 Agent。它不会监控硬盘、RAID、进程或服务，不会过滤命令，不会逐条审批操作，也不承诺命令级审计。它不会自动修改存储、RAID、共享目录、软件包或业务服务。
 
-## Upstream references
+## English
+
+This guide is a template. It does not deploy anything and contains no real hostnames, keys, tokens or account identifiers. Apply it only after the device owner authorizes the exact target and Cloudflare/Tailscale policy changes.
+
+## 1. Install the native services on the target
+
+On Debian/OMV, install and enable:
+- OpenSSH server (`openssh-server`, service normally `ssh.service`);
+- Tailscale from its official Debian package instructions (`tailscaled.service`);
+- cloudflared from Cloudflare's official package instructions.
+
+Do not install a GhostFleet Node Agent. There is no custom GhostFleet daemon.
+
+## 2. Configure OpenSSH for owner-authorized administrator access
+
+The example in [00-ghostfleet-admin.conf.example](../config/sshd/00-ghostfleet-admin.conf.example) enforces public-key-only authentication for root inside `Match User root`. It does not set global password or keyboard-interactive policy; non-root accounts retain the effective authentication settings supplied by the OS. Copy it to `/etc/ssh/sshd_config.d/00-ghostfleet-admin.conf`, add the owner's **public** key to `/root/.ssh/authorized_keys`, then validate before reloading:
+
+```sh
+sudo SSH_TEST_CONTEXT='user=root,host=localhost,addr=127.0.0.1' scripts/verify-sshd-admin.sh
+```
+
+The verifier runs `sshd -t` and `sshd -T -C` in a root context and requires enabled root login (`prohibit-password`, its normalized `without-password` alias, or OMV-managed `yes`), `pubkeyauthentication yes`, `passwordauthentication no`, `kbdinteractiveauthentication no`, and the complete `AuthenticationMethods` value to be exactly `publickey`. These are effective values for root, not global requirements. Replace the context host/address when Match rules depend on them. A conflict or missing value fails closed; the verifier never reloads sshd. Non-root policy is not asserted or changed by this verifier. Do not copy the private key to the server, repository or chat.
+
+**OMV/cloud-init boundary:** do not edit a generated main sshd config as the durable source of truth. Inspect Include order, drop-ins and Match rules. OMV/cloud-init may regenerate configuration on Apply/upgrade; after such an operation rerun `sshd -t` and the effective-policy verifier. If a vendor-managed setting wins, reconcile it at its supported source rather than deleting generated files.
+
+**OMV 8 root-session choice:** OMV's own guidance normally recommends a non-privileged user in `_ssh` and `sudo`, and recommends disabling root SSH after installation. This GhostFleet profile intentionally chooses direct root administration with SSH public-key-only authentication. In OMV `Services → SSH`, enable root login and public-key authentication. Do not disable password authentication globally just to satisfy GhostFleet; preserve the OS/OMV-wide policy for non-root users. Put the root-only restrictions in OMV's supported SSH **Extra options** field as a `Match User root` block, not in a global toggle or generated file. Preserve the OMV-managed `AllowGroups` rule only if it admits root (the usual `root _ssh` list does); do not add root to `_ssh` just to satisfy a generic rule. The verifier accepts OMV's `PermitRootLogin yes` only when root's effective public-key authentication is enabled, password and keyboard-interactive authentication are disabled, `AuthenticationMethods publickey` is effective, and the supported static admission checks pass. See [OMV 8 SSH documentation](https://docs.openmediavault.org/en/8.x/administration/services/ssh.html).
+
+**Static-check boundary:** all repeated Allow/Deny entries are read. Exact user/group names and a standalone `*` are supported; patterns such as `user@host`, partial wildcards or negation return `UNKNOWN` and a nonzero exit. Do not weaken a valid complex policy to satisfy this small checker. Inspect it through OpenSSH and record real login evidence. A successful result still does not prove `authorized_keys`, PAM/account state, forced-command options, SFTP or a live login. The test context must contain exactly one `user=root`; evaluate both the Cloudflare-origin and Tailscale connection contexts.
+
+After an authorized configuration change, keep the existing session or local console available. On ordinary Debian, once syntax and supported effective checks pass, use the platform's SSH reload (`sudo systemctl reload ssh` where that is the installed unit). On OMV, Apply through its supported configuration source and rerun the checks. Open a separate new connection, confirm the intended account and normal session behavior, then close the old session. If checks fail or login remains unknown, retain the recovery path. See the [acceptance matrix](ACCEPTANCE.md).
+
+Once authenticated as root, the SSH session has root authority. GhostFleet does not add command restrictions or per-command approvals.
+
+## 3. Enroll the SSH host key / 带外登记主机密钥
+
+On the target's trusted local console, obtain the public host-key fingerprint and key:
+```sh
+sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+sudo cat /etc/ssh/ssh_host_ed25519_key.pub
+```
+Verify the fingerprint through a separate trusted channel. Add the verified public key to the operator's `~/.ssh/known_hosts` using the alias `ghostfleet-node`. The client config uses `StrictHostKeyChecking yes` and refuses an un-enrolled key. Do not trust an unverified ssh-keyscan result.
+
+## 4. Cloudflare path
+
+Use a remotely-managed Cloudflare Tunnel:
+1. Create/select a tunnel in Cloudflare Zero Trust.
+2. Add a published application route for a hostname such as `ssh.example.invalid` to `ssh://127.0.0.1:22`.
+3. Create a Cloudflare Access self-hosted application for that hostname and allow the owner's identity.
+4. Install cloudflared on the target and run it as a systemd service. The service example uses a token file; use a cloudflared build whose `tunnel run --help` lists `--token-file` (verified with 2026.11.0):
+   ```sh
+   # Run these commands from the GhostFleet repository root.
+   sudo groupadd --system cloudflared
+   sudo useradd --system --gid cloudflared --home-dir /var/lib/cloudflared --create-home --shell /usr/sbin/nologin cloudflared
+   sudo install -d -o root -g cloudflared -m 0750 /etc/cloudflared
+   sudo install -o root -g cloudflared -m 0640 /dev/null /etc/cloudflared/ssh-tunnel.token
+   sudoedit /etc/cloudflared/ssh-tunnel.token
+   sudo chown root:cloudflared /etc/cloudflared/ssh-tunnel.token
+   sudo chmod 0640 /etc/cloudflared/ssh-tunnel.token
+   sudo install -D -m 0644 config/systemd/cloudflared-ssh.service.example /etc/systemd/system/cloudflared-ssh.service
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now cloudflared-ssh.service
+   ```
+   Adjust the binary path in the unit if `command -v cloudflared` is not `/usr/bin/cloudflared`. Do not put the token in Git, shell history or an AI prompt.
+5. Install cloudflared on the client and connect using the `node-cf` SSH alias. The client-side `cloudflared access ssh` flow prompts for Cloudflare Access login when needed.
+
+Use a normal Access self-hosted application. Access authenticates the connection; it does not inspect or filter SSH commands. Do not use Access for Infrastructure if the deployment goal is a plain unrestricted SSH session without per-target command policy or command recording.
+
+## 5. Tailscale path
+
+1. Install Tailscale from its official Linux package instructions.
+2. Run `sudo tailscale up` and complete the owner-controlled browser authentication.
+3. Ensure the tailnet's existing policy permits the authorized administrator/device to reach this node on TCP/22.
+4. Leave Tailscale SSH disabled (`tailscale set --ssh=false`) so the connection uses the same OpenSSH daemon as the Cloudflare path.
+5. Connect using the `node-ts` alias and the same OpenSSH key.
+
+Tailscale is the network path; OpenSSH remains the SSH server and OS login authority. No custom Tailscale controller or GhostFleet ACL engine is installed.
+
+## 6. Client configuration
+
+Copy [ghostfleet.conf.example](../config/ssh/ghostfleet.conf.example) into the operator's SSH config or include it from `~/.ssh/config`. Replace:
+- `ssh.example.invalid` with the Cloudflare Access hostname;
+- `node.tailnet-name.example.invalid` with the target's Tailscale MagicDNS name;
+- `~/.ssh/ghostfleet_admin` with the owner's local private-key path.
+
+Connect:
+```sh
+ssh node-cf
+ssh node-ts
+```
+
+The two aliases for one machine share one `HostKeyAlias`, so either route checks the same server host key. Choose a different stable alias for every other machine; do not reuse `ghostfleet-node` for the whole fleet. During route acceptance, disable connection reuse with `-o ControlPath=none -o ControlMaster=no`.
+
+### Cloudflare client-side SSH prerequisites and failure isolation
+
+For this profile the Published Application route is an **SSH** route: its service type is SSH and its origin is typically `ssh://127.0.0.1:22`. The native SSH client launches the client-side `cloudflared access ssh --hostname %h` process through `ProxyCommand`. Cloudflare requires `cloudflared` on both the server side (the Tunnel connector) and the operator's client. The client needs the executable; it does **not** need a second Tunnel service or a server-side token.
+
+Do not confuse the two published service types:
+
+- **SSH / `ssh://…:22`** → SSH `ProxyCommand … access ssh --hostname %h`. This is the route tested by `ssh node-cf`.
+- **TCP / `tcp://…`** → start `cloudflared access tcp --hostname <hostname> --url 127.0.0.1:<local-port>`, then point the TCP client at that local port. This is a different local-forwarding flow. Running `access tcp` does not test an SSH-type Published Application route or the SSH `ProxyCommand`.
+
+Choose the actual client machine before testing. On Windows PowerShell, verify the client executable and version:
+
+```
+$cf = Get-Command cloudflared.exe -ErrorAction Stop
+$cf.Source
+& $cf.Source --version
+Resolve-DnsName ssh.example.invalid
+Test-NetConnection ssh.example.invalid -Port 443
+```
+
+If `Get-Command` fails, the client executable is absent from PATH; install/locate the official Windows client from [Cloudflare downloads](https://developers.cloudflare.com/tunnel/downloads/), then use its absolute path. On Linux/macOS:
+
+```
+command -v cloudflared
+cloudflared --version
+getent ahosts ssh.example.invalid
+```
+
+If the binary is not on PATH, use its verified absolute path in the SSH configuration. For example, a Windows OpenSSH host block may use:
+
+```
+Host node-cf
+    HostName ssh.example.invalid
+    ProxyCommand "C:/Program Files/Cloudflare/cloudflared.exe" access ssh --hostname %h
+```
+
+Keep the existing key, unique per-node `HostKeyAlias` and strict host-key verification. Do not copy a server Tunnel token to the client, and do not run `cloudflared service install` on the operator workstation just to obtain the client executable.
+
+Before connecting, inspect the effective SSH configuration and confirm that `proxycommand` resolves to the intended local binary and uses `access ssh`:
+
+```
+ssh -G node-cf
+ssh -vvv -o ControlPath=none -o ControlMaster=no node-cf
+```
+
+Use the output to isolate the failing layer instead of treating every exit code 1 as a Tunnel failure:
+
+1. **Local client launch:** executable missing, PATH/quoting error, or ProxyCommand cannot start → fix the selected client's binary path first.
+2. **DNS / edge reachability:** hostname resolution fails, or the client cannot establish outbound HTTPS to the Cloudflare edge → investigate the client DNS/egress/hostname layer. A successful TCP/443 check proves only edge reachability, not Access, Tunnel or SSH.
+3. **Access identity / policy:** the local proxy starts but browser authentication is not completed or Access denies the identity → inspect the Access application and policy for the selected hostname.
+4. **Tunnel / published route / origin:** Access succeeds but Cloudflare reports the connector/route/origin unavailable → inspect the selected Tunnel's published route, connector health and configured SSH origin. Do not infer this from the reporter's heartbeat.
+5. **Native OpenSSH authentication:** if the proxy reaches the origin and SSH returns `Permission denied (publickey)`, the network path has reached sshd; inspect the intended OS user, key and the effective `sshd -T -C` context.
+
+Retain full `ssh -vvv` output and provider logs privately; publish only sanitized error class, client OS, client `cloudflared` version, route service type and test time. After a positive fresh SSH session, run the authorized denied-identity/source negative test. An active server-side `cloudflared` unit, a successful outbound heartbeat, or a TCP-only probe is not end-to-end SSH acceptance.
+
+Upstream: [Cloudflare client-side SSH](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/use-cases/ssh/ssh-cloudflared-authentication/), [published application protocol types](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/routing-to-tunnel/protocols/), [arbitrary TCP client flow](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/non-http/cloudflared-authentication/arbitrary-tcp/).
+
+## 7. Logs and recovery
+
+Use the OS's native logs:
+```sh
+journalctl -u ssh --since today
+journalctl -u cloudflared-ssh --since today
+journalctl -u tailscaled --since today
+systemctl status ssh cloudflared-ssh tailscaled
+```
+
+These logs show service and connection/authentication events. They do not necessarily record every shell command. GhostFleet does not add command logging or monitoring.
+
+If Cloudflare is unavailable, create a new SSH session with `ssh node-ts`. If Tailscale is unavailable, use `ssh node-cf`. Existing TCP sessions require reconnecting; no custom session migration is promised.
+
+## 8. Revocation
+
+- Remove the operator from the Cloudflare Access allow policy or disable the tunnel route.
+- Remove the operator/device from the Tailscale network policy or revoke the node.
+- Remove the corresponding public key from `/root/.ssh/authorized_keys`.
+- Disable the relevant service if the route itself must be taken offline.
+
+Revocation must be verified with a fresh connection through each path. Removing an SSH authorized key prevents new authentication with that key; it does not terminate an already authenticated shell. Network-policy propagation and existing-session termination depend on the selected provider and configuration. Test and record them separately; stop existing sessions explicitly only when that action is authorized.
+
+## Boundaries
+
+This is a remote-access transport profile, not a complete device-management agent. It does not monitor disks, RAID, processes or services; it does not filter commands; it does not ask for per-command approval; it does not promise command-level audit records. It also does not modify storage, RAID, shares, packages or application services automatically.
+
+
+
+---
+
+## 上游资料 / Upstream references
 
 - Cloudflare SSH/Tunnel: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/use-cases/ssh/
 - Cloudflare client-side SSH: https://developers.cloudflare.com/cloudflare-one/access-controls/applications/non-http/cloudflared-authentication/

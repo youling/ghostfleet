@@ -4,7 +4,7 @@
 | --- | --- |
 | 文档性质 / Classification | `DERIVED`：交付条件与依赖导航，不是状态数据库 / Delivery criteria and dependency navigation, not a status database |
 | `source_pointer` | [#11 当前目标、裁决与回执 / Current goal, decisions and receipts](https://github.com/youling/ghostfleet/issues/11)；[ADR004](adr/004-lightweight-enrollment-presence.md) |
-| 文档核对日期 / Documentation checked | `2026-11-17`；不表示已经部署 / Does not establish deployment |
+| 文档核对日期 / Documentation checked | `2026-11-18`；不表示已经部署 / Does not establish deployment |
 
 ## 1. 范围与用法 / Scope and use
 
@@ -37,12 +37,12 @@ This section and ADR004 are the diagram sources. Edges represent dependencies, n
 
 ```mermaid
 flowchart TD
-  Source["M1 源码整合 / Source"] --> Release["M2 发布包与 origin / Release"]
-  Release --> First["M3 首节点首用 / First node"]
-  First --> Second["M4 第二节点复制 / Second node"]
-  First --> Resilience["Repair / revoke / rollback / outage recovery"]
-  Source --> CF["M4 CF 独立验收 / CF path"]
-  Resilience --> Receipt["#11 分范围交付回执 / Scoped receipts"]
+  Source["M1 源码整合"] --> Release["M2 发布包与双入口"]
+  Release --> First["M3 首节点首用"]
+  First --> Second["M4 独立节点复制"]
+  First --> Resilience["修复、撤销、回退与断网恢复"]
+  Source --> CF["M4 Cloudflare 路径验收"]
+  Resilience --> Receipt["#11 按实际范围交付"]
   Second --> Receipt
   CF --> Receipt
 ```

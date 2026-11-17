@@ -6,7 +6,8 @@
     "docs.netbird.io", "docs.zerotier.com", "gofrp.org", "goteleport.com",
     "headscale.net", "man.openbsd.org", "packages.debian.org", "rustdesk.com",
     "sources.debian.org", "www.freedesktop.org", "www.harding.motd.ca",
-    "www.openssh.org", "registry.npmjs.org"
+    "www.openssh.org", "registry.npmjs.org", "cheatsheetseries.owasp.org",
+    "manpages.debian.org", "www.rfc-editor.org", "smallstep.com"
   ],
   "allowed_public_github_repositories": [
     "youling/ghostfleet", "youling/ai-use", "cloudflare/cloudflared",
@@ -14,7 +15,8 @@
     "jpillora/chisel", "juanfont/headscale", "netbirdio/netbird",
     "openssh/openssh-portable", "rathole-org/rathole", "rustdesk/rustdesk",
     "rustdesk/rustdesk-server", "slackhq/nebula", "systemd/systemd",
-    "tailscale/tailcat", "tailscale/tailscale", "ylianst/meshcentral", "zerotier/zerotierone"
+    "tailscale/tailcat", "tailscale/tailscale", "ylianst/meshcentral", "zerotier/zerotierone",
+    "panva/jose"
   ],
   "reserved_placeholder_domains": ["example.invalid", "example.com", "example.net", "example.org", "localhost", "127.0.0.1"],
   "notes": "Public npm registry URLs are admitted for the reviewed development dependency lock. Funding metadata was omitted from the lock; versions and integrity hashes are retained. No real tailnet locators, node IDs, credentials or personal hostnames. New public hosts/repositories require review. UTF-8 text only; unsupported tracked types fail closed."
