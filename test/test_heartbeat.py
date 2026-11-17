@@ -109,6 +109,36 @@ class ClientTests(unittest.TestCase):
         self.assertNotIn('Restart=', hb.SERVICE_TEXT)
         self.assertIn('OnUnitInactiveSec=60s', hb.TIMER_TEXT)
 
+class RepairTests(unittest.TestCase):
+    def test_repair_reuses_saved_identity_and_local_script_without_claim(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'presence.json'
+            path.write_text(json.dumps(config()))
+            path.chmod(0o600)
+            installs = []; systemctl_calls = []; output = io.StringIO()
+
+            def install(saved, source):
+                installs.append((saved, source))
+
+            def systemctl(*args):
+                systemctl_calls.append(args)
+
+            with patch.object(hb, 'CONFIG', path), patch.object(hb.os, 'geteuid', return_value=0), \
+                 patch.object(hb, 'install_files', side_effect=install), \
+                 patch.object(hb, 'systemctl', side_effect=systemctl), \
+                 patch.object(hb, 'post_json') as request, contextlib.redirect_stdout(output):
+                hb.repair()
+
+            self.assertEqual(installs, [(config(), SOURCE.read_bytes())])
+            request.assert_not_called()
+            self.assertEqual(systemctl_calls, [
+                ('daemon-reload',),
+                ('enable', '--now', hb.TIMER.name),
+                ('start', hb.SERVICE.name),
+            ])
+            self.assertEqual(output.getvalue().strip(), 'GF_REPAIRED; NO_NEW_TICKET_OR_NODE')
+
+
 class NetworkTests(unittest.TestCase):
     def setUp(self):
         self.mode = 'ok'; self.hits = []; case = self
