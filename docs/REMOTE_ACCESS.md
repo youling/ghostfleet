@@ -90,6 +90,62 @@ ssh node-ts
 
 The two aliases for one machine share one `HostKeyAlias`, so either route checks the same server host key. Choose a different stable alias for every other machine; do not reuse `ghostfleet-node` for the whole fleet. During route acceptance, disable connection reuse with `-o ControlPath=none -o ControlMaster=no`.
 
+### Cloudflare client-side SSH prerequisites and failure isolation
+
+For this profile the Published Application route is an **SSH** route: its service type is SSH and its origin is typically `ssh://127.0.0.1:22`. The native SSH client launches the client-side `cloudflared access ssh --hostname %h` process through `ProxyCommand`. Cloudflare requires `cloudflared` on both the server side (the Tunnel connector) and the operator's client. The client needs the executable; it does **not** need a second Tunnel service or a server-side token.
+
+Do not confuse the two published service types:
+
+- **SSH / `ssh://…:22`** → SSH `ProxyCommand … access ssh --hostname %h`. This is the route tested by `ssh node-cf`.
+- **TCP / `tcp://…`** → start `cloudflared access tcp --hostname <hostname> --url 127.0.0.1:<local-port>`, then point the TCP client at that local port. This is a different local-forwarding flow. Running `access tcp` does not test an SSH-type Published Application route or the SSH `ProxyCommand`.
+
+Choose the actual client machine before testing. On Windows PowerShell, verify the client executable and version:
+
+```
+$cf = Get-Command cloudflared.exe -ErrorAction Stop
+$cf.Source
+& $cf.Source --version
+Resolve-DnsName ssh.example.invalid
+Test-NetConnection ssh.example.invalid -Port 443
+```
+
+If `Get-Command` fails, the client executable is absent from PATH; install/locate the official Windows client from [Cloudflare downloads](https://developers.cloudflare.com/tunnel/downloads/), then use its absolute path. On Linux/macOS:
+
+```
+command -v cloudflared
+cloudflared --version
+getent ahosts ssh.example.invalid
+```
+
+If the binary is not on PATH, use its verified absolute path in the SSH configuration. For example, a Windows OpenSSH host block may use:
+
+```
+Host node-cf
+    HostName ssh.example.invalid
+    ProxyCommand "C:/Program Files/Cloudflare/cloudflared.exe" access ssh --hostname %h
+```
+
+Keep the existing key, unique per-node `HostKeyAlias` and strict host-key verification. Do not copy a server Tunnel token to the client, and do not run `cloudflared service install` on the operator workstation just to obtain the client executable.
+
+Before connecting, inspect the effective SSH configuration and confirm that `proxycommand` resolves to the intended local binary and uses `access ssh`:
+
+```
+ssh -G node-cf
+ssh -vvv -o ControlPath=none -o ControlMaster=no node-cf
+```
+
+Use the output to isolate the failing layer instead of treating every exit code 1 as a Tunnel failure:
+
+1. **Local client launch:** executable missing, PATH/quoting error, or ProxyCommand cannot start → fix the selected client's binary path first.
+2. **DNS / edge reachability:** hostname resolution fails, or the client cannot establish outbound HTTPS to the Cloudflare edge → investigate the client DNS/egress/hostname layer. A successful TCP/443 check proves only edge reachability, not Access, Tunnel or SSH.
+3. **Access identity / policy:** the local proxy starts but browser authentication is not completed or Access denies the identity → inspect the Access application and policy for the selected hostname.
+4. **Tunnel / published route / origin:** Access succeeds but Cloudflare reports the connector/route/origin unavailable → inspect the selected Tunnel's published route, connector health and configured SSH origin. Do not infer this from the reporter's heartbeat.
+5. **Native OpenSSH authentication:** if the proxy reaches the origin and SSH returns `Permission denied (publickey)`, the network path has reached sshd; inspect the intended OS user, key and the effective `sshd -T -C` context.
+
+Retain full `ssh -vvv` output and provider logs privately; publish only sanitized error class, client OS, client `cloudflared` version, route service type and test time. After a positive fresh SSH session, run the authorized denied-identity/source negative test. An active server-side `cloudflared` unit, a successful outbound heartbeat, or a TCP-only probe is not end-to-end SSH acceptance.
+
+Upstream: [Cloudflare client-side SSH](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/use-cases/ssh/ssh-cloudflared-authentication/), [published application protocol types](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/routing-to-tunnel/protocols/), [arbitrary TCP client flow](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/non-http/cloudflared-authentication/arbitrary-tcp/).
+
 ## 7. Logs and recovery
 
 Use the OS's native logs:
@@ -228,6 +284,62 @@ ssh node-ts
 
 同一机器的两个别名共用一个 `HostKeyAlias`，两路校验同一主机密钥；每台其他机器必须使用自己的稳定别名，不能全舰队照抄 `ghostfleet-node`。路径验收时使用 `-o ControlPath=none -o ControlMaster=no`，避免复用已有连接而误判另一条路径可用。
 
+### Cloudflare 客户端 SSH 前置条件与分层排障
+
+本指南使用 Cloudflare Published Application 的 **SSH 路由**：服务类型选择 SSH，源站通常填写 `ssh://127.0.0.1:22`。原生 SSH 客户端通过 `ProxyCommand` 启动客户端侧的 `cloudflared access ssh --hostname %h`。Cloudflare 要求服务器侧（Tunnel connector）和操作者客户端都安装 `cloudflared`。客户端只需要可执行文件，**不需要再创建一套 Tunnel 服务，也不需要服务器侧 Tunnel token**。
+
+不要混淆两种 Published Application 服务类型：
+
+- **SSH / `ssh://…:22`** → SSH `ProxyCommand … access ssh --hostname %h`。`ssh node-cf` 测试的就是这条路径。
+- **TCP / `tcp://…`** → 启动 `cloudflared access tcp --hostname <hostname> --url 127.0.0.1:<local-port>`，再让 TCP 客户端连接本地转发端口。这是另一种本地转发流程。执行 `access tcp` 不能验证 SSH 类型 Published Application，也不能验证 SSH `ProxyCommand`。
+
+测试前先明确实际使用哪台客户端。Windows PowerShell 可这样检查客户端二进制和版本：
+
+```
+$cf = Get-Command cloudflared.exe -ErrorAction Stop
+$cf.Source
+& $cf.Source --version
+Resolve-DnsName ssh.example.invalid
+Test-NetConnection ssh.example.invalid -Port 443
+```
+
+如果 `Get-Command` 失败，说明客户端 PATH 中找不到该程序；从 [Cloudflare 官方下载页](https://developers.cloudflare.com/tunnel/downloads/) 安装或定位 Windows 客户端，再使用核实过的绝对路径。Linux/macOS 客户端执行：
+
+```
+command -v cloudflared
+cloudflared --version
+getent ahosts ssh.example.invalid
+```
+
+如果二进制不在 PATH 中，应在 SSH 配置里填写核实过的绝对路径。例如 Windows OpenSSH 配置可以写成：
+
+```
+Host node-cf
+    HostName ssh.example.invalid
+    ProxyCommand "C:/Program Files/Cloudflare/cloudflared.exe" access ssh --hostname %h
+```
+
+保留原有 SSH 密钥、每台机器唯一的 `HostKeyAlias` 和严格主机密钥校验。不要把服务器 Tunnel token 复制到客户端，也不要为了取得客户端程序就在操作者电脑上执行 `cloudflared service install`。
+
+连接前先检查 SSH 实际生效配置，确认 `proxycommand` 指向预期的本地二进制，并调用 `access ssh`：
+
+```
+ssh -G node-cf
+ssh -vvv -o ControlPath=none -o ControlMaster=no node-cf
+```
+
+按故障所在层定位，不要把所有 exit code 1 都当成 Tunnel 故障：
+
+1. **客户端本地启动：** 二进制不存在、PATH/引号错误或 ProxyCommand 无法启动 → 先修复所选客户端的二进制路径。
+2. **DNS / 边缘连通：** 域名解析失败，或客户端无法向 Cloudflare edge 建立出站 HTTPS → 检查客户端 DNS、出站网络和主机名。TCP/443 检查成功只证明能到边缘，不证明 Access、Tunnel 或 SSH 正常。
+3. **Access 身份 / 策略：** 本地代理已启动，但浏览器认证未完成或 Access 拒绝身份 → 检查该主机名对应的 Access 应用和策略。
+4. **Tunnel / Published Route / 源站：** Access 已通过，但 Cloudflare 报告 connector、route 或 origin 不可用 → 检查所选 Tunnel 的 Published Route、connector 健康状态和 SSH 源站地址。不要用 reporter 心跳推断这条路径。
+5. **原生 OpenSSH 认证：** 如果代理已经到达源站，而 SSH 返回 `Permission denied (publickey)`，说明网络路径已经到达 sshd；接着检查目标 OS 用户、密钥和实际 `sshd -T -C` 上下文。
+
+完整 `ssh -vvv` 输出和 provider 日志留在私有记录中；公开记录只写脱敏后的错误类别、客户端 OS、客户端 `cloudflared` 版本、route 服务类型和测试时间。新 SSH 会话正测通过后，再执行获授权的拒绝身份/来源负测。服务器侧 `cloudflared` unit 处于 active、出站 heartbeat 成功，或仅做了 TCP 探测，都不等于 SSH 端到端验收通过。
+
+上游资料：[Cloudflare 客户端 SSH](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/use-cases/ssh/ssh-cloudflared-authentication/)、[Published Application 协议类型](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/routing-to-tunnel/protocols/)、[任意 TCP 客户端流程](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/non-http/cloudflared-authentication/arbitrary-tcp/)。
+
 ## 7. 日志与故障恢复
 
 使用操作系统原生日志：
@@ -260,6 +372,8 @@ systemctl status ssh cloudflared-ssh tailscaled
 
 - Cloudflare SSH/Tunnel: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/use-cases/ssh/
 - Cloudflare client-side SSH: https://developers.cloudflare.com/cloudflare-one/access-controls/applications/non-http/cloudflared-authentication/
+- Cloudflare published application protocol types (SSH vs TCP): https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/routing-to-tunnel/protocols/
+- Cloudflare arbitrary TCP client flow: https://developers.cloudflare.com/cloudflare-one/access-controls/applications/non-http/cloudflared-authentication/arbitrary-tcp/
 - Cloudflare Tunnel token-file run parameter: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/run-parameters/
 - Tailscale Linux install: https://tailscale.com/docs/install/linux
 - Tailscale network access policy: https://tailscale.com/docs/features/access-control
