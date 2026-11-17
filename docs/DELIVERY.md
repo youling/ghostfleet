@@ -27,13 +27,13 @@ Deliver each stage's proven capability when complete. Resolve concrete gaps with
 
 M2 的 dry-run 是“发布包已准备”，真实版本和鉴权回读才支持“面板已发布”。M3 的核心交付是“首节点可用”：必须有真实系统级自动心跳与原生 SSH 保持证据；repair/revoke/rollback/网络中断恢复是独立韧性验收，须单独留证，不能由 happy path 代替。M3 首节点验收不证明第二节点或双路远控。M4 的第二节点复制与 CF 接线可以并行，CF 也可在源码确定后按原授权提前推进。CF 未完成时保留其未验收状态，不撤销已经成立的单路或面板交付。
 
-M2 dry-run supports “release package prepared”; actual version and authorization readback support “panel released.” M3 supports “first node usable,” not second-node or dual-path acceptance. M4 replication and CF work may proceed in parallel; CF may start once source is established and existing authority permits it. Pending CF acceptance does not invalidate proven single-path or panel delivery.
+M2 dry-run supports “release package prepared”; actual version and authorization readback support “panel released.” M3's core delivery is “first node usable”: require real systemd-triggered heartbeats and preserved native SSH. Repair, revoke, rollback and network-outage recovery are separate resilience checks that need their own evidence; do not infer them from the happy path. M3 first-node acceptance does not prove a second node or dual-path remote control. M4 replication and CF work may proceed in parallel; CF may start once source is established and existing authority permits it. Pending CF acceptance does not invalidate proven single-path or panel delivery.
 
 ### 交付依赖图 / Delivery dependency diagram
 
 图源是本节与 ADR004；箭头表示依赖，不表示已经完成。首节点首用与后续韧性验收分开表达；CF 分支独立于面板首用，汇总时分别陈述已证明的范围。
 
-This section and ADR004 are the diagram sources. Edges represent dependencies, not completed work. CF is independent of panel first use; the receipt distinguishes each proven scope.
+This section and ADR004 are the diagram sources. Edges represent dependencies, not completed work. First-node core acceptance and later resilience checks are separate; CF is independent of panel first use. The receipt distinguishes each proven scope.
 
 ```mermaid
 flowchart TD
