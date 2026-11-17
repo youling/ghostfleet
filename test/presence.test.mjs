@@ -206,6 +206,46 @@ test('real Worker handler rejects admin access on node host and old command rout
     assert.equal((await worker.fetch(request(p), bindings)).status, 404);
   }
 });
+test('Worker/DO path rejects Read-token ticket creation before state mutation', async () => {
+  const bindings = mockBindings();
+  const denied = await worker.fetch(request('/v0/enrollment-tickets', {
+    method: 'POST', token: reader, body: { label: 'read-only-denial-fixture' },
+  }), bindings);
+  assert.equal(denied.status, 403);
+  assert.equal((await denied.json()).error, 'READ_ONLY_CREDENTIAL');
+
+  const list = await worker.fetch(request('/v0/nodes', { token: operator }), bindings);
+  assert.equal(list.status, 200);
+  assert.deepEqual((await list.json()).nodes, []);
+});
+
+test('Worker/DO path rejects a revoked reporter token with 401', async () => {
+  const bindings = mockBindings();
+  const created = await (await worker.fetch(request('/v0/enrollment-tickets', {
+    method: 'POST', body: { label: 'revocation-fixture' },
+  }), bindings)).json();
+  const claimed = await (await worker.fetch(request(
+    '/v1/enrollment-tickets/' + created.ticket.ticket_id + '/claim',
+    { method: 'POST', origin: env.GHOSTFLEET_NODE_ORIGIN, token: '', body: { short_code: created.short_code } },
+  ), bindings)).json();
+
+  const revoked = await worker.fetch(request('/v0/nodes/' + claimed.node_uid + '/revoke', {
+    method: 'POST', body: {},
+  }), bindings);
+  assert.equal(revoked.status, 200);
+
+  const stale = await worker.fetch(request('/v1/nodes/' + claimed.node_uid + '/heartbeat', {
+    method: 'POST', origin: env.GHOSTFLEET_NODE_ORIGIN, token: claimed.reporting_token, body: report,
+  }), bindings);
+  assert.equal(stale.status, 401);
+
+  const list = await worker.fetch(request('/v0/nodes', { token: operator }), bindings);
+  const nodes = (await list.json()).nodes;
+  assert.equal(nodes.length, 1);
+  assert.equal(nodes[0].node_uid, claimed.node_uid);
+  assert.equal(nodes[0].presence, 'REVOKED');
+});
+
 test('Worker/DO path commits one of 12 concurrent claims, then authenticated heartbeat', async () => {
   const bindings = mockBindings();
   const created = await (await worker.fetch(request('/v0/enrollment-tickets', { method: 'POST', body: { label: 'concurrent-fixture' } }), bindings)).json();
