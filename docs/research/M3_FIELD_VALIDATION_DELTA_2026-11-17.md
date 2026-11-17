@@ -1,4 +1,4 @@
-# M3 Field Validation Delta — 2026-11-17
+# M3 现场验证增量 / Field Validation Delta — 2026-11-17
 
 ```yaml
 artifact_type: ARCHITECT_FIELD_VALIDATION_DELTA
@@ -98,7 +98,7 @@ The accepted M3 slice is the original ThinkPad node's same-node replacement with
 
 Interrupted-install recovery, network-outage recovery, M2 Read/revocation/Operator/origin checks, and M4 second-node/Cloudflare SSH acceptance remain NOT_RUN until separately evidenced. No new dependency or second identity/authority/state owner is admitted.
 
-## References
+## 资料来源 / References
 
 - [2026-11-12 external mechanism reconnaissance](https://github.com/youling/ghostfleet/blob/0cbb9c17bdd298634e4ccebf2c1a9c50d9f09fe1/docs/research/REUSE_RECONNAISSANCE_2026-11-12.md)
 - [M3 field reconciliation #6949587945](https://github.com/youling/ghostfleet/issues/11#issuecomment-6949587945)

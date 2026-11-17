@@ -1,4 +1,4 @@
-# Architecture / 架构
+# 架构 / Architecture
 
 当前语义由 [ADR004](adr/004-lightweight-enrollment-presence.md) 与 [#11](https://github.com/youling/ghostfleet/issues/11) 持有。本页是当前集成主干的 DERIVED 架构导航，说明组件职责、接口与边界；它不是实例发布状态库，也不代替生产验收。具体生产版本、节点验收与剩余门禁以 #11 回执为准。原 transport-only 图和旧控制平台保留在 Git 历史中。
 
@@ -17,6 +17,21 @@
 旧节点的 `ACTIVE`、资产字段与 node_uid 不被心跳覆盖。首次心跳只改变派生 presence。凭据撤销仅拒绝 reporting，原生 SSH 权限另行管理。网络/SSH/本机进程/心跳分别验收；一条路径成功不代表双路通过。
 
 交付依赖与阶段图见 [DELIVERY](DELIVERY.md)：源码整合、私有发布包/双 origin、首节点系统级安装与浏览器首用、第二节点复制分别交付；CF 原生传输验收可按原授权独立推进。该图只表达依赖，当前完成状态回到 #11；ADR004 继续持有组件边界。
+
+### 状态与证据怎么读
+
+| 展示或回执 | 能证明什么 | 还需什么证据 |
+| --- | --- | --- |
+| 节点已登记 | 稳定 `node_uid` 已分配 | 安装、上报与远控各自的结果 |
+| 心跳在线 | 该节点凭据的近期出站上报已收到 | 从指定管理端到目标的入站连接 |
+| 本机服务 active | 对应 systemd manager 中的 unit 状态 | provider 路由、网络准入与 SSH 认证 |
+| 某条 SSH 路径已验证 | 所记录客户端、账户、主机身份与时间窗口内的新会话通过 | 其它路径、拒绝来源及恢复范围各自的结果 |
+
+这些是现有证据的不同含义，不新增状态数据库。具体实例回执仍归 #11。源码实现见 [Worker](../src/adapters/cloudflare/worker.js)、[心跳模型](../src/control-plane/presence.js)和 [reporter](../scripts/heartbeat.py)。
+
+### 纳管体验的下一步
+
+[2026-11-18 研究与提案整合](research/ONBOARDING_RECONNAISSANCE_2026-11-18.md)建议：复用现有 Access 会话、减少票据/UID 搬运，并把原生 SSH 准备与新会话验证放进同一可恢复流程。它是后续实现输入；现有组件图仍只描绘 ADR004 已实现的边界，尚不包含 SSO、自动公钥写入或端点上报。
 
 ## English
 

@@ -1,6 +1,6 @@
-# ADR 004 — Lightweight enrollment and presence / 轻量纳管与心跳
+# ADR 004 — 轻量纳管与心跳 / Lightweight enrollment and presence
 
-Decision date: 2026-11-15. Direction accepted by Human in [#11](https://github.com/youling/ghostfleet/issues/11). The implementation is integrated into main; the instance owner has reported M2 Worker deployment and M3 first-node systemd acceptance, with exact evidence and remaining gates tracked in [#11](https://github.com/youling/ghostfleet/issues/11). This ADR records the accepted product/architecture decision, not a live deployment ledger. Supersedes only the transport-only exclusion of a panel/reporting plane. It does not revive the older command/Helper/JIT program.
+决策日期：2026-11-15。Human 已在 [#11](https://github.com/youling/ghostfleet/issues/11) 接受方向，实现在主干整合；实例发布、节点验收与剩余项回到 #11 的当前回执。本 ADR 保存产品与架构决定，不充当实时部署账本。它取代 transport-only 对所有面板/上报能力的排除，不恢复旧命令、Helper 或 JIT 体系。
 
 ## 中文
 
@@ -28,21 +28,21 @@ Operator 签发时预留稳定 node_uid；随机票据定位符与独立八位�
 
 一个独立 Python 文件内含 reporter、安装/修复/移除与两个 unit 模板。system service 使用 DynamicUser 和 LoadCredential，config 为0600；无长期新增账户、无 sudoers、无密钥环境变量。安装只写自己的固定路径，不覆盖未标记的其他程序；清理依据自己的文件摘要清单，遇到本地改动拒绝盲删。真实 root 安装、Access/DNS 与发布需实例 owner 执行；临时 user-unit 联调不冒充生产 DynamicUser 安装验收。
 
-## Derived architecture / 派生架构
+## 派生架构 / Derived architecture
 
-Source: this ADR and #11. Scope: current product architecture. This diagram describes component relationships, not per-instance deployment or acceptance. Solid edges describe implemented interfaces; production release and field acceptance remain evidenced in #11.
+图源：本 ADR 与 #11；性质：DERIVED。下图说明当前组件关系，实线为已实现接口，不表示具体实例部署或验收状态。生产结果回到 #11；图的中文化不改变任何接口、权限或状态语义。
 
 ```mermaid
-flowchart LR
-  Human["Operator / Read"] --> Panel["Existing console surface"]
-  Panel --> API["One Worker: panel origin"]
-  Reporter["Python oneshot"] --> Edge["Same Worker: node origin"]
-  Timer["systemd timer"] --> Reporter
-  Reporter --> Journal["local journald"]
-  API --> Store["Existing DO / nodes / node_uid"]
+flowchart TD
+  Human["操作者 / 只读角色"] --> Panel["既有控制台"]
+  Panel --> API["Worker：面板入口"]
+  Reporter["Python 单次上报"] --> Edge["同一 Worker：节点入口"]
+  Timer["systemd 定时器"] --> Reporter
+  Reporter --> Journal["本地 journald"]
+  API --> Store["既有 DO：nodes / node_uid"]
   Edge --> Store
-  Client["Authorized SSH client"] --> Network["Cloudflare or Tailscale"]
-  Network --> SSH["Native OpenSSH"]
+  Client["获授权的 SSH 客户端"] --> Network["Cloudflare 或 Tailscale"]
+  Network --> SSH["原生 OpenSSH"]
 ```
 
 ## English
