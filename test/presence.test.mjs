@@ -160,6 +160,20 @@ test('reuse existing auth: missing roots, missing bearer, read token and same-to
   assert.equal((await (await prepare(request('/v0/access', { token: reader }), env)).response.json()).access, 'read_only');
   assert.equal((await prepare(request('/v0/access'), { ...env, GHOSTFLEET_READ_TOKEN: operator })).response.status, 503);
 });
+
+test('authentication denials include no-store and browser hardening headers', async () => {
+  const denied = [
+    (await prepare(request('/v0/access', { token: '' }), {})).response,
+    (await prepare(request('/v0/access', { token: '' }), env)).response,
+    (await prepare(request('/v0/nodes', { method: 'POST', token: reader, body: {} }), env)).response,
+  ];
+  assert.deepEqual(denied.map(response => response.status), [503, 401, 403]);
+  for (const response of denied) {
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+  }
+});
 test('body limits, content-type, malformed JSON and forged Origin are refused', async () => {
   const path = '/v0/enrollment-tickets';
   const big = await prepare(request(path, { method: 'POST', body: { label: 'x'.repeat(5000) } }), env);
