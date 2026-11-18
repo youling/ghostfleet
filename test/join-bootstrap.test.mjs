@@ -88,7 +88,8 @@ function fixture({ distro = 'debian', version = '13', python = false, aptUpdate 
     .replaceAll('/etc/os-release', osRelease)
     .replaceAll('/etc/openmediavault/config.xml', omvMarker)
     .replaceAll('/usr/bin/python3', pythonBin)
-    .replaceAll('$(id -u)', '0');
+    .replaceAll('$(id -u)', '0')
+    .replace('[ -t 0 ] || fail INTERACTIVE_TERMINAL_REQUIRED', 'true');
   const scriptPath = path.join(root, 'join.sh');
   writeFileSync(scriptPath, script);
   const env = {
