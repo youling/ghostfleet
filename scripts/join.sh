@@ -109,9 +109,9 @@ fi
 command -v curl >/dev/null 2>&1 || fail CURL_REQUIRED
 command -v sha256sum >/dev/null 2>&1 || fail SHA256SUM_REQUIRED
 case "$INSTALLER_SHA256" in
-  [0-9a-f][0-9a-f]*) [ "${#INSTALLER_SHA256}" -eq 64 ] || fail INVALID_PINNED_INSTALLER_DIGEST ;;
-  *) fail INVALID_PINNED_INSTALLER_DIGEST ;;
+  ''|*[!0-9a-f]*) fail INVALID_PINNED_INSTALLER_DIGEST ;;
 esac
+[ "${#INSTALLER_SHA256}" -eq 64 ] || fail INVALID_PINNED_INSTALLER_DIGEST
 
 WORKDIR=$(mktemp -d /tmp/ghostfleet-join.XXXXXX) || fail TEMP_DIR_FAILED
 printf '%s\n' 'GhostFleet: downloading the pinned standard-library reporter.'
