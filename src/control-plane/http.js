@@ -23,9 +23,13 @@ export async function prepare(request, env) {
     }
     if (request.method === 'GET' && url.pathname === '/v0/access') {
       const sha = env.GHOSTFLEET_INSTALLER_SHA256;
+      const bootstrapSha = env.GHOSTFLEET_BOOTSTRAP_SHA256;
       return { response: json({ ok: true, access, node_origin: env.GHOSTFLEET_NODE_ORIGIN,
         installer: typeof sha === 'string' && /^[0-9a-f]{64}$/.test(sha) ? {
           url: env.GHOSTFLEET_NODE_ORIGIN + '/bootstrap/' + sha + '.py', sha256: sha,
+        } : null,
+        bootstrap: typeof bootstrapSha === 'string' && /^[0-9a-f]{64}$/.test(bootstrapSha) ? {
+          url: env.GHOSTFLEET_NODE_ORIGIN + '/bootstrap/' + bootstrapSha + '.sh', sha256: bootstrapSha,
         } : null }) };
     }
   }
