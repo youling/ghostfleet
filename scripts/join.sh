@@ -43,7 +43,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$origin" in
-  https://*) ;;
+  https://[A-Za-z0-9]*) ;;
   *) fail INVALID_ORIGIN ;;
 esac
 case "$origin" in
