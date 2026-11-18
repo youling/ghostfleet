@@ -245,10 +245,12 @@ def collect(config: dict, service_states: dict | None = None) -> dict:
 
 def report(config: dict, allow_loopback: bool = False, service_state_file: Path | None = None) -> None:
     if service_state_file:
-        # stdout is the inherited write-only descriptor for the root-owned
-        # systemd snapshot. Close it before reading the file as DynamicUser.
-        try: sys.stdout.close()
-        except (OSError, ValueError): pass
+        # Replace fd 1 itself before reading the root-owned snapshot. CPython's
+        # standard stream has closefd=False: closing its wrapper is not enough.
+        # fd 2 is the unit's existing journal stream, not the snapshot file.
+        try: os.dup2(2, 1)
+        except OSError:
+            raise ClientError('SERVICE_SNAPSHOT_STDOUT_REDIRECT_FAILED') from None
         service_states = read_service_snapshot(service_state_file, config['units'])
     else:
         service_states = None

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -325,18 +326,56 @@ class ServiceObservationTests(unittest.TestCase):
 
     def test_report_uses_precomputed_snapshot_without_unprivileged_systemctl(self):
         states = {'ssh': 'active', 'cloudflared': 'failed', 'tailscaled': 'not_found'}
-        with patch.object(hb, 'read_service_snapshot', return_value=states), patch.object(hb, 'service_state', side_effect=AssertionError('report must not call systemctl')), patch.object(hb, 'post_json', return_value={'node_uid': UID, 'received_at': 'now'}) as post, contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(hb.os, 'dup2'), patch.object(hb, 'read_service_snapshot', return_value=states), patch.object(hb, 'service_state', side_effect=AssertionError('report must not call systemctl')), patch.object(hb, 'post_json', return_value={'node_uid': UID, 'received_at': 'now'}) as post, contextlib.redirect_stdout(io.StringIO()):
             hb.report(config(), service_state_file=Path('/run/ghostfleet-heartbeat-services.json'))
         sent = post.call_args.args[2]
         self.assertEqual(sent['services'], states)
         self.assertNotIn(TOKEN, json.dumps(sent))
 
     def test_missing_snapshot_keeps_heartbeat_and_reports_unknown(self):
-        with patch.object(hb, 'service_state', side_effect=AssertionError('must use snapshot path')), patch.object(hb, 'post_json', return_value={'node_uid': UID, 'received_at': 'now'}) as post, contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(hb.os, 'dup2'), patch.object(hb, 'service_state', side_effect=AssertionError('must use snapshot path')), patch.object(hb, 'post_json', return_value={'node_uid': UID, 'received_at': 'now'}) as post, contextlib.redirect_stdout(io.StringIO()):
             hb.report(config(), service_state_file=Path('/nonexistent/ghostfleet/services.json'))
         self.assertEqual(post.call_args.args[2]['services'], {
             'ssh': 'unknown', 'cloudflared': 'unknown', 'tailscaled': 'unknown',
         })
+
+    def test_report_revokes_real_snapshot_write_descriptor_before_reading(self):
+        # A real child standard stream (closefd=False), not StringIO, reproduces
+        # systemd's inherited writable stdout without needing root or systemd.
+        child = '''
+import importlib.util, json, os, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('heartbeat', sys.argv[1])
+hb = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hb)
+config = json.loads(sys.argv[2])
+def read_snapshot(path, units):
+    os.write(1, b'FD1_DIAGNOSTIC\\n')
+    return {role: 'unknown' for role in units}
+hb.read_service_snapshot = read_snapshot
+hb.post_json = lambda *args: {'node_uid': config['node_uid'], 'received_at': 'now'}
+hb.report(config, service_state_file=Path(sys.argv[3]))
+'''
+        with tempfile.TemporaryDirectory() as d:
+            snapshot = Path(d) / 'services.json'
+            expected = b'UNCHANGED_SERVICE_SNAPSHOT\n'
+            snapshot.write_bytes(expected)
+            with snapshot.open('r+b') as output:
+                process = subprocess.run([sys.executable, '-I', '-c', child, str(SOURCE),
+                                          json.dumps(config()), str(snapshot)],
+                                         stdout=output, stderr=subprocess.PIPE, timeout=10)
+            self.assertEqual(process.returncode, 0, process.stderr.decode())
+            self.assertEqual(snapshot.read_bytes(), expected)
+            self.assertIn(b'FD1_DIAGNOSTIC\n', process.stderr)
+            self.assertIn(b'GF_HEARTBEAT_OK\n', process.stderr)
+
+    def test_snapshot_descriptor_failure_stops_before_read_or_network(self):
+        with patch.object(hb.os, 'dup2', side_effect=OSError('unavailable')), \
+             patch.object(hb, 'read_service_snapshot') as read, patch.object(hb, 'post_json') as post:
+            with self.assertRaisesRegex(hb.ClientError, 'SERVICE_SNAPSHOT_STDOUT_REDIRECT_FAILED'):
+                hb.report(config(), service_state_file=Path('/run/ghostfleet-heartbeat-services.json'))
+            read.assert_not_called()
+            post.assert_not_called()
 
 
 if __name__ == '__main__': unittest.main()
