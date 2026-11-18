@@ -25,7 +25,7 @@ flowchart TD
 
 Cloudflare SSH 仍未验收。最新[分层排障回执](https://github.com/youling/ghostfleet/issues/11#issuecomment-6962547549)表明：所选客户端已能启动 `cloudflared access ssh`，当前停在 DNS `NXDOMAIN`；后续应回读 DNS、Published Application route 与 Access，再完成新会话正测及拒绝来源/身份负测。连接器运行、出站心跳和另一条 SSH 路径成功，均不能替代这条路径的结果。
 
-生产版本、M2 鉴权与双 origin、M3 恢复测试及 M4 各路径的剩余项统一见 [#11](https://github.com/youling/ghostfleet/issues/11)。源码合并、CI 成功和现场验收分别报告。v1 安装器只安装上报功能；一键加入、Access SSO 和统一远控就绪向导的取舍见[本轮研究](docs/research/ONBOARDING_RECONNAISSANCE_2026-11-18.md)，尚未作为新功能实现。
+生产版本、M2 鉴权与双 origin、M3 恢复测试及 M4 各路径的剩余项统一见 [#11](https://github.com/youling/ghostfleet/issues/11)。源码合并、CI 成功和现场验收分别报告。v1 Python 安装器仍只安装心跳上报功能；本分支新增的 POSIX join bootstrap 仅负责校验自身、补齐 Python/CA 运行时并启动该安装器，不配置 SSH/provider。Access SSO 和统一远控就绪向导仍是研究项，不在本次实现范围。
 
 [产品范围](PRODUCT.md) · [架构](docs/ARCHITECTURE.md) · [传输安装](docs/REMOTE_ACCESS.md) · [面板与心跳部署](docs/PRESENCE.md) · [阶段交付](docs/DELIVERY.md) · [文档目录](docs/README.md)
 
