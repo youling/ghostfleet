@@ -198,6 +198,70 @@ function mockBindings() {
   bindings.ASSETS = { fetch: async () => new Response('synthetic static asset') };
   return bindings;
 }
+function mockBindingsWithDistinctObjectsPerId() {
+  const objects = new Map(), requestedIds = [];
+  const bindings = { ...env };
+  bindings.GHOSTFLEET_STATE = {
+    idFromName(name) { requestedIds.push(name); return 'id:' + name; },
+    get(id) {
+      if (!objects.has(id)) {
+        let snapshot = null, tail = Promise.resolve();
+        const storage = { transaction(fn) {
+          const next = tail.then(async () => {
+            let pending = structuredClone(snapshot);
+            const result = await fn({
+              get: async () => structuredClone(pending),
+              put: async (_key, value) => { pending = structuredClone(value); },
+            });
+            snapshot = pending;
+            return result;
+          });
+          tail = next.catch(() => {});
+          return next;
+        } };
+        objects.set(id, new GhostFleetState({ storage }, bindings));
+      }
+      return objects.get(id);
+    },
+  };
+  bindings.ASSETS = { fetch: async () => new Response('synthetic static asset') };
+  return { bindings, requestedIds };
+}
+
+test('panel and node origins share the same global Durable Object identity', async () => {
+  const { bindings, requestedIds } = mockBindingsWithDistinctObjectsPerId();
+
+  const createdResponse = await worker.fetch(request('/v0/enrollment-tickets', {
+    method: 'POST', body: { label: 'same-global-do-fixture' },
+  }), bindings);
+  assert.equal(createdResponse.status, 201);
+  const created = await createdResponse.json();
+
+  const claimResponse = await worker.fetch(request(
+    '/v1/enrollment-tickets/' + created.ticket.ticket_id + '/claim',
+    { method: 'POST', origin: env.GHOSTFLEET_NODE_ORIGIN, token: '',
+      body: { short_code: created.short_code } },
+  ), bindings);
+  assert.equal(claimResponse.status, 200);
+  const claimed = await claimResponse.json();
+
+  const heartbeatResponse = await worker.fetch(request(
+    '/v1/nodes/' + claimed.node_uid + '/heartbeat',
+    { method: 'POST', origin: env.GHOSTFLEET_NODE_ORIGIN,
+      token: claimed.reporting_token, body: report },
+  ), bindings);
+  assert.equal(heartbeatResponse.status, 200);
+
+  const inventoryResponse = await worker.fetch(request('/v0/nodes'), bindings);
+  assert.equal(inventoryResponse.status, 200);
+  const inventory = await inventoryResponse.json();
+  assert.equal(inventory.nodes.length, 1);
+  assert.equal(inventory.nodes[0].node_uid, claimed.node_uid);
+  assert.equal(inventory.nodes[0].presence, 'ONLINE');
+  assert.ok(requestedIds.length >= 4);
+  assert.deepEqual([...new Set(requestedIds)], ['global']);
+});
+
 test('real Worker handler rejects admin access on node host and old command routes', async () => {
   const bindings = mockBindings();
   assert.equal((await worker.fetch(request('/v0/nodes', { origin: env.GHOSTFLEET_NODE_ORIGIN }), bindings)).status, 404);
