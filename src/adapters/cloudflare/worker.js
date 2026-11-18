@@ -59,6 +59,11 @@ export default {
       if (!env.ASSETS) return denied('INSTALLER_NOT_BUILT', 503);
       return env.ASSETS.fetch(request);
     }
+    if (isNode && request.method === 'GET' && /^[0-9a-f]{64}$/.test(env.GHOSTFLEET_BOOTSTRAP_SHA256 ?? '') &&
+        u.pathname === '/bootstrap/' + env.GHOSTFLEET_BOOTSTRAP_SHA256 + '.sh') {
+      if (!env.ASSETS) return denied('BOOTSTRAP_NOT_BUILT', 503);
+      return env.ASSETS.fetch(request);
+    }
     // Explicit static allowlist: node ingress can never serve the panel or any
     // admin API, and arbitrary paths cannot fall through to a SPA or old routes.
     if (isPanel && ['GET', 'HEAD'].includes(request.method) &&
