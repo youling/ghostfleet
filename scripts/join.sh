@@ -67,12 +67,16 @@ esac
 # Elevate this exact local file, not an unverified network stream.
 if [ "$(/usr/bin/id -u)" -ne 0 ]; then
   if command -v sudo >/dev/null 2>&1; then
-    exec sudo /bin/sh "$0" --origin "$origin" --ticket "$ticket" ${replace:+}
+    if [ "$replace" -eq 1 ]; then
+      exec sudo /bin/sh "$0" --origin "$origin" --ticket "$ticket" --replace
+    else
+      exec sudo /bin/sh "$0" --origin "$origin" --ticket "$ticket"
+    fi
   fi
   fail ROOT_REQUIRED_RUN_IN_ROOT_SHELL
 fi
 
-[ -r /dev/tty ] || fail INTERACTIVE_TERMINAL_REQUIRED
+[ -r /dev/tty ] && [ -t 0 ] || fail INTERACTIVE_TERMINAL_REQUIRED
 command -v sha256sum >/dev/null 2>&1 || fail SHA256SUM_REQUIRED
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/ghostfleet-join.XXXXXX") || fail TEMP_DIRECTORY_FAILED
