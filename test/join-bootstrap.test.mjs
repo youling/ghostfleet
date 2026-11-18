@@ -19,7 +19,7 @@ function executable(file, source) {
 }
 
 function fixture({ distro = 'debian', version = '13', python = false, aptUpdate = 0,
-  aptInstall = 0, dnfInstall = 0, corrupt = false } = {}) {
+  aptInstall = 0, dnfInstall = 0, corrupt = false, omv = false } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'gf-join-test-'));
   const bin = path.join(root, 'bin');
   const etc = path.join(root, 'etc');
@@ -27,6 +27,11 @@ function fixture({ distro = 'debian', version = '13', python = false, aptUpdate 
   mkdirSync(bin); mkdirSync(etc, { recursive: true }); mkdirSync(usrBin, { recursive: true });
   const osRelease = path.join(etc, 'os-release');
   writeFileSync(osRelease, 'ID=' + distro + '\nVERSION_ID="' + version + '"\n');
+  const omvMarker = path.join(root, 'etc/openmediavault/config.xml');
+  if (omv) {
+    mkdirSync(path.dirname(omvMarker), { recursive: true });
+    writeFileSync(omvMarker, '<config/>');
+  }
   const pythonBin = path.join(usrBin, 'python3');
   const pythonStub = '#!/bin/sh\n' +
     'if [ "${1:-}" = "-c" ]; then\n' +
@@ -81,6 +86,7 @@ function fixture({ distro = 'debian', version = '13', python = false, aptUpdate 
   const script = TEMPLATE
     .replaceAll('__GHOSTFLEET_INSTALLER_SHA256__', INSTALLER_SHA)
     .replaceAll('/etc/os-release', osRelease)
+    .replaceAll('/etc/openmediavault/config.xml', omvMarker)
     .replaceAll('/usr/bin/python3', pythonBin)
     .replaceAll('$(id -u)', '0');
   const scriptPath = path.join(root, 'join.sh');
@@ -137,6 +143,17 @@ test('DNF path installs only python3 with weak dependencies disabled', () => {
     const result = f.run();
     assert.equal(result.status, 0, result.stderr);
     assert.equal(readFileSync(f.pkgLog, 'utf8').trim(), 'install -y --setopt=install_weak_deps=False python3');
+  } finally { f.close(); }
+});
+
+test('OMV is held for its owner-run Phase 0 before package mutation', () => {
+  const f = fixture({ distro: 'debian', version: '13', omv: true });
+  try {
+    const result = f.run();
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /OMV_PHASE0_REQUIRED_BEFORE_PACKAGE_MUTATION/);
+    assert.equal(requireNoFile(f.pkgLog), true);
+    assert.equal(requireNoFile(f.argsLog), true);
   } finally { f.close(); }
 });
 
