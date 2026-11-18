@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -177,7 +178,11 @@ def read_service_snapshot(path: Path, units: dict) -> dict:
         if len(raw) > 4096:
             return unknown
         data = json.loads(raw)
-        if not isinstance(data, dict) or set(data) != {'protocol', 'services'} or data['protocol'] != SERVICE_SNAPSHOT_PROTOCOL:
+        if not isinstance(data, dict) or set(data) != {'protocol', 'observed_at', 'services'} or data['protocol'] != SERVICE_SNAPSHOT_PROTOCOL:
+            return unknown
+        observed_at = data['observed_at']
+        if (isinstance(observed_at, bool) or not isinstance(observed_at, (int, float)) or
+                not 0 <= time.monotonic() - observed_at <= 30):
             return unknown
         services = data['services']
         if not isinstance(services, dict) or set(services) != set(units):
@@ -217,7 +222,7 @@ def probe() -> None:
     config_path = Path(os.getenv('CREDENTIALS_DIRECTORY', str(CONFIG.parent))) / 'presence.json'
     config = load_config(config_path)
     services = {role: service_state(unit) for role, unit in config['units'].items()}
-    payload = json.dumps({'protocol': SERVICE_SNAPSHOT_PROTOCOL, 'services': services},
+    payload = json.dumps({'protocol': SERVICE_SNAPSHOT_PROTOCOL, 'observed_at': time.monotonic(), 'services': services},
                          separators=(',', ':')).encode()
     try:
         offset = 0
