@@ -31,9 +31,9 @@ M2 dry-run supports “release package prepared”; actual version and authoriza
 
 ### 交付依赖图 / Delivery dependency diagram
 
-图源是本节与 ADR004；箭头表示依赖，不表示已经完成。首节点首用与后续韧性验收分开表达；CF 分支独立于面板首用，汇总时分别陈述已证明的范围。
+图源是本节与 ADR004。实线表示前置依赖，虚线表示各分支独立回写证据；均不表示已经完成，也不要求所有分支同时完成后才记录交付。首节点首用与后续韧性验收分开表达；CF 分支独立于面板首用，汇总时分别陈述已证明的范围。
 
-This section and ADR004 are the diagram sources. Edges represent dependencies, not completed work. First-node core acceptance and later resilience checks are separate; CF is independent of panel first use. The receipt distinguishes each proven scope.
+This section and ADR004 are the diagram sources. Solid edges are prerequisites; dashed edges are independent evidence writebacks. Neither means completion, and recording a delivered scope does not require all branches to finish together. First-node core acceptance and later resilience checks are separate; CF is independent of panel first use. The receipt distinguishes each proven scope.
 
 ```mermaid
 flowchart TD
@@ -42,9 +42,10 @@ flowchart TD
   First --> Second["M4 独立节点复制"]
   First --> Resilience["修复、撤销、回退与断网恢复"]
   Source --> CF["M4 Cloudflare 路径验收"]
-  Resilience --> Receipt["#11 按实际范围交付"]
-  Second --> Receipt
-  CF --> Receipt
+  First -.->|证据回写| Receipt["#11 分别记录交付范围"]
+  Resilience -.->|证据回写| Receipt
+  Second -.->|证据回写| Receipt
+  CF -.->|证据回写| Receipt
 ```
 
 ## 3. 实例发布与首次使用 / Instance release and first use
