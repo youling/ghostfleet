@@ -28,7 +28,7 @@ ACTIVE_STATES = {'active', 'inactive', 'failed', 'activating', 'deactivating', '
 CONFIG = Path('/etc/ghostfleet/presence.json')
 MANIFEST = Path('/etc/ghostfleet/presence-install.json')
 SCRIPT = Path('/usr/local/libexec/ghostfleet-heartbeat.py')
-SERVICE_SNAPSHOT = Path('/run/ghostfleet-heartbeat/services.json')
+SERVICE_SNAPSHOT = Path('/run/ghostfleet-heartbeat-services.json')
 SERVICE_SNAPSHOT_PROTOCOL = 'ghostfleet-service-observation/v1'
 SERVICE = Path('/etc/systemd/system/ghostfleet-heartbeat.service')
 TIMER = Path('/etc/systemd/system/ghostfleet-heartbeat.timer')
@@ -42,12 +42,11 @@ After=network.target
 Type=oneshot
 DynamicUser=yes
 LoadCredential=presence.json:/etc/ghostfleet/presence.json
-RuntimeDirectory=ghostfleet-heartbeat
-RuntimeDirectoryMode=0700
-# The fixed read-only systemd query runs as UID 0 only to use systemd's
-# private local API. "!" does not bypass the capability or filesystem sandbox.
-ExecStartPre=!/usr/bin/python3 -I /usr/local/libexec/ghostfleet-heartbeat.py probe
-ExecStart=/usr/bin/python3 -I /usr/local/libexec/ghostfleet-heartbeat.py report --service-state-file /run/ghostfleet-heartbeat/services.json
+# systemd opens this root-owned snapshot before applying the service sandbox.
+# The pre-probe writes only to this file; the DynamicUser reporter reads it.
+# "-" keeps heartbeat reporting alive if the local read-only probe fails.
+ExecStartPre=-!/usr/bin/python3 -I /usr/local/libexec/ghostfleet-heartbeat.py probe
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/ghostfleet-heartbeat.py report --service-state-file /run/ghostfleet-heartbeat-services.json
 TimeoutStartSec=40
 NoNewPrivileges=yes
 ProtectSystem=strict
@@ -58,8 +57,9 @@ ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 CapabilityBoundingSet=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/run/ghostfleet-heartbeat-services.json
 UMask=0077
-StandardOutput=journal
+StandardOutput=file:/run/ghostfleet-heartbeat-services.json
 StandardError=journal
 SyslogIdentifier=ghostfleet-heartbeat
 '''
@@ -201,17 +201,30 @@ def probe() -> None:
         raise ClientError('SERVICE_PROBE_REQUIRES_ROOT')
     config_path = Path(os.getenv('CREDENTIALS_DIRECTORY', str(CONFIG.parent))) / 'presence.json'
     config = load_config(config_path)
-    parent = SERVICE_SNAPSHOT.parent
     try:
-        info = parent.stat()
-    except OSError:
-        raise ClientError('SERVICE_PROBE_RUNTIME_DIR_UNAVAILABLE') from None
-    if parent.is_symlink() or not stat.S_ISDIR(info.st_mode) or info.st_uid == 0 or stat.S_IMODE(info.st_mode) != 0o700:
-        raise ClientError('SERVICE_PROBE_RUNTIME_DIR_UNSAFE')
+        fd = sys.stdout.fileno()
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0:
+            raise ClientError('SERVICE_PROBE_OUTPUT_UNSAFE')
+        # systemd opens StandardOutput=file: as the manager (root) before the
+        # service sandbox. Keep the file root-owned, but readable by DynamicUser.
+        os.fchmod(fd, 0o644)
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+    except (OSError, ValueError):
+        raise ClientError('SERVICE_PROBE_OUTPUT_UNAVAILABLE') from None
+    config_path = Path(os.getenv('CREDENTIALS_DIRECTORY', str(CONFIG.parent))) / 'presence.json'
+    config = load_config(config_path)
     services = {role: service_state(unit) for role, unit in config['units'].items()}
-    payload = {'protocol': SERVICE_SNAPSHOT_PROTOCOL, 'services': services}
-    atomic_write(SERVICE_SNAPSHOT, json.dumps(payload, separators=(',', ':')).encode(), 0o644)
-    print('GF_SERVICE_PROBE_OK', flush=True)
+    payload = json.dumps({'protocol': SERVICE_SNAPSHOT_PROTOCOL, 'services': services},
+                         separators=(',', ':')).encode()
+    try:
+        offset = 0
+        while offset < len(payload):
+            offset += os.write(fd, payload[offset:])
+        os.fsync(fd)
+    except OSError:
+        raise ClientError('SERVICE_PROBE_OUTPUT_WRITE_FAILED') from None
 
 def collect(config: dict, service_states: dict | None = None) -> dict:
     try:
@@ -225,12 +238,19 @@ def collect(config: dict, service_states: dict | None = None) -> dict:
             'services': services}
 
 def report(config: dict, allow_loopback: bool = False, service_state_file: Path | None = None) -> None:
-    service_states = read_service_snapshot(service_state_file, config['units']) if service_state_file else None
+    if service_state_file:
+        # stdout is the inherited write-only descriptor for the root-owned
+        # systemd snapshot. Close it before reading the file as DynamicUser.
+        try: sys.stdout.close()
+        except (OSError, ValueError): pass
+        service_states = read_service_snapshot(service_state_file, config['units'])
+    else:
+        service_states = None
     result = post_json(config['origin'], '/v1/nodes/' + config['node_uid'] + '/heartbeat',
                        collect(config, service_states), config['reporting_token'], allow_loopback)
     if result.get('node_uid') != config['node_uid'] or not isinstance(result.get('received_at'), str):
         raise ClientError('RESPONSE_IDENTITY_MISMATCH')
-    print('GF_HEARTBEAT_OK', flush=True)
+    print('GF_HEARTBEAT_OK', file=sys.stderr if service_state_file else sys.stdout, flush=True)
 
 def atomic_write(path: Path, data: bytes, mode: int) -> None:
     if path.is_symlink(): raise ClientError('TARGET_SYMLINK_REFUSED')
