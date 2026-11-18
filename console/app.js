@@ -8,7 +8,7 @@ const copy = {
     create:'首次纳管', label:'节点名称', columns:['节点','心跳状态','最后收到','SSH','Cloudflare','Tailscale','操作'],
     reissue:'重发票据', revoke:'撤销上报', replaceConfirm:'重发将使该节点旧心跳凭据失效，但不改变 SSH。继续？', revokeConfirm:'只撤销心跳上报，不撤销 SSH 或网络权限。继续？',
     delivery:'一次性纳管材料', warning:'短码只在本次显示。响应丢失或安装中断时，先检查同一节点，不要重复创建节点。',
-    code:'终端中输入的独立短码', expires:'过期时间', copy:'复制安装命令', hide:'清除此材料', root:'在目标 Linux 终端运行。已是 root 时去掉 sudo。重新绑定已有安装时，在安装器参数中加入 --replace；必须使用同一节点的重发票据。',
+    code:'终端中输入的独立短码', expires:'过期时间', copy:'复制安装命令', hide:'清除此材料', root:'复制整条命令到目标 Linux 终端。命令会先校验固定版本的 Shell 引导器，再以 root 运行；若缺少 Python 3，会按系统发行版只补装 python3，不执行系统升级。短码由安装器隐藏提示，绝不放进命令。已有节点重发票据时会保留原 node_uid。',
     footer:'面板中断不会切断现有 SSH。节点端没有命令接收器、任务队列或常驻 Agent。',
     empty:'尚无节点。', noInstaller:'安装材料未发布，暂不能生成纳管票据。', uncertain:'操作结果不确定：先刷新列表并核对同一节点，不要盲目重试。',
     stale:'刷新失败，当前显示是旧快照，不代表实时在线状态。', copied:'安装命令已复制；独立短码不在命令中。', online:'在线', total:'节点', read:'仅查看', operator:'操作员', readAt:'快照时间',
@@ -21,19 +21,19 @@ const copy = {
     create:'Enroll node',label:'Node label',columns:['Node','Presence','Last received','SSH','Cloudflare','Tailscale','Actions'],
     reissue:'Reissue',revoke:'Revoke reporting',replaceConfirm:'Reissuing disables the former reporting credential, not SSH. Continue?',revokeConfirm:'Revoke heartbeat reporting only, not SSH or network access. Continue?',
     delivery:'One-time enrollment',warning:'The code is shown only now. On lost responses or interrupted installation, reconcile this same node instead of creating another.',code:'Separate terminal code',expires:'Expires',copy:'Copy installer command',hide:'Clear delivery',
-    root:'Run on the target Linux terminal. Omit sudo in a root shell. For an existing installation, add --replace to the installer arguments and use a ticket reissued for that same node.',
+    root:'Copy the complete command to the target Linux terminal. It verifies the pinned shell bootstrap before running as root. If Python 3 is missing, it installs only python3 using the supported distro package manager; it never runs a system upgrade. The short code is requested with hidden input and is never placed in the command. Reissues preserve the existing node_uid.',
     footer:'A panel outage does not terminate SSH. No command receiver, job queue, or resident agent is installed.',empty:'No nodes yet.',noInstaller:'Pinned installer is not published; ticket creation is disabled.',uncertain:'Outcome uncertain. Refresh and reconcile the same node before retrying.',stale:'Refresh failed. This is an old snapshot, not current online evidence.',copied:'Installer command copied; the separate code is not in it.',online:'online',total:'nodes',read:'read only',operator:'operator',readAt:'Snapshot',
     status:{ONLINE:'Online',STALE:'Stale',OFFLINE:'Heartbeat overdue',PENDING:'Awaiting heartbeat',REVOKED:'Reporting revoked',UNREGISTERED:'Not registered',UNKNOWN:'Unknown'},
     states:{active:'Active',inactive:'Inactive',failed:'Failed',activating:'Starting',deactivating:'Stopping',reloading:'Reloading',not_found:'Not found',unknown:'Unknown'} },
 };
-let lang = 'zh', token = '', access = null, installer = null, nodeOrigin = '', rows = [], receivedAt = null;
+let lang = 'zh', token = '', access = null, installer = null, bootstrap = null, nodeOrigin = '', rows = [], receivedAt = null;
 let epoch = 0, session = new AbortController(), timer = null, busy = false;
 const t = key => copy[lang][key];
 function text(id, value) { $(id).textContent = value; }
 function feedback(value) { text('feedback', value); }
 function date(value) { return value ? new Date(value).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en') : '—'; }
 function cell(value) { const td = document.createElement('td'); td.textContent = value; return td; }
-function controls() { $('create-ticket').disabled = busy || access !== 'operator' || !installer; $('refresh').disabled = busy; }
+function controls() { $('create-ticket').disabled = busy || access !== 'operator' || !installer || !bootstrap; $('refresh').disabled = busy; }
 function translate() {
   document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
   for (const [id, key] of Object.entries({subtitle:'subtitle','login-title':'login',connect:'connect',disconnect:'disconnect',refresh:'refresh','credential-help':'credential',boundary:'boundary','create-ticket':'create','delivery-title':'delivery','delivery-warning':'warning','code-label':'code','expires-label':'expires','copy-command':'copy','hide-delivery':'hide','root-help':'root','footer-note':'footer'})) text(id, t(key));
@@ -53,7 +53,7 @@ async function api(path, method = 'GET', body) {
 function clearDelivery() { $('delivery').hidden = true; for (const id of ['short-code','delivery-node','expires','command']) text(id,''); }
 function disconnect() {
   epoch++; session.abort(); session = new AbortController(); clearTimeout(timer);
-  token = ''; access = null; installer = null; rows = []; receivedAt = null; busy = false;
+  token = ''; access = null; installer = null; bootstrap = null; rows = []; receivedAt = null; busy = false;
   $('token').value = ''; $('fleet-card').hidden = true; $('login-card').hidden = false;
   clearDelivery(); feedback(''); render();
 }
@@ -67,11 +67,19 @@ async function refresh() {
 }
 const quote = value => "'" + String(value).replaceAll("'", "'\\''") + "'";
 function installCommand(ticket, replace = false) {
-  const program = 'import hashlib,pathlib,subprocess,sys,tempfile,urllib.request\nu,h,o,t,*flags=sys.argv[1:]\nr=urllib.request.urlopen(urllib.request.Request(u,headers={"User-Agent":"GhostFleet-Reporter/1"}),timeout=20)\nif r.url!=u:sys.exit("REDIRECT_REFUSED")\nb=r.read(262145)\nif len(b)>262144 or hashlib.sha256(b).hexdigest()!=h:sys.exit("INSTALLER_HASH_MISMATCH")\nwith tempfile.TemporaryDirectory(prefix="ghostfleet-",dir="/run") as d:\n p=pathlib.Path(d)/"installer.py";p.write_bytes(b)\n subprocess.run(["/usr/bin/python3","-I",str(p),"install","--origin",o,"--ticket",t]+flags,check=True,env={"PATH":"/usr/sbin:/usr/bin:/sbin:/bin","HOME":"/root"})';
-  return 'sudo /usr/bin/python3 -I -c ' + quote(program) + ' ' + [installer.url,installer.sha256,nodeOrigin,ticket,...(replace?['--replace']:[])].map(quote).join(' ');
+  const inner = [
+    'set -eu',
+    'umask 077',
+    'tmp=$(mktemp /tmp/ghostfleet-join.XXXXXX)',
+    \`trap 'rm -f "$tmp"' 0\`,
+    \`curl --fail --silent --show-error --proto '=https' --tlsv1.2 --max-redirs 0 --output "$tmp" \${quote(bootstrap.url)}\`,
+    \`printf '%s  %s\\n' \${quote(bootstrap.sha256)} "$tmp" | sha256sum -c - >/dev/null\`,
+    \`/bin/sh "$tmp" --origin \${quote(nodeOrigin)} --ticket \${quote(ticket)}\${replace ? ' --replace' : ''}\`,
+  ].join('; ');
+  return 'if [ "$(id -u)" -eq 0 ]; then /bin/sh -c ' + quote(inner) + '; else sudo /bin/sh -c ' + quote(inner) + '; fi';
 }
 async function makeTicket(node) {
-  if (!installer || access !== 'operator' || busy) return;
+  if (!installer || !bootstrap || access !== 'operator' || busy) return;
   if (node && !confirm(t('replaceConfirm'))) return;
   const e = epoch; busy = true; controls(); clearDelivery();
   try {
@@ -108,8 +116,8 @@ function render() {
 }
 $('login-form').addEventListener('submit',async event=>{
   event.preventDefault(); const entered=$('token').value; disconnect(); token=entered; const e=epoch;
-  try { const data=await api('/v0/access'); if(e!==epoch)return; access=data.access;installer=data.installer;nodeOrigin=data.node_origin;
-    $('login-card').hidden=true;$('fleet-card').hidden=false;await refresh();if(!installer)feedback(t('noInstaller'));
+  try { const data=await api('/v0/access'); if(e!==epoch)return; access=data.access;installer=data.installer;bootstrap=data.bootstrap;nodeOrigin=data.node_origin;
+    $('login-card').hidden=true;$('fleet-card').hidden=false;await refresh();if(!installer || !bootstrap)feedback(t('noInstaller'));
   } catch(error) { if(e===epoch){disconnect();feedback(error.message);} }
 });
 $('disconnect').addEventListener('click',disconnect);$('refresh').addEventListener('click',refresh);
