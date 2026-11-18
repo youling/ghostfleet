@@ -81,6 +81,55 @@ sudo systemctl enable --now cloudflared-ssh.service
 
 使用普通 Access Self-hosted Application 即可。Access 负责认证连接，不会检查或过滤 SSH 命令。若目标是普通、不受命令策略限制的 SSH 会话，不要选用会引入逐目标命令策略或命令录制的 Access for Infrastructure 模式。
 
+### Cloudflare 源站连接器诊断（服务器侧）
+
+本节在**运行 cloudflared 的源站机器**执行，不在操作者 Windows 客户端执行。它诊断源站到 Cloudflare Edge 的连接条件；不能替代 hostname DNS、Published Application、Access Policy 或最终 SSH 会话验收。
+
+先记录实际二进制和版本，再执行 Cloudflare 自带的连接预检：
+
+```sh
+command -v cloudflared
+cloudflared --version
+cloudflared tunnel diag
+```
+
+从 `cloudflared 2026.5.2` 起，`tunnel diag` 会检查：
+- `region1.v2.argotunnel.com` 与 `region2.v2.argotunnel.com` 的 DNS 解析；
+- 到 Cloudflare Tunnel Edge 的出站 UDP/7844（QUIC）和 TCP/7844（HTTP/2）；
+- 到 `api.cloudflare.com:443` 的管理 API 连通性。
+
+UDP 或 TCP 任一路径可用时，cloudflared 通常可以使用对应传输；强制选择被防火墙阻断的协议会导致连接失败。443 管理 API 检查涉及更新等可选能力，按工具返回的 Pass/Warn/Fail 分别解释；不能把单独的 443 Warn 等同于 Tunnel 数据通道中断。防火墙只需按实际协议放行出站与返回流量，不要因此开放源站入站 7844。
+
+`tunnel diag` 会在当前工作目录生成诊断归档。建议先进入权限受限的临时目录执行，并在本地检查归档内容；日志、主机信息、Tunnel 标识和连接元数据可能属于敏感信息。只把经过筛选、脱敏的摘要写入公开工单；不要上传原始归档、token、凭据或完整私有日志。若当前版本支持，可减少采集范围：
+
+```sh
+cloudflared tunnel diag --no-diag-logs --no-diag-metrics --no-diag-system --no-diag-runtime
+```
+
+先运行 `cloudflared tunnel diag --help` 确认当前版本支持这些选项。诊断归档只保留在 owner 控制的私有位置；按原件保留要求归档或在完成核对后清理临时副本。
+
+再分别核对**本机进程、systemd 单元、Edge 连接和源站 SSH**。使用实际安装的单元名称与 manager scope；不要把 system manager 和 user manager 混为一谈：
+
+```sh
+systemctl status cloudflared-ssh.service --no-pager
+journalctl -u cloudflared-ssh.service -b --no-pager -n 100
+ss -ltnp
+```
+
+如果连接器由 user manager 管理，应改用 `systemctl --user` 与对应的 `journalctl --user`。如产品或本地 unit 另有 readiness URL，可单独读取该端点；**本机 readiness HTTP 200 只证明该本地端点当时响应，不证明 cloudflared 已连接 Edge，也不证明 hostname、Published Application、Access 或 SSH 可用**。需要确认真实 Edge 连接时，结合 cloudflared 当前日志、Tunnel 状态/Connections API 或 Dashboard 读回连接数量与状态；不要只凭进程存在作结论。
+
+推荐按以下层次判定，避免把不同故障混在一起：
+
+1. **进程与本机就绪**：实际 unit 是否 active，进程是否持续运行，本地 readiness（若存在）是否响应。
+2. **源站到 Edge 的网络条件**：`tunnel diag` 中两组 DNS、UDP/7844、TCP/7844 的结果；根据实际使用的 QUIC/HTTP2 协议判定。历史 journal 超时不能覆盖新的成功诊断，反之亦然。
+3. **当前 Edge 连接**：读取 Tunnel 当前 status / connections；预检通过不等于已建立连接，进程 active 也不等于 Edge healthy。
+4. **应用发布与准入**：独立核对正确 Tunnel 的 ingress hostname/service、权威 DNS record、Access Application/Policy。
+5. **端到端 SSH**：从真实管理客户端用新会话、关闭连接复用，验证 host key、预期 OS 用户、显式 exec 与必要的 PTY shell；再按授权执行拒绝身份/来源负测。
+
+版本升级是独立维护变更：先读 `cloudflared --version` 和官方 release notes，按原安装来源升级，保留回退制品/包版本，并在受控节点验证连接器重新建立 Edge 连接。不要把升级、DNS/route 变更、token 轮换和 SSH 验收合并成一个不可区分的动作；不要在没有恢复通道时同时重启唯一连接器。
+
+官方依据：[Connectivity pre-checks](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/troubleshoot-tunnels/connectivity-prechecks/) · [Tunnel firewall / outbound 7844](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/tunnel-with-firewall/) · [2026-05-27 cloudflared pre-check changelog](https://developers.cloudflare.com/changelog/post/2026-05-27-cloudflared-connectivity-prechecks/)
+
 ## 5. Tailscale 连接路径
 
 1. 按官方 Linux 安装说明安装 Tailscale。
@@ -280,6 +329,55 @@ Use a remotely-managed Cloudflare Tunnel:
 5. Install cloudflared on the client and connect using the `node-cf` SSH alias. The client-side `cloudflared access ssh` flow prompts for Cloudflare Access login when needed.
 
 Use a normal Access self-hosted application. Access authenticates the connection; it does not inspect or filter SSH commands. Do not use Access for Infrastructure if the deployment goal is a plain unrestricted SSH session without per-target command policy or command recording.
+
+### Origin-side cloudflared diagnostics
+
+Run this section **on the host that runs cloudflared**, not on the operator's Windows client. It checks origin-to-Cloudflare Edge connectivity prerequisites; it does not replace hostname DNS, Published Application, Access Policy or a real SSH-session acceptance test.
+
+Record the actual binary and version, then run Cloudflare's built-in connectivity diagnostics:
+
+```sh
+command -v cloudflared
+cloudflared --version
+cloudflared tunnel diag
+```
+
+Starting with `cloudflared 2026.5.2`, `tunnel diag` checks:
+- DNS resolution for `region1.v2.argotunnel.com` and `region2.v2.argotunnel.com`;
+- outbound UDP/7844 (QUIC) and TCP/7844 (HTTP/2) to Cloudflare Tunnel Edge;
+- management API connectivity to `api.cloudflare.com:443`.
+
+If either UDP or TCP is available, cloudflared can generally use the corresponding transport. Forcing a protocol blocked by the firewall will prevent that transport from connecting. The 443 management API check covers optional capabilities such as update checks; interpret Pass/Warn/Fail according to the tool output. A standalone 443 warning does not mean the Tunnel data path is down. Allow the required outbound and return traffic for the protocol in use; do not open inbound port 7844 on the origin.
+
+`tunnel diag` creates a diagnostic archive in the current working directory. Run it from a restricted temporary directory and inspect the archive locally. Logs, host details, Tunnel identifiers and connection metadata may be sensitive. Publish only filtered, sanitized summaries; never upload the raw archive, tokens, credentials or complete private logs. If supported by the installed version, reduce the collected scope:
+
+```sh
+cloudflared tunnel diag --no-diag-logs --no-diag-metrics --no-diag-system --no-diag-runtime
+```
+
+Check `cloudflared tunnel diag --help` first to confirm that the installed version supports these options. Keep diagnostic archives only in an owner-controlled private location; retain or remove temporary copies according to the owner's evidence-retention requirements.
+
+Then inspect the **local process, systemd unit, Edge connections and origin SSH** separately. Use the actual installed unit name and manager scope; do not confuse the system manager with a user manager:
+
+```sh
+systemctl status cloudflared-ssh.service --no-pager
+journalctl -u cloudflared-ssh.service -b --no-pager -n 100
+ss -ltnp
+```
+
+If the connector is managed by a user manager, use `systemctl --user` and the corresponding `journalctl --user` commands. If the product or local unit exposes a readiness URL, query it separately. **A local readiness HTTP 200 proves only that the local endpoint responded at that time; it does not prove cloudflared is connected to Edge, nor that hostname DNS, Published Application, Access or SSH works.** To establish current Edge connectivity, combine current cloudflared logs with Tunnel status/Connections API or Dashboard readback. Do not infer health solely from the process being present.
+
+Classify failures by layer:
+
+1. **Process and local readiness:** Is the actual unit active? Is the process running? Does the local readiness endpoint respond, if one exists?
+2. **Origin-to-Edge network prerequisites:** Check both DNS regions and UDP/7844 and TCP/7844 results in `tunnel diag`. Interpret them against the QUIC/HTTP2 protocol actually in use. Historical journal timeouts do not override a newer successful diagnostic, and vice versa.
+3. **Current Edge connections:** Read the Tunnel's current status/connections. Passing pre-checks does not prove a live connection; an active process does not prove Edge health.
+4. **Published route and access:** Independently read the correct Tunnel's ingress hostname/service, authoritative DNS record and Access Application/Policy.
+5. **End-to-end SSH:** From the real operator client, use a fresh session with connection reuse disabled. Verify host key, expected OS user, explicit exec and any required PTY shell; then run authorized denied-identity/source tests.
+
+Treat upgrades as a separate maintenance change. First record `cloudflared --version` and read the official release notes; upgrade through the same installation source, preserve a rollback package/binary, and verify that the connector reconnects to Edge on a controlled node. Do not combine a software upgrade, DNS/route change, token rotation and SSH acceptance into one indistinguishable operation. Do not restart the only connector without a recovery path.
+
+Official references: [Connectivity pre-checks](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/troubleshoot-tunnels/connectivity-prechecks/) · [Tunnel firewall / outbound 7844](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/tunnel-with-firewall/) · [2026-05-27 cloudflared pre-check changelog](https://developers.cloudflare.com/changelog/post/2026-05-27-cloudflared-connectivity-prechecks/)
 
 ## 5. Tailscale path
 
