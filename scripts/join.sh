@@ -52,6 +52,11 @@ done
 [ -t 0 ] || fail INTERACTIVE_TERMINAL_REQUIRED
 [ -n "$TICKET" ] || fail TICKET_REQUIRED
 case "$TICKET" in ticket-*) ;; *) fail INVALID_TICKET_SHAPE ;; esac
+# OMV owns its package/configuration lifecycle. Its local read-only Phase 0 is
+# an instance-owner gate and must happen before this generic bootstrap mutates packages.
+if [ -e /etc/openmediavault/config.xml ] || command -v omv-salt >/dev/null 2>&1; then
+  fail OMV_PHASE0_REQUIRED_BEFORE_PACKAGE_MUTATION
+fi
 case "$ORIGIN" in https://?*) authority=${ORIGIN#https://} ;; *) fail INVALID_HTTPS_ORIGIN ;; esac
 case "$authority" in
   ''|*/*|*'?'*|*'#'*|*'@'*|*[!A-Za-z0-9.:-]*) fail INVALID_HTTPS_ORIGIN ;;
