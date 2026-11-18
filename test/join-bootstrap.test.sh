@@ -23,7 +23,7 @@ sed \
   -e "s|/etc/ssl/certs/ca-certificates.crt|$fixture/root/debian-ca.crt|g" \
   -e "s|/etc/pki/tls/certs/ca-bundle.crt|$fixture/root/redhat-ca.crt|g" \
   -e "s|PATH=/usr/sbin:/usr/bin:/sbin:/bin|PATH=$fixture/bin:/usr/bin:/bin|g" \
-  -e "s%\\[ -r /dev/tty \\] && \\[ -t 0 \\] || fail INTERACTIVE_TERMINAL_REQUIRED%: TTY is covered by the production guard%g" \\
+  -e "s%\[ -r /dev/tty \] && \[ -t 0 \] || fail INTERACTIVE_TERMINAL_REQUIRED%: TTY is covered by the production guard%g" \
   "$template" > "$script"
 chmod 0700 "$script"
 
