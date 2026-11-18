@@ -4,6 +4,8 @@
 # addressed and verified by the Panel-generated command before execution.
 set -eu
 umask 077
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
 
 INSTALLER_SHA256='@INSTALLER_SHA256@'
 INSTALLER_BYTES='@INSTALLER_BYTES@'
