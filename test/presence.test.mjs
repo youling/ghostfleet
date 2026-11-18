@@ -234,7 +234,7 @@ test('panel and node origins share the same global Durable Object identity', asy
   const createdResponse = await worker.fetch(request('/v0/enrollment-tickets', {
     method: 'POST', body: { label: 'same-global-do-fixture' },
   }), bindings);
-  assert.equal(createdResponse.status, 200);
+  assert.equal(createdResponse.status, 201);
   const created = await createdResponse.json();
 
   const claimResponse = await worker.fetch(request(
