@@ -8,7 +8,7 @@ const copy = {
     create:'首次纳管', label:'节点名称', columns:['节点','心跳状态','最后收到','SSH','Cloudflare','Tailscale','操作'],
     reissue:'重发票据', revoke:'撤销上报', replaceConfirm:'重发将使该节点旧心跳凭据失效，但不改变 SSH。继续？', revokeConfirm:'只撤销心跳上报，不撤销 SSH 或网络权限。继续？',
     delivery:'一次性纳管材料', warning:'短码只在本次显示。响应丢失或安装中断时，先检查同一节点，不要重复创建节点。',
-    code:'终端中输入的独立短码', expires:'过期时间', copy:'复制安装命令', hide:'清除此材料', root:'在目标 Linux 终端运行这一行命令。脚本先校验自身 SHA-256；非 root 时请求 sudo，缺少 Python/CA 时仅补齐对应系统包，不做系统升级。短码仍在终端安全提示中输入。已有节点重发会自动使用 --replace。',
+    code:'终端中输入的独立短码', expires:'过期时间', copy:'复制安装命令', hide:'清除此材料', root:'在目标 Linux 终端运行这一行命令。须已有可信 CA、curl 或 wget 和 sha256sum；命令先校验下载脚本，非 root 时请求 sudo，仅在缺少 Python 时安装 python3，不做系统升级。已有 Python 需为 3.10+。短码仍在终端隐藏提示中输入。已有节点重发自动使用 --replace。',
     footer:'面板中断不会切断现有 SSH。节点端没有命令接收器、任务队列或常驻 Agent。',
     empty:'尚无节点。', noInstaller:'安装材料未发布，暂不能生成纳管票据。', uncertain:'操作结果不确定：先刷新列表并核对同一节点，不要盲目重试。',
     stale:'刷新失败，当前显示是旧快照，不代表实时在线状态。', copied:'安装命令已复制；独立短码不在命令中。', online:'在线', total:'节点', read:'仅查看', operator:'操作员', readAt:'快照时间',
@@ -21,7 +21,7 @@ const copy = {
     create:'Enroll node',label:'Node label',columns:['Node','Presence','Last received','SSH','Cloudflare','Tailscale','Actions'],
     reissue:'Reissue',revoke:'Revoke reporting',replaceConfirm:'Reissuing disables the former reporting credential, not SSH. Continue?',revokeConfirm:'Revoke heartbeat reporting only, not SSH or network access. Continue?',
     delivery:'One-time enrollment',warning:'The code is shown only now. On lost responses or interrupted installation, reconcile this same node instead of creating another.',code:'Separate terminal code',expires:'Expires',copy:'Copy installer command',hide:'Clear delivery',
-    root:'Run this one-line command on the target Linux terminal. The shim verifies its SHA-256 first, requests sudo only when needed, and installs only missing Python/CA prerequisites without a system upgrade. Enter the short code at the hidden terminal prompt. Reissue for an existing node automatically uses --replace.',
+    root:'Run this one-line command on the target Linux terminal with trusted CA certificates, curl or wget, and sha256sum already available. The command verifies the downloaded shim before execution. It requests sudo only when needed and installs only missing python3, without a system upgrade. An existing Python must be 3.10+. Enter the short code at the hidden terminal prompt. Reissue automatically uses --replace.',
     footer:'A panel outage does not terminate SSH. No command receiver, job queue, or resident agent is installed.',empty:'No nodes yet.',noInstaller:'Pinned installer is not published; ticket creation is disabled.',uncertain:'Outcome uncertain. Refresh and reconcile the same node before retrying.',stale:'Refresh failed. This is an old snapshot, not current online evidence.',copied:'Installer command copied; the separate code is not in it.',online:'online',total:'nodes',read:'read only',operator:'operator',readAt:'Snapshot',
     status:{ONLINE:'Online',STALE:'Stale',OFFLINE:'Heartbeat overdue',PENDING:'Awaiting heartbeat',REVOKED:'Reporting revoked',UNREGISTERED:'Not registered',UNKNOWN:'Unknown'},
     states:{active:'Active',inactive:'Inactive',failed:'Failed',activating:'Starting',deactivating:'Stopping',reloading:'Reloading',not_found:'Not found',unknown:'Unknown'} },
@@ -70,7 +70,16 @@ function installCommand(ticket, replace = false) {
   const bootstrap = installer.bootstrap;
   const url = quote(bootstrap.url), sha = quote(bootstrap.sha256);
   const replaceArg = replace ? ' --replace' : '';
-  return `(set -eu; umask 077; d=$(mktemp -d) || exit 1; trap 'rm -rf "$d"' 0; trap 'exit 130' HUP INT TERM; if command -v curl >/dev/null 2>&1; then curl -fsS --proto '=https' --tlsv1.2 --max-redirs 0 ${url} -o "$d/join.sh"; elif command -v wget >/dev/null 2>&1; then wget -q -O "$d/join.sh" ${url}; else echo 'GhostFleet requires curl or wget for first download' >&2; exit 1; fi; printf '%s  %s\\n' ${sha} "$d/join.sh" | sha256sum -c -; /bin/sh "$d/join.sh" --origin ${quote(nodeOrigin)} --ticket ${quote(ticket)}${replaceArg})`;
+  return [
+    '(set -eu; umask 077;',
+    "command -v sha256sum >/dev/null 2>&1 || { echo 'GF_BOOTSTRAP_ERROR SHA256SUM_REQUIRED' >&2; exit 1; };",
+    "ca=''; for p in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do if [ -r \"$p\" ] && [ -s \"$p\" ]; then ca=$p; break; fi; done;",
+    "[ -n \"$ca\" ] || { echo 'GF_BOOTSTRAP_ERROR CA_BUNDLE_REQUIRED' >&2; exit 1; };",
+    'd=$(mktemp -d) || exit 1; trap \'rm -rf "$d"\' 0; trap \'exit 130\' HUP INT TERM;',
+    `if command -v curl >/dev/null 2>&1; then status=$(curl -q -fsS --proto '=https' --tlsv1.2 --max-redirs 0 --connect-timeout 10 --max-time 60 --max-filesize 262144 -H 'User-Agent: GhostFleet-Bootstrap/1' --cacert "$ca" -w '%{http_code}' ${url} -o "$d/join.sh") || exit 1; [ "$status" = 200 ] || { echo 'GF_BOOTSTRAP_ERROR BOOTSTRAP_HTTP_STATUS' >&2; exit 1; }; elif command -v wget >/dev/null 2>&1; then wget --no-config -q --https-only --max-redirect=0 --timeout=30 --tries=1 --user-agent='GhostFleet-Bootstrap/1' --ca-certificate="$ca" -O "$d/join.sh" ${url}; else echo 'GF_BOOTSTRAP_ERROR CURL_OR_WGET_REQUIRED' >&2; exit 1; fi;`,
+    `printf '%s  %s\\n' ${sha} "$d/join.sh" | sha256sum -c -;`,
+    `/bin/sh "$d/join.sh" --origin ${quote(nodeOrigin)} --ticket ${quote(ticket)}${replaceArg})`,
+  ].join(' ');
 }
 async function makeTicket(node) {
   if (!installer || access !== 'operator' || busy) return;

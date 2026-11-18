@@ -4,7 +4,9 @@ import io
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -104,7 +106,8 @@ class ClientTests(unittest.TestCase):
     def test_production_unit_no_secret_in_env_or_argv(self):
         self.assertIn('LoadCredential=presence.json:', hb.SERVICE_TEXT)
         self.assertIn('Type=oneshot', hb.SERVICE_TEXT)
-        self.assertIn('StandardOutput=journal', hb.SERVICE_TEXT)
+        self.assertIn('StandardOutput=file:/run/ghostfleet-heartbeat-services.json', hb.SERVICE_TEXT)
+        self.assertIn('StandardError=journal', hb.SERVICE_TEXT)
         self.assertNotIn('Environment=', hb.SERVICE_TEXT)
         self.assertNotIn('Restart=', hb.SERVICE_TEXT)
         self.assertIn('OnUnitInactiveSec=60s', hb.TIMER_TEXT)
@@ -205,9 +208,182 @@ class M3FixTests(unittest.TestCase):
             server.shutdown(); server.server_close()
         self.assertEqual(hits, ['GhostFleet-Reporter/1'])
     def test_install_command_sends_user_agent(self):
-        js = (Path(__file__).resolve().parents[1] / 'console' / 'app.js').read_text(encoding='utf-8')
-        lines = [line for line in js.splitlines() if 'urllib.request.urlopen' in line]
-        self.assertEqual(len(lines), 1)
-        self.assertIn('GhostFleet-Reporter/1', lines[0])
+        # Preserve the first-download UA regression across the POSIX migration.
+        # The shared fixture executes the actual Panel command through real
+        # curl and wget against local TLS, and checks BOTH request headers.
+        import subprocess
+        import sys
+        suite = Path(__file__).with_name('test_join_bootstrap.py')
+        result = subprocess.run([
+            sys.executable, str(suite),
+            'JoinBootstrapTests.test_generated_curl_command_runs_both_pinned_stages',
+            'JoinBootstrapTests.test_generated_wget_command_runs_both_pinned_stages',
+        ], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+class ServiceObservationTests(unittest.TestCase):
+    def test_unit_keeps_dynamic_reporter_and_uses_bounded_root_probe(self):
+        self.assertIn('DynamicUser=yes', hb.SERVICE_TEXT)
+        self.assertIn('ExecStartPre=-!/usr/bin/python3 -I /usr/local/libexec/ghostfleet-heartbeat.py probe', hb.SERVICE_TEXT)
+        self.assertIn('report --service-state-file /run/ghostfleet-heartbeat-services.json', hb.SERVICE_TEXT)
+        self.assertIn('StandardOutput=file:/run/ghostfleet-heartbeat-services.json', hb.SERVICE_TEXT)
+        self.assertIn('ReadWritePaths=/run/ghostfleet-heartbeat-services.json', hb.SERVICE_TEXT)
+        self.assertIn('NoNewPrivileges=yes', hb.SERVICE_TEXT)
+        self.assertRegex(hb.SERVICE_TEXT, r'(?m)^CapabilityBoundingSet=$')
+        self.assertIn('ProtectSystem=strict', hb.SERVICE_TEXT)
+        self.assertIn('ProtectHome=yes', hb.SERVICE_TEXT)
+
+    def test_probe_requires_root_and_writes_only_service_states(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            config_path = root / 'presence.json'
+            config_path.write_text(json.dumps(config()))
+            config_path.chmod(0o600)
+            snapshot = root / 'services.json'
+            snapshot.touch()
+            real_lstat = Path.lstat
+            def fake_lstat(path):
+                info = real_lstat(path)
+                if path == snapshot:
+                    return SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=0, st_dev=info.st_dev, st_ino=info.st_ino)
+                return info
+            fd_info = SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=0,
+                                      st_dev=snapshot.stat().st_dev, st_ino=snapshot.stat().st_ino)
+            calls = []
+            def state(unit):
+                calls.append(unit)
+                return 'active' if unit == 'ssh.service' else 'not_found'
+            with snapshot.open('wb') as output:
+                with patch.object(hb, 'SERVICE_SNAPSHOT', snapshot), patch.object(hb.os, 'geteuid', return_value=0), patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(root)}), patch.object(hb, 'service_state', side_effect=state), patch.object(hb.sys, 'stdout', output), patch.object(hb.os, 'fstat', return_value=fd_info), patch.object(Path, 'lstat', new=fake_lstat):
+                    hb.probe()
+                output.flush()
+            self.assertEqual(calls, list(config()['units'].values()))
+            self.assertEqual(snapshot.stat().st_mode & 0o777, 0o644)
+            data = json.loads(snapshot.read_text())
+            self.assertEqual(data['protocol'], hb.SERVICE_SNAPSHOT_PROTOCOL)
+            self.assertGreaterEqual(hb.time.monotonic() - data['observed_at'], 0)
+            self.assertLessEqual(hb.time.monotonic() - data['observed_at'], 30)
+            self.assertEqual(data['services'], {'ssh': 'active', 'cloudflared': 'not_found', 'tailscaled': 'not_found'})
+            self.assertNotIn(TOKEN, snapshot.read_text())
+        with patch.object(hb.os, 'geteuid', return_value=1000):
+            with self.assertRaisesRegex(hb.ClientError, 'SERVICE_PROBE_REQUIRES_ROOT'):
+                hb.probe()
+
+    def test_probe_rejects_untrusted_output_file_before_query(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            config_path = root / 'presence.json'
+            config_path.write_text(json.dumps(config()))
+            config_path.chmod(0o600)
+            snapshot = root / 'services.json'
+            snapshot.touch()
+            with snapshot.open('wb') as output:
+                with patch.object(hb, 'SERVICE_SNAPSHOT', snapshot), patch.object(hb.os, 'geteuid', return_value=0), patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(root)}), patch.object(hb.sys, 'stdout', output), patch.object(hb.os, 'fstat', return_value=SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=1000)), patch.object(hb, 'service_state') as query:
+                    with self.assertRaisesRegex(hb.ClientError, 'SERVICE_PROBE_OUTPUT_UNSAFE'):
+                        hb.probe()
+                    query.assert_not_called()
+
+    def test_snapshot_reader_accepts_only_root_owned_private_service_map(self):
+        good = SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_uid=0, st_size=100)
+        self.assertTrue(hb.service_snapshot_file_ok(good))
+        for info in [
+            SimpleNamespace(st_mode=stat.S_IFREG | 0o666, st_uid=0, st_size=100),
+            SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_uid=1000, st_size=100),
+            SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_uid=0, st_size=4097),
+            SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0, st_size=100),
+        ]:
+            self.assertFalse(hb.service_snapshot_file_ok(info))
+
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'services.json'
+            path.write_text(json.dumps({
+                'protocol': hb.SERVICE_SNAPSHOT_PROTOCOL,
+                'observed_at': hb.time.monotonic(),
+                'services': {'ssh': 'active', 'cloudflared': 'not_found', 'tailscaled': 'failed'},
+            }))
+            with patch.object(hb, 'service_snapshot_file_ok', return_value=True):
+                self.assertEqual(hb.read_service_snapshot(path, config()['units']), {
+                    'ssh': 'active', 'cloudflared': 'not_found', 'tailscaled': 'failed',
+                })
+                path.write_text(json.dumps({
+                    'protocol': hb.SERVICE_SNAPSHOT_PROTOCOL,
+                    'observed_at': hb.time.monotonic(),
+                    'services': {'ssh': 'online', 'cloudflared': 'active', 'tailscaled': 'active'},
+                }))
+                self.assertEqual(hb.read_service_snapshot(path, config()['units']), {
+                    'ssh': 'unknown', 'cloudflared': 'unknown', 'tailscaled': 'unknown',
+                })
+                path.unlink()
+                path.symlink_to(Path(d) / 'missing')
+                self.assertEqual(hb.read_service_snapshot(path, config()['units']), {
+                    'ssh': 'unknown', 'cloudflared': 'unknown', 'tailscaled': 'unknown',
+                })
+
+    def test_snapshot_reader_rejects_stale_observation(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'services.json'
+            path.write_text(json.dumps({
+                'protocol': hb.SERVICE_SNAPSHOT_PROTOCOL,
+                'observed_at': hb.time.monotonic() - 60,
+                'services': {'ssh': 'active', 'cloudflared': 'active', 'tailscaled': 'active'},
+            }))
+            with patch.object(hb, 'service_snapshot_file_ok', return_value=True):
+                self.assertEqual(hb.read_service_snapshot(path, config()['units']), {
+                    'ssh': 'unknown', 'cloudflared': 'unknown', 'tailscaled': 'unknown',
+                })
+
+    def test_report_uses_precomputed_snapshot_without_unprivileged_systemctl(self):
+        states = {'ssh': 'active', 'cloudflared': 'failed', 'tailscaled': 'not_found'}
+        with patch.object(hb.os, 'dup2'), patch.object(hb, 'read_service_snapshot', return_value=states), patch.object(hb, 'service_state', side_effect=AssertionError('report must not call systemctl')), patch.object(hb, 'post_json', return_value={'node_uid': UID, 'received_at': 'now'}) as post, contextlib.redirect_stdout(io.StringIO()):
+            hb.report(config(), service_state_file=Path('/run/ghostfleet-heartbeat-services.json'))
+        sent = post.call_args.args[2]
+        self.assertEqual(sent['services'], states)
+        self.assertNotIn(TOKEN, json.dumps(sent))
+
+    def test_missing_snapshot_keeps_heartbeat_and_reports_unknown(self):
+        with patch.object(hb.os, 'dup2'), patch.object(hb, 'service_state', side_effect=AssertionError('must use snapshot path')), patch.object(hb, 'post_json', return_value={'node_uid': UID, 'received_at': 'now'}) as post, contextlib.redirect_stdout(io.StringIO()):
+            hb.report(config(), service_state_file=Path('/nonexistent/ghostfleet/services.json'))
+        self.assertEqual(post.call_args.args[2]['services'], {
+            'ssh': 'unknown', 'cloudflared': 'unknown', 'tailscaled': 'unknown',
+        })
+
+    def test_report_revokes_real_snapshot_write_descriptor_before_reading(self):
+        # A real child standard stream (closefd=False), not StringIO, reproduces
+        # systemd's inherited writable stdout without needing root or systemd.
+        child = '''
+import importlib.util, json, os, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('heartbeat', sys.argv[1])
+hb = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hb)
+config = json.loads(sys.argv[2])
+def read_snapshot(path, units):
+    os.write(1, b'FD1_DIAGNOSTIC\\n')
+    return {role: 'unknown' for role in units}
+hb.read_service_snapshot = read_snapshot
+hb.post_json = lambda *args: {'node_uid': config['node_uid'], 'received_at': 'now'}
+hb.report(config, service_state_file=Path(sys.argv[3]))
+'''
+        with tempfile.TemporaryDirectory() as d:
+            snapshot = Path(d) / 'services.json'
+            expected = b'UNCHANGED_SERVICE_SNAPSHOT\n'
+            snapshot.write_bytes(expected)
+            with snapshot.open('r+b') as output:
+                process = subprocess.run([sys.executable, '-I', '-c', child, str(SOURCE),
+                                          json.dumps(config()), str(snapshot)],
+                                         stdout=output, stderr=subprocess.PIPE, timeout=10)
+            self.assertEqual(process.returncode, 0, process.stderr.decode())
+            self.assertEqual(snapshot.read_bytes(), expected)
+            self.assertIn(b'FD1_DIAGNOSTIC\n', process.stderr)
+            self.assertIn(b'GF_HEARTBEAT_OK\n', process.stderr)
+
+    def test_snapshot_descriptor_failure_stops_before_read_or_network(self):
+        with patch.object(hb.os, 'dup2', side_effect=OSError('unavailable')), \
+             patch.object(hb, 'read_service_snapshot') as read, patch.object(hb, 'post_json') as post:
+            with self.assertRaisesRegex(hb.ClientError, 'SERVICE_SNAPSHOT_STDOUT_REDIRECT_FAILED'):
+                hb.report(config(), service_state_file=Path('/run/ghostfleet-heartbeat-services.json'))
+            read.assert_not_called()
+            post.assert_not_called()
+
 
 if __name__ == '__main__': unittest.main()

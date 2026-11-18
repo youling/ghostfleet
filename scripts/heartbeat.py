@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -28,6 +29,8 @@ ACTIVE_STATES = {'active', 'inactive', 'failed', 'activating', 'deactivating', '
 CONFIG = Path('/etc/ghostfleet/presence.json')
 MANIFEST = Path('/etc/ghostfleet/presence-install.json')
 SCRIPT = Path('/usr/local/libexec/ghostfleet-heartbeat.py')
+SERVICE_SNAPSHOT = Path('/run/ghostfleet-heartbeat-services.json')
+SERVICE_SNAPSHOT_PROTOCOL = 'ghostfleet-service-observation/v1'
 SERVICE = Path('/etc/systemd/system/ghostfleet-heartbeat.service')
 TIMER = Path('/etc/systemd/system/ghostfleet-heartbeat.timer')
 MARKER = '# GhostFleet presence v1'
@@ -40,7 +43,11 @@ After=network.target
 Type=oneshot
 DynamicUser=yes
 LoadCredential=presence.json:/etc/ghostfleet/presence.json
-ExecStart=/usr/bin/python3 -I /usr/local/libexec/ghostfleet-heartbeat.py report
+# systemd opens this root-owned snapshot before applying the service sandbox.
+# The pre-probe writes only to this file; the DynamicUser reporter reads it.
+# "-" keeps heartbeat reporting alive if the local read-only probe fails.
+ExecStartPre=-!/usr/bin/python3 -I /usr/local/libexec/ghostfleet-heartbeat.py probe
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/ghostfleet-heartbeat.py report --service-state-file /run/ghostfleet-heartbeat-services.json
 TimeoutStartSec=40
 NoNewPrivileges=yes
 ProtectSystem=strict
@@ -51,8 +58,9 @@ ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 CapabilityBoundingSet=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/run/ghostfleet-heartbeat-services.json
 UMask=0077
-StandardOutput=journal
+StandardOutput=file:/run/ghostfleet-heartbeat-services.json
 StandardError=journal
 SyslogIdentifier=ghostfleet-heartbeat
 '''
@@ -153,20 +161,104 @@ def service_state(unit: str, runner=subprocess.run) -> str:
     active = fields.get('ActiveState')
     return active if active in ACTIVE_STATES else 'unknown'
 
-def collect(config: dict) -> dict:
+def service_snapshot_file_ok(info: os.stat_result) -> bool:
+    return (stat.S_ISREG(info.st_mode) and info.st_uid == 0 and
+            stat.S_IMODE(info.st_mode) == 0o644 and info.st_size <= 4096)
+
+def read_service_snapshot(path: Path, units: dict) -> dict:
+    unknown = {role: 'unknown' for role in units}
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_CLOEXEC', 0))
+        with os.fdopen(fd, 'rb') as stream:
+            fd = None
+            if not service_snapshot_file_ok(os.fstat(stream.fileno())):
+                return unknown
+            raw = stream.read(4097)
+        if len(raw) > 4096:
+            return unknown
+        data = json.loads(raw)
+        if not isinstance(data, dict) or set(data) != {'protocol', 'observed_at', 'services'} or data['protocol'] != SERVICE_SNAPSHOT_PROTOCOL:
+            return unknown
+        observed_at = data['observed_at']
+        if (isinstance(observed_at, bool) or not isinstance(observed_at, (int, float)) or
+                not 0 <= time.monotonic() - observed_at <= 30):
+            return unknown
+        services = data['services']
+        if not isinstance(services, dict) or set(services) != set(units):
+            return unknown
+        if any(not isinstance(value, str) or value not in ACTIVE_STATES | {'not_found', 'unknown'}
+               for value in services.values()):
+            return unknown
+        return dict(services)
+    except (OSError, ValueError, TypeError, UnicodeError):
+        return unknown
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+def probe() -> None:
+    # ExecStartPre=! runs this fixed, read-only probe with UID 0 so systemctl
+    # uses systemd's private local API instead of the DynamicUser D-Bus identity
+    # path. The process still has CapabilityBoundingSet= empty and the unit's
+    # filesystem/network sandbox; it never accepts a command or unit from a peer.
+    if os.geteuid() != 0:
+        raise ClientError('SERVICE_PROBE_REQUIRES_ROOT')
+    try:
+        fd = sys.stdout.fileno()
+        info = os.fstat(fd)
+        path_info = SERVICE_SNAPSHOT.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or
+                not stat.S_ISREG(path_info.st_mode) or path_info.st_uid != 0 or
+                (info.st_dev, info.st_ino) != (path_info.st_dev, path_info.st_ino)):
+            raise ClientError('SERVICE_PROBE_OUTPUT_UNSAFE')
+        # systemd opens StandardOutput=file: as the manager (root) before the
+        # service sandbox. Keep the file root-owned, but readable by DynamicUser.
+        os.fchmod(fd, 0o644)
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+    except (OSError, ValueError):
+        raise ClientError('SERVICE_PROBE_OUTPUT_UNAVAILABLE') from None
+    config_path = Path(os.getenv('CREDENTIALS_DIRECTORY', str(CONFIG.parent))) / 'presence.json'
+    config = load_config(config_path)
+    services = {role: service_state(unit) for role, unit in config['units'].items()}
+    payload = json.dumps({'protocol': SERVICE_SNAPSHOT_PROTOCOL, 'observed_at': time.monotonic(), 'services': services},
+                         separators=(',', ':')).encode()
+    try:
+        offset = 0
+        while offset < len(payload):
+            offset += os.write(fd, payload[offset:])
+        os.fsync(fd)
+    except OSError:
+        raise ClientError('SERVICE_PROBE_OUTPUT_WRITE_FAILED') from None
+
+def collect(config: dict, service_states: dict | None = None) -> dict:
     try:
         boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         if not re.fullmatch(r'[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}', boot): boot = None
     except OSError: boot = None
+    services = service_states if service_states is not None else {
+        role: service_state(unit) for role, unit in config['units'].items()
+    }
     return {'protocol': 'ghostfleet-heartbeat/v1', 'boot_id': boot, 'reporter_version': VERSION,
-            'services': {role: service_state(unit) for role, unit in config['units'].items()}}
+            'services': services}
 
-def report(config: dict, allow_loopback: bool = False) -> None:
+def report(config: dict, allow_loopback: bool = False, service_state_file: Path | None = None) -> None:
+    if service_state_file:
+        # Replace fd 1 itself before reading the root-owned snapshot. CPython's
+        # standard stream has closefd=False: closing its wrapper is not enough.
+        # fd 2 is the unit's existing journal stream, not the snapshot file.
+        try: os.dup2(2, 1)
+        except OSError:
+            raise ClientError('SERVICE_SNAPSHOT_STDOUT_REDIRECT_FAILED') from None
+        service_states = read_service_snapshot(service_state_file, config['units'])
+    else:
+        service_states = None
     result = post_json(config['origin'], '/v1/nodes/' + config['node_uid'] + '/heartbeat',
-                       collect(config), config['reporting_token'], allow_loopback)
+                       collect(config, service_states), config['reporting_token'], allow_loopback)
     if result.get('node_uid') != config['node_uid'] or not isinstance(result.get('received_at'), str):
         raise ClientError('RESPONSE_IDENTITY_MISMATCH')
-    print('GF_HEARTBEAT_OK', flush=True)
+    print('GF_HEARTBEAT_OK', file=sys.stderr if service_state_file else sys.stdout, flush=True)
 
 def atomic_write(path: Path, data: bytes, mode: int) -> None:
     if path.is_symlink(): raise ClientError('TARGET_SYMLINK_REFUSED')
@@ -272,14 +364,18 @@ def main() -> int:
     commands = parser.add_subparsers(dest='action', required=True)
     p = commands.add_parser('report')
     p.add_argument('--config', type=Path, default=Path(os.getenv('CREDENTIALS_DIRECTORY', str(CONFIG.parent))) / 'presence.json')
+    p.add_argument('--service-state-file', type=Path)
     p.add_argument('--allow-loopback-http', action='store_true', help='isolated local tests only; never permits public HTTP')
+    commands.add_parser('probe')
     p = commands.add_parser('install')
     p.add_argument('--origin', required=True); p.add_argument('--ticket'); p.add_argument('--replace', action='store_true')
     for role, unit in DEFAULT_UNITS.items(): p.add_argument('--' + role + '-unit', default=unit)
     commands.add_parser('repair'); commands.add_parser('remove')
     args = parser.parse_args()
     try:
-        if args.action == 'report': report(load_config(args.config, args.allow_loopback_http), args.allow_loopback_http)
+        if args.action == 'report':
+            report(load_config(args.config, args.allow_loopback_http), args.allow_loopback_http, args.service_state_file)
+        elif args.action == 'probe': probe()
         elif args.action == 'install': install(args)
         elif args.action == 'repair': repair()
         else: remove()

@@ -24,7 +24,7 @@ jobs:
       - name: Locked development dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: POSIX bootstrap dependency-recovery regressions
-        run: sudo sh test/join-bootstrap.test.sh
+        run: sh test/join-bootstrap.test.sh
       - name: Protocol and publication regressions
         run: npm test
       - name: Python client regressions
