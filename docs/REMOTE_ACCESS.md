@@ -98,9 +98,9 @@ cloudflared tunnel diag
 - 到 Cloudflare Tunnel Edge 的出站 UDP/7844（QUIC）和 TCP/7844（HTTP/2）；
 - 到 `api.cloudflare.com:443` 的管理 API 连通性。
 
-UDP 或 TCP 任一路径可用时，cloudflared 通常可以使用对应传输；强制选择被防火墙阻断的协议会导致连接失败。443 管理 API 检查涉及更新等可选能力，按工具返回的 Pass/Warn/Fail 分别解释；不能把单独的 443 Warn 等同于 Tunnel 数据通道中断。防火墙只需按实际协议放行出站与返回流量，不要因此开放源站入站 7844。
+UDP 或 TCP 任一路径可用时，cloudflared 通常可以使用对应传输；强制选择被防火墙阻断的协议会导致连接失败。443 管理 API 检查涉及更新检查、Access JWT 验证等能力，按工具返回的 Pass/Warn/Fail 分别解释；不能把单独的 443 Warn 等同于 Tunnel 数据通道中断。防火墙只需按实际协议放行出站与返回流量，不要因此开放源站入站 7844。
 
-`tunnel diag` 会在当前工作目录生成诊断归档。建议先进入权限受限的临时目录执行，并在本地检查归档内容；日志、主机信息、Tunnel 标识和连接元数据可能属于敏感信息。只把经过筛选、脱敏的摘要写入公开工单；不要上传原始归档、token、凭据或完整私有日志。若当前版本支持，可减少采集范围：
+`tunnel diag` 会在当前工作目录生成诊断归档；该命令用于诊断，不会代替配置变更或重启连接器。建议先进入权限受限的临时目录执行，并在本地检查归档内容；日志、主机信息、Tunnel 标识和连接元数据可能属于敏感信息。只把经过筛选、脱敏的摘要写入公开工单；不要上传原始归档、token、凭据或完整私有日志。若当前版本支持，可减少采集范围：
 
 ```sh
 cloudflared tunnel diag --no-diag-logs --no-diag-metrics --no-diag-system --no-diag-runtime
@@ -347,9 +347,9 @@ Starting with `cloudflared 2026.5.2`, `tunnel diag` checks:
 - outbound UDP/7844 (QUIC) and TCP/7844 (HTTP/2) to Cloudflare Tunnel Edge;
 - management API connectivity to `api.cloudflare.com:443`.
 
-If either UDP or TCP is available, cloudflared can generally use the corresponding transport. Forcing a protocol blocked by the firewall will prevent that transport from connecting. The 443 management API check covers optional capabilities such as update checks; interpret Pass/Warn/Fail according to the tool output. A standalone 443 warning does not mean the Tunnel data path is down. Allow the required outbound and return traffic for the protocol in use; do not open inbound port 7844 on the origin.
+If either UDP or TCP is available, cloudflared can generally use the corresponding transport. Forcing a protocol blocked by the firewall will prevent that transport from connecting. The 443 management API check covers capabilities such as software update checks and Access JWT validation; interpret Pass/Warn/Fail according to the tool output. A standalone 443 warning does not mean the Tunnel data path is down. Allow the required outbound and return traffic for the protocol in use; do not open inbound port 7844 on the origin.
 
-`tunnel diag` creates a diagnostic archive in the current working directory. Run it from a restricted temporary directory and inspect the archive locally. Logs, host details, Tunnel identifiers and connection metadata may be sensitive. Publish only filtered, sanitized summaries; never upload the raw archive, tokens, credentials or complete private logs. If supported by the installed version, reduce the collected scope:
+`tunnel diag` creates a diagnostic archive in the current working directory. It is a diagnostic command, not a configuration change or connector restart. Run it from a restricted temporary directory and inspect the archive locally. Logs, host details, Tunnel identifiers and connection metadata may be sensitive. Publish only filtered, sanitized summaries; never upload the raw archive, tokens, credentials or complete private logs. If supported by the installed version, reduce the collected scope:
 
 ```sh
 cloudflared tunnel diag --no-diag-logs --no-diag-metrics --no-diag-system --no-diag-runtime
