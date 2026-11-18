@@ -54,9 +54,16 @@ export default {
       try { return await env.GHOSTFLEET_STATE.get(env.GHOSTFLEET_STATE.idFromName('global')).fetch(forwarded); }
       catch { return denied('STATE_UNAVAILABLE', 503); }
     }
-    if (isNode && request.method === 'GET' && /^[0-9a-f]{64}$/.test(env.GHOSTFLEET_INSTALLER_SHA256 ?? '') &&
+    if (isNode && request.method === 'GET' &&
+        /^[0-9a-f]{64}$/.test(env.GHOSTFLEET_INSTALLER_SHA256 ?? '') &&
         u.pathname === '/bootstrap/' + env.GHOSTFLEET_INSTALLER_SHA256 + '.py') {
       if (!env.ASSETS) return denied('INSTALLER_NOT_BUILT', 503);
+      return env.ASSETS.fetch(request);
+    }
+    if (isNode && request.method === 'GET' &&
+        /^[0-9a-f]{64}$/.test(env.GHOSTFLEET_BOOTSTRAP_SHA256 ?? '') &&
+        u.pathname === '/bootstrap/' + env.GHOSTFLEET_BOOTSTRAP_SHA256 + '.sh') {
+      if (!env.ASSETS) return denied('BOOTSTRAP_NOT_BUILT', 503);
       return env.ASSETS.fetch(request);
     }
     // Explicit static allowlist: node ingress can never serve the panel or any

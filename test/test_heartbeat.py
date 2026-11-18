@@ -208,10 +208,18 @@ class M3FixTests(unittest.TestCase):
             server.shutdown(); server.server_close()
         self.assertEqual(hits, ['GhostFleet-Reporter/1'])
     def test_install_command_sends_user_agent(self):
-        js = (Path(__file__).resolve().parents[1] / 'console' / 'app.js').read_text(encoding='utf-8')
-        lines = [line for line in js.splitlines() if 'urllib.request.urlopen' in line]
-        self.assertEqual(len(lines), 1)
-        self.assertIn('GhostFleet-Reporter/1', lines[0])
+        # Preserve the first-download UA regression across the POSIX migration.
+        # The shared fixture executes the actual Panel command through real
+        # curl and wget against local TLS, and checks BOTH request headers.
+        import subprocess
+        import sys
+        suite = Path(__file__).with_name('test_join_bootstrap.py')
+        result = subprocess.run([
+            sys.executable, str(suite),
+            'JoinBootstrapTests.test_generated_curl_command_runs_both_pinned_stages',
+            'JoinBootstrapTests.test_generated_wget_command_runs_both_pinned_stages',
+        ], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 class ServiceObservationTests(unittest.TestCase):
     def test_unit_keeps_dynamic_reporter_and_uses_bounded_root_probe(self):

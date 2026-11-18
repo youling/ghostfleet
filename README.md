@@ -25,7 +25,7 @@ flowchart TD
 
 Cloudflare SSH 仍未验收。最新[分层排障回执](https://github.com/youling/ghostfleet/issues/11#issuecomment-6962547549)表明：所选客户端已能启动 `cloudflared access ssh`，当前停在 DNS `NXDOMAIN`；后续应回读 DNS、Published Application route 与 Access，再完成新会话正测及拒绝来源/身份负测。连接器运行、出站心跳和另一条 SSH 路径成功，均不能替代这条路径的结果。
 
-生产版本、M2 鉴权与双 origin、M3 恢复测试及 M4 各路径的剩余项统一见 [#11](https://github.com/youling/ghostfleet/issues/11)。源码合并、CI 成功和现场验收分别报告。v1 安装器只安装上报功能；一键加入、Access SSO 和统一远控就绪向导的取舍见[本轮研究](docs/research/ONBOARDING_RECONNAISSANCE_2026-11-18.md)，尚未作为新功能实现。
+生产版本、M2 鉴权与双 origin、M3 恢复测试及 M4 各路径的剩余项统一见 [#11](https://github.com/youling/ghostfleet/issues/11)。源码合并、CI 成功和现场验收分别报告。v1 Python 安装器仍只安装心跳上报功能；POSIX join bootstrap 由面板命令先校验固定摘要，再仅补齐缺失的系统 python3 并启动固定摘要的 Python 安装器，不配置 SSH/provider。Access SSO 和统一远控就绪向导仍是研究项，不在本次实现范围。
 
 [产品范围](PRODUCT.md) · [架构](docs/ARCHITECTURE.md) · [传输安装](docs/REMOTE_ACCESS.md) · [面板与心跳部署](docs/PRESENCE.md) · [阶段交付](docs/DELIVERY.md) · [文档目录](docs/README.md)
 
@@ -33,19 +33,20 @@ Cloudflare SSH 仍未验收。最新[分层排障回执](https://github.com/youl
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
+sh test/join-bootstrap.test.sh
 npm test
 npm run test:python
 npm run build
 npm run test:live
 ```
 
-服务端开发需要 Node 22+；节点需要 Python 3.10+ 和支持 DynamicUser/LoadCredential 的 systemd，首验平台为 Debian 13。节点不需要 npm、Node、curl 或额外 Python 包。构建输出静态页面、哈希固定的单文件安装器与 Worker 配置；部署由实例 owner 配置 origin、Access、应用凭据与既有 DO 绑定。测试不会自动发布。
+服务端开发需要 Node 22+；节点需要支持 DynamicUser/LoadCredential 的 systemd，首验平台为 Debian 13。首次加入使用哈希固定的 POSIX shell bootstrap：可信 CA bundle、`curl` 或 GNU `wget` 与 `sha256sum` 必须已可用。只有 `/usr/bin/python3` 缺失时，Debian/Ubuntu 使用 apt-get、Fedora/RHEL 系优先 dnf、没有 dnf 时使用 yum 安装 python3 及其必需依赖。已有 Python 低于 3.10 时明确失败，不替换或升级系统 Python；不执行系统升级。节点不需要 npm、Node 或额外 Python 包。构建输出静态页面、哈希固定的 shell bootstrap/Python 安装器与 Worker 配置；部署由实例 owner 配置 origin、Access、应用凭据与既有 DO 绑定。测试不会自动发布。
 
 ## English
 
 **Native SSH transport, lightweight enrollment and presence.** Cloudflare Tunnel/Tailscale reach the same OpenSSH service. A thin panel registers nodes, issues reporting-only credentials and shows last-seen plus local service observations. Python standard-library oneshots run under systemd; diagnostics stay in journald. There is no resident command agent, execution API or job queue.
 
-The dated field receipts above report three separately enrolled nodes and a working direct SSH path for the third node. They are observations from that window, not a live availability guarantee. The Cloudflare SSH path remains unaccepted: client-side cloudflared now starts, but DNS returns NXDOMAIN. Read back DNS, the actual published route and Access configuration, then verify a fresh positive SSH session and the denied-source/identity case.
+The dated field receipts above report three separately enrolled nodes and a working direct SSH path for the third node. They are observations from that window, not a live availability guarantee. The one-time join flow now uses a hash-pinned POSIX shell bootstrap; trusted CA certificates, curl or GNU wget, and sha256sum are prerequisites. Supported Debian/Ubuntu hosts use apt-get, and Fedora/RHEL-family hosts use dnf or yum, only when system python3 is missing. An existing Python below 3.10 fails without replacement; no system-wide upgrade runs. The shell artifact is verified before execution, and the short code remains a hidden terminal prompt. The Cloudflare SSH path remains unaccepted: client-side cloudflared now starts, but DNS returns NXDOMAIN. Read back DNS, the actual published route and Access configuration, then verify a fresh positive SSH session and the denied-source/identity case.
 
 [#11](https://github.com/youling/ghostfleet/issues/11) owns exact production versions and remaining M2/M3/M4 evidence. Source/CI acceptance is separate from deployment and field acceptance. Reporting revocation is not SSH revocation. The v1 installer does not configure SSH or provider networks. The onboarding/SSO research is a design input, not shipped behavior. Follow the commands above and the [deployment runbook](docs/PRESENCE.md); preserve instance-owned origins, credentials and DO identity.
 

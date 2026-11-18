@@ -154,6 +154,26 @@ function request(path, { method = 'GET', token = operator, body, origin = env.GH
     ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...headers },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
 }
+test('access metadata exposes both pinned installer and POSIX bootstrap only when both hashes are configured', async () => {
+  const configured = { ...env, GHOSTFLEET_INSTALLER_SHA256: 'a'.repeat(64),
+    GHOSTFLEET_BOOTSTRAP_SHA256: 'b'.repeat(64) };
+  const ready = await prepare(request('/v0/access'), configured);
+  assert.equal(ready.response.status, 200);
+  const data = await ready.response.json();
+  assert.deepEqual(data.installer, {
+    url: env.GHOSTFLEET_NODE_ORIGIN + '/bootstrap/' + 'a'.repeat(64) + '.py',
+    sha256: 'a'.repeat(64),
+    bootstrap: {
+      url: env.GHOSTFLEET_NODE_ORIGIN + '/bootstrap/' + 'b'.repeat(64) + '.sh',
+      sha256: 'b'.repeat(64),
+    },
+  });
+  const incomplete = await prepare(request('/v0/access'), {
+    ...configured, GHOSTFLEET_BOOTSTRAP_SHA256: 'not-a-digest',
+  });
+  assert.equal((await incomplete.response.json()).installer, null);
+});
+
 test('reuse existing auth: missing roots, missing bearer, read token and same-token conflict', async () => {
   assert.equal((await prepare(request('/v0/access', { token: '' }), {})).response.status, 503);
   assert.equal((await prepare(request('/v0/access', { token: '' }), env)).response.status, 401);
@@ -416,11 +436,15 @@ test('Worker/DO path commits one of 12 concurrent claims, then authenticated hea
   const list = await (await worker.fetch(request('/v0/nodes', { token: reader }), bindings)).json();
   assert.equal(list.nodes.length, 1); assert.equal(list.nodes[0].presence, 'ONLINE');
 });
-test('node ingress serves only exact pinned installer, never UI; static UI has restrictive headers', async () => {
-  const bindings = { ...mockBindings(), GHOSTFLEET_INSTALLER_SHA256: 'a'.repeat(64) };
+test('node ingress serves only exact pinned installer and join shim; static UI stays panel-only', async () => {
+  const bindings = { ...mockBindings(), GHOSTFLEET_INSTALLER_SHA256: 'a'.repeat(64),
+    GHOSTFLEET_BOOTSTRAP_SHA256: 'c'.repeat(64) };
   assert.equal((await worker.fetch(request('/', { origin: env.GHOSTFLEET_NODE_ORIGIN }), bindings)).status, 404);
   assert.equal((await worker.fetch(request('/bootstrap/' + 'a'.repeat(64) + '.py', { origin: env.GHOSTFLEET_NODE_ORIGIN }), bindings)).status, 200);
   assert.equal((await worker.fetch(request('/bootstrap/' + 'b'.repeat(64) + '.py', { origin: env.GHOSTFLEET_NODE_ORIGIN }), bindings)).status, 404);
+  assert.equal((await worker.fetch(request('/bootstrap/' + 'c'.repeat(64) + '.sh', { origin: env.GHOSTFLEET_NODE_ORIGIN }), bindings)).status, 200);
+  assert.equal((await worker.fetch(request('/bootstrap/' + 'd'.repeat(64) + '.sh', { origin: env.GHOSTFLEET_NODE_ORIGIN }), bindings)).status, 404);
+  assert.equal((await worker.fetch(request('/bootstrap/' + 'c'.repeat(64) + '.sh'), bindings)).status, 404);
   const page = await worker.fetch(request('/'), bindings);
   assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/);
 });
