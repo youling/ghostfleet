@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import tempfile
 import threading
@@ -218,7 +219,7 @@ class ServiceObservationTests(unittest.TestCase):
         self.assertIn('ExecStartPre=!/usr/bin/python3 -I /usr/local/libexec/ghostfleet-heartbeat.py probe', hb.SERVICE_TEXT)
         self.assertIn('report --service-state-file /run/ghostfleet-heartbeat/services.json', hb.SERVICE_TEXT)
         self.assertIn('NoNewPrivileges=yes', hb.SERVICE_TEXT)
-        self.assertIn('CapabilityBoundingSet=\\n', hb.SERVICE_TEXT)
+        self.assertIn('CapabilityBoundingSet=', hb.SERVICE_TEXT)
         self.assertIn('ProtectSystem=strict', hb.SERVICE_TEXT)
         self.assertIn('ProtectHome=yes', hb.SERVICE_TEXT)
 
@@ -236,10 +237,7 @@ class ServiceObservationTests(unittest.TestCase):
             def state(unit):
                 calls.append(unit)
                 return 'active' if unit == 'ssh.service' else 'not_found'
-            with patch.object(hb, 'SERVICE_SNAPSHOT', snapshot), \\
-                 patch.object(hb.os, 'geteuid', return_value=0), \\
-                 patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(root)}), \\
-                 patch.object(hb, 'service_state', side_effect=state):
+            with patch.object(hb, 'SERVICE_SNAPSHOT', snapshot), patch.object(hb.os, 'geteuid', return_value=0), patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(root)}), patch.object(hb, 'service_state', side_effect=state):
                 hb.probe()
             self.assertEqual(calls, list(config()['units'].values()))
             self.assertEqual(snapshot.stat().st_mode & 0o777, 0o644)
@@ -261,10 +259,7 @@ class ServiceObservationTests(unittest.TestCase):
             config_path = root / 'presence.json'
             config_path.write_text(json.dumps(config()))
             config_path.chmod(0o600)
-            with patch.object(hb, 'SERVICE_SNAPSHOT', runtime / 'services.json'), \\
-                 patch.object(hb.os, 'geteuid', return_value=0), \\
-                 patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(root)}), \\
-                 patch.object(hb, 'service_state') as query:
+            with patch.object(hb, 'SERVICE_SNAPSHOT', runtime / 'services.json'), patch.object(hb.os, 'geteuid', return_value=0), patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(root)}), patch.object(hb, 'service_state') as query:
                 with self.assertRaisesRegex(hb.ClientError, 'SERVICE_PROBE_RUNTIME_DIR_UNSAFE'):
                     hb.probe()
                 query.assert_not_called()
@@ -305,19 +300,14 @@ class ServiceObservationTests(unittest.TestCase):
 
     def test_report_uses_precomputed_snapshot_without_unprivileged_systemctl(self):
         states = {'ssh': 'active', 'cloudflared': 'failed', 'tailscaled': 'not_found'}
-        with patch.object(hb, 'read_service_snapshot', return_value=states), \\
-             patch.object(hb, 'service_state', side_effect=AssertionError('report must not call systemctl')), \\
-             patch.object(hb, 'post_json', return_value={'node_uid': UID, 'received_at': 'now'}) as post, \\
-             contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(hb, 'read_service_snapshot', return_value=states), patch.object(hb, 'service_state', side_effect=AssertionError('report must not call systemctl')), patch.object(hb, 'post_json', return_value={'node_uid': UID, 'received_at': 'now'}) as post, contextlib.redirect_stdout(io.StringIO()):
             hb.report(config(), service_state_file=Path('/run/ghostfleet-heartbeat/services.json'))
         sent = post.call_args.args[2]
         self.assertEqual(sent['services'], states)
         self.assertNotIn(TOKEN, json.dumps(sent))
 
     def test_missing_snapshot_keeps_heartbeat_and_reports_unknown(self):
-        with patch.object(hb, 'service_state', side_effect=AssertionError('must use snapshot path')), \\
-             patch.object(hb, 'post_json', return_value={'node_uid': UID, 'received_at': 'now'}) as post, \\
-             contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(hb, 'service_state', side_effect=AssertionError('must use snapshot path')), patch.object(hb, 'post_json', return_value={'node_uid': UID, 'received_at': 'now'}) as post, contextlib.redirect_stdout(io.StringIO()):
             hb.report(config(), service_state_file=Path('/nonexistent/ghostfleet/services.json'))
         self.assertEqual(post.call_args.args[2]['services'], {
             'ssh': 'unknown', 'cloudflared': 'unknown', 'tailscaled': 'unknown',
