@@ -116,6 +116,27 @@ ssh node-ts
 - **SSH / `ssh://…:22`** → SSH `ProxyCommand … access ssh --hostname %h`。`ssh node-cf` 测试的就是这条路径。
 - **TCP / `tcp://…`** → 启动 `cloudflared access tcp --hostname <hostname> --url 127.0.0.1:<local-port>`，再让 TCP 客户端连接本地转发端口。这是另一种本地转发流程。执行 `access tcp` 不能验证 SSH 类型 Published Application，也不能验证 SSH `ProxyCommand`。
 
+#### DNS 权威区与 Published Route 必须分开核验
+
+`NXDOMAIN` 只证明被查询的 DNS 视图中没有该名称；它本身不能证明 Tunnel connector 故障，也不能单独证明 Published Application route 不存在。先确认域名的权威 NS、Cloudflare zone 是否为 **Full Setup**（Cloudflare 托管权威 DNS）还是 **Partial Setup**（权威 DNS 在其他服务商），再检查 hostname、route 与 DNS record 的对应关系：
+
+- **Full Setup：** 在 Cloudflare Dashboard 为 Tunnel 添加 Published Application route 时，Cloudflare 会自动创建指向该 Tunnel 子域名（`<UUID>.cfargotunnel.com`）的 DNS record。若看到 NXDOMAIN，应回读确切 zone、hostname、route 和自动生成的 record 是否存在、名称是否一致；不要先重复创建 route。
+- **Partial Setup：** Cloudflare 不托管该域名的权威 DNS。每个 Published Application hostname 还需要在当前权威 DNS 服务商单独创建 CNAME/ALIAS；Cloudflare 当前 FAQ 给出的 partial-CNAME 目标格式为 `<hostname>.cdn.cloudflare.net`。只在确认 zone 模式与目标格式后修改对应 DNS owner，不能照搬 Full Setup 的自动创建假设。
+- **Route readback：** 在正确账户/zone 的 Tunnels 页面读取目标 Tunnel 的 Published Application 列表，核对完整 hostname、服务类型（SSH 或 TCP）和 Service URL。SSH route 应为 `ssh://127.0.0.1:22`（或经 owner 确认的实际源站）；TCP route 应为 `tcp://…`。再独立核对 Access Application/Policy 覆盖该 hostname。
+- **不要混为一个对象：** Tunnel connector `Healthy/Ready`、Published Application route、权威 DNS record、Access Application/Policy 是不同层。只有逐项读回，才能判断 NXDOMAIN 是 zone/delegation、record 缺失/错名，还是 route/Access 另有问题。
+
+在已授权客户端可使用以下只读 DNS 检查（将示例域名替换为实例 hostname；输出留私有记录）：
+
+```sh
+dig +trace ssh.example.invalid
+dig NS example.invalid +short
+dig CNAME ssh.example.invalid +short
+dig A ssh.example.invalid +short
+dig AAAA ssh.example.invalid +short
+```
+
+Windows PowerShell 可用 `Resolve-DnsName example.invalid -Type NS` 与 `Resolve-DnsName ssh.example.invalid -Type CNAME`。如果是 Partial Setup，应对实际权威 DNS provider 查询，而不只查询 Cloudflare Dashboard。任何 DNS/route 写操作都应等到 owner 回读当前对象、确认最小差异和回退方式后再按原授权执行。
+
 测试前先明确实际使用哪台客户端。Windows PowerShell 可这样检查客户端二进制和版本：
 
 ```
@@ -291,6 +312,27 @@ Do not confuse the two published service types:
 
 - **SSH / `ssh://…:22`** → SSH `ProxyCommand … access ssh --hostname %h`. This is the route tested by `ssh node-cf`.
 - **TCP / `tcp://…`** → start `cloudflared access tcp --hostname <hostname> --url 127.0.0.1:<local-port>`, then point the TCP client at that local port. This is a different local-forwarding flow. Running `access tcp` does not test an SSH-type Published Application route or the SSH `ProxyCommand`.
+
+#### DNS authority and Published Route must be checked separately
+
+`NXDOMAIN` proves only that the queried DNS view has no such name. It does not prove that the Tunnel connector is down, and it does not by itself prove that a Published Application route is absent. First identify the domain's authoritative nameservers and whether the Cloudflare zone uses **Full Setup** (Cloudflare hosts authoritative DNS) or **Partial Setup** (another provider hosts authoritative DNS). Then reconcile the hostname, route and DNS record:
+
+- **Full Setup:** when you add a Published Application route to a Tunnel in the Cloudflare dashboard, Cloudflare automatically creates a DNS record pointing the hostname to the Tunnel subdomain (`<UUID>.cfargotunnel.com`). If the hostname returns NXDOMAIN, read back the exact zone, hostname, route and generated record; do not blindly create a duplicate route.
+- **Partial Setup:** Cloudflare does not host authoritative DNS for the domain. Each Published Application hostname also needs a CNAME/ALIAS at the current authoritative DNS provider. Cloudflare's current FAQ gives `<hostname>.cdn.cloudflare.net` as the partial-CNAME target format. Confirm the zone mode and target format before changing the DNS owner; do not assume Full Setup's automatic record creation applies.
+- **Route readback:** in the correct account/zone, inspect the target Tunnel's Published Application list and verify the exact hostname, service type (SSH or TCP) and Service URL. An SSH route should use `ssh://127.0.0.1:22` (or the owner-confirmed origin); a TCP route should use `tcp://…`. Separately verify the Access Application/Policy covers that hostname.
+- **Do not collapse the objects:** Tunnel connector `Healthy/Ready`, Published Application route, authoritative DNS record, and Access Application/Policy are distinct layers. Read each one before deciding whether NXDOMAIN is caused by zone/delegation, a missing/misnamed record, or a separate route/Access problem.
+
+The following read-only DNS checks can be run from the authorized client (replace the example with the instance hostname; keep outputs in the private record):
+
+```sh
+dig +trace ssh.example.invalid
+dig NS example.invalid +short
+dig CNAME ssh.example.invalid +short
+dig A ssh.example.invalid +short
+dig AAAA ssh.example.invalid +short
+```
+
+On Windows PowerShell use `Resolve-DnsName example.invalid -Type NS` and `Resolve-DnsName ssh.example.invalid -Type CNAME`. For Partial Setup, query the actual authoritative DNS provider, not only the Cloudflare dashboard. Do not write DNS or route configuration until the owner has read back the current objects, identified the minimum difference and recorded a rollback path.
 
 Choose the actual client machine before testing. On Windows PowerShell, verify the client executable and version:
 
