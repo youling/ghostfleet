@@ -4,7 +4,7 @@
 
 ### 开发与验证
 
-服务端开发使用 Node22+；节点客户端使用 Python3.10+ 和支持 DynamicUser/LoadCredential 的 systemd，首验环境为 Debian13。原生 SSH 配置沿用 [传输指南](REMOTE_ACCESS.md)。不需要在节点安装 Node、npm、curl 或额外 Python 包。
+服务端开发使用 Node22+；节点 reporter 运行时需要 Python3.10+ 和支持 DynamicUser/LoadCredential 的 systemd，首验环境为 Debian13。原生 SSH 配置沿用 [传输指南](REMOTE_ACCESS.md)。节点不需要 Node、npm 或额外 Python 包；一行加入命令使用现有 `curl` 与 `sha256sum`，若受支持的非 OMV Linux 缺少 Python3，会按发行版只补装 `python3`。
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
@@ -18,15 +18,15 @@ python3 test/live-presence.py --with-user-systemd
 
 `test:live` 启动仅绑定 loopback 的真实 Workerd/DO，使用合成凭据，验证并发领取、reporter、持久化重启和撤销。附加参数创建独立命名的临时用户 timer/service，验证凭据投递、journald、断网/恢复，最后删除测试状态。不会改 SSH、提供商或系统级 unit；没有 user manager 时附加测试明确失败，不报告为通过。全部测试属于作者/CI证据，不替代独立代码审查。
 
-构建产生 `dist/console`、`dist/installer.json`、`dist/wrangler.json`。安装器为单个 SHA-256 固定 Python 文件；面板下载命令先验哈希，再在目标机执行。短码通过终端隐藏输入，不写入命令、URL或服务器持久明文。Root 初次授权只用于安装自身配置和 unit。
+构建产生 `dist/console`、`dist/installer.json`、`dist/wrangler.json`，包含分别固定 SHA-256 的 POSIX Shell bootstrap 与 Python reporter installer。面板生成的一行命令先下载 Shell bootstrap 到 root-owned 临时文件、校验摘要后才执行；Shell 再下载并校验 Python 文件。短码只由 Python 安装器在终端隐藏提示，不写入命令、URL、进程参数或服务器持久明文。
 
 ### 实例发布的最短路径
 
 1. 从已审查提交构建。保留真实部署的 Worker 名称、DO绑定/命名空间和既有 `v1` migration；不要重新创建 namespace 或抹掉 snapshot。发布前保留上一 Worker 版本与数据备份。
 2. 在私有部署覆盖中把 panel/node 两个 HTTPS origin、域名路由配置到**同一个 Worker**。示例 `example.invalid` 不是可发布地址。Panel 全站 Access；node origin 不套浏览器登录页，但仅允许实现中的机器路由。保持 workers.dev/preview 关闭。
 3. 所有者通过原生 secret 配置设置不同的 `GHOSTFLEET_OPERATOR_TOKEN` 和 `GHOSTFLEET_READ_TOKEN`（各至少32字符的高熵随机值）。不要交给聊天、Issue、CI或仓库。Access 登录不自动成为应用 Operator。
-4. 私有覆盖应用在生成的 `dist/wrangler.json` 上，保留构建生成的 `GHOSTFLEET_INSTALLER_SHA256`。先执行 `wrangler deploy --dry-run --config <private-config>`；正式发布/域名操作由实例 owner 按现行授权完成，不由 CI 自动发布。
-5. 先验证匿名 panel 的 Access 拦截、Read 写入拒绝、node origin 管理 API 404、错误/撤销心跳凭据401、正确安装器字节哈希，再做第一台经授权节点的系统级安装。检查普通用户 SSH 与已有 root 公钥入口未改变。
+4. 私有覆盖应用在生成的 `dist/wrangler.json` 上，保留构建生成的 `GHOSTFLEET_INSTALLER_SHA256` 与 `GHOSTFLEET_BOOTSTRAP_SHA256`。先执行 `wrangler deploy --dry-run --config <private-config>`；正式发布/域名操作由实例 owner 按现行授权完成，不由 CI 自动发布。
+5. 先验证匿名 panel 的 Access 拦截、Read 写入拒绝、node origin 管理 API 404、错误/撤销心跳凭据401、正确 Shell/Python 两个固定制品的字节哈希，再做第一台经授权节点的系统级安装。检查普通用户 SSH 与已有 root 公钥入口未改变。
 
 旧 Worker 的 command/MCP/helper/七证据纳管 API 不再挂载，旧 node 数据和 lifecycle 字段保留。若有旧消费者，先确认切换与回滚；不能直接覆盖仍在使用旧 API 的生产实例。需要回退时回退该 Worker 版本并停用本 reporter；不要为回退删除原节点、DO或 SSH 凭据。
 
@@ -36,12 +36,12 @@ GhostFleet v1 安装器是**心跳上报器安装器，不是 NAS/OMV 配置管�
 
 安装器当前实际执行的本地操作范围：
 
-- 交互式检查 Linux、root、TTY、HTTPS origin、票据/短码格式，以及 GhostFleet 自有目标的符号链接/归属/权限边界。
+- Python reporter installer 交互式检查 Linux、root、TTY、HTTPS origin、票据/短码格式，以及 GhostFleet 自有目标的符号链接/归属/权限边界。Shell bootstrap 在执行前检查发行版、运行时与包管理器。
 - 在需要时创建 GhostFleet 自有目录：`/etc/ghostfleet`（0700）及 `/usr/local/libexec`（0755）。
 - 仅写入 `/etc/ghostfleet/presence.json`（0600）、`/etc/ghostfleet/presence-install.json`（0600）、`/usr/local/libexec/ghostfleet-heartbeat.py`（0755）、`/etc/systemd/system/ghostfleet-heartbeat.service` 和 `ghostfleet-heartbeat.timer`（0644）。
 - 仅对自己的 timer/service 执行 `systemctl stop / daemon-reload / enable --now / start`；reporter 对 SSH、cloudflared、tailscaled 只读观察，不修改这些服务。
 
-明确不做：安装/升级系统软件包；创建或修改 OS 用户/组/sudoers；修改 sshd/authorized_keys；安装、迁移或重启 Cloudflare/Tailscale provider；修改防火墙、路由、DNS；调用 OMV 配置接口；访问或修改磁盘、分区、文件系统、RAID、挂载、共享、Docker/业务容器；重启主机。它也不提供远程命令执行、常驻 Node Agent、Helper 或 JIT 特权审批。
+权限与副作用边界：Python reporter installer 不安装/升级系统软件包。POSIX Shell bootstrap 仅在受支持的**非 OMV** Debian 12+ / Ubuntu 22+ / Fedora 40+ / RHEL 家族 10+ 且 `/usr/bin/python3` 缺失时，执行最小依赖补齐：Debian/Ubuntu 只刷新 apt package metadata 并安装 `python3`；Fedora/RHEL 家族只通过 dnf 安装 `python3`。绝不执行 `apt upgrade`、`full-upgrade`、`dist-upgrade`、`dnf upgrade`，不添加软件源、不安装 curl、不修改系统 Python 以外的软件。若 Python 已存在且版本满足要求，不调用包管理器；若版本过旧、发行版不支持、包管理器缺失或安装失败，则 fail-closed，不尝试升级现有 Python。**检测到 OMV（`/etc/openmediavault/config.xml` 或 `omv-salt`）时，通用 bootstrap 在任何包管理器动作前停止，要求 OMV owner 先完成私有只读 Phase 0；当前公共 bootstrap 不提供跳过该门的参数。**除此以外，仍不创建或修改 OS 用户/组/sudoers，不修改 sshd/authorized_keys，不安装、迁移或重启 Cloudflare/Tailscale provider，不修改防火墙、路由、DNS，不调用 OMV 配置接口，不访问或修改磁盘、分区、文件系统、RAID、挂载、共享、Docker/业务容器，不重启主机。它也不提供远程命令执行、常驻 Node Agent、Helper 或 JIT 特权审批。
 
 因此，NAS 真机仍由其 owner 在本机执行独立只读 Phase 0，确认设备身份、OS/systemd、当前权限模型、存储/业务服务提示与恢复条件；Phase 0 未通过或事实为 UNKNOWN 时，不进入安装。Phase 0 与 root ceremony 的授权属于实例 owner，不由 GhostFleet 的票据、面板或 CI 自动授予。
 
@@ -51,14 +51,14 @@ GhostFleet v1 安装器是**心跳上报器安装器，不是 NAS/OMV 配置管�
 
 The GhostFleet v1 installer is a **presence-reporter installer, not a NAS/OMV configuration manager**. Its one-time root ceremony installs only GhostFleet-owned configuration, reporter and two systemd units. It does not replace OMV's local read-only Phase 0, and it must not infer that disks, RAID, mounts or business services are safe merely because the host is Debian-based.
 
-The installer's current local effect scope is limited to:
+The Python reporter installer's local effect scope is limited to: 
 
 - Checking Linux, root, an interactive TTY, HTTPS origin, ticket/short-code shape, and symlink/ownership/permission boundaries for GhostFleet-owned targets.
 - Creating GhostFleet-owned directories when absent: `/etc/ghostfleet` (0700) and `/usr/local/libexec` (0755).
 - Writing only `/etc/ghostfleet/presence.json` (0600), `/etc/ghostfleet/presence-install.json` (0600), `/usr/local/libexec/ghostfleet-heartbeat.py` (0755), `/etc/systemd/system/ghostfleet-heartbeat.service` and `ghostfleet-heartbeat.timer` (0644).
 - Running `systemctl stop / daemon-reload / enable --now / start` only for its own timer/service. SSH, cloudflared and tailscaled are observed read-only, never modified.
 
-It does **not** install/upgrade packages; create or modify OS users/groups/sudoers; change sshd/authorized_keys; install, migrate or restart Cloudflare/Tailscale providers; change firewall/routes/DNS; call OMV configuration APIs; inspect or mutate disks, partitions, filesystems, RAID, mounts, shares, Docker/business containers; or reboot the host. It provides no remote command execution, resident Node Agent, privileged Helper or JIT approval.
+The Python reporter installer does **not** install/upgrade packages; create or modify OS users/groups/sudoers; change sshd/authorized_keys; install, migrate or restart Cloudflare/Tailscale providers; change firewall/routes/DNS; call OMV configuration APIs; inspect or mutate disks, partitions, filesystems, RAID, mounts, shares, Docker/business containers; or reboot the host. The POSIX join bootstrap may install only the `python3` package on supported non-OMV Debian 12+, Ubuntu 22+, Fedora 40+ or RHEL-family 10+ systems when `/usr/bin/python3` is absent. It performs apt metadata refresh + `apt-get install --no-install-recommends python3`, or `dnf install python3`; it never runs a system upgrade, adds repositories, or updates an existing Python runtime. If Python exists but is too old, it fails closed. It detects OMV and stops before any package-manager action until the instance owner has completed the private read-only Phase 0; there is no public bypass flag. It provides no remote command execution, resident Node Agent, privileged Helper or JIT approval.
 
 A real NAS must still pass its owner-run local read-only Phase 0 for device identity, OS/systemd, current privilege model, storage/business-service hints and recovery conditions. If Phase 0 fails or a material fact is UNKNOWN, installation does not proceed. Phase 0 and the root ceremony are instance-owner authority; a GhostFleet ticket, panel or CI does not grant them.
 
