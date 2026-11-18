@@ -262,6 +262,27 @@ test('panel and node origins share the same global Durable Object identity', asy
   assert.deepEqual([...new Set(requestedIds)], ['global']);
 });
 
+test('Worker origin routing fails closed for invalid, shared-public and cross-origin requests', async () => {
+  const bindings = mockBindings();
+  const sharedPublic = { ...bindings, GHOSTFLEET_NODE_ORIGIN: env.GHOSTFLEET_PANEL_ORIGIN };
+  assert.equal((await worker.fetch(request('/v0/nodes'), sharedPublic)).status, 503);
+
+  const insecure = { ...bindings, GHOSTFLEET_PANEL_ORIGIN: 'http://panel.example.invalid' };
+  assert.equal((await worker.fetch(request('/v0/nodes'), insecure)).status, 503);
+
+  assert.equal((await worker.fetch(request('/v0/nodes?unexpected=1'), bindings)).status, 404);
+  assert.equal((await worker.fetch(request('/v0/nodes', {
+    origin: 'https://attacker.example.invalid',
+  }), bindings)).status, 404);
+
+  const ticket = 'ticket-11111111-1111-4111-8111-111111111111';
+  const panelClaim = await worker.fetch(request(
+    '/v1/enrollment-tickets/' + ticket + '/claim',
+    { method: 'POST', body: { short_code: '12345678' } },
+  ), bindings);
+  assert.equal(panelClaim.status, 404);
+});
+
 test('real Worker handler rejects admin access on node host and old command routes', async () => {
   const bindings = mockBindings();
   assert.equal((await worker.fetch(request('/v0/nodes', { origin: env.GHOSTFLEET_NODE_ORIGIN }), bindings)).status, 404);
