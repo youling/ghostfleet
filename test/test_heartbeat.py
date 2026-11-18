@@ -105,7 +105,8 @@ class ClientTests(unittest.TestCase):
     def test_production_unit_no_secret_in_env_or_argv(self):
         self.assertIn('LoadCredential=presence.json:', hb.SERVICE_TEXT)
         self.assertIn('Type=oneshot', hb.SERVICE_TEXT)
-        self.assertIn('StandardOutput=journal', hb.SERVICE_TEXT)
+        self.assertIn('StandardOutput=file:/run/ghostfleet-heartbeat-services.json', hb.SERVICE_TEXT)
+        self.assertIn('StandardError=journal', hb.SERVICE_TEXT)
         self.assertNotIn('Environment=', hb.SERVICE_TEXT)
         self.assertNotIn('Restart=', hb.SERVICE_TEXT)
         self.assertIn('OnUnitInactiveSec=60s', hb.TIMER_TEXT)
