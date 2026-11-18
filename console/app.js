@@ -71,10 +71,10 @@ function installCommand(ticket, replace = false) {
     'set -eu',
     'umask 077',
     'tmp=$(mktemp /tmp/ghostfleet-join.XXXXXX)',
-    \`trap 'rm -f "$tmp"' 0\`,
-    \`curl --fail --silent --show-error --proto '=https' --tlsv1.2 --max-redirs 0 --output "$tmp" \${quote(bootstrap.url)}\`,
-    \`printf '%s  %s\\n' \${quote(bootstrap.sha256)} "$tmp" | sha256sum -c - >/dev/null\`,
-    \`/bin/sh "$tmp" --origin \${quote(nodeOrigin)} --ticket \${quote(ticket)}\${replace ? ' --replace' : ''}\`,
+    'trap \'rm -f "$tmp"\' 0',
+    'curl --fail --silent --show-error --proto \'=https\' --tlsv1.2 --max-redirs 0 --output "$tmp" ' + quote(bootstrap.url),
+    'printf \'%s  %s\\n\' ' + quote(bootstrap.sha256) + ' "$tmp" | sha256sum -c - >/dev/null',
+    '/bin/sh "$tmp" --origin ' + quote(nodeOrigin) + ' --ticket ' + quote(ticket) + (replace ? ' --replace' : ''),
   ].join('; ');
   return 'if [ "$(id -u)" -eq 0 ]; then /bin/sh -c ' + quote(inner) + '; else sudo /bin/sh -c ' + quote(inner) + '; fi';
 }
