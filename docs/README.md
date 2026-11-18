@@ -3,6 +3,7 @@
 - [产品范围 / Product](../PRODUCT.md)
 - [当前架构导航 / Architecture](ARCHITECTURE.md)
 - [轻量纳管与心跳 ADR004 / Decision and diagram](adr/004-lightweight-enrollment-presence.md)
+- [固定摘要的 POSIX 首次引导 ADR005 / Pinned bootstrap decision](adr/005-pinned-posix-join-bootstrap.md)
 - [阶段交付与依赖图 / Staged delivery and dependencies](DELIVERY.md)
 - [面板、安装与修复 / Presence deployment and recovery](PRESENCE.md)
 - [原生 SSH 安装与连接 / Native transport setup](REMOTE_ACCESS.md)

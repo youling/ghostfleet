@@ -25,6 +25,8 @@
 | 节点已登记 | 稳定 `node_uid` 已分配 | 安装、上报与远控各自的结果 |
 | 心跳在线 | 该节点凭据的近期出站上报已收到 | 从指定管理端到目标的入站连接 |
 | 本机服务 active | 对应 systemd manager 中的 unit 状态 | provider 路由、网络准入与 SSH 认证 |
+| 本机服务 not_found | 所查询的 system manager 未找到该 unit | 核对 unit 名称与实际 manager；用户服务不能由系统服务查询代替 |
+| 本机服务 unknown | 本轮未取得可解释的服务查询结果 | 核对管理器范围、D-Bus 和查询错误；不据此判断服务停止或节点离线 |
 | 某条 SSH 路径已验证 | 所记录客户端、账户、主机身份与时间窗口内的新会话通过 | 其它路径、拒绝来源及恢复范围各自的结果 |
 
 这些是现有证据的不同含义，不新增状态数据库。具体实例回执仍归 #11。源码实现见 [Worker](../src/adapters/cloudflare/worker.js)、[心跳模型](../src/control-plane/presence.js)和 [reporter](../scripts/heartbeat.py)。
@@ -37,6 +39,6 @@
 
 ADR004 is the semantic owner; this page is derived architecture documentation for the integrated main, not a per-instance release ledger. Production versions, node acceptance and remaining gates are recorded in #11. Native network/SSH transport, panel/API state and Linux reporting are separate domains. One reference Worker uses two HTTPS origins and one existing DO. Instance-owned Access and Operator/Read authorization protect the panel; the machine origin exposes only authenticated claim/heartbeat plus the pinned public installer.
 
-The reporter is scheduled, one-shot, and command-free. Existing node_uid, asset fields and lifecycle are retained. Heartbeat freshness does not promote ACTIVE or prove incoming SSH connectivity. Reporting revocation does not revoke SSH. See ADR004 for the diagram and bounded failure/recovery semantics, PRESENCE for deployment, and REMOTE_ACCESS for native transport setup.
+The reporter is scheduled, one-shot, and command-free. A service result of `not_found` refers to the queried system manager; a user-only unit can still be running elsewhere. `unknown` means that this observation did not produce an interpretable service result. Check manager scope, D-Bus and query errors; neither result alone proves the service stopped or the node is offline. A heartbeat can succeed while a service observation is unknown. Existing node_uid, asset fields and lifecycle are retained. Heartbeat freshness does not promote ACTIVE or prove incoming SSH connectivity. Reporting revocation does not revoke SSH. See ADR004 for the diagram and bounded failure/recovery semantics, PRESENCE for deployment, and REMOTE_ACCESS for native transport setup.
 
 [DELIVERY](DELIVERY.md) diagrams the delivery dependencies: source integration, instance package/two origins, first-node system installation and browser first use, then second-node replication. Native CF acceptance can proceed independently under existing authority. The diagram describes dependencies; #11 owns current status and ADR004 continues to own component boundaries.
