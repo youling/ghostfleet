@@ -137,6 +137,8 @@ dig AAAA ssh.example.invalid +short
 
 Windows PowerShell 可用 `Resolve-DnsName example.invalid -Type NS` 与 `Resolve-DnsName ssh.example.invalid -Type CNAME`。如果是 Partial Setup，应对实际权威 DNS provider 查询，而不只查询 Cloudflare Dashboard。任何 DNS/route 写操作都应等到 owner 回读当前对象、确认最小差异和回退方式后再按原授权执行。
 
+官方依据：[Cloudflare Tunnel Routing（Published Application 与自动 DNS record）](https://developers.cloudflare.com/tunnel/concepts/routing/) · [Tunnels FAQ（Full/Partial DNS）](https://developers.cloudflare.com/cloudflare-one/faq/cloudflare-tunnels-faq/)。
+
 测试前先明确实际使用哪台客户端。Windows PowerShell 可这样检查客户端二进制和版本：
 
 ```
@@ -333,6 +335,8 @@ dig AAAA ssh.example.invalid +short
 ```
 
 On Windows PowerShell use `Resolve-DnsName example.invalid -Type NS` and `Resolve-DnsName ssh.example.invalid -Type CNAME`. For Partial Setup, query the actual authoritative DNS provider, not only the Cloudflare dashboard. Do not write DNS or route configuration until the owner has read back the current objects, identified the minimum difference and recorded a rollback path.
+
+Official references: [Cloudflare Tunnel Routing (Published Applications and automatic DNS records)](https://developers.cloudflare.com/tunnel/concepts/routing/) · [Tunnels FAQ (Full/Partial DNS)](https://developers.cloudflare.com/cloudflare-one/faq/cloudflare-tunnels-faq/).
 
 Choose the actual client machine before testing. On Windows PowerShell, verify the client executable and version:
 
