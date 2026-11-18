@@ -154,11 +154,18 @@ function request(path, { method = 'GET', token = operator, body, origin = env.GH
     ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...headers },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
 }
-test('reuse existing auth: missing roots, missing bearer, read token and same-token conflict', async () => {
+test('reuse existing auth and publish both pinned installer artifacts', async () => {
   assert.equal((await prepare(request('/v0/access', { token: '' }), {})).response.status, 503);
   assert.equal((await prepare(request('/v0/access', { token: '' }), env)).response.status, 401);
   assert.equal((await (await prepare(request('/v0/access', { token: reader }), env)).response.json()).access, 'read_only');
   assert.equal((await prepare(request('/v0/access'), { ...env, GHOSTFLEET_READ_TOKEN: operator })).response.status, 503);
+
+  const configured = { ...env, GHOSTFLEET_INSTALLER_SHA256: 'a'.repeat(64), GHOSTFLEET_BOOTSTRAP_SHA256: 'b'.repeat(64) };
+  const access = await (await prepare(request('/v0/access'), configured)).response.json();
+  assert.equal(access.installer.sha256, 'a'.repeat(64));
+  assert.equal(access.installer.url, env.GHOSTFLEET_NODE_ORIGIN + '/bootstrap/' + 'a'.repeat(64) + '.py');
+  assert.equal(access.bootstrap.sha256, 'b'.repeat(64));
+  assert.equal(access.bootstrap.url, env.GHOSTFLEET_NODE_ORIGIN + '/bootstrap/' + 'b'.repeat(64) + '.sh');
 });
 
 test('unverified Cloudflare Access assertion cannot replace the application bearer credential', async () => {
@@ -416,11 +423,15 @@ test('Worker/DO path commits one of 12 concurrent claims, then authenticated hea
   const list = await (await worker.fetch(request('/v0/nodes', { token: reader }), bindings)).json();
   assert.equal(list.nodes.length, 1); assert.equal(list.nodes[0].presence, 'ONLINE');
 });
-test('node ingress serves only exact pinned installer, never UI; static UI has restrictive headers', async () => {
-  const bindings = { ...mockBindings(), GHOSTFLEET_INSTALLER_SHA256: 'a'.repeat(64) };
+test('node ingress serves only exact pinned Python and shell bootstrap artifacts, never UI', async () => {
+  const bindings = { ...mockBindings(), GHOSTFLEET_INSTALLER_SHA256: 'a'.repeat(64),
+    GHOSTFLEET_BOOTSTRAP_SHA256: 'c'.repeat(64) };
   assert.equal((await worker.fetch(request('/', { origin: env.GHOSTFLEET_NODE_ORIGIN }), bindings)).status, 404);
   assert.equal((await worker.fetch(request('/bootstrap/' + 'a'.repeat(64) + '.py', { origin: env.GHOSTFLEET_NODE_ORIGIN }), bindings)).status, 200);
   assert.equal((await worker.fetch(request('/bootstrap/' + 'b'.repeat(64) + '.py', { origin: env.GHOSTFLEET_NODE_ORIGIN }), bindings)).status, 404);
+  assert.equal((await worker.fetch(request('/bootstrap/' + 'c'.repeat(64) + '.sh', { origin: env.GHOSTFLEET_NODE_ORIGIN }), bindings)).status, 200);
+  assert.equal((await worker.fetch(request('/bootstrap/' + 'd'.repeat(64) + '.sh', { origin: env.GHOSTFLEET_NODE_ORIGIN }), bindings)).status, 404);
+  assert.equal((await worker.fetch(request('/bootstrap/' + 'c'.repeat(64) + '.sh'), bindings)).status, 404);
   const page = await worker.fetch(request('/'), bindings);
   assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/);
 });
