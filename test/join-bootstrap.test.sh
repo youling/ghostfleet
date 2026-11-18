@@ -154,6 +154,7 @@ printf 'PASS python-present-fast-path\n'
 # Debian minimal image: install only python3; no broad upgrade.
 reset_case
 printf 'ID=debian\n' > "$fixture/root/os-release"
+: > "$fixture/root/debian-ca.crt"
 run_ok
 grep -F 'apt-get update -qq' "$log" >/dev/null
 grep -F 'apt-get install -y -qq --no-install-recommends --no-upgrade python3' "$log" >/dev/null
