@@ -116,7 +116,7 @@ test('POSIX bootstrap fast path reuses Python and never calls a package manager'
     const result = f.run();
     assert.equal(result.status, 0, result.stderr);
     assert.equal(readFileSync(f.argsLog, 'utf8').includes(TICKET), true);
-    assert.equal(readFileSync(f.pkgLog, 'utf8'), '');
+    assert.equal(requireNoFile(f.pkgLog), true);
   } finally { f.close(); }
 });
 
@@ -146,7 +146,7 @@ test('unsupported distributions fail closed before download or package mutation'
     const result = f.run();
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /UNSUPPORTED_DISTRIBUTION/);
-    assert.equal(readFileSync(f.pkgLog, 'utf8'), '');
+    assert.equal(requireNoFile(f.pkgLog), true);
     assert.equal(requireNoFile(f.argsLog), true);
   } finally { f.close(); }
 });
@@ -182,7 +182,7 @@ test('Python below the supported minimum is not silently upgraded', () => {
     const result = f.run();
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /PYTHON3_TOO_OLD_OR_BROKEN/);
-    assert.equal(readFileSync(f.pkgLog, 'utf8'), '');
+    assert.equal(requireNoFile(f.pkgLog), true);
     assert.equal(requireNoFile(f.argsLog), true);
   } finally { f.close(); }
 });
