@@ -250,10 +250,10 @@ class ServiceObservationTests(unittest.TestCase):
             self.assertEqual(calls, list(config()['units'].values()))
             self.assertEqual(snapshot.stat().st_mode & 0o777, 0o644)
             data = json.loads(snapshot.read_text())
-            self.assertEqual(data, {
-                'protocol': hb.SERVICE_SNAPSHOT_PROTOCOL,
-                'services': {'ssh': 'active', 'cloudflared': 'not_found', 'tailscaled': 'not_found'},
-            })
+            self.assertEqual(data['protocol'], hb.SERVICE_SNAPSHOT_PROTOCOL)
+            self.assertGreaterEqual(hb.time.monotonic() - data['observed_at'], 0)
+            self.assertLessEqual(hb.time.monotonic() - data['observed_at'], 30)
+            self.assertEqual(data['services'], {'ssh': 'active', 'cloudflared': 'not_found', 'tailscaled': 'not_found'})
             self.assertNotIn(TOKEN, snapshot.read_text())
         with patch.object(hb.os, 'geteuid', return_value=1000):
             with self.assertRaisesRegex(hb.ClientError, 'SERVICE_PROBE_REQUIRES_ROOT'):
@@ -288,6 +288,7 @@ class ServiceObservationTests(unittest.TestCase):
             path = Path(d) / 'services.json'
             path.write_text(json.dumps({
                 'protocol': hb.SERVICE_SNAPSHOT_PROTOCOL,
+                'observed_at': hb.time.monotonic(),
                 'services': {'ssh': 'active', 'cloudflared': 'not_found', 'tailscaled': 'failed'},
             }))
             with patch.object(hb, 'service_snapshot_file_ok', return_value=True):
@@ -296,6 +297,7 @@ class ServiceObservationTests(unittest.TestCase):
                 })
                 path.write_text(json.dumps({
                     'protocol': hb.SERVICE_SNAPSHOT_PROTOCOL,
+                    'observed_at': hb.time.monotonic(),
                     'services': {'ssh': 'online', 'cloudflared': 'active', 'tailscaled': 'active'},
                 }))
                 self.assertEqual(hb.read_service_snapshot(path, config()['units']), {
@@ -303,6 +305,19 @@ class ServiceObservationTests(unittest.TestCase):
                 })
                 path.unlink()
                 path.symlink_to(Path(d) / 'missing')
+                self.assertEqual(hb.read_service_snapshot(path, config()['units']), {
+                    'ssh': 'unknown', 'cloudflared': 'unknown', 'tailscaled': 'unknown',
+                })
+
+    def test_snapshot_reader_rejects_stale_observation(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'services.json'
+            path.write_text(json.dumps({
+                'protocol': hb.SERVICE_SNAPSHOT_PROTOCOL,
+                'observed_at': hb.time.monotonic() - 60,
+                'services': {'ssh': 'active', 'cloudflared': 'active', 'tailscaled': 'active'},
+            }))
+            with patch.object(hb, 'service_snapshot_file_ok', return_value=True):
                 self.assertEqual(hb.read_service_snapshot(path, config()['units']), {
                     'ssh': 'unknown', 'cloudflared': 'unknown', 'tailscaled': 'unknown',
                 })
