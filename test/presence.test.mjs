@@ -161,6 +161,22 @@ test('reuse existing auth: missing roots, missing bearer, read token and same-to
   assert.equal((await prepare(request('/v0/access'), { ...env, GHOSTFLEET_READ_TOKEN: operator })).response.status, 503);
 });
 
+test('unverified Cloudflare Access assertion cannot replace the application bearer credential', async () => {
+  const forged = 'synthetic.unverified.access.assertion';
+  const missingBearer = await prepare(request('/v0/access', {
+    token: '',
+    headers: { 'cf-access-jwt-assertion': forged },
+  }), env);
+  assert.equal(missingBearer.response.status, 401);
+
+  const readOnlyWrite = await prepare(request('/v0/enrollment-tickets', {
+    method: 'POST', token: reader, body: { label: 'forged-access-role-fixture' },
+    headers: { 'cf-access-jwt-assertion': forged },
+  }), env);
+  assert.equal(readOnlyWrite.response.status, 403);
+  assert.equal((await readOnlyWrite.response.json()).error, 'READ_ONLY_CREDENTIAL');
+});
+
 test('authentication denials include no-store and browser hardening headers', async () => {
   const denied = [
     (await prepare(request('/v0/access', { token: '' }), {})).response,
