@@ -199,12 +199,13 @@ def probe() -> None:
     # filesystem/network sandbox; it never accepts a command or unit from a peer.
     if os.geteuid() != 0:
         raise ClientError('SERVICE_PROBE_REQUIRES_ROOT')
-    config_path = Path(os.getenv('CREDENTIALS_DIRECTORY', str(CONFIG.parent))) / 'presence.json'
-    config = load_config(config_path)
     try:
         fd = sys.stdout.fileno()
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0:
+        path_info = SERVICE_SNAPSHOT.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or
+                not stat.S_ISREG(path_info.st_mode) or path_info.st_uid != 0 or
+                (info.st_dev, info.st_ino) != (path_info.st_dev, path_info.st_ino)):
             raise ClientError('SERVICE_PROBE_OUTPUT_UNSAFE')
         # systemd opens StandardOutput=file: as the manager (root) before the
         # service sandbox. Keep the file root-owned, but readable by DynamicUser.
