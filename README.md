@@ -39,13 +39,13 @@ npm run build
 npm run test:live
 ```
 
-服务端开发需要 Node 22+；节点需要 Python 3.10+ 和支持 DynamicUser/LoadCredential 的 systemd，首验平台为 Debian 13。节点不需要 npm、Node、curl 或额外 Python 包。构建输出静态页面、哈希固定的单文件安装器与 Worker 配置；部署由实例 owner 配置 origin、Access、应用凭据与既有 DO 绑定。测试不会自动发布。
+服务端开发需要 Node 22+；节点需要支持 DynamicUser/LoadCredential 的 systemd，首验平台为 Debian 13。首次加入使用哈希固定的 POSIX shell bootstrap：需要 `curl` 或 `wget` 与 `sha256sum`；若缺少 Python 3 或 CA bundle，会在 Debian/Ubuntu 使用 apt-get、Fedora/RHEL 系使用 dnf 只补齐缺失包，不执行系统升级。节点不需要 npm、Node 或额外 Python 包。构建输出静态页面、哈希固定的 shell bootstrap/Python 安装器与 Worker 配置；部署由实例 owner 配置 origin、Access、应用凭据与既有 DO 绑定。测试不会自动发布。
 
 ## English
 
 **Native SSH transport, lightweight enrollment and presence.** Cloudflare Tunnel/Tailscale reach the same OpenSSH service. A thin panel registers nodes, issues reporting-only credentials and shows last-seen plus local service observations. Python standard-library oneshots run under systemd; diagnostics stay in journald. There is no resident command agent, execution API or job queue.
 
-The dated field receipts above report three separately enrolled nodes and a working direct SSH path for the third node. They are observations from that window, not a live availability guarantee. The Cloudflare SSH path remains unaccepted: client-side cloudflared now starts, but DNS returns NXDOMAIN. Read back DNS, the actual published route and Access configuration, then verify a fresh positive SSH session and the denied-source/identity case.
+The dated field receipts above report three separately enrolled nodes and a working direct SSH path for the third node. They are observations from that window, not a live availability guarantee. The one-time join flow now uses a hash-pinned POSIX shell bootstrap; on supported Debian/Ubuntu and Fedora/RHEL-family hosts it installs only missing Python/CA prerequisites, without a system-wide upgrade. The shell artifact is verified before execution, and the short code remains a hidden terminal prompt. The Cloudflare SSH path remains unaccepted: client-side cloudflared now starts, but DNS returns NXDOMAIN. Read back DNS, the actual published route and Access configuration, then verify a fresh positive SSH session and the denied-source/identity case.
 
 [#11](https://github.com/youling/ghostfleet/issues/11) owns exact production versions and remaining M2/M3/M4 evidence. Source/CI acceptance is separate from deployment and field acceptance. Reporting revocation is not SSH revocation. The v1 installer does not configure SSH or provider networks. The onboarding/SSO research is a design input, not shipped behavior. Follow the commands above and the [deployment runbook](docs/PRESENCE.md); preserve instance-owned origins, credentials and DO identity.
 
