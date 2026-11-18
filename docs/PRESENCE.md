@@ -4,7 +4,7 @@
 
 ### 开发与验证
 
-服务端开发使用 Node22+；节点客户端使用 Python3.10+ 和支持 DynamicUser/LoadCredential 的 systemd，首验环境为 Debian13。原生 SSH 配置沿用 [传输指南](REMOTE_ACCESS.md)。不需要在节点安装 Node、npm、curl 或额外 Python 包。
+服务端开发使用 Node22+；节点需支持 Python3.10+ 与 DynamicUser/LoadCredential 的 systemd，首验环境为 Debian13。面板生成的 POSIX `/bin/sh` bootstrap 会在 Debian/Ubuntu（apt-get）与 Fedora/RHEL 系（dnf）上幂等补齐缺失的 `python3` / `ca-certificates`；首个下载仍需要 `curl` 或 `wget`、`sha256sum`。节点不需要安装 Node、npm 或额外 Python 包。原生 SSH 配置沿用 [传输指南](REMOTE_ACCESS.md)。
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
@@ -18,7 +18,7 @@ python3 test/live-presence.py --with-user-systemd
 
 `test:live` 启动仅绑定 loopback 的真实 Workerd/DO，使用合成凭据，验证并发领取、reporter、持久化重启和撤销。附加参数创建独立命名的临时用户 timer/service，验证凭据投递、journald、断网/恢复，最后删除测试状态。不会改 SSH、提供商或系统级 unit；没有 user manager 时附加测试明确失败，不报告为通过。全部测试属于作者/CI证据，不替代独立代码审查。
 
-构建产生 `dist/console`、`dist/installer.json`、`dist/wrangler.json`。安装器为单个 SHA-256 固定 Python 文件；面板下载命令先验哈希，再在目标机执行。短码通过终端隐藏输入，不写入命令、URL或服务器持久明文。Root 初次授权只用于安装自身配置和 unit。
+构建产生 `dist/console`、`dist/installer.json`、`dist/wrangler.json`。构建同时生成 SHA-256 固定的 POSIX shell bootstrap 和 Python installer。面板命令先下载 shell 文件到私有临时目录、验 SHA-256，再执行；bootstrap 只在运行时依赖缺失时调用 apt-get/dnf 安装固定包，不做系统升级。随后再下载并校验固定 Python installer。短码由 Python `getpass` 从终端隐藏输入，不进入命令参数、URL、环境变量或服务器持久明文。Root 初次授权只用于依赖补齐（仅缺失时）及安装 GhostFleet 自有配置/unit。
 
 ### 实例发布的最短路径
 
@@ -41,7 +41,7 @@ GhostFleet v1 安装器是**心跳上报器安装器，不是 NAS/OMV 配置管�
 - 仅写入 `/etc/ghostfleet/presence.json`（0600）、`/etc/ghostfleet/presence-install.json`（0600）、`/usr/local/libexec/ghostfleet-heartbeat.py`（0755）、`/etc/systemd/system/ghostfleet-heartbeat.service` 和 `ghostfleet-heartbeat.timer`（0644）。
 - 仅对自己的 timer/service 执行 `systemctl stop / daemon-reload / enable --now / start`；reporter 对 SSH、cloudflared、tailscaled 只读观察，不修改这些服务。
 
-明确不做：安装/升级系统软件包；创建或修改 OS 用户/组/sudoers；修改 sshd/authorized_keys；安装、迁移或重启 Cloudflare/Tailscale provider；修改防火墙、路由、DNS；调用 OMV 配置接口；访问或修改磁盘、分区、文件系统、RAID、挂载、共享、Docker/业务容器；重启主机。它也不提供远程命令执行、常驻 Node Agent、Helper 或 JIT 特权审批。
+明确不做：除 bootstrap 在受支持发行版上按需安装缺失的 `python3` / `ca-certificates` 外，不安装其他系统软件包，不执行 `apt upgrade`、`dist-upgrade` 或 `dnf upgrade`，不添加/修改软件源，不删除软件包；不创建或修改 OS 用户/组/sudoers；不修改 sshd/authorized_keys；不安装、迁移或重启 Cloudflare/Tailscale provider；不修改防火墙、路由、DNS；不调用 OMV 配置接口；不访问或修改磁盘、分区、文件系统、RAID、挂载、共享、Docker/业务容器；不重启主机。它也不提供远程命令执行、常驻 Node Agent、Helper 或 JIT 特权审批。
 
 因此，NAS 真机仍由其 owner 在本机执行独立只读 Phase 0，确认设备身份、OS/systemd、当前权限模型、存储/业务服务提示与恢复条件；Phase 0 未通过或事实为 UNKNOWN 时，不进入安装。Phase 0 与 root ceremony 的授权属于实例 owner，不由 GhostFleet 的票据、面板或 CI 自动授予。
 
@@ -58,7 +58,7 @@ The installer's current local effect scope is limited to:
 - Writing only `/etc/ghostfleet/presence.json` (0600), `/etc/ghostfleet/presence-install.json` (0600), `/usr/local/libexec/ghostfleet-heartbeat.py` (0755), `/etc/systemd/system/ghostfleet-heartbeat.service` and `ghostfleet-heartbeat.timer` (0644).
 - Running `systemctl stop / daemon-reload / enable --now / start` only for its own timer/service. SSH, cloudflared and tailscaled are observed read-only, never modified.
 
-It does **not** install/upgrade packages; create or modify OS users/groups/sudoers; change sshd/authorized_keys; install, migrate or restart Cloudflare/Tailscale providers; change firewall/routes/DNS; call OMV configuration APIs; inspect or mutate disks, partitions, filesystems, RAID, mounts, shares, Docker/business containers; or reboot the host. It provides no remote command execution, resident Node Agent, privileged Helper or JIT approval.
+It installs only missing `python3` and/or `ca-certificates` through the detected supported OS package manager (Debian/Ubuntu `apt-get`; Fedora/RHEL-family `dnf`). It does not run `apt upgrade`, `dist-upgrade`, `dnf upgrade`, add/change repositories, or remove packages. It does not create or modify OS users/groups/sudoers; change sshd/authorized_keys; install, migrate or restart Cloudflare/Tailscale providers; change firewall/routes/DNS; call OMV configuration APIs; inspect or mutate disks, partitions, filesystems, RAID, mounts, shares, Docker/business containers; or reboot the host. It provides no remote command execution, resident Node Agent, privileged Helper or JIT approval.
 
 A real NAS must still pass its owner-run local read-only Phase 0 for device identity, OS/systemd, current privilege model, storage/business-service hints and recovery conditions. If Phase 0 fails or a material fact is UNKNOWN, installation does not proceed. Phase 0 and the root ceremony are instance-owner authority; a GhostFleet ticket, panel or CI does not grant them.
 
@@ -66,7 +66,7 @@ A real NAS must still pass its owner-run local read-only Phase 0 for device iden
 
 ### 日常使用与修复
 
-Operator 登录面板，输入节点名称，创建票据；在目标机可信终端运行面板给出的哈希固定命令并输入短码。已是 root 时去掉 `sudo`。客户端默认观察 `ssh.service`、`cloudflared-ssh.service`、`tailscaled.service`；实际 unit 名称不同，通过安装器 `--ssh-unit` / `--cloudflared-unit` / `--tailscaled-unit` 指定。不存在的服务显示“未安装/未找到”，不要伪装成活动。
+Operator 登录面板，输入节点名称，创建票据；在目标机可信终端运行面板生成的一行命令。Shell bootstrap 先校验自身 SHA-256，再按需请求 sudo、补齐最小运行时依赖，最后下载并校验 Python installer。短码只在隐藏终端提示中输入。客户端默认观察 `ssh.service`、`cloudflared-ssh.service`、`tailscaled.service`；实际 unit 名称不同，通过安装器 `--ssh-unit` / `--cloudflared-unit` / `--tailscaled-unit` 指定。不存在的服务显示“未安装/未找到”，不要伪装成活动。
 
 **服务观察的管理器范围：** reporter 使用 `systemctl --system show`，因此 `--ssh-unit` / `--cloudflared-unit` / `--tailscaled-unit` 只选择 system manager 中要查询的 unit 名称，不会切换到 `systemctl --user`。如果某服务只存在于某个用户的 systemd user manager，即使该 user unit 正在运行，system-level probe 仍会报告 `not_found`。这是观测范围不匹配，不代表服务或隧道已停止。不要为了让面板徽标变绿而擅自迁移/重建现有 provider unit。若确需 system-level unit 或 user-manager 原生观测，应作为单独的 owner-authorized 变更，保留原有执行用户、环境、凭据和回退路径，并先验证原生连接不中断。
 
