@@ -6,7 +6,7 @@
   "engines": {"node": ">=22"},
   "scripts": {
     "test": "node --test test/presence.test.mjs test/publication-guard.test.mjs",
-    "test:python": "python3 -m unittest discover -s test -p 'test_heartbeat.py'",
+    "test:python": "python3 -m unittest discover -s test -p 'test_heartbeat.py' && python3 -m unittest discover -s test -p 'test_omv8_phase0.py'",
     "test:live": "python3 test/live-presence.py",
     "build": "node scripts/build-presence.mjs",
     "check:publication": "node scripts/publication-guard.mjs"
