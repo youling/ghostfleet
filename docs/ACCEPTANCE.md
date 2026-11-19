@@ -184,13 +184,29 @@ All four nodes currently report RunSSH=false. Tailscale carries the network traf
 
 ### 身份选择 / Identity selectors
 
-当前身份并不统一：TP、WCX、SYJ 被读回为 tag:fleet-ssh-target；JG 是 user-bound。TP 的逻辑角色是 Controller，因此不能因为它当前带有 target tag，就把它纳入 Managed destination 集合。Tailscale tag 是非用户设备身份，会替代 user-based authentication；TP 当前已经是 tagged identity，若它仍是人实际使用的工作站，应由 Owner 评估是否迁回 user identity，而不是仅为角色标注保留 target tag。JG 也不能在未审查迁移影响时被强制改为 tagged device。
+当前身份并不统一：TP、WCX、SYJ 被读回为 tag:fleet-ssh-target；JG 是 user-bound。TP 的逻辑角色是 Controller，因此不能因为它当前带有 target tag，就把它纳入 Managed destination 集合。Tailscale tag 是非用户设备身份，会替代 user-based authentication；TP 当前已是 tagged machine identity，且本轮 DCR 只读执行上下文使用 Fleet control service account。从标签语义看，tag:fleet-controller 比 tag:fleet-ssh-target 更符合 TP 的 Controller 角色；target tag 应只标识 Managed Nodes。若 TP 同时承担人类交互设备身份，Owner 需先评估 tag 替代 user identity 的影响。任何 tag 迁移仍需单独授权，本轮未执行。JG 也不能在未审查迁移影响时被强制改为 tagged device。
 
-Current identities are mixed: TP, WCX and SYJ read back as tag:fleet-ssh-target; JG is user-bound. TP's logical role is Controller, so its current target tag must not cause it to be included in the Managed destination set. A Tailscale tag is a non-user device identity and replaces user-based authentication. TP is already tagged; if it remains a human-operated workstation, the Owner should review whether to migrate it back to a user identity rather than retain a target tag merely as a role label. Do not convert JG to a tagged device without reviewing the identity migration.
+Current identities are mixed: TP, WCX and SYJ read back as tag:fleet-ssh-target; JG is user-bound. TP's logical role is Controller, so its current target tag must not cause it to be included in the Managed destination set. A Tailscale tag is a non-user device identity and replaces user-based authentication. TP is already a tagged machine identity, and this round's read-only DCR execution context uses a Fleet control service account. From the tag semantics, tag:fleet-controller better matches TP's Controller role than tag:fleet-ssh-target; the target tag should identify Managed Nodes only. If TP also serves as a human-interactive device identity, the Owner must review the effect of replacing user identity with a tag. Any tag migration still requires separate authorization and was not performed. Do not convert JG to a tagged device without reviewing the identity migration.
 
 对于这组混合身份，优先评估 tailnet policy 的 hosts 别名或精确 Tailscale IP selector，以单独识别 TP source 和三个 Managed destinations；这不要求给 JG 添加 tag，也不要求把 TP 改成 tag:fleet-controller。当前 IP：TP 100.104.97.75、JG 100.71.156.53、WCX 100.99.233.13、SYJ 100.81.179.79。hosts 别名是 policy selector，不是 MagicDNS hostname；节点重注册或 IP 变化后必须更新。最终 selector 需按 Owner 当前 tailnet policy 原件确认。
 
 For this mixed identity set, first evaluate the tailnet policy's hosts aliases or exact Tailscale IP selectors to identify TP as the source and the three Managed Nodes as destinations. This avoids requiring a tag on JG or converting TP to tag:fleet-controller. Current IPs: TP 100.104.97.75, JG 100.71.156.53, WCX 100.99.233.13 and SYJ 100.81.179.79. A hosts alias is a policy selector, not a MagicDNS hostname; update it if a node is re-enrolled or its IP changes. Confirm the final selectors against the Owner's actual tailnet policy.
+
+### Controller 出站 SSH 认证验收 / Controller outbound SSH authentication acceptance
+
+TP → Managed 的 TCP connect 只证明网络路径可达，不能证明 TP 已具备管理能力。Controller 的 A04/A05 必须从**实际执行管理任务的 TP 服务身份**建立全新 SSH 会话，完成 host-key strict verification、root exec 和所需 SFTP；不能只从 Windows 操作者客户端测试，也不能用 TP 的 inbound authorized_keys 代替 outbound client credential。
+
+- 记录实际执行身份、SSH client config、identity selector/credential source、HostKeyAlias、StrictHostKeyChecking、目标地址/端口和退出状态；不记录私钥/token。
+- 凭据应属于 Controller，而不是复制任一 Managed Node 的私钥。允许的凭据保管方案由 Owner/Foreman 单独选择：TP-only controller key 存入受保护的 OS 凭据设施，或经批准的、作用域受限且自动化运行时可用的 SSH agent forwarding。
+- 没有出站凭据/agent 时，只能接受 TCP reachability PASS；Controller SSH authentication 仍 NOT_PROVEN。
+- 本项目当前 RunSSH=false，使用原生 OpenSSH；不得把 Tailscale SSH 切换当作绕过出站凭据设计的替代方案。
+
+TP → Managed TCP reachability alone proves only that the network path is available; it does not prove that TP can perform management. Controller A04/A05 must establish fresh SSH sessions from the **actual TP service identity that runs management tasks**, verify host keys strictly, and complete root exec plus required SFTP. A test from the Windows operator client is insufficient, and TP's inbound authorized_keys is not an outbound client credential.
+
+- Record the actual execution identity, SSH client config, identity selector/credential source, HostKeyAlias, StrictHostKeyChecking, target address/port and exit status; never record private keys or tokens.
+- Credentials must belong to the Controller; never copy a Managed Node's private key. The Owner/Foreman must separately choose credential custody: a TP-only controller key in an OS-protected credential store, or approved, scoped SSH agent forwarding that is available to the automation runtime.
+- Without an outbound credential or agent, accept only TCP reachability PASS; Controller SSH authentication remains NOT_PROVEN.
+- This project currently has RunSSH=false and uses native OpenSSH. Do not treat switching to Tailscale SSH as a substitute for the outbound credential design.
 
 ### 实际策略收敛顺序 / Policy convergence order
 
