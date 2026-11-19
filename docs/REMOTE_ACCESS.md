@@ -164,7 +164,7 @@ Tailscale 只负责网络连通，OpenSSH 仍然负责 OS 登录身份和权限�
 **身份选择与当前映射：**
 - TP 当前 CLI 身份读回为 `tag:fleet-ssh-target`，但其逻辑角色是 Controller；不能把它纳入 managed destination 集合。
 - WCX/SYJ 是 tagged VPS；JG 当前为 user-bound。四台身份类型并不一致，不能假设所有 Managed Node 都有同一 tag。
-- Tailscale tag 是非用户设备身份，会替代 user-based authentication；官方建议仅用于非人类设备。若 TP 仍是人实际使用的工作站，不应仅为角色标注而把它改成 tag 身份。若 Owner 明确将 TP 定义为无人值守的机器 Controller，才另行评估独立的 `tag:fleet-controller`。
+- Tailscale tag 是非用户设备身份，会替代 user-based authentication；官方建议仅用于非人类设备。TP 当前已经是 tagged identity；若它仍是人实际使用的工作站，应由 Owner 评估是否迁回 user identity，不应仅为角色标注而保留 target tag。若 Owner 明确将 TP 定义为无人值守的机器 Controller，才另行评估独立的 `tag:fleet-controller`。
 - 在不改变设备身份的前提下，可优先用 tailnet policy 的 `hosts` 别名或精确 Tailscale IP 作为 grants 的 source/destination selector，例如为 TP、JG、WCX、SYJ 分别定义稳定别名。该选择器只表达现有设备的精确网络身份，不创建 GhostFleet 控制面；IP/设备重注册变化时必须同步维护。最终选择必须先对照 Owner 当前 tailnet policy 原件。
 
 **策略实现前置条件：**
@@ -174,8 +174,6 @@ Tailscale 只负责网络连通，OpenSSH 仍然负责 OS 登录身份和权限�
 4. 生产 policy、tag、设备身份或 key expiry 的变更必须由 Owner 单独批准并准备回滚路径；本指南不授权执行这些变更。
 
 官方依据：[Tailnet policy syntax（hosts/grants/tests）](https://tailscale.com/docs/reference/syntax/policy-file) · [Grants explained（allow 累加与返回流量）](https://tailscale.com/docs/features/access-control/grants/grants-explained) · [Tags（tag 与 user identity 互斥）](https://tailscale.com/docs/features/tags) · [Tailscale SSH 与原生 SSH 区别](https://tailscale.com/docs/features/tailscale-ssh)
-
-
 
 ## 6. 客户端配置
 
@@ -450,7 +448,7 @@ This governs **new connections initiated by a node**. Return traffic for a TCP c
 **Identity selectors and current enrollment:**
 - TP currently reads back as `tag:fleet-ssh-target`, but its logical role is Controller; it must not be included in the managed-destination set.
 - WCX/SYJ are tagged VPS nodes; JG is currently user-bound. The four devices do not share one identity type, so do not assume every Managed Node has the same tag.
-- A Tailscale tag is a non-user device identity and replaces user-based authentication. Tailscale recommends tags for non-human devices. If TP remains a human-operated workstation, do not convert it to a tag identity merely to annotate its role. Only if the Owner explicitly designates TP as an unattended machine Controller should a separate `tag:fleet-controller` be evaluated.
+- A Tailscale tag is a non-user device identity and replaces user-based authentication. Tailscale recommends tags for non-human devices. TP is already tagged; if it remains a human-operated workstation, the Owner should review whether to migrate it back to a user identity rather than retain a target tag merely as a role label. Only if the Owner explicitly designates TP as an unattended machine Controller should a separate `tag:fleet-controller` be evaluated.
 - Without changing device identity, prefer `hosts` aliases or exact Tailscale IPs as grants source/destination selectors, defining a stable alias for TP, JG, WCX and SYJ. These selectors express exact existing network identities; they do not create a GhostFleet control plane. Keep them synchronized if a device is re-enrolled or its IP changes. Make the final choice only after reading the Owner's actual tailnet policy.
 
 **Prerequisites before policy implementation:**
@@ -460,8 +458,6 @@ This governs **new connections initiated by a node**. Return traffic for a TCP c
 4. Any production policy, tag, device-identity or key-expiry change requires separate Owner approval and a rollback path. This guide does not authorize those changes.
 
 Official references: [Tailnet policy syntax (hosts/grants/tests)](https://tailscale.com/docs/reference/syntax/policy-file) · [Grants explained (additive allows and reply traffic)](https://tailscale.com/docs/features/access-control/grants/grants-explained) · [Tags (tag and user identities are mutually exclusive)](https://tailscale.com/docs/features/tags) · [Tailscale SSH vs native SSH](https://tailscale.com/docs/features/tailscale-ssh)
-
-
 
 ## 6. Client configuration
 
