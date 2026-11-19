@@ -184,9 +184,9 @@ All four nodes currently report RunSSH=false. Tailscale carries the network traf
 
 ### 身份选择 / Identity selectors
 
-当前身份并不统一：TP、WCX、SYJ 被读回为 tag:fleet-ssh-target；JG 是 user-bound。TP 的逻辑角色是 Controller，因此不能因为它当前带有 target tag，就把它纳入 Managed destination 集合。Tailscale tag 是非用户设备身份，会替代 user-based authentication；若 TP 仍是人实际使用的工作站，不应仅为角色标注而把它改成 tag 身份。JG 也不能在未审查迁移影响时被强制改为 tagged device。
+当前身份并不统一：TP、WCX、SYJ 被读回为 tag:fleet-ssh-target；JG 是 user-bound。TP 的逻辑角色是 Controller，因此不能因为它当前带有 target tag，就把它纳入 Managed destination 集合。Tailscale tag 是非用户设备身份，会替代 user-based authentication；TP 当前已经是 tagged identity，若它仍是人实际使用的工作站，应由 Owner 评估是否迁回 user identity，而不是仅为角色标注保留 target tag。JG 也不能在未审查迁移影响时被强制改为 tagged device。
 
-Current identities are mixed: TP, WCX and SYJ read back as tag:fleet-ssh-target; JG is user-bound. TP's logical role is Controller, so its current target tag must not cause it to be included in the Managed destination set. A Tailscale tag is a non-user device identity and replaces user-based authentication. If TP remains a human-operated workstation, do not convert it to a tag identity merely to label its role. Do not convert JG to a tagged device without reviewing the identity migration.
+Current identities are mixed: TP, WCX and SYJ read back as tag:fleet-ssh-target; JG is user-bound. TP's logical role is Controller, so its current target tag must not cause it to be included in the Managed destination set. A Tailscale tag is a non-user device identity and replaces user-based authentication. TP is already tagged; if it remains a human-operated workstation, the Owner should review whether to migrate it back to a user identity rather than retain a target tag merely as a role label. Do not convert JG to a tagged device without reviewing the identity migration.
 
 对于这组混合身份，优先评估 tailnet policy 的 hosts 别名或精确 Tailscale IP selector，以单独识别 TP source 和三个 Managed destinations；这不要求给 JG 添加 tag，也不要求把 TP 改成 tag:fleet-controller。当前 IP：TP 100.104.97.75、JG 100.71.156.53、WCX 100.99.233.13、SYJ 100.81.179.79。hosts 别名是 policy selector，不是 MagicDNS hostname；节点重注册或 IP 变化后必须更新。最终 selector 需按 Owner 当前 tailnet policy 原件确认。
 
