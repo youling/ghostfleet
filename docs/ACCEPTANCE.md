@@ -6,7 +6,7 @@
 | `source_pointer` | [当前产品与实施入口 / Current product and implementation](https://github.com/youling/ghostfleet/issues/11)；[ADR004](adr/004-lightweight-enrollment-presence.md)；[原生传输指南 / Native transport guide](REMOTE_ACCESS.md) |
 | 实际状态 / Actual status | 读取 #11 最新裁决及其引用的实例回执，不从本模板推断 / Read the latest #11 disposition and linked instance receipts; do not infer status from this template |
 | 使用版本 / Version under test | 每次执行填写实际提交、版本和实例记录 / Record the actual commit, versions and instance record for each execution |
-| 模板修订 / Template revision | `2026-11-18`：补充 Cloudflare SSH 客户端前置条件、SSH/TCP route 区分和分层诊断；不表示执行了下表测试 / Added Cloudflare SSH client prerequisites, SSH/TCP route distinction and layered diagnostics; does not imply these tests were run |
+| 模板修订 / Template revision | `2026-11-20`：补充 Cloudflare SSH 客户端诊断、Tailscale Controller → Managed 单向角色矩阵及 grants/hosts/tests 证据边界；不表示执行了下表测试 / Added Cloudflare SSH diagnostics and the one-way Tailscale Controller → Managed role matrix with grants/hosts/tests evidence boundaries; does not imply these tests were run |
 | 空白结果 / Blank results | `NOT_RUN` 是未填写的模板占位，不覆盖已接受的现场证据 / `NOT_RUN` is an unfilled template value and does not supersede accepted live evidence |
 
 ## 1. 使用与证据 / Use and evidence
@@ -148,3 +148,62 @@ The following outcomes must remain separate; passing one does not imply its neig
 5. **A06 — SSH login is not an SFTP transfer.** A successful root shell or PTY does not prove the SFTP subsystem works. A06 requires a real SFTP subsystem session, bidirectional transfer in an owner-selected temporary directory, content/hash verification and cleanup. A small-file test does not imply that large files, directory trees, permission preservation, resume or cloud-mounted storage semantics have passed.
 
 Record each layer with its exact target, source identity, path, timestamp, fresh-session settings, exit status and cleanup/recovery result. If the evidence covers only a sub-check, accept only that sub-check and keep the parent milestone partial or not run.
+
+
+## 7. Controller → Managed 单向网络角色 / One-way Controller-to-Managed network roles
+
+### 当前 Owner 角色裁决 / Current Owner role decision
+
+- **ThinkPad (TP) = 唯一 Controller。** TP 必须能主动访问并管理所有获授权的 Fleet 节点。
+- **JG、WCX、SYJ = Managed Nodes。** 它们接受 TP 管理，不主动管理 TP，也不互相发起新的 SSH 管理连接。
+- 角色是 Owner 明确裁决的拓扑权限，不从 Tailscale tag、hostname、IP、设备是否在线或 SSH 登录成功推断。GhostFleet 不增加第二控制面；Tailscale tailnet policy 仍是网络准入执行点。
+
+- **ThinkPad (TP) = the sole Controller.** TP must be able to initiate management connections to every authorized Fleet node.
+- **JG, WCX and SYJ = Managed Nodes.** They receive management from TP; they do not initiate new SSH management connections to TP or to one another.
+- Roles are explicit Owner-approved topology permissions. Do not infer them from a Tailscale tag, hostname, IP, online status or successful SSH login. GhostFleet adds no second control plane; the Tailscale tailnet policy remains the network-admission enforcement point.
+
+| 新连接发起方 / New connection source | 目标 / Destination | TCP listener | 期望 / Expected |
+|---|---|---:|---|
+| TP Controller | JG Managed | 22 | ACCEPT |
+| TP Controller | WCX Managed | 22 | ACCEPT |
+| TP Controller | SYJ Managed | 8280 | ACCEPT |
+| JG Managed | TP Controller | 22 | DENY |
+| WCX Managed | TP Controller | 22 | DENY |
+| SYJ Managed | TP Controller | 22 | DENY |
+| Managed Node | Other Managed Node | Destination's actual SSH port | DENY |
+
+上述拒绝针对**新建的主动连接**。TP 发起的获准 TCP 会话，其返回流量由 Tailscale 有状态连接跟踪自动放行；不需要反向 grant，也不代表 Managed Node 获得新建反向管理连接的权限。
+
+These denials apply to **newly initiated connections**. Tailscale's stateful connection tracking permits reply traffic for a TCP connection initiated by TP; no reverse grant is needed, and reply traffic does not authorize a Managed Node to initiate a new management connection.
+
+### 本实例使用原生 OpenSSH，不使用 Tailscale SSH / Native OpenSSH, not Tailscale SSH
+
+四台节点当前 RunSSH=false。Tailscale 只承载网络流量；目标机的原生 OpenSSH/authorized_keys 负责 SSH 身份认证和 OS 权限。网络方向与端口由 tailnet policy 的 grants/acls 控制。tailnet policy 的 ssh 段和 sshTests 只适用于 Tailscale SSH，不替代原生 OpenSSH 的 TCP 网络准入。不要把两种 SSH 模式混为一谈。
+
+All four nodes currently report RunSSH=false. Tailscale carries the network traffic; native OpenSSH/authorized_keys on the target handles SSH authentication and OS permissions. The tailnet policy's grants/acls control network direction and ports. The policy's ssh and sshTests sections apply only to Tailscale SSH and do not replace TCP network admission for native OpenSSH. Do not conflate the two SSH modes.
+
+### 身份选择 / Identity selectors
+
+当前身份并不统一：TP、WCX、SYJ 被读回为 tag:fleet-ssh-target；JG 是 user-bound。TP 的逻辑角色是 Controller，因此不能因为它当前带有 target tag，就把它纳入 Managed destination 集合。Tailscale tag 是非用户设备身份，会替代 user-based authentication；若 TP 仍是人实际使用的工作站，不应仅为角色标注而把它改成 tag 身份。JG 也不能在未审查迁移影响时被强制改为 tagged device。
+
+Current identities are mixed: TP, WCX and SYJ read back as tag:fleet-ssh-target; JG is user-bound. TP's logical role is Controller, so its current target tag must not cause it to be included in the Managed destination set. A Tailscale tag is a non-user device identity and replaces user-based authentication. If TP remains a human-operated workstation, do not convert it to a tag identity merely to label its role. Do not convert JG to a tagged device without reviewing the identity migration.
+
+对于这组混合身份，优先评估 tailnet policy 的 hosts 别名或精确 Tailscale IP selector，以单独识别 TP source 和三个 Managed destinations；这不要求给 JG 添加 tag，也不要求把 TP 改成 tag:fleet-controller。当前 IP：TP 100.104.97.75、JG 100.71.156.53、WCX 100.99.233.13、SYJ 100.81.179.79。hosts 别名是 policy selector，不是 MagicDNS hostname；节点重注册或 IP 变化后必须更新。最终 selector 需按 Owner 当前 tailnet policy 原件确认。
+
+For this mixed identity set, first evaluate the tailnet policy's hosts aliases or exact Tailscale IP selectors to identify TP as the source and the three Managed Nodes as destinations. This avoids requiring a tag on JG or converting TP to tag:fleet-controller. Current IPs: TP 100.104.97.75, JG 100.71.156.53, WCX 100.99.233.13 and SYJ 100.81.179.79. A hosts alias is a policy selector, not a MagicDNS hostname; update it if a node is re-enrolled or its IP changes. Confirm the final selectors against the Owner's actual tailnet policy.
+
+### 实际策略收敛顺序 / Policy convergence order
+
+1. 先读取并保存原始 tailnet policy：hosts、tagOwners、groups、grants、acls、ssh、tests、sshTests；检查所有能匹配 TP/Managed source 与 destination 的规则。
+2. 四节点有效 PacketFilterRules 曾读回为整个 tailnet IPv4/IPv6 source pool → 任意目标 / 任意端口，故当前 A09 为 **FAIL**。Tailscale grants/ACL 是累加式 allow：窄规则不能覆盖宽规则；省略 acls 会启用默认 allow-all。必须先移除或替换默认/显式宽泛放行，再只保留所需的 TP → JG/WCX/SYJ 精确 TCP 端口许可。不能只追加窄 grants 就宣称已隔离。
+3. 在 tests 中固定正向用例（TP → JG:22、WCX:22、SYJ:8280）和反向拒绝用例（JG/WCX/SYJ → TP:22，以及三台 Managed Nodes 之间的对应 SSH 端口）。测试是策略回归断言，不是运行时 deny 规则；任何新 grant 使拒绝用例变成可达时，策略更新应被测试阻止。
+4. 只有在 Owner 审阅原始策略、确认设备身份和恢复路径并单独授权后，才修改生产 tailnet policy；随后先运行策略 tests，再做实际 TCP 正负连接验证。
+
+1. Read and preserve the original tailnet policy: hosts, tagOwners, groups, grants, acls, ssh, tests and sshTests. Inspect every rule that can match TP/Managed sources and destinations.
+2. The four nodes' effective PacketFilterRules were previously read back as the entire tailnet IPv4/IPv6 source pool → any destination / any port, so current A09 is **FAIL**. Tailscale grants/ACLs are additive allow rules: a narrow rule cannot override a broad one, and omitting acls enables the default allow-all policy. Remove or replace the default/explicit broad allow before retaining only the required exact TP → JG/WCX/SYJ TCP-port permissions. Appending narrow grants alone does not create isolation.
+3. Add policy tests for positive cases (TP → JG:22, WCX:22, SYJ:8280) and denied cases (JG/WCX/SYJ → TP:22, plus the corresponding SSH ports between the three Managed Nodes). These tests are regression assertions, not runtime deny rules; a later grant that makes a denied case reachable must cause the policy update to fail its tests.
+4. Change the production tailnet policy only after the Owner reviews the original policy, confirms device identities and the recovery path, and separately authorizes the change. Then run policy tests before real TCP positive/negative connection tests.
+
+本节只定义验收角色与策略要求，不是可直接覆盖现有 tailnet policy 的完整配置。当前有效策略原件尚未由架构师读回；本轮没有修改生产 ACL/grants、tag、设备身份、key expiry 或任何机器配置。实例当前状态以 GhostFleet #11 和拓扑验收 #64 为准。
+
+This section defines acceptance roles and policy requirements; it is not a complete replacement for the existing tailnet policy. The current effective policy source has not yet been read back by the architect. No production ACL/grant, tag, device identity, key-expiry or host configuration was changed in this round. See GhostFleet #11 and topology acceptance #64.
