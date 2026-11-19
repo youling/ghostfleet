@@ -192,6 +192,22 @@ Current identities are mixed: TP, WCX and SYJ read back as tag:fleet-ssh-target;
 
 For this mixed identity set, first evaluate the tailnet policy's hosts aliases or exact Tailscale IP selectors to identify TP as the source and the three Managed Nodes as destinations. This avoids requiring a tag on JG or converting TP to tag:fleet-controller. Current IPs: TP 100.104.97.75, JG 100.71.156.53, WCX 100.99.233.13 and SYJ 100.81.179.79. A hosts alias is a policy selector, not a MagicDNS hostname; update it if a node is re-enrolled or its IP changes. Confirm the final selectors against the Owner's actual tailnet policy.
 
+### Controller 出站 SSH 认证验收 / Controller outbound SSH authentication acceptance
+
+TP → Managed 的 TCP connect 只证明网络路径可达，不能证明 TP 已具备管理能力。Controller 的 A04/A05 必须从**实际执行管理任务的 TP 服务身份**建立全新 SSH 会话，完成 host-key strict verification、root exec 和所需 SFTP；不能只从 Windows 操作者客户端测试，也不能用 TP 的 inbound authorized_keys 代替 outbound client credential。
+
+- 记录实际执行身份、SSH client config、identity selector/credential source、HostKeyAlias、StrictHostKeyChecking、目标地址/端口和退出状态；不记录私钥/token。
+- 凭据应属于 Controller，而不是复制任一 Managed Node 的私钥。允许的凭据保管方案由 Owner/Foreman 单独选择：TP-only controller key 存入受保护的 OS 凭据设施，或经批准的、作用域受限且自动化运行时可用的 SSH agent forwarding。
+- 没有出站凭据/agent 时，只能接受 TCP reachability PASS；Controller SSH authentication 仍 NOT_PROVEN。
+- 本项目当前 RunSSH=false，使用原生 OpenSSH；不得把 Tailscale SSH 切换当作绕过出站凭据设计的替代方案。
+
+TP → Managed TCP reachability alone proves only that the network path is available; it does not prove that TP can perform management. Controller A04/A05 must establish fresh SSH sessions from the **actual TP service identity that runs management tasks**, verify host keys strictly, and complete root exec plus required SFTP. A test from the Windows operator client is insufficient, and TP's inbound authorized_keys is not an outbound client credential.
+
+- Record the actual execution identity, SSH client config, identity selector/credential source, HostKeyAlias, StrictHostKeyChecking, target address/port and exit status; never record private keys or tokens.
+- Credentials must belong to the Controller; never copy a Managed Node's private key. The Owner/Foreman must separately choose credential custody: a TP-only controller key in an OS-protected credential store, or approved, scoped SSH agent forwarding that is available to the automation runtime.
+- Without an outbound credential or agent, accept only TCP reachability PASS; Controller SSH authentication remains NOT_PROVEN.
+- This project currently has RunSSH=false and uses native OpenSSH. Do not treat switching to Tailscale SSH as a substitute for the outbound credential design.
+
 ### 实际策略收敛顺序 / Policy convergence order
 
 1. 先读取并保存原始 tailnet policy：hosts、tagOwners、groups、grants、acls、ssh、tests、sshTests；检查所有能匹配 TP/Managed source 与 destination 的规则。
