@@ -33,6 +33,14 @@ python3 test/live-presence.py --with-user-systemd
 
 ### NAS / appliance 首次安装安全边界
 
+**OMV8 Phase 0 静态候选（尚未接入 bootstrap）**：`scripts/omv8_phase0_readonly.py` 是仅在受权的 NAS 本地使用的只读事实采集器，不是纳管命令。需由 NAS owner 单独授权首次本机 root ceremony 后，在 NAS 本地执行：
+
+```sh
+python3 scripts/omv8_phase0_readonly.py --check
+```
+
+仅检查 Debian 13 / OMV 8 包与标记、systemd/PID1、当前 root 身份、SSH/Tailscale/Docker unit 的加载状态、Docker socket 提示，以及 `/proc/self/mountinfo` 与 `/proc/mdstat` 的计数/危险提示；不输出共享路径、磁盘标识、凭据或完整服务配置，不访问网络、不写文件、不启动/停止服务、不领取票据。返回码 `4` 是结构不兼容或事实未知，`3` 是事实可读但仍须 Owner 核对存储与授权。**不存在表示可安装的退出码 0**：结果固定声明 `installation_permitted=false`、`bootstrap_phase0_wired=false`。普通 CI 仅运行合成事实单元测试，不接触 OMV/NAS；本脚本尚未嵌入 `join.sh`，因此不能作为 Fleet #328 一键 FULLY_MANAGED 的 Phase 0 验收，也不能恢复旧 Helper/JIT 的产品承诺。
+
 GhostFleet 的 Python 安装器是**心跳上报器安装器，不是 NAS/OMV 配置管理器**。一次性 shell 引导增加的唯一系统包效果，是在受支持发行版上按需安装缺失的 python3 及其必需依赖；随后 Python 安装器只安装 GhostFleet 自己的配置、reporter 与两个 systemd unit。两者都不替代 OMV 的本机只读 Phase 0，也不因系统基于 Debian 就推断存储或业务服务安全。
 
 首次引导与安装的本地操作范围：
@@ -51,6 +59,14 @@ GhostFleet 的 Python 安装器是**心跳上报器安装器，不是 NAS/OMV �
 `repair` 只用本地当前脚本与仍有效的已保存配置恢复 GhostFleet 自有文件/unit；`remove` 只在安装 manifest 和文件摘要匹配时移除 GhostFleet 自有文件/unit。移除后仍须在面板单独撤销 reporter 凭据。两者都不清理或更改任何 SSH/provider/OMV/存储配置。
 
 ### NAS / appliance first-install safety boundary
+
+**OMV8 Phase 0 source-only candidate (not wired into bootstrap):** `scripts/omv8_phase0_readonly.py` is a local read-only fact collector, **not** an enrollment command. Only after the NAS owner separately authorizes the one-time local root ceremony may it be executed **on the NAS itself**:
+
+```sh
+python3 scripts/omv8_phase0_readonly.py --check
+```
+
+It checks Debian 13/OMV8 package and marker, systemd/PID 1, effective root identity, SSH/Tailscale/Docker unit load states, Docker-socket warning and aggregate `/proc/self/mountinfo` / `/proc/mdstat` storage signals. It does not emit share paths, device IDs, credentials or raw service configuration, contact the network, write files, start/stop services or claim tickets. Exit `4` means incompatibility or unknown required facts; exit `3` means read-only facts were collected but Owner storage review and authorization remain outstanding. **Exit 0 is never an install authorization:** the report always states `installation_permitted=false` and `bootstrap_phase0_wired=false`. CI uses synthetic fact fixtures only, not a real OMV/NAS. The probe is not yet integrated into `join.sh`; it does not satisfy Fleet #328's one-click FULLY_MANAGED Phase 0 gate or revive the old Helper/JIT product.
 
 The Python installer is a **presence-reporter installer, not a NAS/OMV configuration manager**. The one-time POSIX bootstrap may install missing system python3 and its required dependencies on supported distributions. The Python installer then writes only GhostFleet-owned configuration, reporter and two systemd units. It does not replace OMV's local read-only Phase 0, and it must not infer that disks, RAID, mounts or business services are safe merely because the host is Debian-based.
 
