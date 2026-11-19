@@ -26,8 +26,14 @@ def good_facts():
         "systemd_runtime": True,
         "root_euid": True,
         "ssh_unit": "loaded",
+        "ssh_active": "active",
         "tailscaled_unit": "not-found",
+        "tailscaled_active": "inactive",
         "docker_unit": "loaded",
+        "docker_active": "active",
+        "sudo_available": True,
+        "su_available": True,
+        "docker_group_members": 2,
         "docker_socket": True,
         "mount_count": 17,
         "mdstat_available": True,
@@ -48,6 +54,8 @@ class AssessmentTests(unittest.TestCase):
         self.assertEqual(report["storage"]["mount_count"], 17)
         self.assertIn("MD_RAID_ACTIVE_DO_NOT_TOUCH", report["safety_hints"])
         self.assertIn("DOCKER_SOCKET_PRESENT_DO_NOT_ATTACH", report["safety_hints"])
+        self.assertIn("DOCKER_GROUP_MEMBERSHIP_REQUIRES_REVIEW", report["safety_hints"])
+        self.assertEqual(report["service_status"]["ssh"]["active"], "active")
 
     def test_wrong_os_omv_and_no_systemd_block(self):
         facts = good_facts()
@@ -76,6 +84,16 @@ class AssessmentTests(unittest.TestCase):
         self.assertEqual(report["compatibility"], "FACTS_READY")
         self.assertIn("TAILSCALE_NOT_YET_CONFIGURED", report["safety_hints"])
         self.assertFalse(report["installation_permitted"])
+
+    def test_active_ssh_state_unknown_fails_closed(self):
+        facts = good_facts()
+        facts["ssh_active"] = "unknown"
+        self.assertIn("UNIT_ACTIVE_STATE_UNAVAILABLE_SSH_ACTIVE", phase0.assess(facts)["blockers"])
+
+    def test_inactive_ssh_is_owner_review_not_fake_active(self):
+        facts = good_facts()
+        facts["ssh_active"] = "inactive"
+        self.assertIn("SSH_SERVICE_NOT_ACTIVE", phase0.assess(facts)["safety_hints"])
 
     def test_omv_major_must_be_eight_not_prefix_eighty(self):
         facts = good_facts()
