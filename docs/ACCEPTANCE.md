@@ -117,3 +117,34 @@ Denial of a new connection, interruption of an established network connection an
 断网恢复检查只使用结果可判断的测试操作。真实操作若在断线时结果未知，先通过新会话检查目标状态，再决定后续操作；不自动重放。服务恢复检查不应从“unit 语法有效”推导出真实二进制、凭据、网络和重启行为都已通过；未实际触发并观察的恢复项保持 `NOT_RUN`。
 
 Use operations with ascertainable outcomes for interruption tests. If real work has an unknown outcome when a connection drops, inspect target state through a new session before deciding what to do next; do not replay it automatically. A syntactically valid unit does not prove the actual binary, credentials, network or restart behavior. Keep recovery cases `NOT_RUN` unless the relevant event was actually exercised and observed.
+
+
+## 6. 证据层级不可互相替代 / Acceptance evidence layers are not interchangeable
+
+以下结果必须分层记录，不能因一个层级通过就推导相邻层级通过：
+
+1. **A03 — Published route ≠ Access policy。** 读回 Tunnel hostname 与 `ssh://…:22` 只证明 Published Application route。完整 A03 还需独立读回覆盖该 hostname 的 Access Application 与 Policy（decision、include/exclude/require 条件）。若设计明确不使用 Access Application，必须由 owner 明确裁决 `NOT_APPLICABLE` 并记录采用的替代边界；不能从 SSH key 登录成功推导 Access policy 已通过。
+
+2. **A08/A09 — SSH key rejection ≠ provider/network admission denial。** 未知公钥收到 `Permission denied (publickey)`，说明请求已到达 sshd 的用户认证层并被拒绝；它不能证明 Cloudflare Access identity/source policy 或 Tailscale ACL/grant 在网络准入层拒绝。A08/A09 必须使用合同授权的拒绝身份/来源或可撤销的测试准入，在新建且禁用连接复用的请求上验证 provider/network 层阻断，并验证未被撤销的替代路径仍可新建连接。不得用撤销现役管理员密钥来制造证据。
+
+3. **A10 — Concurrent coexistence ≠ failover。** 两条 socket 同时处于 ESTABLISHED，只证明两路并发共存与观察窗口内的隔离。A10 还必须在可恢复的测试条件下真实中断一条路径，再通过另一条路径建立一个新的 SSH 会话；不得声称已有 SSH 会话迁移，也不得自动重放结果未知的命令。
+
+4. **A11 — Unit active/config valid ≠ service recovery.** A11 必须实际触发并观察合同范围内的 cloudflared、tailscaled、OpenSSH 恢复事件，并在恢复后通过新会话验证连接。只读状态、unit 语法检查、进程存在或另一条路径仍在线，均不能替代实际恢复证据。任何可能切断唯一恢复入口的测试必须先准备并验证带外恢复路径。
+
+5. **A06 — SSH login ≠ SFTP transfer.** root shell / PTY 成功不证明 SFTP subsystem 可用。A06 必须进入真实 SFTP subsystem，完成 owner 选定临时目录中的双向文件传输、内容/哈希校验和清理；小文件测试也不能外推为大文件、目录树、权限保留、断点续传或云挂载语义已通过。
+
+Record each layer with its exact target, source identity, path, timestamp, fresh-session setting, exit status and cleanup/recovery result. If evidence covers only a sub-check, accept only that sub-check and keep the parent milestone partial or not run.
+
+The following outcomes must remain separate; passing one does not imply its neighbors passed:
+
+1. **A03 — Published route is not the Access policy.** Reading a Tunnel hostname and `ssh://…:22` proves only the Published Application route. Full A03 also requires an independent readback of the Access Application and the Policy covering that hostname (decision and include/exclude/require conditions). If the design intentionally does not use an Access Application, the owner must explicitly decide `NOT_APPLICABLE` and record the alternative boundary. A successful SSH key login does not prove an Access policy passed.
+
+2. **A08/A09 — SSH key rejection is not provider/network admission denial.** `Permission denied (publickey)` for an unknown key means the request reached sshd's user-authentication layer and was rejected there. It does not prove that Cloudflare Access identity/source policy or Tailscale ACL/grant denied network admission. A08/A09 require an authorized denied identity/source or revocable test admission, a fresh non-multiplexed request proving provider/network-layer denial, and a fresh connection over the unchanged alternate path. Do not revoke a live administrator key merely to produce evidence.
+
+3. **A10 — Concurrent coexistence is not failover.** Two sockets simultaneously in ESTABLISHED state prove only concurrent coexistence and isolation during that observation window. A10 additionally requires a real, recoverable interruption of one path followed by a new SSH session over the other path. Do not claim an existing SSH session migrated and do not automatically replay commands whose outcomes are unknown.
+
+4. **A11 — An active unit or valid configuration is not service recovery.** A11 requires an actual recovery event for cloudflared, tailscaled and OpenSSH within the authorized test, followed by a fresh-session connection check. Read-only status, unit syntax, process presence or continued availability of the other path do not substitute for observed recovery. Any test that could cut the only recovery route must have a prepared and verified out-of-band recovery path.
+
+5. **A06 — SSH login is not an SFTP transfer.** A successful root shell or PTY does not prove the SFTP subsystem works. A06 requires a real SFTP subsystem session, bidirectional transfer in an owner-selected temporary directory, content/hash verification and cleanup. A small-file test does not imply that large files, directory trees, permission preservation, resume or cloud-mounted storage semantics have passed.
+
+Record each layer with its exact target, source identity, path, timestamp, fresh-session settings, exit status and cleanup/recovery result. If the evidence covers only a sub-check, accept only that sub-check and keep the parent milestone partial or not run.
