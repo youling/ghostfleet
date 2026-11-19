@@ -6,7 +6,7 @@
 
 **分支 A 已选定**：两个发布到公网的 SSH 主机名使用 Cloudflare Access 身份层，源站仍强制原生 OpenSSH 公钥认证，Host Key 须通过独立渠道固定。
 
-| 主机名 | 已测路由 | 目前边缘准入 | 目标 |
+| 合成主机名 | 合成路由示例 | 示例状态 | 目标 |
 | --- | --- | --- | --- |
 | ssh-node-a.example.invalid | 示例 Tunnel A → ssh://localhost:22 | **NOT_RUN（示例）** | 第一个受控 Self-hosted Application 灰度 |
 | ssh-node-b.example.invalid | 示例 Tunnel B → ssh://localhost:22 | **NOT_RUN（示例）** | A 验收后独立审批 |
@@ -17,11 +17,11 @@
 ~~~mermaid
 flowchart LR
     Operator[Operator 人工客户端 / 被批准的 Agent] --> CF[Cloudflare Edge + Access]
-    CF -->|授权后| Node A[Node A Tunnel → sshd / pubkey]
-    CF -->|授权后| Node B[Node B Tunnel → sshd / pubkey]
+    CF -->|授权后| NodeA[Node A Tunnel → sshd / pubkey]
+    CF -->|授权后| NodeB[Node B Tunnel → sshd / pubkey]
     Operator -->|独立救援| LAN[LAN / Tailscale]
-    LAN --> Node A
-    LAN --> Node B
+    LAN --> NodeA
+    LAN --> NodeB
 ~~~
 
 ## 2. 变更前必须完成的只读清单
@@ -90,7 +90,7 @@ flowchart LR
 ## 6. 其他验收边界
 
 - A03_ROUTE=INSTANCE_READBACK_REQUIRED；A03_EDGE_ACCESS=NOT_RUN；A03_CONFIG_INVENTORY=UNKNOWN；A08=NOT_RUN，直到实际 Access 配置和边缘正负测试完成。
-- A09=FAIL：当前 Tailscale 仍是 allow-all，违反 Node B Controller → Node A/WCX/SYJ Managed 的单向网络管理矩阵。Cloudflare Access 不解决 tailnet ACL，另案修正。
+- A09 的实际状态只由 Fleet 实例 owner 与拓扑工单 #64 判断；Cloudflare Access 不解决 Tailnet ACL，不得从 A03 推导 A09 PASS。
 - A10/A11=NOT_AUTHORIZED：不得做 kill/restart/停 Tunnel/断网/生产故障注入。
 - **文档合并不是线上 Access 变更授权，也不是任何实例已通过 A08 的证据。**
 
