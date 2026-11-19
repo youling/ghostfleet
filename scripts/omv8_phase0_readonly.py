@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import grp
 import json
 import os
 import re
@@ -36,7 +37,8 @@ def readonly_command(argv: tuple[str, ...]) -> tuple[int, str]:
         if argv[1:] != ("-W", "-f=${Version}", "openmediavault"):
             raise ValueError("DPKG_QUERY_NOT_ALLOWLISTED")
     elif argv[0] == "/usr/bin/systemctl":
-        if (len(argv) != 6 or argv[1:5] != ("show", "--no-pager", "-p", "LoadState")
+        if (len(argv) != 6 or argv[1:4] != ("show", "--no-pager", "-p")
+                or argv[4] not in ("LoadState", "ActiveState")
                 or argv[5] not in ("ssh.service", "tailscaled.service", "docker.service")):
             raise ValueError("SYSTEMCTL_QUERY_NOT_ALLOWLISTED")
     else:
@@ -48,11 +50,23 @@ def readonly_command(argv: tuple[str, ...]) -> tuple[int, str]:
     except (OSError, subprocess.TimeoutExpired):
         return 127, ""
 
-def unit_state(name: str) -> str:
+def unit_state(name: str, field: str = "LoadState") -> str:
     code, out = readonly_command(("/usr/bin/systemctl", "show", "--no-pager",
-                                  "-p", "LoadState", name))
-    match = re.search(r"^LoadState=(loaded|not-found|masked|error)\s*$", out, re.M)
+                                  "-p", field, name))
+    values = ("loaded", "not-found", "masked", "error") if field == "LoadState" else (
+        "active", "inactive", "failed", "activating", "deactivating"
+    )
+    match = re.search(r"^" + re.escape(field) + r"=(" + "|".join(values) + r")\s*$", out, re.M)
     return match.group(1) if code == 0 and match else "unknown"
+
+
+def docker_group_size() -> int | None:
+    try:
+        return len(grp.getgrnam("docker").gr_mem)
+    except KeyError:
+        return 0
+    except OSError:
+        return None
 
 def collect() -> dict[str, object]:
     """Local bounded read-only collection; reports no hostpaths, data or secrets."""
@@ -70,8 +84,14 @@ def collect() -> dict[str, object]:
         "systemd_runtime": Path("/run/systemd/system").is_dir(),
         "root_euid": os.geteuid() == 0,
         "ssh_unit": unit_state("ssh.service"),
+        "ssh_active": unit_state("ssh.service", "ActiveState"),
         "tailscaled_unit": unit_state("tailscaled.service"),
+        "tailscaled_active": unit_state("tailscaled.service", "ActiveState"),
         "docker_unit": unit_state("docker.service"),
+        "docker_active": unit_state("docker.service", "ActiveState"),
+        "sudo_available": Path("/usr/bin/sudo").is_file(),
+        "su_available": Path("/usr/bin/su").is_file(),
+        "docker_group_members": docker_group_size(),
         "docker_socket": Path("/run/docker.sock").exists() or Path("/var/run/docker.sock").exists(),
         "mount_count": len(mountinfo.splitlines()) if mountinfo is not None else None,
         "mdstat_available": mdstat is not None,
@@ -97,6 +117,9 @@ def assess(facts: dict[str, object]) -> dict[str, object]:
     for unit in ("ssh_unit", "tailscaled_unit", "docker_unit"):
         if facts.get(unit) == "unknown":
             failures.append("UNIT_STATE_UNAVAILABLE_" + unit.upper())
+        active = unit.replace("_unit", "_active")
+        if facts.get(unit) == "loaded" and facts.get(active, "unknown") == "unknown":
+            failures.append("UNIT_ACTIVE_STATE_UNAVAILABLE_" + active.upper())
 
     hints = []
     if facts.get("docker_socket") is True:
@@ -109,14 +132,23 @@ def assess(facts: dict[str, object]) -> dict[str, object]:
         hints.append("TAILSCALE_NOT_YET_CONFIGURED")
     if facts.get("docker_unit") == "loaded":
         hints.append("DOCKER_WORKLOAD_MAY_BE_PRESENT")
+    if facts.get("docker_group_members") is None or facts.get("docker_group_members", 0) > 0:
+        hints.append("DOCKER_GROUP_MEMBERSHIP_REQUIRES_REVIEW")
+    if facts.get("ssh_unit") == "loaded" and facts.get("ssh_active") != "active":
+        hints.append("SSH_SERVICE_NOT_ACTIVE")
+    if facts.get("sudo_available") is not True and facts.get("su_available") is not True:
+        hints.append("NO_SUDO_OR_SU_TOOL")
 
     return {
         "schema": SCHEMA,
         "compatibility": "BLOCKED" if failures else "FACTS_READY",
         "blockers": sorted(failures),
         "safety_hints": sorted(hints),
-        "unit_load_state": {k: facts.get(k, "unknown")
-                            for k in ("ssh_unit", "tailscaled_unit", "docker_unit")},
+        "service_status": {k: {"load": facts.get(k + "_unit", "unknown"),
+                               "active": facts.get(k + "_active", "unknown")}
+                           for k in ("ssh", "tailscaled", "docker")},
+        "privilege_tools": {"sudo_available": facts.get("sudo_available") is True,
+                            "su_available": facts.get("su_available") is True},
         "storage": {"mount_count": facts.get("mount_count"),
                     "mdstat_readable": facts.get("mdstat_available") is True,
                     "active_md_raid_detected": facts.get("md_arrays_active") is True},
