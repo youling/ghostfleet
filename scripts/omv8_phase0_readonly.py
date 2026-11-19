@@ -16,7 +16,9 @@ SCHEMA = "ghostfleet-omv8-phase0-readonly/v1"
 def read_text(path: str) -> str | None:
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as stream:
-            return stream.read(32768)
+            data = stream.read(32769)
+            # Truncated mountinfo/mdstat must fail closed, never look complete.
+            return data if len(data) <= 32768 else None
     except (OSError, UnicodeError):
         return None
 
