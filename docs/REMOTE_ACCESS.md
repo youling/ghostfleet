@@ -164,7 +164,7 @@ Tailscale 只负责网络连通，OpenSSH 仍然负责 OS 登录身份和权限�
 **身份选择与当前映射：**
 - TP 当前 CLI 身份读回为 `tag:fleet-ssh-target`，但其逻辑角色是 Controller；不能把它纳入 managed destination 集合。
 - WCX/SYJ 是 tagged VPS；JG 当前为 user-bound。四台身份类型并不一致，不能假设所有 Managed Node 都有同一 tag。
-- Tailscale tag 是非用户设备身份，会替代 user-based authentication；官方建议仅用于非人类设备。TP 当前已经是 tagged identity；若它仍是人实际使用的工作站，应由 Owner 评估是否迁回 user identity，不应仅为角色标注而保留 target tag。若 Owner 明确将 TP 定义为无人值守的机器 Controller，才另行评估独立的 `tag:fleet-controller`。
+- Tailscale tag 是非用户设备身份，会替代 user-based authentication；官方建议仅用于非人类设备。TP 当前已是 tagged machine identity，且本轮 DCR 只读执行上下文使用 Fleet control service account；其逻辑角色是 Controller，因此从标签语义看，`tag:fleet-controller` 是比 `tag:fleet-ssh-target` 更合适的候选，target tag 应只标识 Managed Nodes。若 TP 同时承担人类交互设备身份，Owner 需先评估 tag 替代 user identity 的影响。任何 tag 迁移仍需单独授权，本轮未执行。
 - 在不改变设备身份的前提下，可优先用 tailnet policy 的 `hosts` 别名或精确 Tailscale IP 作为 grants 的 source/destination selector，例如为 TP、JG、WCX、SYJ 分别定义稳定别名。该选择器只表达现有设备的精确网络身份，不创建 GhostFleet 控制面；IP/设备重注册变化时必须同步维护。最终选择必须先对照 Owner 当前 tailnet policy 原件。
 
 ### Controller 的出站 SSH 凭据 / Controller outbound SSH credentials
@@ -459,7 +459,7 @@ This governs **new connections initiated by a node**. Return traffic for a TCP c
 **Identity selectors and current enrollment:**
 - TP currently reads back as `tag:fleet-ssh-target`, but its logical role is Controller; it must not be included in the managed-destination set.
 - WCX/SYJ are tagged VPS nodes; JG is currently user-bound. The four devices do not share one identity type, so do not assume every Managed Node has the same tag.
-- A Tailscale tag is a non-user device identity and replaces user-based authentication. Tailscale recommends tags for non-human devices. TP is already tagged; if it remains a human-operated workstation, the Owner should review whether to migrate it back to a user identity rather than retain a target tag merely as a role label. Only if the Owner explicitly designates TP as an unattended machine Controller should a separate `tag:fleet-controller` be evaluated.
+- A Tailscale tag is a non-user device identity and replaces user-based authentication. Tailscale recommends tags for non-human devices. TP is already a tagged machine identity, and this round's read-only DCR execution context uses a Fleet control service account. Given its Controller role, `tag:fleet-controller` is semantically better aligned than `tag:fleet-ssh-target`; the target tag should identify Managed Nodes only. If TP also serves as a human-interactive device identity, the Owner must first review the effect of replacing user identity with a tag. Any tag migration still requires separate authorization and was not performed in this round.
 - Without changing device identity, prefer `hosts` aliases or exact Tailscale IPs as grants source/destination selectors, defining a stable alias for TP, JG, WCX and SYJ. These selectors express exact existing network identities; they do not create a GhostFleet control plane. Keep them synchronized if a device is re-enrolled or its IP changes. Make the final choice only after reading the Owner's actual tailnet policy.
 
 ### Controller outbound SSH credentials
