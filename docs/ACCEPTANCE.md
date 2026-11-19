@@ -13,6 +13,8 @@
 
 本页只验收原生网络与 SSH 传输。面板、票据、心跳、系统级安装和受保护浏览器首次使用按 [PRESENCE](PRESENCE.md) 与 [阶段交付](DELIVERY.md) 分别记录。心跳在线不替代本页任何连接测试；已接受的连接证据也不替代面板首次使用。
 
+**A03/A08 更新指针：** [Cloudflare Access SSH 加固与灰度/回滚合同](CLOUDFLARE_ACCESS_A03.md) 已补充 Edge 真实拒绝、Service Token 实际端到端测试以及安全回滚判据。应将 Cloudflare 的 Access Policy 决策、源站 OpenSSH 认证与 Tailscale 端口许可分开记录；CLI 参数存在不等于 Agent Service Auth PASS。本文的 NOT_RUN 模板不被文档更改为已验收。
+
 This page covers native network and SSH transport only. Record panel, ticket, heartbeat, system installation and protected-browser first use separately through [PRESENCE](PRESENCE.md) and [staged delivery](DELIVERY.md). Presence does not replace a transport test, and accepted transport evidence does not establish panel first-use acceptance.
 
 本页可以直接用于已有授权范围内的实例验收，不新增审批仪式。先填写实际候选提交、实例私有记录指针、版本和测试日期，再逐项填写实测结果。无法执行的项保持 `NOT_RUN` 并说明原因；只配置一路时，另一路填 `NOT_APPLICABLE`，不能宣称双路通过。`PASS` 必须有该实例、该版本的实际证据。
