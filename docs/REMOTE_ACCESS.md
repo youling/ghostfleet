@@ -81,6 +81,26 @@ sudo systemctl enable --now cloudflared-ssh.service
 
 使用普通 Access Self-hosted Application 即可。Access 负责认证连接，不会检查或过滤 SSH 命令。若目标是普通、不受命令策略限制的 SSH 会话，不要选用会引入逐目标命令策略或命令录制的 Access for Infrastructure 模式。
 
+### A03 / A08：Cloudflare Access SSH 双身份灰度与安全回滚
+
+本节是部署方的**受控灰度运行规程**，不是自动变更命令，也不授权创建 Access Application、Service Token 或修改 Tunnel。Cloudflare Self-hosted Access 可以叠加在既有 SSH Published Application 上，原生 sshd 公钥认证保持第二道验证。人工交互使用受约束的身份策略；无人值守使用独立的 Service Auth 策略与短期、可轮换的 Service Token，二者不得共享凭据。具体账户/邮箱/域名/Token 存私有实例工单。
+
+**变更前只读门禁：**
+1. 保存精确 hostname、Tunnel ingress service、Access Application/Policy 的当前配置及版本（若不存在，记录不存在）。核对 Service Auth 与 Allow/Require/Exclude、Token 有效期以及当前 Zero Trust 组织的 strict service-token authentication 设置。界面所称 `Service Auth` 的 API policy decision 可能显示为 `non_identity`，不要凭字面值误判。
+2. 从**实际管理客户端**分别核对二进制版本、`cloudflared access ssh --help` 和有效 `ssh -G`；Cloudflare upstream issue [#1674](https://github.com/cloudflare/cloudflared/issues/1674) 曾报告 2026.6.0 的 Service Token TCP/SSH 回归。参数“存在”只证明 CLI 能解析，不证明 headless Access 的 WebSocket/SSH 握手成功。灰度前必须在当前实际版本的隔离/临时受保护目标上做有效和无效 Service Token 的真实新连接试验，证明**无浏览器流程**、SSH banner/认证/exec/SFTP 都按预期工作。
+3. 不得把 `--service-token-secret <secret>`、明文环境赋值或 token 写进 `~/.ssh/config`、进程参数、历史、Git、Issue 或日志。若使用 `TUNNEL_SERVICE_TOKEN_ID` / `TUNNEL_SERVICE_TOKEN_SECRET`，应通过有权限隔离的进程级凭据注入，控制环境继承和本机进程可见性，配合到期/撤销机制；环境变量也并非对相同 UID/root 保密的万能保险箱。凭据保管无法证明时，保留现有 Tailscale/LAN 自动化路径，不上线 Service Token 通道。
+4. 从**实际可操作的救援管理身份**完成一条独立 LAN 或其他不依赖待变更 Access/Tunnel 的 root SSH 新会话及只读命令。仅有 TCP connect 或 SSH banner 不能称为带外救援 PASS。记录回滚执行账户与对 Cloudflare Access/DNS/Route 的具体写权限；本机能进 SSH 不等于能从网络恢复 Cloudflare 配置。
+
+**先单目标灰度，再推广。** 创建/更新 Access 前保留原配置快照与回滚目标，之后分别验收：
+- 人工合法身份：新建非复用 `ProxyCommand` SSH 会话；验证预期 Access 授权、host key、OS 账户、root exec、必要 SFTP。
+- 服务身份：有效短期 Service Token 与独立 SSH 公钥一起使用；必须在无人值守模式成功，且无浏览器弹窗。Token 缺失、过期/撤销、错误 Secret、错误应用作用域分别负测，记录是否在 Edge 层被阻断。
+- 身份拒绝：区分 `302` 登录重定向、`401/403`、WebSocket 握手拒绝与 sshd 的 `Permission denied (publickey)`；不可强行把每次未认证探测要求为 403。strict service-token authentication 启用时，无效的已识别 Token 一般返回 401/403；未知 Client ID 或 malformed header 可能**不会进入 Access authentication logs**，因此“日志零记录”不是通过证据。用 Edge 结果、源站指定时窗的 sshd/journald 与正向对照联合判断，避免只看 `/var/log/auth.log`（发行版可能改用 journal）。
+- 验证原 Tailscale/LAN 管理路径未受变更影响。保留新连接与现有连接分开观测，不自动重放结果未知的远程命令。
+
+**安全回滚不是默认删除 Access Application。** 删除仍公开解析的 Access Application 可能恢复为未经 Access 检查的公网 SSH Tunnel（尽管 sshd 公钥仍然有效），属于安全降级，不可称为“秒级无损零停机”。优先恢复预先记录的安全策略/应用版本；无法恢复时在 Owner 批准下将**受影响的 Published Application hostname 暂时撤除或禁止访问**，接受 Cloudflare 路径暂时不可用，借由已验证的 Tailscale/LAN 管理。回滚后读回实际 Access + Tunnel/DNS 状态，并分别验证 Edge 拒绝与合法救援路径。不得因为可用性而偷偷改成 Bypass、Everyone 或裸 SSH 发布。
+
+来源：[Cloudflare client-side SSH](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/use-cases/ssh/ssh-cloudflared-authentication/) · [Service Tokens / strict mode](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/) · [cloudflared Access TCP service-token regression](https://github.com/cloudflare/cloudflared/issues/1674)。
+
 ### Cloudflare 源站连接器诊断（服务器侧）
 
 本节在**运行 cloudflared 的源站机器**执行，不在操作者 Windows 客户端执行。它诊断源站到 Cloudflare Edge 的连接条件；不能替代 hostname DNS、Published Application、Access Policy 或最终 SSH 会话验收。
@@ -375,6 +395,26 @@ Use a remotely-managed Cloudflare Tunnel:
 5. Install cloudflared on the client and connect using the `node-cf` SSH alias. The client-side `cloudflared access ssh` flow prompts for Cloudflare Access login when needed.
 
 Use a normal Access self-hosted application. Access authenticates the connection; it does not inspect or filter SSH commands. Do not use Access for Infrastructure if the deployment goal is a plain unrestricted SSH session without per-target command policy or command recording.
+
+### A03 / A08: Cloudflare Access SSH dual-identity canary and secure rollback
+
+This is an **operator-controlled canary runbook**, not an automated mutation or authorization to create an Access Application/Service Token or change a Tunnel. A Self-hosted Access Application can protect the existing SSH Published Application while native sshd public-key authentication remains the second layer. Human interactive access and unattended service authentication require separately scoped policies and distinct credentials. Actual account, identity, hostname and token data belong in the private deployment record.
+
+**Read-only prechange gates:**
+1. Record the exact hostname, Tunnel ingress service and current Access Application/Policy object/version (including an explicit absence). Review Allow/Require/Exclude versus Service Auth, token lifetime and the organization's strict service-token authentication setting. The UI's Service Auth action may be represented as `non_identity` in API policy data.
+2. On the **actual operator client**, record the cloudflared version, `cloudflared access ssh --help` and effective `ssh -G` settings. Upstream cloudflared issue [#1674](https://github.com/cloudflare/cloudflared/issues/1674) reports a service-token TCP/SSH regression in version 2026.6.0. The presence of flags proves only CLI parsing; it does not prove unattended WebSocket/SSH authentication. Before production canary, verify valid and invalid service tokens against an isolated/temporary protected target using the actual version; successful headless SSH banner, authentication, exec and SFTP must be observed without a browser flow.
+3. Never place `--service-token-secret <secret>`, plaintext variable assignments or token values in `~/.ssh/config`, command argv, shell history, Git, issues or logs. If using `TUNNEL_SERVICE_TOKEN_ID` / `TUNNEL_SERVICE_TOKEN_SECRET`, inject them into a permission-isolated per-process environment with controlled inheritance and rotation/revocation. Environment variables are not guaranteed secret from same-UID or root processes. If custody cannot be proven, keep existing Tailscale/LAN automation rather than enabling service-token SSH.
+4. From an **actual rescue operator identity**, establish a fresh authenticated root SSH session and read-only command over a separate LAN/other path independent of the Access/Tunnel being changed. TCP reachability or an SSH banner alone is not a verified rescue path. Confirm that the rescue operator can actually change the Cloudflare Access/DNS/Route objects if rollback requires it.
+
+Canary **one target at a time** after preserving exact configuration and rollback targets:
+- Authorized human: fresh non-multiplexed ProxyCommand SSH, Access authorization, strict host key, expected OS identity, exec and required SFTP.
+- Authorized unattended service: valid scoped short-lived Service Token **and** independent SSH key; prove no browser prompt. Deny missing, revoked/expired, incorrect secret and wrong-application token at the Edge.
+- Unauthorized identities: distinguish `302` login redirects, `401/403`, WebSocket handshake denial and sshd's `Permission denied (publickey)`. Do not require every unauthenticated probe to return 403. Under strict service-token auth, recognized invalid tokens normally get 401/403; unknown client IDs or malformed headers may be **absent from Access auth logs**, so an empty log is not proof. Correlate Edge response, origin sshd/journald within the precise time window and an authorized positive control; do not assume `/var/log/auth.log` exists.
+- Confirm Tailscale/LAN management remains working. Do not automatically replay SSH commands whose outcomes are unknown.
+
+**Deleting Access is not the default secure rollback.** Removing the Access Application while the Tunnel hostname remains published can restore Internet reachability to native SSH without the Access layer. This is a security regression even if sshd still requires a public key; it must not be described as guaranteed zero-downtime rollback. Prefer restoring a known-good protected Access policy/application version. If that cannot be done, keep a separately verified rescue route and, with Owner authorization, disable/unpublish the affected public hostname while Access is repaired. Read back final Access and Tunnel/DNS objects and re-test denied Edge access and the independent recovery route. Never silently fall back to Bypass, Everyone or unprotected public SSH.
+
+References: [Client-side SSH](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/use-cases/ssh/ssh-cloudflared-authentication/) · [Service Tokens/strict mode](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/) · [upstream service-token SSH regression](https://github.com/cloudflare/cloudflared/issues/1674).
 
 ### Origin-side cloudflared diagnostics
 
