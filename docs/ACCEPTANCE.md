@@ -119,6 +119,29 @@ Denial of a new connection, interruption of an established network connection an
 Use operations with ascertainable outcomes for interruption tests. If real work has an unknown outcome when a connection drops, inspect target state through a new session before deciding what to do next; do not replay it automatically. A syntactically valid unit does not prove the actual binary, credentials, network or restart behavior. Keep recovery cases `NOT_RUN` unless the relevant event was actually exercised and observed.
 
 
+## 5.1 A03/A08 Access SSH 灰度证据 / Access SSH canary evidence
+
+本节只定义 **Self-hosted Access 保护既有 SSH Published Application** 时的灰度验收，不授予生产写入权。人工 Allow/IdP 与自动化 Service Auth 使用独立规则和凭据，原生 sshd 公钥认证仍需验证。若方案只完成参数和路由设计，不得将 A03/A08 标为 PASS。
+
+按实际部署填写以下证据，不得以单个结果代替另一项：
+
+| 检查 / Check | 有效证据 / Required evidence |
+| --- | --- |
+| 变更前基线 / Prechange | 原 hostname/ingress、原 Access Application/Policy 存在性及版本、救援管理账户的独立 SSH **认证+命令执行**、可实施回滚的 Cloudflare 写权限；仅 TCP banner 不够 / Original ingress and Access object/version; a separately authenticated rescue session plus real rollback authority, not a TCP banner |
+| 人工授权 / Human allow | 新的非复用 SSH 会话完成 IdP/OTP → Access Allow → sshd key auth、root exec、SFTP（按需），且保留拒绝身份测试 / Fresh non-multiplexed IdP/OTP, Access and sshd authentication, exec and required SFTP |
+| 服务授权 / Service Auth | 绑定正确 hostname/应用的短期有效 Token 在当前 cloudflared 版本上**无浏览器**完成 SSH 认证和 exec；CLI 参数存在不算通过；不得在 argv/config/log 泄漏 Secret / Valid scoped token completes genuinely headless SSH on actual version; CLI flags alone do not count |
+| Edge 拒绝 / Edge deny | 缺失、错误 Secret、已撤销/过期 Token、错误应用 Token 分别做新连接；记录 Edge 结果与 origin sshd/journald 同一时间窗；`302` 登录、`401/403` 与 WebSocket 拒绝分开解释，不要求所有探测都为 403；`Permission denied (publickey)` 不是 Edge 拒绝 / Distinguish login redirects, HTTP denial and WebSocket denial; SSH key rejection is not an Edge denial |
+| 缓存/会话 / Cache | 区分交互 Access JWT/session TTL 与 Service Token 的每次请求凭据；无效 Client ID 或坏格式 header 可能不产生日志。不可因为没有 Access log 就宣称 Edge PASS / Distinguish interactive JWT caching from per-request service credentials; missing logs alone do not prove denial |
+| 安全回滚 / Rollback | 恢复预先冻结的受保护 Access 策略/应用，或在独立救援可用且获授权时撤除**仅受影响 SSH Published Route**。删除 Access App 仍保留公开 SSH route 属于安全降级，不能默认为“零停机回滚” / Restore protected Access or explicitly withdraw affected public route; deleting Access alone can re-expose SSH |
+
+全部新连接记录应包含测试端环境、cloudflared 版本、账号/Service Token 类型（仅不透明引用）、SSH 主机身份、退出状态、时间戳及回滚读回。原始 Token、私钥、完整 IP/账户标识只留实例私有 owner。未取得端到端服务身份和回滚证据时，A03/A08 保持 PARTIAL/NOT_RUN，不因 UI 配置保存就进入下一节点推广。
+
+This section applies only to a canary that adds a **Self-hosted Access Application to an existing SSH Published Application**. Human Allow/IdP and unattended Service Auth require separately scoped policies and credentials; native sshd public-key verification remains required. Approval to edit production settings does not follow from this template.
+
+Record prechange Application/Policy/route readbacks, a fully authenticated independent rescue route and actual Cloudflare rollback authority. Demonstrate fresh authorized human sessions and headless service-token SSH on the exact installed cloudflared version. Invalid/missing/expired/revoked/wrong-app tokens require separate Edge-denial cases; interpret `302`, `401/403` and WebSocket denial according to context, and do not equate sshd public-key rejection with an Edge denial. Failed/unknown Service Token Client IDs may not appear in Access logs. Restore a protected policy/application or explicitly disable the affected Published Route under Owner authorization; deleting Access without withdrawing the route can re-expose native SSH. Record evidence and outcomes per case without disclosing secrets. A03/A08 remain unaccepted until their own evidence is complete.
+
+---
+
 ## 6. 证据层级不可互相替代 / Acceptance evidence layers are not interchangeable
 
 以下结果必须分层记录，不能因一个层级通过就推导相邻层级通过：
