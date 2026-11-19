@@ -167,6 +167,17 @@ Tailscale 只负责网络连通，OpenSSH 仍然负责 OS 登录身份和权限�
 - Tailscale tag 是非用户设备身份，会替代 user-based authentication；官方建议仅用于非人类设备。TP 当前已经是 tagged identity；若它仍是人实际使用的工作站，应由 Owner 评估是否迁回 user identity，不应仅为角色标注而保留 target tag。若 Owner 明确将 TP 定义为无人值守的机器 Controller，才另行评估独立的 `tag:fleet-controller`。
 - 在不改变设备身份的前提下，可优先用 tailnet policy 的 `hosts` 别名或精确 Tailscale IP 作为 grants 的 source/destination selector，例如为 TP、JG、WCX、SYJ 分别定义稳定别名。该选择器只表达现有设备的精确网络身份，不创建 GhostFleet 控制面；IP/设备重注册变化时必须同步维护。最终选择必须先对照 Owner 当前 tailnet policy 原件。
 
+### Controller 的出站 SSH 凭据 / Controller outbound SSH credentials
+
+**网络可达不等于 SSH 管理能力。** TP 能建立到目标 TCP listener 的连接，只证明 Tailscale 网络层允许；Controller 还必须在实际执行管理任务的服务身份下，具备到每个目标的出站 SSH 认证能力，并严格校验目标 host key。TP 上的 `authorized_keys` 只控制谁能登录 TP，是入站公钥，不是 TP 登录其他节点的出站私钥。
+
+- 由 Owner/Foreman 明确选择凭据保管方式：优先使用专属于 TP Controller 的管理身份/密钥，并通过系统支持的受保护凭据存储交给实际执行服务；若选择 SSH agent forwarding，必须限定在可信连接与明确会话范围内，并确认自动化任务运行时确实能访问该 agent。
+- 绝不把 JG/WCX/SYJ 的节点私钥复制到 TP；也不把 Windows 管理客户端上“能登录目标”的结果当成 TP 服务身份已具备出站凭据。
+- 对每个目标使用新建 SSH 会话、禁用连接复用、`BatchMode=yes`、`StrictHostKeyChecking=yes`，从 TP 的实际 Controller 执行身份验证 root exec 与所需 SFTP；记录认证身份、host-key alias、目标端口和退出状态，不记录私钥或 token。
+- 当前四节点使用原生 OpenSSH（`RunSSH=false`）；不能为了绕过凭据设计而悄悄切换为 Tailscale SSH。
+
+
+
 **策略实现前置条件：**
 1. 先读取并保存当前 tailnet policy 原件，逐项检查 `hosts`、`tagOwners`、`groups`、`grants`、`acls`、`ssh`、`tests`；当前四台设备的有效 `PacketFilterRules` 曾读回为全 tailnet IPv4/IPv6 source pool → 任意目标 / 任意端口，A09 因而 FAIL。
 2. Tailscale 的 grants/ACL 都是累加式 allow；更具体的新规则不能覆盖或收窄旧的宽泛 allow。省略 `acls` 会套用默认 allow-all；必须先移除/替换默认或显式的全网放行，再只保留 TP → 三个 Managed Nodes 的精确端口许可。不能只追加三条窄 grants 就宣称已隔离。
@@ -450,6 +461,17 @@ This governs **new connections initiated by a node**. Return traffic for a TCP c
 - WCX/SYJ are tagged VPS nodes; JG is currently user-bound. The four devices do not share one identity type, so do not assume every Managed Node has the same tag.
 - A Tailscale tag is a non-user device identity and replaces user-based authentication. Tailscale recommends tags for non-human devices. TP is already tagged; if it remains a human-operated workstation, the Owner should review whether to migrate it back to a user identity rather than retain a target tag merely as a role label. Only if the Owner explicitly designates TP as an unattended machine Controller should a separate `tag:fleet-controller` be evaluated.
 - Without changing device identity, prefer `hosts` aliases or exact Tailscale IPs as grants source/destination selectors, defining a stable alias for TP, JG, WCX and SYJ. These selectors express exact existing network identities; they do not create a GhostFleet control plane. Keep them synchronized if a device is re-enrolled or its IP changes. Make the final choice only after reading the Owner's actual tailnet policy.
+
+### Controller outbound SSH credentials
+
+**Network reachability is not SSH management capability.** A successful TCP connection from TP to a target listener proves only that the Tailscale network layer permits the path. The Controller must also have an outbound SSH authentication method under the actual service identity that executes management tasks, and it must strictly verify each target host key. TP's `authorized_keys` controls who may log in to TP; it is an inbound public-key file, not an outbound private key for TP to log in to other nodes.
+
+- The Owner/Foreman must choose credential custody explicitly: prefer a TP-Controller-only management identity/key delivered to the actual execution service through an OS-supported protected credential store; if SSH agent forwarding is chosen, scope it to trusted connections and explicit sessions, and verify that the automation runtime can actually access the agent.
+- Never copy a Managed Node's private key from JG/WCX/SYJ to TP. A successful login from the Windows operator client does not prove that TP's controller service identity has outbound credentials.
+- For each target, use a fresh SSH session with connection multiplexing disabled, `BatchMode=yes` and `StrictHostKeyChecking=yes`; from TP's actual Controller execution identity, verify root exec and required SFTP. Record the authenticating identity, host-key alias, target port and exit status, never private keys or tokens.
+- All four current nodes use native OpenSSH (`RunSSH=false`); do not silently switch to Tailscale SSH to bypass the credential-custody design.
+
+
 
 **Prerequisites before policy implementation:**
 1. Read and preserve the original tailnet policy. Inspect `hosts`, `tagOwners`, `groups`, `grants`, `acls`, `ssh` and `tests`. The four nodes' effective `PacketFilterRules` were previously read back as the entire tailnet IPv4/IPv6 source pool → any destination / any port; A09 therefore FAILS.
