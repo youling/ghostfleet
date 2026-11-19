@@ -8,9 +8,9 @@
 
 | 主机名 | 已测路由 | 目前边缘准入 | 目标 |
 | --- | --- | --- | --- |
-| fleet-x7ti.xuezishi.net | JG Tunnel dcf91987-5fcf-4c36-bdfc-3fd170e29bad → ssh://localhost:22 | 无 Access 凭据仍读到 sshd banner：**NOT_ENFORCED** | 第一个受控 Self-hosted Application 灰度 |
-| fleet-tp.xuezishi.net | TP Tunnel f6be7111-6a4f-4833-a336-9b23e1c278ce → ssh://localhost:22 | 无 Access 凭据仍读到 sshd banner：**NOT_ENFORCED** | JG 验收后独立审批 |
-| fleet.xuezishi.net | 现有 Worker 控制面 | 已观察 Access 身份挑战 | 不受本次修改影响 |
+| ssh-node-a.example.invalid | JG Tunnel tunnel-a-opaque-ref → ssh://localhost:22 | 无 Access 凭据仍读到 sshd banner：**NOT_ENFORCED** | 第一个受控 Self-hosted Application 灰度 |
+| ssh-node-b.example.invalid | TP Tunnel tunnel-b-opaque-ref → ssh://localhost:22 | 无 Access 凭据仍读到 sshd banner：**NOT_ENFORCED** | JG 验收后独立审批 |
+| panel.example.invalid | 现有 Worker 控制面 | 已观察 Access 身份挑战 | 不受本次修改影响 |
 
 **不能将“当前没有有效 Access 拒绝”推导为“后台绝无 Access App/Policy 对象”**。工头尚未通过有权限的 Cloudflare API/控制台完整枚举对象；资源存在性仍为 **INVENTORY_UNKNOWN**。
 
