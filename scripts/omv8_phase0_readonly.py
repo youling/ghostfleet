@@ -225,56 +225,85 @@ def assess(facts: dict[str, object]) -> dict[str, object]:
 
     mounts = facts.get("mounts")
     mdstat = facts.get("mdstat")
+    storage_view: dict[str, object] | None = None
     if not isinstance(mounts, dict) or not isinstance(mdstat, dict):
         blockers.append("STORAGE_FACTS_UNAVAILABLE")
     else:
         filesystem_types = mounts.get("filesystem_types")
         root_filesystem = mounts.get("root_filesystem")
+        mount_count = mounts.get("mount_count")
         active_arrays = mdstat.get("active_array_count")
+        storage_flags = (
+            mounts.get("remote_mounts_present"),
+            mounts.get("btrfs_present"),
+            mounts.get("zfs_present"),
+            mdstat.get("degraded_signal"),
+            mdstat.get("maintenance_in_progress"),
+        )
         if (
             not isinstance(filesystem_types, list)
-            or not all(isinstance(item, str) for item in filesystem_types)
+            or not all(
+                isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9._+-]{1,32}", item)
+                for item in filesystem_types
+            )
             or not isinstance(root_filesystem, str)
-            or not isinstance(active_arrays, int)
-            or not isinstance(mdstat.get("degraded_signal"), bool)
-            or not isinstance(mdstat.get("maintenance_in_progress"), bool)
+            or not re.fullmatch(r"[A-Za-z0-9._+-]{1,32}", root_filesystem)
+            or type(mount_count) is not int
+            or mount_count < 0
+            or type(active_arrays) is not int
+            or active_arrays < 0
+            or not all(type(flag) is bool for flag in storage_flags)
         ):
             blockers.append("STORAGE_FACTS_MALFORMED")
         else:
             filesystems = set(filesystem_types)
-            if mounts.get("remote_mounts_present") is True:
+            if mounts["remote_mounts_present"]:
                 hints.append("REMOTE_MOUNTS_PRESENT_DO_NOT_TOUCH")
-            if mounts.get("btrfs_present") is True:
+            if mounts["btrfs_present"]:
                 hints.append("BTRFS_PRESENT_DO_NOT_TOUCH")
-            if mounts.get("zfs_present") is True:
+            if mounts["zfs_present"]:
                 hints.append("ZFS_PRESENT_DO_NOT_TOUCH")
             if active_arrays > 0:
                 hints.append("MD_RAID_ACTIVE_DO_NOT_TOUCH")
-            if mdstat.get("degraded_signal") is True:
+            if mdstat["degraded_signal"]:
                 hints.append("MD_RAID_DEGRADED_OWNER_REVIEW")
-            if mdstat.get("maintenance_in_progress") is True:
+            if mdstat["maintenance_in_progress"]:
                 hints.append("MD_RAID_MAINTENANCE_IN_PROGRESS")
             if not filesystems or not root_filesystem:
                 blockers.append("ROOT_FILESYSTEM_NOT_PROVEN")
+            storage_view = {
+                "mount_count": mount_count,
+                "filesystem_types": sorted(set(filesystem_types)),
+                "root_filesystem": root_filesystem,
+                "mdstat": {
+                    "active_array_count": active_arrays,
+                    "degraded_signal": mdstat["degraded_signal"],
+                    "maintenance_in_progress": mdstat["maintenance_in_progress"],
+                },
+            }
 
     units = facts.get("units")
     if not isinstance(units, dict):
         blockers.append("SERVICE_FACTS_UNAVAILABLE")
         units = {}
     valid_units: dict[str, dict[str, str]] = {}
+    allowed_load = ("loaded", "not-found", "masked", "error", "unknown")
+    allowed_active = ("active", "inactive", "failed", "activating", "deactivating", "unknown")
     for key, state in units.items():
+        if key not in UNIT_NAMES:
+            blockers.append("UNEXPECTED_UNIT_FACT")
+            continue
         if not isinstance(state, dict):
             blockers.append("UNIT_STATE_INVALID_" + str(key).upper())
             continue
         load = state.get("load", "unknown")
         active = state.get("active", "unknown")
-        if load not in ("loaded", "not-found", "masked", "error", "unknown"):
-            blockers.append("UNIT_LOAD_VALUE_INVALID_" + str(key).upper())
-        if active not in ("active", "inactive", "failed", "activating", "deactivating", "unknown"):
-            blockers.append("UNIT_ACTIVE_VALUE_INVALID_" + str(key).upper())
+        if load not in allowed_load or active not in allowed_active:
+            blockers.append("UNIT_STATE_VALUE_INVALID_" + str(key).upper())
+            continue
         if load == "unknown" or active == "unknown":
             blockers.append("UNIT_STATE_UNAVAILABLE_" + str(key).upper())
-        valid_units[str(key)] = {"load": str(load), "active": str(active)}
+        valid_units[key] = {"load": load, "active": active}
     units = valid_units
 
     for required in UNIT_NAMES:
@@ -297,25 +326,38 @@ def assess(facts: dict[str, object]) -> dict[str, object]:
     if not isinstance(groups, dict):
         blockers.append("GROUP_FACTS_UNAVAILABLE")
         groups = {}
+    group_view: dict[str, int] = {}
     for key in ("docker_member_count", "ssh_member_count", "sudo_member_count"):
         count = groups.get(key)
-        if not isinstance(count, int) or count < 0:
+        if type(count) is not int or count < 0:
             blockers.append("GROUP_MEMBERSHIP_UNKNOWN_" + key.upper())
-    docker_members = groups.get("docker_member_count")
-    if isinstance(docker_members, int) and docker_members > 0:
+        else:
+            group_view[key] = count
+    docker_members = group_view.get("docker_member_count")
+    if docker_members is not None and docker_members > 0:
         hints.append("DOCKER_GROUP_MEMBERSHIP_REQUIRES_REVIEW")
-    if groups.get("ssh_member_count") == 0:
+    if group_view.get("ssh_member_count") == 0:
         hints.append("OMV_SSH_GROUP_EMPTY_REVIEW")
-    if groups.get("sudo_member_count", 0) > 0:
+    if group_view.get("sudo_member_count", 0) > 0:
         hints.append("SUDO_GROUP_MEMBERSHIP_PRESENT")
 
     privilege_tools = facts.get("privilege_tools")
     if not isinstance(privilege_tools, dict):
         blockers.append("PRIVILEGE_TOOL_FACTS_UNAVAILABLE")
         privilege_tools = {}
-    if not privilege_tools.get("sudo_available") and not privilege_tools.get("su_available"):
+    privilege_view = {
+        key: privilege_tools.get(key)
+        for key in ("sudo_available", "su_available")
+    }
+    for key, value in privilege_view.items():
+        if type(value) is not bool:
+            blockers.append("PRIVILEGE_TOOL_STATE_UNKNOWN_" + key.upper())
+    if not privilege_view.get("sudo_available") and not privilege_view.get("su_available"):
         hints.append("NO_SUDO_OR_SU_TOOL")
 
+    for key in ("docker_socket_present", "podman_socket_present"):
+        if type(facts.get(key)) is not bool:
+            blockers.append("SOCKET_STATE_UNKNOWN_" + key.upper())
     if facts.get("docker_socket_present") is True:
         hints.append("DOCKER_SOCKET_PRESENT_DO_NOT_ATTACH")
     if facts.get("podman_socket_present") is True:
@@ -329,14 +371,9 @@ def assess(facts: dict[str, object]) -> dict[str, object]:
         "blockers": sorted(set(blockers)),
         "safety_hints": sorted(set(hints)),
         "service_status": units,
-        "group_member_counts": groups,
-        "privilege_tools": privilege_tools,
-        "storage": {
-            "mount_count": mounts.get("mount_count") if isinstance(mounts, dict) else None,
-            "filesystem_types": mounts.get("filesystem_types", []) if isinstance(mounts, dict) else [],
-            "root_filesystem": mounts.get("root_filesystem") if isinstance(mounts, dict) else None,
-            "mdstat": mdstat if isinstance(mdstat, dict) else None,
-        },
+        "group_member_counts": group_view,
+        "privilege_tools": privilege_view,
+        "storage": storage_view,
         "owner_storage_attestation": "NOT_PERFORMED",
         "root_ceremony_authorization": "NOT_ASSERTED",
         "bootstrap_phase0_wired": False,
