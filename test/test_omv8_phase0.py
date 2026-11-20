@@ -167,7 +167,7 @@ unused devices: <none>
 
     def test_mountinfo_reports_only_aggregate_filesystem_types(self):
         data = (
-            "36 25 8:1 / / rw,relatime - ext4 /dev/sda1 rw\\n"
+            "36 25 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n"
             "37 36 0:42 / /srv/dev-disk-by-uuid-secret rw,relatime - btrfs /dev/sdb1 rw"
         )
         summary = phase0.summarize_mountinfo(data)
@@ -180,8 +180,8 @@ unused devices: <none>
 
     def test_remote_mounts_and_zfs_btrfs_are_hints(self):
         mounts = phase0.summarize_mountinfo(
-            "1 0 0:1 / / rw - ext4 /dev/root rw\\n"
-            "2 1 0:2 / /srv/share rw - nfs4 server:/export rw\\n"
+            "1 0 0:1 / / rw - ext4 /dev/root rw\n"
+            "2 1 0:2 / /srv/share rw - nfs4 server:/export rw\n"
             "3 1 0:3 / /data rw - zfs tank/data rw"
         )
         facts = good_facts()
@@ -197,7 +197,7 @@ unused devices: <none>
         self.assertIn("STORAGE_FACTS_UNAVAILABLE", phase0.assess(facts)["blockers"])
 
     def test_oversized_input_fails_closed(self):
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as stream:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as stream:
             stream.write("x" * (phase0.MAX_READ + 1))
             stream.flush()
             self.assertIsNone(phase0.read_text(stream.name))
@@ -225,7 +225,7 @@ unused devices: <none>
         self.assertNotIn("/mnt/", encoded)
 
     def test_parse_os_release_does_not_evaluate_shell(self):
-        data = 'ID="debian"\\nVERSION_ID="13"\\nBAD=$(touch /tmp/pwn)\\n'
+        data = 'ID="debian"\nVERSION_ID="13"\nBAD=$(touch /tmp/pwn)\n'
         parsed = phase0.os_release(data)
         self.assertEqual(parsed["ID"], "debian")
         self.assertEqual(parsed["VERSION_ID"], "13")
