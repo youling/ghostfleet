@@ -243,7 +243,9 @@ def assess(facts: dict[str, object]) -> dict[str, object]:
         blockers.append("LOCAL_ROOT_CEREMONY_NOT_PROVEN")
     if facts.get("container_context_readable") is not True:
         blockers.append("CONTAINER_CONTEXT_UNKNOWN")
-    if facts.get("container_environment_detected") is True:
+    if type(facts.get("container_environment_detected")) is not bool:
+        blockers.append("CONTAINER_DETECTION_UNKNOWN")
+    elif facts.get("container_environment_detected") is True:
         blockers.append("OMV_CONTAINER_INSTALL_UNSUPPORTED")
 
     mounts = facts.get("mounts")
