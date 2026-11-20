@@ -27,6 +27,8 @@ def good_facts():
         "systemd_pid1": True,
         "systemd_runtime": True,
         "root_euid": True,
+        "container_context_readable": True,
+        "container_environment_detected": False,
         "units": {
             "ssh": {"load": "loaded", "active": "active"},
             "tailscaled": {"load": "not-found", "active": "inactive"},
@@ -101,6 +103,26 @@ class AssessmentTests(unittest.TestCase):
         self.assertIn("LOCAL_ROOT_CEREMONY_NOT_PROVEN", report["blockers"])
         self.assertIn("STORAGE_FACTS_UNAVAILABLE", report["blockers"])
         self.assertIn("UNIT_STATE_UNAVAILABLE_SSH", report["blockers"])
+
+    def test_container_environment_is_detected_from_markers_and_cgroup(self):
+        self.assertTrue(phase0.detect_container_environment("0::/docker/abc", False, False))
+        self.assertTrue(phase0.detect_container_environment("0::/lxc.payload.name", False, False))
+        self.assertTrue(phase0.detect_container_environment(None, True, False))
+        self.assertTrue(phase0.detect_container_environment(None, False, True))
+        self.assertFalse(phase0.detect_container_environment("0::/", False, False))
+
+    def test_container_environment_and_unknown_context_block(self):
+        facts = good_facts()
+        facts["container_environment_detected"] = True
+        self.assertIn("OMV_CONTAINER_INSTALL_UNSUPPORTED", phase0.assess(facts)["blockers"])
+        facts = good_facts()
+        facts["container_context_readable"] = False
+        self.assertIn("CONTAINER_CONTEXT_UNKNOWN", phase0.assess(facts)["blockers"])
+
+    def test_overlay_root_filesystem_blocks_unsupported_container(self):
+        facts = good_facts()
+        facts["mounts"]["root_filesystem"] = "overlay"
+        self.assertIn("OMV_CONTAINER_FILESYSTEM_UNSUPPORTED", phase0.assess(facts)["blockers"])
 
     def test_omv_engine_must_be_loaded_and_active(self):
         facts = good_facts()
