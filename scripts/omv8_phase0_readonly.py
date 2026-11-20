@@ -172,6 +172,13 @@ def collect() -> dict[str, object]:
     )
     mount_summary = summarize_mountinfo(read_text("/proc/self/mountinfo"))
     mdstat_summary = summarize_mdstat(read_text("/proc/mdstat"))
+    cgroup = read_text("/proc/1/cgroup")
+    cgroup_lower = (cgroup or "").lower()
+    container_detected = (
+        Path("/.dockerenv").exists()
+        or Path("/run/.containerenv").exists()
+        or re.search(r"(^|[/.-])(docker|containerd|kubepods|lxc|libpod|podman)([/.-]|$)", cgroup_lower) is not None
+    )
     units = {
         key: {
             "load": unit_state(name, "LoadState"),
@@ -187,6 +194,8 @@ def collect() -> dict[str, object]:
         "systemd_pid1": (read_text("/proc/1/comm") or "").strip() == "systemd",
         "systemd_runtime": Path("/run/systemd/system").is_dir(),
         "root_euid": os.geteuid() == 0,
+        "container_context_readable": cgroup is not None,
+        "container_environment_detected": container_detected,
         "units": units,
         "groups": {
             "docker_member_count": group_member_count("docker"),
@@ -222,6 +231,10 @@ def assess(facts: dict[str, object]) -> dict[str, object]:
         blockers.append("SYSTEMD_NOT_PROVEN")
     if facts.get("root_euid") is not True:
         blockers.append("LOCAL_ROOT_CEREMONY_NOT_PROVEN")
+    if facts.get("container_context_readable") is not True:
+        blockers.append("CONTAINER_CONTEXT_UNKNOWN")
+    if facts.get("container_environment_detected") is True:
+        blockers.append("OMV_CONTAINER_INSTALL_UNSUPPORTED")
 
     mounts = facts.get("mounts")
     mdstat = facts.get("mdstat")
@@ -271,6 +284,8 @@ def assess(facts: dict[str, object]) -> dict[str, object]:
                 hints.append("MD_RAID_MAINTENANCE_IN_PROGRESS")
             if not filesystems or not root_filesystem:
                 blockers.append("ROOT_FILESYSTEM_NOT_PROVEN")
+            if root_filesystem in ("overlay", "aufs", "fuse.overlayfs"):
+                blockers.append("OMV_CONTAINER_FILESYSTEM_UNSUPPORTED")
             storage_view = {
                 "mount_count": mount_count,
                 "filesystem_types": sorted(set(filesystem_types)),
