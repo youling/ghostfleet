@@ -12,14 +12,16 @@
 
 ## 2. 一次性只读取证包（不修改现网）
 
-由有权限的 Tailnet Owner **私有**归档完整、脱敏展示的原始 `policy.hujson` + 内容 SHA256、读取时间及审查主体，并同时记录：
+由有权限的 Tailnet Owner **私有**归档原始 `policy.hujson`，仅向公共工单展示脱敏摘要；同时固定内容 SHA256、读取时间、审查主体及版本标识。如果已有合法的只读 Tailscale API 凭据，可直接使用官方 `GET /api/v2/tailnet/-/acl` 取得 Policy 和 ETag（`-` 表示该凭据的默认 Tailnet），无需由 Human 手工复制文本。**仅限读取权限**：Tailscale scoped trust credential 的 `policy_file:read`，按官方要求附属的设备读取权限，不取得 `policy_file` 写权限。不可为了这次只读审计创建宽权限管理员 Token；没有合法读取权限就标 `READBACK_UNAVAILABLE` 并停在只读阶段。不得在 URL、命令行参数、GitHub 评论或普通日志中输出凭据。私有原件应按受信任 Host 存储规则保存；若未来实施写入，必须用获准写主体对照 ETag/原始摘要，防止覆盖他人并发修改。参考官方 [Policy File API](https://tailscale.com/api) 与 [Trust Credentials](https://tailscale.com/docs/reference/trust-credentials)。
+
+同时记录：
 
 | 对象 | 必须读回 |
 | --- | --- |
 | Tailnet Policy | 原有 `hosts`、`tagOwners`、`groups`、`grants`、`acls`、`ssh`、`tests` 与其他既有段；所有 `*:* / *` 或宽泛 grant 来源 |
 | 设备身份 | TP/Managed/Windows Operator/救援设备的当前 Tailscale IP、节点 key、user-vs-tag identity、现有 tag 与 key expiry |
 | 服务消费 | 实际 SSH listener：不同节点可能是 22 或另一个端口；Fleet 心跳、反向调用、Runner/业务数据、NAS、SSH/SFTP 的真实通信方向及目的端口 |
-| Control service | TP 现役控制服务的 **ExecStart/User/Group** 和受权的执行主体（不是简单读 /root/.ssh）；服务使用哪一种 SSH client identity、known_hosts 与凭据设施 |
+| Controller executor | 确认 TP 是否实际存在执行出站 SSH 的常驻服务，或由已有受信任的按需 Operator/Fleet 任务发起；若有进程，读回其 **ExecStart/User/Group** 和实际 UID；如无，记录 **NO_OUTBOUND_EXECUTOR_IDENTIFIED**，不得将 Tunnel 接入器或心跳 Reporter 误写为 SSH 执行器。记录选定执行身份的 client key/agent/known_hosts 与授权边界，不只清点 `/root/.ssh` |
 | 救援通道 | Windows Operator 到 TP/至少一个 Managed 节点的独立**新建已认证** SSH/SFTP 会话；若依赖 LAN/Cloudflare，记录真实可用性、控制面回退权限、恢复操作者 |
 | 当前有效策略 | TP/Managed 从 `tailscale debug netmap` 或等价正规接口读回本机生效过滤规则；仅 policy 文件文本不能证明设备已接收更新 |
 
@@ -79,9 +81,9 @@
 
 ## 5. TP 原生 SSH 控制凭据：按实际服务身份接入
 
-- 首先读回 TP 现役 Controller unit 的 `User=`、`ExecStart=` 与实际执行 UID。**不要默认在 root HOME 创建私钥然后误以为服务就能使用**；也不要把 Windows 的管理私钥或任一 Managed Node 的私钥拷过去。
-- 如果确需单独的 TP Controller Ed25519 key，其私钥应只给实际受信任控制服务主体使用；公钥仅加到受审 Managed SSH 入口，遵守原有 root/forced-command/privileged-helper 边界。能使用狭窄命令 helper 时，不因“方便”而一律给无限 root SSH。
-- 从 TP **实际服务身份**发起全新 SSH，禁用连接复用，验证 host-key pin、root/限定命令 exec、PTY 与 SFTP；对三台目标分别做凭据正例、错误身份负例。A04/A05/A06 的 Windows Operator 历史回执不能顶替 TP Controller 出站验收。
+- **Controller 是逻辑控制权限，不要求常驻 SSH 守护程序。** 先判断谁实际执行出站管理请求：可能是既有按需 Fleet Operator 进程，也可能是经过批准的控制服务。若没有发现出站 Executor，应先定义最小任务入口及其系统执行身份，而不是为了通过验收新建常驻 daemon。Cloudflare Tunnel 入站 connector 与 DynamicUser 心跳 Reporter 本身不等于出站 SSH 控制主体；控制服务的 inbound 公钥也不是它对 Managed 节点的 outbound 私钥。只检查 `/root/.ssh` 与普通用户 HOME 不足以证明全系统不存在其它受控的凭据来源/agent，但确实不构成当前执行身份已具备出站认证的正证。禁止默认在 root HOME 创建私钥后就声称 Controller SSH 就绪；也不得复制 Windows 或 Managed 节点的私钥。
+- 在生成任何新凭据前，先核对 Managed 节点现役 `authorized_keys` 中已有的运维公钥指纹、归属、调用方及撤销条件，避免重复分发凭据。若确需单独的 TP Controller Ed25519 key，应由受信任 Host Owner 在**选定执行身份和凭据保管位置以后**生成并留在 TP，不与 Human Break-glass key 混用。仅将公钥增量安装至受审目标；默认限制来源、Agent/端口转发及命令权限。自动化可消费受限 helper/forced-command 时，不因“方便”而为所有目标一律放行无限 root PTY/SFTP。若必须演练 PTY 或 SFTP，明确它们是否属于另一个受授权管理身份；不能用受限自动化公钥冒充全功能交互密钥。
+- 从 TP **实际获准的出站执行身份**发起新 SSH 连接，使用 `BatchMode=yes`、`IdentitiesOnly=yes`、`StrictHostKeyChecking=yes`，禁用连接复用和 Agent/端口转发（除非有另外一项已批准的必要性）。按凭据权限区分限定命令 exec 与交互 PTY/SFTP 验收，对每个目标分别做正例和错误身份负例，并记录精确公钥指纹与执行身份。A04/A05/A06 的 Windows Operator 历史回执不能替代 TP Controller 的出站认证；仅有 TCP CONNECTED 也不行。
 
 ## 6. 切换与恢复边界
 
