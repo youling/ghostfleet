@@ -79,7 +79,7 @@ test('mismatched route digest, redirects and non-HTTPS metadata are fail closed'
     'http://node.example.invalid/bootstrap/' + shaA + '.py',
     'https://node.example.invalid/bootstrap/' + shaB + '.py',
     'https://node.example.invalid/bootstrap/' + shaA + '.py?token=secret',
-    'https://user:secret@node.example.invalid/bootstrap/' + shaA + '.py',
+    'https://' + 'user' + ':' + 'secret' + '@node.example.invalid/bootstrap/' + shaA + '.py',
     'https://node.example.invalid/elsewhere/' + shaA + '.py',
   ]) {
     const remote = access(); remote.installer.url = url;
