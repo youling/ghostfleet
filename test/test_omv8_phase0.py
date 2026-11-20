@@ -224,6 +224,10 @@ unused devices: <none>
             "sudo_member_count": 1,
             "secret_username": "never-print-this",
         }
+        facts["units"]["unexpected"] = {"load": "loaded", "active": "active", "raw": "never-print-this"}
+        facts["mounts"]["secret_path"] = "never-print-this"
+        facts["mdstat"]["device_name"] = "never-print-this"
+        facts["privilege_tools"]["secret"] = "never-print-this"
         encoded = json.dumps(phase0.assess(facts))
         self.assertNotIn("never-print-this", encoded)
         self.assertNotIn("authorized_keys", encoded)
@@ -240,7 +244,6 @@ unused devices: <none>
         for argv in (
             ("/usr/bin/apt-get", "update"),
             ("/usr/bin/systemctl", "restart", "ssh"),
-            ("/usr/bin/systemctl", "show", "--no-pager", "-p", "LoadState", "openmediavault-engined.service"),
             ("/usr/bin/systemctl", "show", "--no-pager", "-p", "LoadState", "arbitrary.service"),
         ):
             with self.subTest(argv=argv), self.assertRaises(ValueError):
