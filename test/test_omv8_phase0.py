@@ -118,6 +118,11 @@ class AssessmentTests(unittest.TestCase):
         facts["units"]["ssh"]["active"] = "unknown"
         self.assertIn("UNIT_STATE_UNAVAILABLE_SSH", phase0.assess(facts)["blockers"])
 
+    def test_unknown_active_state_for_absent_unit_still_blocks(self):
+        facts = good_facts()
+        facts["units"]["nfs"] = {"load": "not-found", "active": "unknown"}
+        self.assertIn("UNIT_STATE_UNAVAILABLE_NFS", phase0.assess(facts)["blockers"])
+
     def test_smb_and_nfs_services_are_observed_not_modified(self):
         facts = good_facts()
         facts["units"]["nfs"] = {"load": "loaded", "active": "active"}
