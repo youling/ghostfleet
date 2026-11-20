@@ -4,6 +4,8 @@
 
 本指南只是安装模板，不会自动部署。只有设备所有者明确授权目标机器及 Cloudflare/Tailscale 配置变更后，才执行相应步骤。
 
+对于公开 Cloudflare SSH 主机名的身份层配置、人工/Agent 双通道、Edge A08 独立验收及**禁止自动删除 Access 作为默认回滚**的规则，先读 [A03 设计与灰度合同](CLOUDFLARE_ACCESS_A03.md)。该文件目前是设计，不代表任何 Access 策略已部署。
+
 ## 1. 安装系统原生服务
 
 在 Debian / OpenMediaVault 上安装：

@@ -112,6 +112,17 @@ Claim 响应丢失：先在面板找到原 node_uid，点击该节点“重发�
 
 **repair** 只会用当前正在执行的本地脚本（Path(__file__).read_bytes()）重写 GhostFleet 自己的文件与 systemd unit，并重新启用 timer；它不下载新安装器、不领取票据，也不轮换 reporting token。因此，旧版本执行 repair 仍会恢复旧版本，不能用它升级到新版本。
 
+**发布摘要核对（新增只读工具）**：如果源码已包含 PR #110 的服务快照预探针，但生产 Panel 仍提供旧 bootstrap，旧节点会继续安装不带 `ExecStartPre` 的服务单元，出现心跳在线但服务状态 `unknown`。这通常是**线上发行包固定 SHA 尚未更新**，不应仅凭 GitHub main 或 `repair` 判断部署已升级。实例 owner 可在本地构建当前候选，并通过原有受保护 `GET /v0/access` 读取发布元数据，保存为仅限本机读取的 JSON，执行：
+
+```sh
+npm run build
+node scripts/check-presence-release.mjs \
+  --build-json dist/installer.json \
+  --access-json /private/access-readback.json
+```
+
+退出码 `0` 只表示当前本地发行包的 **installer + bootstrap 两个固定 SHA** 都与线上 Worker 对外宣告的摘要相同；退出码 `3` 表示任一 SHA 不匹配或线上未配置；退出码 `4` 表示输入不合规。该工具不调用 API、不含凭据、不部署。**即使摘要匹配，也不证明某台已安装节点的 reporter 或 systemd unit 已升级**；还要按原本的 `presence-install.json`、脚本/Unit SHA 与实际 timer/快照回执确认。摘要不匹配时先由 owner 修复部署一致性，再考虑对同一 node_uid 重发票据，避免提前失效现有心跳。
+
 升级已有节点时，按以下顺序操作：
 
 1. 先由实例 owner 发布包含新 console/app.js 和新安装器的 Worker 版本，更新构建生成的 GHOSTFLEET_INSTALLER_SHA256 与 GHOSTFLEET_BOOTSTRAP_SHA256；核对 Panel 提供的安装器 SHA-256 与规范 LF 构建产物一致。
@@ -125,6 +136,17 @@ Claim 响应丢失：先在面板找到原 node_uid，点击该节点“重发�
 ## English — Updating an installed reporter (repair is not upgrade)
 
 **repair** rewrites GhostFleet-owned files and systemd units from the locally executing script (Path(__file__).read_bytes()), then re-enables the timer. It does not download a newer installer, claim a ticket or rotate the reporting token. Running repair from an old installation therefore restores that old version; it is not a software update.
+
+**Read-only release-pin currentness check:** If source already contains the PR #110 systemd snapshot pre-probe but the production Panel still serves an old bootstrap, an enrolled node can keep installing a unit without `ExecStartPre`, yielding a fresh heartbeat with `unknown` service states. This is usually **deployment artifact pin drift**; a newer GitHub main or a local `repair` does not prove the Worker distribution has been updated. The instance owner can build the reviewed candidate and save an authorized, protected `GET /v0/access` metadata response locally, then run:
+
+```sh
+npm run build
+node scripts/check-presence-release.mjs \
+  --build-json dist/installer.json \
+  --access-json /private/access-readback.json
+```
+
+Exit `0` proves only that both **installer and bootstrap SHA-256 pins** match the Worker-advertised distribution. Exit `3` means a mismatch or unconfigured metadata; exit `4` means invalid input. The tool makes no API call, reads no token and performs no deployment. **Matching distribution pins do not prove any already-enrolled node's script or systemd unit was updated.** Reconcile its local `presence-install.json`, installed source/unit hashes, timer and snapshot receipts separately. If the pins differ, align the reviewed deployment first; do not reissue a reporting credential prematurely.
 
 To update an existing node:
 

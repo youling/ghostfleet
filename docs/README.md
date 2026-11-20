@@ -7,6 +7,7 @@
 - [阶段交付与依赖图 / Staged delivery and dependencies](DELIVERY.md)
 - [面板、安装与修复 / Presence deployment and recovery](PRESENCE.md)
 - [原生 SSH 安装与连接 / Native transport setup](REMOTE_ACCESS.md)
+- [A03 Cloudflare Access SSH 加固、灰度与回滚（设计候选）](CLOUDFLARE_ACCESS_A03.md)
 - [原生传输验收矩阵 / Transport acceptance matrix](ACCEPTANCE.md)
 - [当前迁移映射与历史出处 / Current migration and provenance](MIGRATION.md)
 - [公开边界检查 / Publication boundary](PUBLICATION.md)

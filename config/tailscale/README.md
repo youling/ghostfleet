@@ -2,6 +2,8 @@
 
 ## 中文
 
+> **A09 单向 Controller 网络准入迁移**：[A09_CONTROLLED_MIGRATION.md](A09_CONTROLLED_MIGRATION.md) 给出完整 Policy readback、最小化切换、操作端/业务例外、正负测试与回滚门禁。该卡是源码与设计，**不授权 Tailnet Policy/tag/SSH key 线上写入**。
+
 复用官方 Tailscale 软件包及 `tailscaled.service`，按所有者既定身份完成设备加入。现有 tailnet 网络策略应允许指定管理端访问目标 TCP/22；具体来源/目的地和凭据归属在原实例内配置。
 
 本方案只使用 Tailscale 网络层。目标必须保持 Tailscale SSH 关闭，让两路进入同一个原生 sshd，并使用同一节点的主机密钥和 OS 账户。更改真实设备前保留已有恢复入口；下面是获授权后的配置模板：
