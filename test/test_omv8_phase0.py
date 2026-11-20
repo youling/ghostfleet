@@ -105,11 +105,12 @@ class AssessmentTests(unittest.TestCase):
         self.assertIn("UNIT_STATE_UNAVAILABLE_SSH", report["blockers"])
 
     def test_container_environment_is_detected_from_markers_and_cgroup(self):
-        self.assertTrue(phase0.detect_container_environment("0::/docker/abc", False, False))
-        self.assertTrue(phase0.detect_container_environment("0::/lxc.payload.name", False, False))
-        self.assertTrue(phase0.detect_container_environment(None, True, False))
-        self.assertTrue(phase0.detect_container_environment(None, False, True))
-        self.assertFalse(phase0.detect_container_environment("0::/", False, False))
+        self.assertTrue(phase0.detect_container_environment("0::/docker/abc", False, False, False))
+        self.assertTrue(phase0.detect_container_environment("0::/lxc.payload.name", False, False, False))
+        self.assertTrue(phase0.detect_container_environment(None, True, False, False))
+        self.assertTrue(phase0.detect_container_environment(None, False, True, False))
+        self.assertTrue(phase0.detect_container_environment("0::/", False, False, True))
+        self.assertFalse(phase0.detect_container_environment("0::/", False, False, False))
 
     def test_container_environment_and_unknown_context_block(self):
         facts = good_facts()
@@ -272,6 +273,7 @@ unused devices: <none>
             ("/usr/bin/apt-get", "update"),
             ("/usr/bin/systemctl", "restart", "ssh"),
             ("/usr/bin/systemctl", "show", "--no-pager", "-p", "LoadState", "arbitrary.service"),
+            ("/usr/bin/systemd-detect-virt", "--vm"),
         ):
             with self.subTest(argv=argv), self.assertRaises(ValueError):
                 phase0.readonly_command(argv)
