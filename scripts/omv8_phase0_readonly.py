@@ -54,6 +54,9 @@ def readonly_command(argv: tuple[str, ...]) -> tuple[int, str]:
     if argv[0] == "/usr/bin/dpkg-query":
         if argv[1:] != ("-W", "-f=${Version}", "openmediavault"):
             raise ValueError("DPKG_QUERY_NOT_ALLOWLISTED")
+    elif argv[0] == "/usr/bin/systemd-detect-virt":
+        if argv[1:] != ("--container",):
+            raise ValueError("VIRT_QUERY_NOT_ALLOWLISTED")
     elif argv[0] == "/usr/bin/systemctl":
         if (
             len(argv) != 6
@@ -165,9 +168,9 @@ def summarize_mdstat(data: str | None) -> dict[str, object] | None:
 
 
 def detect_container_environment(
-    cgroup: str | None, docker_marker: bool, podman_marker: bool
+    cgroup: str | None, docker_marker: bool, podman_marker: bool, systemd_detected: bool
 ) -> bool:
-    if docker_marker or podman_marker:
+    if docker_marker or podman_marker or systemd_detected:
         return True
     if cgroup is None:
         return False
@@ -186,8 +189,10 @@ def collect() -> dict[str, object]:
     mount_summary = summarize_mountinfo(read_text("/proc/self/mountinfo"))
     mdstat_summary = summarize_mdstat(read_text("/proc/mdstat"))
     cgroup = read_text("/proc/1/cgroup")
+    virt_rc, _virt_output = readonly_command(("/usr/bin/systemd-detect-virt", "--container"))
+    container_context_readable = cgroup is not None and virt_rc in (0, 1)
     container_detected = detect_container_environment(
-        cgroup, Path("/.dockerenv").exists(), Path("/run/.containerenv").exists()
+        cgroup, Path("/.dockerenv").exists(), Path("/run/.containerenv").exists(), virt_rc == 0
     )
     units = {
         key: {
@@ -204,7 +209,7 @@ def collect() -> dict[str, object]:
         "systemd_pid1": (read_text("/proc/1/comm") or "").strip() == "systemd",
         "systemd_runtime": Path("/run/systemd/system").is_dir(),
         "root_euid": os.geteuid() == 0,
-        "container_context_readable": cgroup is not None,
+        "container_context_readable": container_context_readable,
         "container_environment_detected": container_detected,
         "units": units,
         "groups": {
