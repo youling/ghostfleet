@@ -228,36 +228,62 @@ def assess(facts: dict[str, object]) -> dict[str, object]:
     if not isinstance(mounts, dict) or not isinstance(mdstat, dict):
         blockers.append("STORAGE_FACTS_UNAVAILABLE")
     else:
-        filesystems = set(mounts.get("filesystem_types", []))
-        if mounts.get("remote_mounts_present") is True:
-            hints.append("REMOTE_MOUNTS_PRESENT_DO_NOT_TOUCH")
-        if mounts.get("btrfs_present") is True:
-            hints.append("BTRFS_PRESENT_DO_NOT_TOUCH")
-        if mounts.get("zfs_present") is True:
-            hints.append("ZFS_PRESENT_DO_NOT_TOUCH")
-        if mdstat.get("active_array_count", 0) > 0:
-            hints.append("MD_RAID_ACTIVE_DO_NOT_TOUCH")
-        if mdstat.get("degraded_signal") is True:
-            hints.append("MD_RAID_DEGRADED_OWNER_REVIEW")
-        if mdstat.get("maintenance_in_progress") is True:
-            hints.append("MD_RAID_MAINTENANCE_IN_PROGRESS")
-        if not filesystems or not mounts.get("root_filesystem"):
-            blockers.append("ROOT_FILESYSTEM_NOT_PROVEN")
+        filesystem_types = mounts.get("filesystem_types")
+        root_filesystem = mounts.get("root_filesystem")
+        active_arrays = mdstat.get("active_array_count")
+        if (
+            not isinstance(filesystem_types, list)
+            or not all(isinstance(item, str) for item in filesystem_types)
+            or not isinstance(root_filesystem, str)
+            or not isinstance(active_arrays, int)
+            or not isinstance(mdstat.get("degraded_signal"), bool)
+            or not isinstance(mdstat.get("maintenance_in_progress"), bool)
+        ):
+            blockers.append("STORAGE_FACTS_MALFORMED")
+        else:
+            filesystems = set(filesystem_types)
+            if mounts.get("remote_mounts_present") is True:
+                hints.append("REMOTE_MOUNTS_PRESENT_DO_NOT_TOUCH")
+            if mounts.get("btrfs_present") is True:
+                hints.append("BTRFS_PRESENT_DO_NOT_TOUCH")
+            if mounts.get("zfs_present") is True:
+                hints.append("ZFS_PRESENT_DO_NOT_TOUCH")
+            if active_arrays > 0:
+                hints.append("MD_RAID_ACTIVE_DO_NOT_TOUCH")
+            if mdstat.get("degraded_signal") is True:
+                hints.append("MD_RAID_DEGRADED_OWNER_REVIEW")
+            if mdstat.get("maintenance_in_progress") is True:
+                hints.append("MD_RAID_MAINTENANCE_IN_PROGRESS")
+            if not filesystems or not root_filesystem:
+                blockers.append("ROOT_FILESYSTEM_NOT_PROVEN")
 
     units = facts.get("units")
     if not isinstance(units, dict):
         blockers.append("SERVICE_FACTS_UNAVAILABLE")
         units = {}
+    valid_units: dict[str, dict[str, str]] = {}
     for key, state in units.items():
         if not isinstance(state, dict):
-            blockers.append("UNIT_STATE_INVALID_" + key.upper())
+            blockers.append("UNIT_STATE_INVALID_" + str(key).upper())
             continue
         load = state.get("load", "unknown")
         active = state.get("active", "unknown")
+        if load not in ("loaded", "not-found", "masked", "error", "unknown"):
+            blockers.append("UNIT_LOAD_VALUE_INVALID_" + str(key).upper())
+        if active not in ("active", "inactive", "failed", "activating", "deactivating", "unknown"):
+            blockers.append("UNIT_ACTIVE_VALUE_INVALID_" + str(key).upper())
         if load == "unknown" or (load == "loaded" and active == "unknown"):
-            blockers.append("UNIT_STATE_UNAVAILABLE_" + key.upper())
-        if key == "omv_engine" and (load != "loaded" or active != "active"):
-            blockers.append("OMV_ENGINE_NOT_ACTIVE")
+            blockers.append("UNIT_STATE_UNAVAILABLE_" + str(key).upper())
+        valid_units[str(key)] = {"load": str(load), "active": str(active)}
+    units = valid_units
+
+    for required in UNIT_NAMES:
+        if required not in units:
+            blockers.append("UNIT_FACT_MISSING_" + required.upper())
+    omv_engine = units.get("omv_engine", {})
+    if omv_engine.get("load") != "loaded" or omv_engine.get("active") != "active":
+        blockers.append("OMV_ENGINE_NOT_ACTIVE")
+
     for key in ("ssh", "tailscaled", "docker", "docker_socket", "containerd", "podman_socket"):
         state = units.get(key, {})
         if state.get("load") == "loaded" and state.get("active") == "active":
@@ -272,11 +298,16 @@ def assess(facts: dict[str, object]) -> dict[str, object]:
         blockers.append("GROUP_FACTS_UNAVAILABLE")
         groups = {}
     for key in ("docker_member_count", "ssh_member_count", "sudo_member_count"):
-        if groups.get(key) is None:
+        count = groups.get(key)
+        if not isinstance(count, int) or count < 0:
             blockers.append("GROUP_MEMBERSHIP_UNKNOWN_" + key.upper())
     docker_members = groups.get("docker_member_count")
     if isinstance(docker_members, int) and docker_members > 0:
         hints.append("DOCKER_GROUP_MEMBERSHIP_REQUIRES_REVIEW")
+    if groups.get("ssh_member_count") == 0:
+        hints.append("OMV_SSH_GROUP_EMPTY_REVIEW")
+    if groups.get("sudo_member_count", 0) > 0:
+        hints.append("SUDO_GROUP_MEMBERSHIP_PRESENT")
 
     privilege_tools = facts.get("privilege_tools")
     if not isinstance(privilege_tools, dict):
@@ -312,7 +343,6 @@ def assess(facts: dict[str, object]) -> dict[str, object]:
         "installation_permitted": False,
         "jit_helper_in_scope": False,
     }
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Read-only OMV8 Phase 0; never installs")
