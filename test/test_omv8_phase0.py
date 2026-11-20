@@ -119,6 +119,11 @@ class AssessmentTests(unittest.TestCase):
         facts["container_context_readable"] = False
         self.assertIn("CONTAINER_CONTEXT_UNKNOWN", phase0.assess(facts)["blockers"])
 
+    def test_unknown_container_detection_fails_closed(self):
+        facts = good_facts()
+        facts["container_environment_detected"] = None
+        self.assertIn("CONTAINER_DETECTION_UNKNOWN", phase0.assess(facts)["blockers"])
+
     def test_overlay_root_filesystem_blocks_unsupported_container(self):
         facts = good_facts()
         facts["mounts"]["root_filesystem"] = "overlay"
