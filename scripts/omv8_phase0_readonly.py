@@ -164,6 +164,19 @@ def summarize_mdstat(data: str | None) -> dict[str, object] | None:
     }
 
 
+def detect_container_environment(
+    cgroup: str | None, docker_marker: bool, podman_marker: bool
+) -> bool:
+    if docker_marker or podman_marker:
+        return True
+    if cgroup is None:
+        return False
+    return re.search(
+        r"(^|[/.-])(docker|containerd|kubepods|lxc|libpod|podman)([/.-]|$)",
+        cgroup.lower(),
+    ) is not None
+
+
 def collect() -> dict[str, object]:
     """Local bounded read-only collection; reports no hostpaths, data or secrets."""
     osdata = os_release(read_text("/etc/os-release"))
@@ -173,11 +186,8 @@ def collect() -> dict[str, object]:
     mount_summary = summarize_mountinfo(read_text("/proc/self/mountinfo"))
     mdstat_summary = summarize_mdstat(read_text("/proc/mdstat"))
     cgroup = read_text("/proc/1/cgroup")
-    cgroup_lower = (cgroup or "").lower()
-    container_detected = (
-        Path("/.dockerenv").exists()
-        or Path("/run/.containerenv").exists()
-        or re.search(r"(^|[/.-])(docker|containerd|kubepods|lxc|libpod|podman)([/.-]|$)", cgroup_lower) is not None
+    container_detected = detect_container_environment(
+        cgroup, Path("/.dockerenv").exists(), Path("/run/.containerenv").exists()
     )
     units = {
         key: {
