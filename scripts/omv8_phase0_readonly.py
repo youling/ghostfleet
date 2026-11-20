@@ -272,7 +272,7 @@ def assess(facts: dict[str, object]) -> dict[str, object]:
             blockers.append("UNIT_LOAD_VALUE_INVALID_" + str(key).upper())
         if active not in ("active", "inactive", "failed", "activating", "deactivating", "unknown"):
             blockers.append("UNIT_ACTIVE_VALUE_INVALID_" + str(key).upper())
-        if load == "unknown" or (load == "loaded" and active == "unknown"):
+        if load == "unknown" or active == "unknown":
             blockers.append("UNIT_STATE_UNAVAILABLE_" + str(key).upper())
         valid_units[str(key)] = {"load": str(load), "active": str(active)}
     units = valid_units
