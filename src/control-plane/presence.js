@@ -84,10 +84,7 @@ export function dispatch(input, state, now = Date.now()) {
     if (method === 'POST' && path === '/v0/enrollment-tickets') {
       shape(body, ['label', 'node_uid', 'attempt_id'], []);
       if (body.node_uid !== undefined && (typeof body.node_uid !== 'string' || !UID.test(body.node_uid))) reject('INVALID_NODE_UID');
-      if (body.label !== undefined && (typeof body.label !== 'string' || !body.label.trim() ||
-          body.label.length > 80 || /[\x00-\x1f\x7f]/.test(body.label))) reject('INVALID_LABEL');
-      if (!body.node_uid && !body.label) reject('LABEL_REQUIRED');
-      const label = body.label?.trim();
+      const label = typeof body.label === 'string' ? body.label.trim() : undefined;
       const attempt = body.attempt_id;
       if (own(body, 'attempt_id')) {
         if (body.node_uid || typeof attempt !== 'string' || !ATTEMPT.test(attempt)) {
@@ -95,11 +92,18 @@ export function dispatch(input, state, now = Date.now()) {
         }
         const prior = Object.values(state.presence_tickets ?? {}).find(ticket => ticket.attempt_id === attempt);
         if (prior) {
-          if (prior.attempt_label !== label) reject('ENROLLMENT_ATTEMPT_CONFLICT', 409);
           // The enrollment code was delivered once. A replay only recovers the original identity.
-          return ok(ticketDelivery(prior, null));
+          const delivery = ticketDelivery(prior, null);
+          if (prior.attempt_label !== label) {
+            return { status: 409, dirty: false, data: {
+              ok: false, error: 'ENROLLMENT_ATTEMPT_CONFLICT', ...delivery,
+            } };
+          }
+          return ok(delivery);
         }
       }
+      if (body.label !== undefined && (!label || body.label.length > 80 || /[\x00-\x1f\x7f]/.test(body.label))) reject('INVALID_LABEL');
+      if (!body.node_uid && !label) reject('LABEL_REQUIRED');
       const uid = body.node_uid ?? 'node-' + randomUUID();
       const existing = body.node_uid ? nodeAt(state, uid) : null;
       const ticketId = 'ticket-' + randomUUID();

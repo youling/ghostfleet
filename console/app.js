@@ -68,7 +68,7 @@ async function api(path, method = 'GET', body) {
     ...(body !== undefined ? {body:JSON.stringify(body)} : {}), signal:AbortSignal.any([session.signal, AbortSignal.timeout(10000)]) });
   if (!response.headers.get('content-type')?.includes('application/json')) throw new Error('UNEXPECTED_RESPONSE');
   const data = await response.json();
-  if (!response.ok || data.ok !== true) throw Object.assign(new Error(data.error ?? 'REQUEST_FAILED'), { status: response.status });
+  if (!response.ok || data.ok !== true) throw Object.assign(new Error(data.error ?? 'REQUEST_FAILED'), { ticket: data.ticket });
   return data;
 }
 function clearDelivery() { $('delivery').hidden = true; for (const id of ['short-code','delivery-node','expires','command']) text(id,''); }
@@ -102,6 +102,11 @@ function installCommand(ticket, replace = false) {
     `/bin/sh "$d/join.sh" --origin ${quote(nodeOrigin)} --ticket ${quote(ticket)}${replaceArg})`,
   ].join(' ');
 }
+async function recoverTicket(ticket, requestEpoch) {
+  saveTicketAttempt(null); $('label').value = '';
+  await refresh();
+  if (requestEpoch === epoch) feedback(t('ticketRecovered') + ticket.node_uid);
+}
 async function makeTicket(node) {
   if (!installer || access !== 'operator' || busy) return;
   if (node && !confirm(t('replaceConfirm'))) return;
@@ -111,9 +116,7 @@ async function makeTicket(node) {
     const data = await api('/v0/enrollment-tickets','POST',node ? {node_uid:node.node_uid} : ticketAttempt);
     if (e !== epoch) return;
     if (!node && data.short_code === null) {
-      saveTicketAttempt(null); $('label').value = '';
-      await refresh();
-      if (e === epoch) feedback(t('ticketRecovered') + data.ticket.node_uid);
+      await recoverTicket(data.ticket, e);
       return;
     }
     text('delivery-node',data.ticket.node_uid); text('short-code',data.short_code); text('expires',date(data.ticket.expires_at));
@@ -123,7 +126,13 @@ async function makeTicket(node) {
     await refresh();
   } catch (error) {
     if (e === epoch) {
-      if (!node && error.status === 400) saveTicketAttempt(null);
+      if (!node && error.message === 'ENROLLMENT_ATTEMPT_CONFLICT' && error.ticket?.node_uid) {
+        await recoverTicket(error.ticket, e);
+        return;
+      }
+      // A previous Worker may reject an unknown field. Keep the original
+      // attempt through rollback until the server can reconcile it.
+      if (!node && ['INVALID_LABEL', 'LABEL_REQUIRED', 'INVALID_ENROLLMENT_ATTEMPT'].includes(error.message)) saveTicketAttempt(null);
       feedback(t(!node && ticketAttempt ? 'issueUncertain' : 'uncertain') + ' ' + error.message);
     }
   }

@@ -124,6 +124,10 @@ test('initial issue attempt cannot be changed or used to reissue an existing nod
   const conflict = send(state, 'POST', '/v0/enrollment-tickets', { ...attempt, label: 'other' });
   assert.equal(conflict.status, 409);
   assert.equal(conflict.data.error, 'ENROLLMENT_ATTEMPT_CONFLICT');
+  assert.deepEqual(conflict.data.ticket, first.data.ticket);
+  assert.equal(conflict.data.short_code, null);
+  const corruptedLabel = send(state, 'POST', '/v0/enrollment-tickets', { ...attempt, label: null });
+  assert.deepEqual(corruptedLabel, conflict);
   const invalid = send(state, 'POST', '/v0/enrollment-tickets', { ...attempt, node_uid: first.data.ticket.node_uid });
   assert.equal(invalid.status, 400);
   assert.equal(invalid.data.error, 'INVALID_ENROLLMENT_ATTEMPT');
