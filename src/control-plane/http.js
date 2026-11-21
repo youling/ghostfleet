@@ -19,7 +19,7 @@ async function verifiedManagedBootstrap(env) {
   const bootstrap = managedBootstrap(env);
   if (!bootstrap) return null;
   try {
-    const response = await env.ASSETS.fetch(new Request(bootstrap.url, { redirect: 'error' }));
+    const response = await env.ASSETS.fetch(new Request(bootstrap.url, { redirect: 'manual' }));
     if (response.status !== 200 || !response.body) {
       await response.body?.cancel();
       return null;
