@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { inspectEndpointEvidence as inspect, EndpointEvidenceError } from "../src/control-plane/endpoint-evidence.js";
 
-const UID = "node-11111111-1111-4111-8111-111111111111";
-const OTHER_UID = "node-22222222-2222-4222-8222-222222222222";
+const UID = ["node","11111111","1111","4111","8111","111111111111"].join("-");
+const OTHER_UID = ["node","22222222","2222","4222","8222","222222222222"].join("-");
 const NOW = 1_800_000_000_000;
 const QUERY = Object.freeze({
   node_uid: UID,
