@@ -1,5 +1,11 @@
 # 纳管与心跳 / Enrollment and presence
 
+### 现有 Reporter 与正式版 FULLY_MANAGED 的关系（2026-11-22）
+
+本文描述的现有 `join.sh` / Python installer 仍然只负责 GhostFleet reporter、systemd timer 和 heartbeat；它**不会**配置 SSH、Provider、DCR 或 Root helper。这是 ADR004 的既有轻量子能力，不能因 ADR007 的产品决策就误报已经升级。
+
+Owner 已决定正式版增加独立的 `FULL_MANAGED_LOWER_NODE` profile：一次 Panel ticket/短码 + 目标机一次 root bootstrap，在同一受授权流程内自动完成 Host preflight、复用已有 Tailscale/Cloudflare、原生 SSH、动态 DCR、Root helper/lease 与 ChatGPT 实际验收。该全流程合同见 [ADR007](adr/007-fully-managed-lower-node-enrollment.md)；首个真实 Canary 是搬瓦工 VPS，不使用虚拟机。**当前源码尚未实现这条完整流水线**；直到新 bootstrap/动态 DCR/Root session 的真实 ChatGPT E2E 通过前，现有 reporter-only 安装不能称为 FULLY_MANAGED。
+
 ## 中文
 
 ### 开发与验证
