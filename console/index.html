@@ -14,10 +14,11 @@
 <section class="presence-card" id="fleet-card" hidden>
 <div class="toolbar spread"><div><strong id="summary"></strong><p id="read-time" class="secondary"></p></div><div class="toolbar"><button id="refresh" type="button"></button><button id="disconnect" type="button"></button></div></div>
 <p id="boundary" class="secondary"></p>
-<form id="enroll-form" class="toolbar"><input id="label" class="form-control" required maxlength="80" aria-label="Node label"><button id="create-ticket" type="submit" class="btn btn-primary"></button></form>
+<p id="managed-domain" class="secondary" hidden></p>
+<form id="enroll-form" class="toolbar"><input id="label" class="form-control" required maxlength="80" aria-label="Node label"><select id="enrollment-profile" class="form-control" aria-label="Enrollment profile"><option value="" id="reporter-profile"></option><option value="FULL_MANAGED_LOWER_NODE" id="managed-profile" disabled></option></select><select id="pairing-request" class="form-control" aria-label="Pairing request" hidden></select><button id="create-ticket" type="submit" class="btn btn-primary"></button></form>
 <div class="table-scroll"><table><thead><tr id="columns"></tr></thead><tbody id="nodes"></tbody></table></div>
 </section>
-<section id="delivery" class="presence-card" hidden><h2 id="delivery-title"></h2><p id="delivery-warning"></p><dl><dt>Node UID</dt><dd id="delivery-node"></dd><dt id="code-label"></dt><dd><code id="short-code"></code></dd><dt id="expires-label"></dt><dd id="expires"></dd></dl><pre id="command"></pre><div class="toolbar"><button id="copy-command" type="button"></button><button id="hide-delivery" type="button"></button></div><p id="root-help" class="secondary"></p></section>
+<section id="delivery" class="presence-card" hidden><h2 id="delivery-title"></h2><p id="delivery-warning"></p><dl><dt>Node UID</dt><dd id="delivery-node"></dd><dt id="domain-label" hidden></dt><dd id="enrollment-domain" hidden></dd><dt id="code-label"></dt><dd><code id="short-code"></code></dd><dt id="expires-label"></dt><dd id="expires"></dd></dl><pre id="command"></pre><div class="toolbar"><button id="copy-command" type="button"></button><button id="hide-delivery" type="button"></button></div><p id="root-help" class="secondary"></p></section>
 <p id="feedback" role="status" aria-live="polite"></p>
 <footer class="secondary"><code>journalctl -u ghostfleet-heartbeat.service</code><p id="footer-note"></p></footer>
 </main>

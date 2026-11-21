@@ -10,6 +10,10 @@ If the initial **Register heartbeat** response is lost, use **Check ticket** in 
 
 Owner 已决定正式版增加独立的 `FULL_MANAGED_LOWER_NODE` profile：一次 Panel ticket/短码 + 目标机一次 root bootstrap，在同一受授权流程内自动完成 Host preflight、复用已有 Tailscale/Cloudflare、原生 SSH、动态 DCR、Root helper/lease 与 ChatGPT 实际验收。该全流程合同见 [ADR007](adr/007-fully-managed-lower-node-enrollment.md)；首个真实 Canary 是搬瓦工 VPS，不使用虚拟机。**当前源码尚未实现这条完整流水线**；直到新 bootstrap/动态 DCR/Root session 的真实 ChatGPT E2E 通过前，现有 reporter-only 安装不能称为 FULLY_MANAGED。
 
+`FULL_MANAGED_LOWER_NODE` 的目标端在可信安装的纳管入口输入域名和短码。`scripts/enroll-managed.py` 通过 `/.well-known/ghostfleet-enrollment` 发现并校验独立 `.managed.sh` 制品，创建配对请求。在 Panel 选择与目标端匹配的请求后手动签发六位短码，有效十分钟，大小写等价。入口把随机配对秘密和短码通过标准输入交给校验过的引导制品，供其在完成预检后调用 `POST /v1/managed-enrollment/claim`。旧 reporter Worker 无法领取该票据。Operator 可对同一 UID 用新配对请求重发，旧 reporter 在新票据领取前继续上报。Panel 只根据各阶段实际证据显示进展。默认构建仍只发布 reporter。Managed 选项要求实例发布独立制品、配置 `GHOSTFLEET_MANAGED_BOOTSTRAP_SHA256` 并绑定 `ASSETS`。
+
+The trusted target enrollment client accepts the domain and short code. `scripts/enroll-managed.py` discovers and verifies a pinned `.managed.sh`, starts a device pairing and prompts for the six-character code manually issued in the Panel. The code is case-insensitive and valid for ten minutes. The verified installer gets the pairing secret and code on standard input and calls `POST /v1/managed-enrollment/claim` after preflight. Older reporter workers cannot consume that ticket. Reissuing for a known UID preserves the existing reporter until the new claim. `ASSETS` and `GHOSTFLEET_MANAGED_BOOTSTRAP_SHA256` enable the managed profile after the managed artifact is released. The default build ships only the reporter installer.
+
 ## 中文
 
 ### 开发与验证

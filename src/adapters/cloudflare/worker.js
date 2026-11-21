@@ -1,5 +1,5 @@
 import { dispatch } from '../../control-plane/presence.js';
-import { prepare, json } from '../../control-plane/http.js';
+import { prepare, json, managedBootstrap } from '../../control-plane/http.js';
 
 // Retain the original class, namespace name and snapshot key. Legacy nodes and
 // their lifecycle fields survive; obsolete command/helper routes are not mounted.
@@ -37,7 +37,13 @@ export default {
     }
     const isPanel = u.origin === panel, isNode = u.origin === node;
     if ((!isPanel && !isNode) || u.search) return denied('NOT_FOUND', 404);
+    if (request.method === 'GET' && u.pathname === '/.well-known/ghostfleet-enrollment') {
+      const artifact = managedBootstrap(env);
+      if (!artifact) return denied('MANAGED_BOOTSTRAP_UNAVAILABLE', 503);
+      return json({ ok: true, protocol: 'ghostfleet-managed-enrollment/v1', node_origin: node, artifact });
+    }
     const nodeRoute = /^\/v1\/enrollment-tickets\/ticket-[0-9a-f-]+\/claim$/.test(u.pathname) ||
+      ['/v1/managed-enrollment/requests', '/v1/managed-enrollment/claim'].includes(u.pathname) ||
       /^\/v1\/nodes\/node-[0-9a-f-]+\/heartbeat$/.test(u.pathname);
     if ((isPanel && u.pathname.startsWith('/v0/')) || (isNode && nodeRoute)) {
       if (!env.GHOSTFLEET_STATE) return denied('STORE_NOT_CONFIGURED', 503);
@@ -64,6 +70,9 @@ export default {
         /^[0-9a-f]{64}$/.test(env.GHOSTFLEET_BOOTSTRAP_SHA256 ?? '') &&
         u.pathname === '/bootstrap/' + env.GHOSTFLEET_BOOTSTRAP_SHA256 + '.sh') {
       if (!env.ASSETS) return denied('BOOTSTRAP_NOT_BUILT', 503);
+      return env.ASSETS.fetch(request);
+    }
+    if (isNode && request.method === 'GET' && u.href === managedBootstrap(env)?.url) {
       return env.ASSETS.fetch(request);
     }
     // Explicit static allowlist: node ingress can never serve the panel or any
