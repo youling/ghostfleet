@@ -8,8 +8,8 @@
 
 | 提案 | 架构裁决 | 具体归属 |
 | --- | --- | --- |
-| Stable Node Identity + Locator | **KEEP / EXTEND** | 公共 GhostFleet 只读契约，复用现有 Fleet \`node_uid\`，不另 mint |
-| \`HostServiceEndpoint(service_ref, namespace_ref)\` | **CHANGE / SOURCE_ONLY** | 公共事实模型与纯校验器；实际绑定由私有 Host owner 提供 |
+| Stable Node Identity + Locator | **KEEP / EXTEND** | 公共 GhostFleet 只读契约，复用现有 Fleet `node_uid`，不另 mint |
+| `HostServiceEndpoint(service_ref, namespace_ref)` | **CHANGE / SOURCE_ONLY** | 公共事实模型与纯校验器；实际绑定由私有 Host owner 提供 |
 | 被动连通性/服务健康 | **KEEP / STAGE** | 下一阶段版本化、预算受限的一次性观测；不能改 ADR004 v1 心跳格式 |
 | 常驻 Guardian、重启隧道、FIB/默认路由自愈 | **DEFER** | 私有 Host owner 的独立 opt-in 实验；有实机收益/负控再议 |
 | 统一 node-agent、第二路由/网络管理器、旧 Adaptive Router | **REJECT** | 不恢复旧 PR #67 或自建管理平面 |
@@ -23,33 +23,33 @@
 
 三个不能相互替代的概念：
 
-- **节点身份**：Fleet 唯一 \`node_uid\`。绝不由网卡 MAC、DHCP IP、Tailscale IP、MagicDNS、Tunnel UUID、hostname、同一 SSID 或报告凭据反推/重新发行。
-- **服务逻辑身份**：\`service_ref\`（如 \`host-proxy\`）、\`namespace_ref\`（指服务被消费的逻辑隔离域，如 RootlessKit worker）、\`purpose_ref\` 与 \`caller_ref\`。**应用逻辑 namespace ≠ Linux network namespace**；后者只是实现细节。
-- **端点定位证据**：\`locator_ref\` 是私有 owner 持有的**不透明索引**，不是 URL/IP/Socket 路径；绑定类型可以是 \`unix_socket\`、\`http_connect\`、\`private_ipv4\`、\`mesh\` 或 \`tunnel\`。来源、有效期与路径/目标身份证据单独记录；地址更换应更新定位事实，不改变 node_uid。
+- **节点身份**：Fleet 唯一 `node_uid`。绝不由网卡 MAC、DHCP IP、Tailscale IP、MagicDNS、Tunnel UUID、hostname、同一 SSID 或报告凭据反推/重新发行。
+- **服务逻辑身份**：`service_ref`（如 `host-proxy`）、`namespace_ref`（指服务被消费的逻辑隔离域，如 RootlessKit worker）、`purpose_ref` 与 `caller_ref`。**应用逻辑 namespace ≠ Linux network namespace**；后者只是实现细节。
+- **端点定位证据**：`locator_ref` 是私有 owner 持有的**不透明索引**，不是 URL/IP/Socket 路径；绑定类型可以是 `unix_socket`、`http_connect`、`private_ipv4`、`mesh` 或 `tunnel`。来源、有效期与路径/目标身份证据单独记录；地址更换应更新定位事实，不改变 node_uid。
 
-现役 ai-hub PR #407 使用经 Host Owner 验证的本机 RFC1918 地址、root-owned 配置与 RootlessKit 网络隔离。**保留此合同**。不因为想统一端点而硬设 \`10.200.0.1\` 或放宽 \`--disable-host-loopback\`。验证容器可达性必须发生在**实际 RootlessKit 隔离命名空间**，不能用宿主自身 curl 成功替代。
+现役 ai-hub PR #407 使用经 Host Owner 验证的本机 RFC1918 地址、root-owned 配置与 RootlessKit 网络隔离。**保留此合同**。不因为想统一端点而硬设 `10.200.0.1` 或放宽 `--disable-host-loopback`。验证容器可达性必须发生在**实际 RootlessKit 隔离命名空间**，不能用宿主自身 curl 成功替代。
 
 ## 3. M1 最小公开接口（不执行）
 
-\`src/control-plane/endpoint-evidence.js\` 的唯一职责：
+`src/control-plane/endpoint-evidence.js` 的唯一职责：
 
-\`\`\`text
+```text
 inspectEndpointEvidence(
   {node_uid, service_ref, namespace_ref, purpose_ref, caller_ref},
   evidence[], now_ms
 )
   -> {state, candidate_refs, authorization:"NOT_EVALUATED",
-      connectivity_effect:"NONE", execution_effect:"NONE"}
-\`\`\`
+      network_connectivity_effect:"NONE", execution_effect:"NONE"}
+```
 
 候选输入是已从私有 owner 获取的**离线证据副本**；它只能描述“来源声称某个端点在某时间和命名空间可达”。模块不验证来源签名、不读取真实地址、不查 provider、不登录节点、不触碰网络、不返回可直接连接的 URL。字段枚举及数量/时间/格式有限；错误只给稳定代码，不回显原始输入。
 
-- 任一目标身份证据冲突 → \`IDENTITY_CONFLICT\`，返回零候选。
-- 同一请求出现明确的 \`DENIED\` → \`DENIED\`，**禁止切换 CF/LAN 路径绕过该准入拒绝**。
-- 过期、未来时间、UNKNOWN、未验证身份或无对应证据 → \`UNKNOWN\`，零候选。
-- 只有完全匹配、期限内、路径自称可达且目标 pin 有受审证据时，返回 \`CANDIDATE_EVIDENCE_ONLY\` 和排序后的不透明 \`candidate_refs\`。
+- 任一目标身份证据冲突 → `IDENTITY_CONFLICT`，返回零候选。
+- 同一请求出现明确的 `DENIED` → `DENIED`，**禁止切换 CF/LAN 路径绕过该准入拒绝**。
+- 过期、未来时间、UNKNOWN、未验证身份或无对应证据 → `UNKNOWN`，零候选。
+- 只有完全匹配、期限内、路径自称可达且目标 pin 有受审证据时，返回 `CANDIDATE_EVIDENCE_ONLY` 和排序后的不透明 `candidate_refs`。
 
-**任何返回值都不是 permission/grant。** 原始证据不能自授可信身份；实际连接前，私有 Fleet/Host 必须通过独立的 Operator 身份、真实 Policy、host-key/TS/CF 目标证明与终端命名空间探针校验。此模块永远不调用、选择或自动回退执行中的 SSH 命令；\`MAY_HAVE_EXECUTED/UNKNOWN\` 结果必须由原执行方先对账，不能按 locator 自动重发。
+**任何返回值都不是 permission/grant。** 原始证据不能自授可信身份；实际连接前，私有 Fleet/Host 必须通过独立的 Operator 身份、真实 Policy、host-key/TS/CF 目标证明与终端命名空间探针校验。此模块永远不调用、选择或自动回退执行中的 SSH 命令；`MAY_HAVE_EXECUTED/UNKNOWN` 结果必须由原执行方先对账，不能按 locator 自动重发。
 
 ## 4. M2 供应商事实优先：观察不是 Guardian
 
@@ -65,7 +65,7 @@ inspectEndpointEvidence(
 
 ## 5. Runner 消费边界
 
-不要合并三种身份：Host 的 Fleet \`node_uid\`、一次 GitHub Runner registration/attempt、每 Job 的可选短命 TS device。Github Runner 监听器**先**需要出站 HTTPS 443 接单；工作流内 Tailscale Action 不能补偿启动前断网。Job TS 使用 OIDC、独立 \`tag:ci-ephemeral\`、专用数据端口白名单和失联清理证据。Userspace networking 是 SOCKS5/HTTP proxy，不代表任意 rootless 程序自动透明 TUN；Exit Node 也必须有真正可用的异地互联网出口。
+不要合并三种身份：Host 的 Fleet `node_uid`、一次 GitHub Runner registration/attempt、每 Job 的可选短命 TS device。Github Runner 监听器**先**需要出站 HTTPS 443 接单；工作流内 Tailscale Action 不能补偿启动前断网。Job TS 使用 OIDC、独立 `tag:ci-ephemeral`、专用数据端口白名单和失联清理证据。Userspace networking 是 SOCKS5/HTTP proxy，不代表任意 rootless 程序自动透明 TUN；Exit Node 也必须有真正可用的异地互联网出口。
 
 现役 #64 A09 Tailnet allow-all 未解决之前，不把执行第三方代码的 Job 接入生产 Tailnet。此试验不作为 JG/TP 单机 Runner E2E 或两机调度的前置。普通 CI 使用本地可信 Runner，紧急构建仍保留不依赖 GitHub Actions 控制面的受控入口。
 
@@ -73,7 +73,7 @@ inspectEndpointEvidence(
 
 | 对象 | 公共 GhostFleet | 私有 Fleet / Host / Runner |
 | --- | --- | --- |
-| 节点身份 | \`node_uid\` 格式与注册/心跳语义 | 真实 UID ↔ 资产、注册来源及 Host 证明 |
+| 节点身份 | `node_uid` 格式与注册/心跳语义 | 真实 UID ↔ 资产、注册来源及 Host 证明 |
 | Locator | 规范、离线分类、候选证据 | 实际接口地址、Socket 路径、TS/CF 绑定、时序来源 |
 | HostServiceEndpoint | 不透明引用与命名空间隔离契约 | 具体 RootlessKit/UDS/Proxy gateway、Host owner 校验 |
 | Connectivity | 一次性采样/原因状态与版本格式 | 真实健康采集、外部握手、网络恢复所有权 |
