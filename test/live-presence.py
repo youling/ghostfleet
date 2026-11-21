@@ -163,7 +163,8 @@ def main():
             assert sum(s == 200 for s, _ in issues) == 11
             delivery = next(p for s, p in issues if s == 201)
             assert all(p['ticket'] == delivery['ticket'] and p['short_code'] is None for s, p in issues if s == 200)
-            assert len(api('/v0/nodes', token=reader)[1]['nodes']) == 1
+            listed = api('/v0/nodes', token=reader)[1]['nodes']
+            assert {node['node_uid'] for node in listed} == {delivery['ticket']['node_uid'], receipt['node_uid']}
             check('real_DO_12_issue_retries_same_uid_no_code_replay')
             path = '/v1/enrollment-tickets/' + delivery['ticket']['ticket_id'] + '/claim'
             with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
