@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
@@ -35,8 +35,8 @@ function fixture(t) {
       GHOSTFLEET_INSTALLER_SHA256: 'a'.repeat(64),
     },
   };
-  const build = () => spawnSync(process.execPath, [
-    path.join(root, 'scripts/build-presence.mjs'), '--deployment-config', input, '--output-config', output,
+  const build = (deployment = input, release = output) => spawnSync(process.execPath, [
+    path.join(root, 'scripts/build-presence.mjs'), '--deployment-config', deployment, '--output-config', release,
   ], { encoding: 'utf8' });
   return { root, input, output, config, build };
 }
@@ -45,6 +45,9 @@ test('release embeds both Linux asset pins while keeping the existing Worker and
   const f = fixture(t);
   const original = JSON.stringify(f.config);
   writeFileSync(f.input, original);
+  const previousAssets = path.join(f.root, 'dist/console');
+  mkdirSync(previousAssets, { recursive: true });
+  writeFileSync(path.join(previousAssets, 'unrelated.json'), 'legacy file');
   for (const file of ['heartbeat.py', 'join.sh']) {
     const filename = path.join(f.root, 'scripts', file);
     writeFileSync(filename, readFileSync(filename, 'utf8').replace(/\r?\n/g, '\r\n'));
@@ -64,6 +67,8 @@ test('release embeds both Linux asset pins while keeping the existing Worker and
   assert.equal(packaged.assets.run_worker_first, true);
   assert.equal(path.resolve(path.dirname(f.output), packaged.main), path.join(f.root, 'src/adapters/cloudflare/worker.js'));
   const assets = path.resolve(path.dirname(f.output), packaged.assets.directory);
+  assert.notEqual(assets, previousAssets);
+  assert.ok(!existsSync(path.join(assets, 'unrelated.json')));
   for (const [pin, bytes, ext] of [
     [manifest.sha256, manifest.bytes, 'py'], [manifest.bootstrap_sha256, manifest.bootstrap_bytes, 'sh'],
   ]) {
@@ -81,6 +86,21 @@ test('release embeds both Linux asset pins while keeping the existing Worker and
   assert.equal(readFileSync(f.output, 'utf8'), 'existing private file');
 });
 
+test('rejects extra files in an existing release asset tree without removing them', t => {
+  const f = fixture(t);
+  writeFileSync(f.input, JSON.stringify(f.config));
+  assert.equal(f.build().status, 0);
+  const config = JSON.parse(readFileSync(f.output, 'utf8'));
+  const assetPath = path.resolve(path.dirname(f.output), config.assets.directory, 'unrelated.json');
+  writeFileSync(assetPath, 'fixture that must not ship');
+  const secondOutput = path.join(path.dirname(f.output), 'second-release.json');
+  const result = f.build(f.input, secondOutput);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /RELEASE_ASSET_TREE_INVALID/);
+  assert.equal(readFileSync(assetPath, 'utf8'), 'fixture that must not ship');
+  assert.ok(!existsSync(secondOutput));
+});
+
 test('a courier or an overlay carrying access credentials is rejected without printing its contents', t => {
   const f = fixture(t);
   const sample = 'synthetic-in-memory-value';
@@ -95,4 +115,43 @@ test('a courier or an overlay carrying access credentials is rejected without pr
   assert.equal(secret.status, 1);
   assert.match(secret.stderr, /DEPLOYMENT_TOKENS_MUST_USE_SECRETS/);
   assert.ok(!(secret.stdout + secret.stderr).includes(sample));
+});
+
+test('refuses reserved build outputs as either config before writing anything', t => {
+  const f = fixture(t);
+  const dist = path.join(f.root, 'dist');
+  mkdirSync(dist);
+  const manifest = path.join(dist, 'installer.json');
+  const draft = path.join(dist, 'private.json');
+  const manifestAlias = path.join(dist, 'private-alias.json');
+  const original = JSON.stringify(f.config);
+  writeFileSync(manifest, original);
+  writeFileSync(draft, original);
+  linkSync(manifest, manifestAlias);
+  const release = path.join(dist, 'release.json');
+  for (const [input, output] of [[manifest, release], [draft, manifest], [manifestAlias, release], [draft, manifestAlias]]) {
+    const result = f.build(input, output);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /OUTPUT_CONFIG_MUST_BE_SEPARATE/);
+    assert.equal(readFileSync(manifest, 'utf8'), original);
+    assert.ok(!existsSync(path.join(dist, 'console')));
+  }
+});
+
+test('refuses private configs inside the published asset tree even through a directory alias', t => {
+  const f = fixture(t);
+  const assets = path.join(f.root, 'dist/console');
+  const alias = path.join(f.root, 'local-alias');
+  mkdirSync(assets, { recursive: true });
+  symlinkSync(assets, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const original = JSON.stringify(f.config);
+  writeFileSync(path.join(assets, 'private.json'), original);
+  for (const dir of [assets, alias]) {
+    const result = f.build(path.join(dir, 'private.json'), path.join(dir, 'release.json'));
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /PRIVATE_CONFIG_INSIDE_ASSETS/);
+  }
+  assert.equal(readFileSync(path.join(assets, 'private.json'), 'utf8'), original);
+  assert.ok(!existsSync(path.join(assets, 'release.json')));
+  assert.ok(!existsSync(path.join(assets, 'bootstrap')));
 });

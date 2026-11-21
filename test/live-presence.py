@@ -20,6 +20,11 @@ import urllib.request
 import uuid
 
 
+class DirectDownload(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        return None
+
+
 def assert_reporter_ok(result):
     # Emit only fixed reporter diagnostic codes, never raw output or credentials.
     codes = re.findall(r'^GF_ERROR ([A-Z0-9_]+)', result.stderr, re.MULTILINE)
@@ -50,7 +55,7 @@ def main():
         reader = 'synthetic-reader-' + uuid.uuid4().hex
         config = json.loads((root / 'dist/wrangler.json').read_text())
         config['main'] = str(root / 'src/adapters/cloudflare/worker.js')
-        config['assets']['directory'] = str(root / 'dist/console')
+        config['assets']['directory'] = str((root / 'dist' / config['assets']['directory']).resolve())
         config['vars'].update(GHOSTFLEET_PANEL_ORIGIN=origin, GHOSTFLEET_NODE_ORIGIN=origin,
                               GHOSTFLEET_OPERATOR_TOKEN=operator, GHOSTFLEET_READ_TOKEN=reader)
         config_path = run / 'wrangler.json'
@@ -127,15 +132,16 @@ def main():
             access_status, access = api('/v0/access')
             assert access_status == 200
             installer = access['installer']
+            direct = urllib.request.build_opener(DirectDownload())
             for advertised, pin, size, extension in (
                 (installer, manifest['sha256'], manifest['bytes'], '.py'),
                 (installer['bootstrap'], manifest['bootstrap_sha256'], manifest['bootstrap_bytes'], '.sh'),
             ):
                 url = origin + '/bootstrap/' + pin + extension
                 assert advertised['url'] == url and advertised['sha256'] == pin
-                with urllib.request.urlopen(url, timeout=12) as downloaded:
+                with direct.open(url, timeout=12) as downloaded:
                     body = downloaded.read(size + 1)
-                    assert downloaded.status == 200 and len(body) == size
+                    assert downloaded.status == 200 and downloaded.geturl() == url and len(body) == size
                     assert sha256(body).hexdigest() == pin
             check('advertised_installer_and_bootstrap_serve_exact_build_bytes')
             status, delivery = api('/v0/enrollment-tickets', {'label': 'synthetic-live-fixture'})

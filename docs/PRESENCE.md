@@ -32,7 +32,7 @@ python3 test/live-presence.py --with-user-systemd
 1. 从已审查提交构建。保留真实部署的 Worker 名称、DO绑定/命名空间和既有 `v1` migration；不要重新创建 namespace 或抹掉 snapshot。发布前保留上一 Worker 版本与数据备份。
 2. 在私有部署覆盖中把 panel/node 两个 HTTPS origin、域名路由配置到**同一个 Worker**。示例 `example.invalid` 不是可发布地址。Panel 全站 Access；node origin 不套浏览器登录页，但仅允许实现中的机器路由。保持 workers.dev/preview 关闭。
 3. 所有者通过原生 secret 配置设置不同的 `GHOSTFLEET_OPERATOR_TOKEN` 和 `GHOSTFLEET_READ_TOKEN`（各至少32字符的高熵随机值）。不要交给聊天、Issue、CI或仓库。Access 登录不自动成为应用 Operator。
-4. 从实例当前的 GhostFleet 私有配置生成候选配置，保留 Worker 名称、域名路由、DO 绑定和迁移。构建将两份 LF 制品、摘要和静态资源绑定一并生成。输入和输出置于同一目录，以保留私有配置中其他相对路径。
+4. 从实例当前的 GhostFleet 私有配置生成候选配置，保留 Worker 名称、域名路由、DO 绑定和迁移。构建将两份 LF 制品、摘要和静态资源绑定一并生成，候选只使用隔离的发布资源目录。私有输入和输出置于同一目录，且都在静态资源目录之外。
 5. 先验证匿名 panel 的 Access 拦截、Read 写入拒绝、node origin 管理 API 404、错误/撤销心跳凭据401、正确安装器字节哈希，再做第一台经授权节点的系统级安装。检查普通用户 SSH 与已有 root 公钥入口未改变。
 
 ```sh
@@ -42,7 +42,7 @@ npx --no-install wrangler deploy --dry-run --config dist/wrangler.release.json
 
 生成和预演均为本地操作。实例 owner 发布前仍需核对 Cloudflare 的 Custom Domain 与路径路由，确认 Node Origin 和 `/bootstrap/*` 由预期的 GhostFleet Worker 提供。发布后，从已授权的 `/v0/access` 读取两份实际 URL，再核对实际下载大小和字节摘要。根路径返回 404 只能说明该路径没有对应资源。
 
-Build the release candidate from the instance's current GhostFleet configuration using the commands above. Keep the output beside the input so existing relative paths still work. The generated configuration retains the Worker, routes, DO bindings and migrations and picks up both LF asset files and their pins. The instance owner checks the live Custom Domain and path-route ownership before deploying. After deployment, read both advertised URLs from the protected `/v0/access` response and verify the downloaded byte counts and digests.
+Build the release candidate from the instance's current GhostFleet configuration using the commands above. Keep the output beside the input and keep both outside the static asset directories. The generated configuration retains the Worker, routes, DO bindings and migrations and includes both LF assets and their pins from an isolated release directory. The instance owner checks the live Custom Domain and path-route ownership before deploying. After deployment, read both advertised URLs from the protected `/v0/access` response and verify the downloaded byte counts and digests.
 
 旧 Worker 的 command/MCP/helper/七证据纳管 API 不再挂载，旧 node 数据和 lifecycle 字段保留。若有旧消费者，先确认切换与回滚；不能直接覆盖仍在使用旧 API 的生产实例。需要回退时回退该 Worker 版本并停用本 reporter；不要为回退删除原节点、DO或 SSH 凭据。
 
