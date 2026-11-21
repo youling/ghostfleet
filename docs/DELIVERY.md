@@ -77,3 +77,21 @@ Cloudflare does not require a new class migration for a code-only update to an e
 回执分别说明“源码整合”“发布包准备”“面板发布”“首节点可用”“第二节点复制”“双路传输”的实际结果，并引用证据和剩余限制。达到哪个范围就交付哪个范围；不以 CI、心跳或计划替代未执行的现场能力。
 
 The receipt distinguishes source integration, package preparation, panel release, first-node usability, second-node replication and dual-path transport, with evidence and remaining limits. Deliver each established scope without using CI, heartbeat or plans as substitutes for unexecuted live capability.
+
+
+## 4. 正式版 FULLY_MANAGED 交付 / Full-managed release gates
+
+Owner 于 2026-11-22 已选择真实搬瓦工 VPS 作为首次全流程 Canary，**不使用虚拟机**。通过后才分批纳管国内生产力服务器；这些目标全部是 Managed lower nodes，TP 是唯一 Controller。产品与端到端门禁见 [ADR007](adr/007-fully-managed-lower-node-enrollment.md)。
+
+| Gate | 完成条件 | 不可替代的证据 |
+|---|---|---|
+| G0 Panel profile | Operator 能创建 `FULL_MANAGED_LOWER_NODE`，签发同一 immutable UID 的一次性 ticket/短码 | 真实受保护 Panel 操作、TTL/错误锁/重复 Claim 负测 |
+| G1 Root bootstrap | 目标 VPS 只需一次可信 root 引导和短码输入，固定摘要校验、预检、阶段 receipt | 真实 VPS shell/systemd receipt；不以 CI 或旧节点安装替代 |
+| G2 Provider/transport | 自动发现并复用现有 TS/CF，建立原生 SSH、Host Key pin 和可恢复路径 | Provider readback + 从 TP/Worker 发起的新 SSH 会话；Tunnel healthy 不是 origin SSH |
+| G3 DCR | 同一 UID 自动进入动态 DCR catalog/target/policy，无逐节点源码改动 | 当前 ChatGPT 会话真实 `node.inspect` + typed Job receipt、准确策略版本 |
+| G4 Root | 专用 root-probe + 一次 Owner 委托覆盖范围/期限的连续 Root maintenance session | ChatGPT 真实 Root receipt，至少两条连续无害 Root 命令、撤销/过期负测 |
+| G5 FULLY_MANAGED | G0–G4 必需阶段全通过；修复/恢复路径可用 | Panel 最终状态与真实 ChatGPT 可操作性相互吻合 |
+
+**先真实 VPS，后国内生产力服务器。** 搬瓦工 Canary 通过后，按单节点、小批次、全量 rollout；OMV8/NAS 仍需自己的只读存储 Phase 0。Panel 状态投影不能覆盖现有 NodeLifecycle/Presence，也不能把 `UNKNOWN` 伪装成完成。每阶段失败保留同一 Node UID 和已有 Provider/SSH 成果，走 repair/resume；不得自动创建第二身份或重复消费票据。
+
+**动态 DCR 是全自动的硬前置。** 现有每节点 `runtimeTarget.ts` 常量与 Wrangler VPC binding 若要求人工改源码/部署，尚不满足 G3。由私有 Fleet owner 在现有 Worker/DO 上完成审核过的动态 UID/transport/policy 消费；不能为此另建第二 Worker/第二身份控制面。
