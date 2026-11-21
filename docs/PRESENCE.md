@@ -14,6 +14,10 @@ Owner 已决定正式版增加独立的 `FULL_MANAGED_LOWER_NODE` profile：一�
 
 The trusted target enrollment client accepts the domain and short code. `scripts/enroll-managed.py` discovers and verifies a pinned `.managed.sh`, starts a device pairing and prompts for the six-character code manually issued in the Panel. The code is case-insensitive and valid for ten minutes. The verified installer gets the pairing secret and code on standard input and calls `POST /v1/managed-enrollment/claim` after preflight. Older reporter workers cannot consume that ticket. Reissuing for a known UID preserves the existing reporter until the new claim. `ASSETS` and `GHOSTFLEET_MANAGED_BOOTSTRAP_SHA256` enable the managed profile after the managed artifact is released. The default build ships only the reporter installer.
 
+可信客户端包同时安装由 root 拥有的 `/etc/ghostfleet/enrollment-trust.json`，记录允许输入的域名及其对应 Node Origin。这样输错域名时，客户端会在下载前停下。若 Panel 和 Node Origin 都应可输入，配置中各有一条映射。入口域名须能读取 `/.well-known/ghostfleet-enrollment`，Panel 的管理路由继续使用 Access。
+
+The trusted client package supplies a root-owned `/etc/ghostfleet/enrollment-trust.json` mapping approved bare domain names to their approved Node Origin names, for example `{"panel.example.invalid":"node.example.invalid","node.example.invalid":"node.example.invalid"}`. This lets the client reject mistyped domains before download. A domain accepted for discovery serves `/.well-known/ghostfleet-enrollment`. Panel management routes retain their Access policy.
+
 ## 中文
 
 ### 开发与验证

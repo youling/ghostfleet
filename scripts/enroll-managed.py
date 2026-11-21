@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import stat
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,7 @@ DIGEST = re.compile(r'[0-9a-f]{64}')
 CODE = re.compile(r'[0-9A-HJKMNP-TV-Z]{6}', re.ASCII | re.IGNORECASE)
 DISCOVERY = '/.well-known/ghostfleet-enrollment'
 MAX_BOOTSTRAP_BYTES = 262144
+TRUST_FILE = Path('/etc/ghostfleet/enrollment-trust.json')
 
 
 class EnrollmentError(Exception):
@@ -38,6 +40,19 @@ def origin_for(domain):
     if len(ascii_domain) > 253 or not DOMAIN.fullmatch(ascii_domain):
         raise EnrollmentError('INVALID_DOMAIN')
     return 'https://' + ascii_domain
+
+
+def trusted_origins():
+    try:
+        fd = os.open(TRUST_FILE, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_size > 4096:
+                raise ValueError()
+            pairs = json.loads(stream.read(4097))
+        return {origin_for(panel): origin_for(node) for panel, node in pairs.items()}
+    except (OSError, AttributeError, TypeError, ValueError, EnrollmentError):
+        raise EnrollmentError('ENROLLMENT_TRUST_NOT_CONFIGURED') from None
 
 
 def download(opener, url, limit, document=None):
@@ -74,11 +89,15 @@ def metadata(raw):
     return node_origin, pin, artifact['url']
 
 
-def enroll(domain, read_code, show_request=print, *, opener=None, launch=subprocess.run):
+def enroll(domain, read_code, show_request=print, *, trusted, opener=None, launch=subprocess.run):
+    panel_origin = origin_for(domain)
+    if panel_origin not in trusted:
+        raise EnrollmentError('UNTRUSTED_ENROLLMENT_DOMAIN')
     if opener is None:
         opener = urllib.request.build_opener(NoRedirect())
-    panel_origin = origin_for(domain)
     node_origin, pin, url = metadata(download(opener, panel_origin + DISCOVERY, 4096))
+    if node_origin != trusted[panel_origin]:
+        raise EnrollmentError('UNTRUSTED_NODE_ORIGIN')
     script = download(opener, url, MAX_BOOTSTRAP_BYTES)
     if not hmac.compare_digest(hashlib.sha256(script).hexdigest(), pin):
         raise EnrollmentError('MANAGED_BOOTSTRAP_DIGEST_MISMATCH')
@@ -111,7 +130,8 @@ def main():
         if not hasattr(os, 'geteuid') or os.geteuid() != 0 or not sys.stdin.isatty():
             raise EnrollmentError('TRUSTED_ROOT_TERMINAL_REQUIRED')
         enroll(input('纳管域名 / Enrollment domain: '), lambda: getpass.getpass('短码 / Short code: '),
-            lambda identifier: print('请在面板选择此配对请求 / Select this pairing request in the Panel: ' + identifier))
+            lambda identifier: print('请在面板选择此配对请求 / Select this pairing request in the Panel: ' + identifier),
+            trusted=trusted_origins())
     except (EnrollmentError, EOFError, KeyboardInterrupt) as error:
         print('GF_ENROLL_ERROR ' + (str(error) if isinstance(error, EnrollmentError) else 'CANCELLED'), file=sys.stderr)
         return 1

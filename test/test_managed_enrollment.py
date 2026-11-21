@@ -16,6 +16,7 @@ spec.loader.exec_module(wizard)
 class EnrollmentTest(unittest.TestCase):
     panel = 'https://panel.example.invalid'
     node = 'https://node.example.invalid'
+    trusted = {panel: node}
     script = b'#!/bin/sh\nexit 1\n'
 
     def opener(self, *, script_body=None, request_result=b'{"ok": true}'):
@@ -55,18 +56,28 @@ class EnrollmentTest(unittest.TestCase):
             self.assertEqual(argv[2:], ['--origin', self.node])
             return SimpleNamespace(returncode=0)
 
-        wizard.enroll('Panel.Example.Invalid', lambda: 'ab2xy3', shown.append, opener=opener, launch=launch)
+        wizard.enroll('Panel.Example.Invalid', lambda: 'ab2xy3', shown.append, trusted=self.trusted, opener=opener, launch=launch)
 
     def test_wrong_digest_stops_before_pairing_or_prompt(self):
         opener, calls = self.opener(script_body=b'wrong bytes')
         with self.assertRaisesRegex(wizard.EnrollmentError, 'MANAGED_BOOTSTRAP_DIGEST_MISMATCH'):
-            wizard.enroll('panel.example.invalid', lambda: self.fail('prompt called'), opener=opener)
+            wizard.enroll('panel.example.invalid', lambda: self.fail('prompt called'), trusted=self.trusted, opener=opener)
         self.assertEqual(len(calls), 2)
 
     def test_failed_registration_stops_before_prompt(self):
         opener, _ = self.opener(request_result=b'{"ok": false}')
         with self.assertRaisesRegex(wizard.EnrollmentError, 'ENROLLMENT_REQUEST_NOT_REGISTERED'):
-            wizard.enroll('panel.example.invalid', lambda: self.fail('prompt called'), opener=opener)
+            wizard.enroll('panel.example.invalid', lambda: self.fail('prompt called'), trusted=self.trusted, opener=opener)
+
+    def test_trust_policy_stops_unapproved_domain_or_delegation_before_artifact(self):
+        opener, calls = self.opener()
+        with self.assertRaisesRegex(wizard.EnrollmentError, 'UNTRUSTED_ENROLLMENT_DOMAIN'):
+            wizard.enroll('other.example.invalid', lambda: self.fail('prompt called'), trusted=self.trusted, opener=opener)
+        self.assertEqual(calls, [])
+        with self.assertRaisesRegex(wizard.EnrollmentError, 'UNTRUSTED_NODE_ORIGIN'):
+            wizard.enroll('panel.example.invalid', lambda: self.fail('prompt called'),
+                          trusted={self.panel: 'https://other.example.invalid'}, opener=opener)
+        self.assertEqual(len(calls), 1)
 
     def test_domain_requires_bare_dns_name(self):
         for domain in ('https://panel.example.invalid', 'example.invalid/path', 'owner@example.invalid', 'localhost'):

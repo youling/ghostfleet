@@ -132,6 +132,10 @@ def main():
             start(); check('real_workerd_DO_started')
             discovery_status, discovery = api('/.well-known/ghostfleet-enrollment', token='')
             assert discovery_status == 200 and discovery['artifact'] == {'url': origin + managed_path, 'sha256': managed_pin}
+            with urllib.request.urlopen(origin + managed_path, timeout=12) as download:
+                assert download.status == 200 and download.read() == managed_fixture
+            access_status, access = api('/v0/access')
+            assert access_status == 200 and access['managed_bootstrap'] == discovery['artifact'], 'PANEL_ASSET_VERIFICATION_FAILED'
             secret = uuid.uuid4().hex + uuid.uuid4().hex
             request_id = sha256(secret.encode()).hexdigest()
             assert api('/v1/managed-enrollment/requests', {'request_id': request_id}, token='')[0] == 201
@@ -142,7 +146,7 @@ def main():
             assert status == 200 and len(pending['requests']) == 1 and pending['requests'][0]['request_id'] == request_id
             assert api(issue_path, choice, token=reader)[0] == 403
             status, managed = api(issue_path, choice)
-            assert status == 201 and len(managed['short_code']) == 6
+            assert status == 201 and len(managed['short_code']) == 6, 'MANAGED_ISSUE_' + str(status) + '_' + managed.get('error', '')
             assert api(issue_path, choice)[1]['short_code'] is None
             old_claim = '/v1/enrollment-tickets/' + managed['ticket']['ticket_id'] + '/claim'
             assert api(old_claim, {'short_code': managed['short_code']}, token='')[0] == 404
