@@ -51,17 +51,17 @@ inspectEndpointEvidence(
 
 **任何返回值都不是 permission/grant。** 原始证据不能自授可信身份；实际连接前，私有 Fleet/Host 必须通过独立的 Operator 身份、真实 Policy、host-key/TS/CF 目标证明与终端命名空间探针校验。此模块永远不调用、选择或自动回退执行中的 SSH 命令；\`MAY_HAVE_EXECUTED/UNKNOWN\` 结果必须由原执行方先对账，不能按 locator 自动重发。
 
-## 4. M2 观察不是 Guardian
+## 4. M2 供应商事实优先：观察不是 Guardian
 
-第一步保留 ADR004 的 Python oneshot + systemd Timer：
+**2026-11-21 的复用纠偏：先问 Tailscale/Cloudflare 已经知道什么，再决定 GhostFleet 是否需要自己上报。** 完整审查见 [TS/CF Provider-first 能力复用地图](../research/TS_CF_PROVIDER_REUSE_2026-11-21.md)。
 
-- 版本化扩展候选 **heartbeat/v2**，绝不往当前严格 4KiB \`heartbeat/v1\` 塞字段或放松已有验证。
-- 分别观察 \`reported_presence\`、正确 system/user manager 的 \`local_unit_state\`、Tailscale/Cloudflare 的 \`provider_state\`、独立客户端的 \`authenticated_path_state\`，再另行展示 \`capability_claim\` 与 \`job_admission\`。**ONLINE ≠ SSH READY ≠ JOB ADMISSIBLE**。
-- 记录 \`source\`、\`observed_at\`、\`boot_id\`、有效期和有限错误代码。不同管理器的 \`not_found\` 只表示该 manager 未发现服务；\`unknown\` 不等于服务未安装。
-- 网络变化时只读观察 carrier/route ownership、provider 状态、SSH listener 和出站心跳；采样预算/退避/抖动与短期脱敏本地证据，不上传原始 netmap、IP、密钥、全部路由表或业务目录。
-- 本机无法证明“远端仍能 SSH 进入”；需要 TP/可信 Operator 独立新会话验证。无可用上游或远端失联只报告 \`UNKNOWN/DEGRADED\`，不承诺持续拥有 default route。
-
-若 L0（NetworkManager/systemd-networkd/ifupdown、systemd Restart、tailscaled/cloudflared 原生恢复）不足，**才**为单一已审自有 unit 研究 L2。禁止普通守护循环自动重写 FIB/默认路由、DHCP、路由器、ACL、TS re-auth、Access、密钥或重启所有入口；系统网络配置必须有唯一 owner。新增常驻 Guardian 须新 ADR、独立身份/最小权限、冷却/熔断/次数上限、Owner 授权和可验证回滚。
+- **Tailscale 本身拥有设备连接状态。** 优先使用 Admin Devices API 的 `connectedToControl`（不是把 `lastSeen` 当心跳）、设备身份/Tag/密钥事件和受信本机 `tailscale status --json`。公开 GhostFleet 不复制 Device Registry，不凭设备名/IP 自动绑定 `node_uid`，私有 Fleet 维护审过的映射与最小只读权限。
+- **Cloudflare 本身拥有 Tunnel→Edge 状态。** 优先使用官方 `healthy/degraded/down/inactive` 与 Health Alert 通知/只读 API；Healthy 不能证明 origin SSH 可靠，也不能代替 Access 身份策略。TS Webhook 目前覆盖设备增删/批准/密钥事件等，不能假定提供通用 online/offline 推送。
+- **Tailscale Services 已提供部分跨宿主稳定服务发现/路由。** 优先审查其 MagicDNS/TailVIP、Host approval/drain 和多宿主机制，**不要为同一用途再造 Adaptive Router**。它要求 tag-based Service Host，RootlessKit 命名空间、ACL/端口与多网卡可达仍需独立实验；不替代 Host owner 的本地 namespace 安全验证。
+- **GhostFleet 只补真实缺口。** 本机 service manager 的单位状态、boot_id、任意未装 TS/CF 节点的独立出站见证，以及 TP/可信 Operator 的全新 SSH 认证证据，与 TS/CF 控制面状态不同。视图必须展示 `reported_presence`、`provider_state`、`local_unit_state`、`authenticated_path_state` 和 `job_admission` 各自的来源/时效；**ONLINE ≠ SSH READY ≠ JOB ADMISSIBLE**。
+- **现役 ADR004 heartbeat/v1 不动。** 严格 4KiB、Python one-shot + systemd Timer 和既有 server-side freshness 阈值仍是当前生产合同。先做 48–72 小时有界只读 Shadow 对照：TS devices 控制面、CF Tunnel 事件/API、GhostFleet heartbeat/三个 systemd unit 和少量获准的独立 SSH 对照。量化误判/迟到/缺测、Token/轮询成本及独立可用性；完成前**不开发 heartbeat/v2、不降频或停止 reporter**。后续如采用可选的 provider-only 与 host-augmented 模式，仍需单独兼容性/用户授权。
+- 无有效观测时只报 `UNKNOWN/STALE`：Provider API 超时、缓存/事件延迟、客户端未授权、CF down、TS session 过期都不能通过单一绿灯推断主机死亡或登录可用。不同 systemd manager 的 `not_found` 只表示该 manager 未找到，不等于服务不存在。
+- **不自动修网。** 优先利用 NetworkManager/systemd-networkd/ifupdown、systemd Restart、TS roaming/DERP、CF Tunnel replicas；网络管理单一写主。只有上游原生恢复实测不足才为特定 unit 申请 L2 独立 opt-in Guardian，要求次数上限、冷却、熔断和带外恢复；普通观察循环不得写 FIB、DHCP、Tailnet ACL、TS 重新登录、CF Access 或密钥。
 
 ## 5. Runner 消费边界
 
