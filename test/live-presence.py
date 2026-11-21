@@ -157,9 +157,19 @@ def main():
             assert api('/v0/enrollment-tickets', {'label': 'denied'}, token=reader)[0] == 403
             check('read_role_mutation_denied')
             credential = run / 'presence.json'
+            absent_unit = 'ghostfleet-synthetic-absent-' + uuid.uuid4().hex + '.service'
             credential.write_text(json.dumps({'origin': origin, 'node_uid': uid, 'reporting_token': token,
-                'units': {'ssh': 'ssh.service', 'cloudflared': 'ghostfleet-synthetic-absent.service', 'tailscaled': 'tailscaled.service'}}))
+                'units': {'ssh': 'ssh.service', 'cloudflared': absent_unit, 'tailscaled': 'tailscaled.service'}}))
             credential.chmod(0o600)
+            # A missing system manager (for example in WSL) cannot attest that a unit is absent.
+            expected_unit_state = 'unknown'
+            try:
+                observed = subprocess.run(['/usr/bin/systemctl', '--system', 'show', '--property=LoadState', '--', absent_unit],
+                    capture_output=True, text=True, timeout=5)
+                if 'LoadState=not-found' in observed.stdout.splitlines():
+                    expected_unit_state = 'not_found'
+            except (OSError, subprocess.TimeoutExpired):
+                pass
             python = shutil.which('python3')
             command = [python, '-I', str(root / 'scripts/heartbeat.py'), 'report', '--config', str(credential), '--allow-loopback-http']
             result = subprocess.run(command, capture_output=True, text=True, timeout=35)
@@ -167,8 +177,8 @@ def main():
             assert token not in result.stdout + result.stderr
             n = current(uid)
             assert n['presence'] == 'ONLINE' and n['lifecycle'] == 'PROVISIONAL'
-            assert n['report']['services']['cloudflared'] == 'not_found'
-            check('actual_Python_reporter_HTTP_and_truthful_missing_unit')
+            assert n['report']['services']['cloudflared'] == expected_unit_state
+            check('actual_Python_reporter_HTTP_and_unit_state_' + expected_unit_state)
             stop(); start()
             assert current(uid)['presence'] == 'ONLINE'
             assert_reporter_ok(subprocess.run(command, capture_output=True, text=True, timeout=35))
