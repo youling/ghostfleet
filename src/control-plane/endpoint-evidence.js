@@ -43,7 +43,7 @@ function exactObject(value, keys) {
 
 function validQuery(q) {
   exactObject(q, QUERY_KEYS);
-  if (!UID.test(q.node_uid)) denyContract();
+  if (typeof q.node_uid !== "string" || !UID.test(q.node_uid)) denyContract();
   for (const key of QUERY_KEYS.slice(1)) {
     if (typeof q[key] !== "string" || !NAME.test(q[key])) denyContract();
   }
