@@ -122,8 +122,15 @@ def main():
 
         try:
             start(); check('real_workerd_DO_started')
-            status, delivery = api('/v0/enrollment-tickets', {'label': 'synthetic-live-fixture'})
-            assert status == 201
+            attempt = {'label': 'synthetic-live-fixture', 'attempt_id': str(uuid.uuid4())}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+                issues = list(pool.map(lambda _: api('/v0/enrollment-tickets', attempt), range(12)))
+            assert sum(s == 201 for s, _ in issues) == 1
+            assert sum(s == 200 for s, _ in issues) == 11
+            delivery = next(p for s, p in issues if s == 201)
+            assert all(p['ticket'] == delivery['ticket'] and p['short_code'] is None for s, p in issues if s == 200)
+            assert len(api('/v0/nodes', token=reader)[1]['nodes']) == 1
+            check('real_DO_12_issue_retries_same_uid_no_code_replay')
             path = '/v1/enrollment-tickets/' + delivery['ticket']['ticket_id'] + '/claim'
             with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
                 claims = list(pool.map(lambda _: api(path, {'short_code': delivery['short_code']}, token=''), range(12)))

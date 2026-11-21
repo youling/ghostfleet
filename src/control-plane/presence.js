@@ -2,8 +2,10 @@
 // reporting projection, not a promotion to NodeLifecycle.ACTIVE or SSH access.
 import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 
-const UID = /^node-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const TICKET = /^ticket-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const UUID_V4 = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+const UID = new RegExp('^node-' + UUID_V4 + '$');
+const TICKET = new RegExp('^ticket-' + UUID_V4 + '$');
+const ATTEMPT = new RegExp('^' + UUID_V4 + '$');
 const TOKEN = /^gf_hb_[A-Za-z0-9_-]{43}$/;
 const BOOT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const STATES = new Set(['active', 'inactive', 'failed', 'activating', 'deactivating', 'reloading', 'not_found', 'unknown']);
@@ -61,6 +63,11 @@ function validateReport(body) {
   return structuredClone(body);
 }
 
+function ticketDelivery(ticket, shortCode) {
+  return { ticket: { ticket_id: ticket.ticket_id, node_uid: ticket.node_uid, expires_at: ticket.expires_at },
+    short_code: shortCode };
+}
+
 // Synchronous mutation, called once per durable storage transaction attempt.
 // There are no network/provider effects here. Responses are returned only after commit.
 export function dispatch(input, state, now = Date.now()) {
@@ -75,17 +82,35 @@ export function dispatch(input, state, now = Date.now()) {
       return ok({ nodes: Object.values(state.nodes ?? {}).map(n => publicNode(n, now)), received_at: iso(now) });
     }
     if (method === 'POST' && path === '/v0/enrollment-tickets') {
-      shape(body, ['label', 'node_uid'], []);
+      shape(body, ['label', 'node_uid', 'attempt_id'], []);
       if (body.node_uid !== undefined && (typeof body.node_uid !== 'string' || !UID.test(body.node_uid))) reject('INVALID_NODE_UID');
-      if (body.label !== undefined && (typeof body.label !== 'string' || !body.label.trim() ||
-          body.label.length > 80 || /[\x00-\x1f\x7f]/.test(body.label))) reject('INVALID_LABEL');
-      if (!body.node_uid && !body.label) reject('LABEL_REQUIRED');
+      const label = typeof body.label === 'string' ? body.label.trim() : undefined;
+      const attempt = body.attempt_id;
+      if (own(body, 'attempt_id')) {
+        if (body.node_uid || typeof attempt !== 'string' || !ATTEMPT.test(attempt)) {
+          reject('INVALID_ENROLLMENT_ATTEMPT');
+        }
+        const prior = Object.values(state.presence_tickets ?? {}).find(ticket => ticket.attempt_id === attempt);
+        if (prior) {
+          // The enrollment code was delivered once. A replay only recovers the original identity.
+          const delivery = ticketDelivery(prior, null);
+          if (prior.attempt_label !== label) {
+            return { status: 409, dirty: false, data: {
+              ok: false, error: 'ENROLLMENT_ATTEMPT_CONFLICT', ...delivery,
+            } };
+          }
+          return ok(delivery);
+        }
+      }
+      if (body.label !== undefined && (!label || body.label.length > 80 || /[\x00-\x1f\x7f]/.test(body.label))) reject('INVALID_LABEL');
+      if (!body.node_uid && !label) reject('LABEL_REQUIRED');
       const uid = body.node_uid ?? 'node-' + randomUUID();
       const existing = body.node_uid ? nodeAt(state, uid) : null;
       const ticketId = 'ticket-' + randomUUID();
       const code = String(randomInt(100_000_000)).padStart(8, '0');
       const ticket = { ticket_id: ticketId, node_uid: uid, code_digest: digest(code),
-        state: 'ISSUED', created_at: iso(now), expires_at: iso(now + 600_000), failed_claims: 0 };
+        state: 'ISSUED', created_at: iso(now), expires_at: iso(now + 600_000), failed_claims: 0,
+        ...(attempt ? { attempt_id: attempt, attempt_label: label } : {}) };
       state.nodes ??= {};
       state.presence_tickets ??= {};
       for (const t of Object.values(state.presence_tickets)) {
@@ -94,10 +119,10 @@ export function dispatch(input, state, now = Date.now()) {
       // Reissue invalidates the former reporting credential without changing SSH
       // keys, OS accounts, provider access, or the existing lifecycle/identity.
       state.nodes[uid] = { ...(existing ?? { node_uid: uid, node_id: uid, platform: 'linux', lifecycle: 'PROVISIONAL' }),
-        label: body.label?.trim() ?? existing.label ?? existing.node_id,
+        label: label ?? existing.label ?? existing.node_id,
         reporting: { registered_at: null, last_seen_at: null, last_report: null, digest: null, revoked_at: null } };
       state.presence_tickets[ticketId] = ticket;
-      return ok({ ticket: { ticket_id: ticketId, node_uid: uid, expires_at: ticket.expires_at }, short_code: code }, true, 201);
+      return ok(ticketDelivery(ticket, code), true, 201);
     }
     let match = /^\/v0\/enrollment-tickets\/([^/]+)\/revoke$/.exec(path);
     if (method === 'POST' && match) {

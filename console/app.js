@@ -5,7 +5,7 @@ const copy = {
     credential:'这里只接受 GhostFleet Operator / Read 访问令牌，不是 Cloudflare 或 SSH 凭据。令牌仅留在页面内存。',
     missing:'控制面尚未初始化，请实例所有者通过原生部署流程设置应用访问令牌。', required:'请输入实例所有者提供的访问令牌。', unknown:'尚不能确认控制面状态，请检查部署或登录入口。',
     boundary:'“在线”仅表示最近收到本节点心跳；服务栏是本机进程观测，不代表 Cloudflare/Tailscale 入口或 SSH 登录已通过。',
-    create:'首次纳管', label:'节点名称', columns:['节点','心跳状态','最后收到','SSH','Cloudflare','Tailscale','操作'],
+    create:'注册心跳', retryTicket:'核对票据', issueUncertain:'尚未收到签发结果，可用「核对票据」查看同一请求。', ticketRecovered:'已找回原节点。短码仅显示一次，如未保存，请在该节点行重发票据。节点：', label:'节点名称', columns:['节点','心跳状态','最后收到','SSH','Cloudflare','Tailscale','操作'],
     reissue:'重发票据', revoke:'撤销上报', replaceConfirm:'重发将使该节点旧心跳凭据失效，但不改变 SSH。继续？', revokeConfirm:'只撤销心跳上报，不撤销 SSH 或网络权限。继续？',
     delivery:'一次性纳管材料', warning:'短码只在本次显示。响应丢失或安装中断时，先检查同一节点，不要重复创建节点。',
     code:'终端中输入的独立短码', expires:'过期时间', copy:'复制安装命令', hide:'清除此材料', root:'在目标 Linux 终端运行这一行命令。须已有可信 CA、curl 或 wget 和 sha256sum；命令先校验下载脚本，非 root 时请求 sudo，仅在缺少 Python 时安装 python3，不做系统升级。已有 Python 需为 3.10+。短码仍在终端隐藏提示中输入。已有节点重发自动使用 --replace。',
@@ -18,7 +18,7 @@ const copy = {
     credential:'Use a GhostFleet Operator / Read token, not a Cloudflare or SSH credential. It stays only in page memory.',
     missing:'Application authentication is not initialized. The deployment owner must configure it through the native deployment flow.', required:'Enter the access token supplied by the instance owner.', unknown:'Backend status is unknown. Check the deployment or login entry.',
     boundary:'Online means a recent authenticated heartbeat. Service states are local process observations, not proof of inbound Cloudflare/Tailscale or SSH connectivity.',
-    create:'Enroll node',label:'Node label',columns:['Node','Presence','Last received','SSH','Cloudflare','Tailscale','Actions'],
+    create:'Register heartbeat',retryTicket:'Check ticket',issueUncertain:'No issue receipt yet. Check ticket to recover the result of the same request.',ticketRecovered:'The original node was recovered. If you missed the one-time code, reissue the ticket from that node’s row. Node: ',label:'Node label',columns:['Node','Presence','Last received','SSH','Cloudflare','Tailscale','Actions'],
     reissue:'Reissue',revoke:'Revoke reporting',replaceConfirm:'Reissuing disables the former reporting credential, not SSH. Continue?',revokeConfirm:'Revoke heartbeat reporting only, not SSH or network access. Continue?',
     delivery:'One-time enrollment',warning:'The code is shown only now. On lost responses or interrupted installation, reconcile this same node instead of creating another.',code:'Separate terminal code',expires:'Expires',copy:'Copy installer command',hide:'Clear delivery',
     root:'Run this one-line command on the target Linux terminal with trusted CA certificates, curl or wget, and sha256sum already available. The command verifies the downloaded shim before execution. It requests sudo only when needed and installs only missing python3, without a system upgrade. An existing Python must be 3.10+. Enter the short code at the hidden terminal prompt. Reissue automatically uses --replace.',
@@ -28,12 +28,33 @@ const copy = {
 };
 let lang = 'zh', token = '', access = null, installer = null, nodeOrigin = '', rows = [], receivedAt = null;
 let epoch = 0, session = new AbortController(), timer = null, busy = false;
+const ticketAttemptKey = 'ghostfleet:initial-ticket-attempt';
+let ticketAttempt = null;
+try {
+  const saved = JSON.parse(sessionStorage.getItem(ticketAttemptKey));
+  if (typeof saved?.label === 'string' && typeof saved.attempt_id === 'string') {
+    ticketAttempt = { label: saved.label, attempt_id: saved.attempt_id };
+    $('label').value = saved.label;
+  }
+} catch { /* Use in-memory recovery when browser storage is unavailable. */ }
+function saveTicketAttempt(attempt) {
+  ticketAttempt = attempt;
+  try {
+    if (attempt) sessionStorage.setItem(ticketAttemptKey, JSON.stringify(attempt));
+    else sessionStorage.removeItem(ticketAttemptKey);
+  } catch { /* A normal response does not depend on browser storage. */ }
+}
 const t = key => copy[lang][key];
 function text(id, value) { $(id).textContent = value; }
 function feedback(value) { text('feedback', value); }
 function date(value) { return value ? new Date(value).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en') : '—'; }
 function cell(value) { const td = document.createElement('td'); td.textContent = value; return td; }
-function controls() { $('create-ticket').disabled = busy || access !== 'operator' || !installer; $('refresh').disabled = busy; }
+function controls() {
+  $('create-ticket').disabled = busy || access !== 'operator' || !installer;
+  $('label').readOnly = busy || ticketAttempt !== null;
+  text('create-ticket', t(ticketAttempt ? 'retryTicket' : 'create'));
+  $('refresh').disabled = busy;
+}
 function translate() {
   document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
   for (const [id, key] of Object.entries({subtitle:'subtitle','login-title':'login',connect:'connect',disconnect:'disconnect',refresh:'refresh','credential-help':'credential',boundary:'boundary','create-ticket':'create','delivery-title':'delivery','delivery-warning':'warning','code-label':'code','expires-label':'expires','copy-command':'copy','hide-delivery':'hide','root-help':'root','footer-note':'footer'})) text(id, t(key));
@@ -47,7 +68,7 @@ async function api(path, method = 'GET', body) {
     ...(body !== undefined ? {body:JSON.stringify(body)} : {}), signal:AbortSignal.any([session.signal, AbortSignal.timeout(10000)]) });
   if (!response.headers.get('content-type')?.includes('application/json')) throw new Error('UNEXPECTED_RESPONSE');
   const data = await response.json();
-  if (!response.ok || data.ok !== true) throw new Error(data.error ?? 'REQUEST_FAILED');
+  if (!response.ok || data.ok !== true) throw Object.assign(new Error(data.error ?? 'REQUEST_FAILED'), { ticket: data.ticket });
   return data;
 }
 function clearDelivery() { $('delivery').hidden = true; for (const id of ['short-code','delivery-node','expires','command']) text(id,''); }
@@ -81,16 +102,40 @@ function installCommand(ticket, replace = false) {
     `/bin/sh "$d/join.sh" --origin ${quote(nodeOrigin)} --ticket ${quote(ticket)}${replaceArg})`,
   ].join(' ');
 }
+async function recoverTicket(ticket, requestEpoch) {
+  saveTicketAttempt(null); $('label').value = '';
+  await refresh();
+  if (requestEpoch === epoch) feedback(t('ticketRecovered') + ticket.node_uid);
+}
 async function makeTicket(node) {
   if (!installer || access !== 'operator' || busy) return;
   if (node && !confirm(t('replaceConfirm'))) return;
   const e = epoch; busy = true; controls(); clearDelivery();
   try {
-    const data = await api('/v0/enrollment-tickets','POST',node ? {node_uid:node.node_uid} : {label:$('label').value.trim()});
+    if (!node && !ticketAttempt) saveTicketAttempt({ label: $('label').value.trim(), attempt_id: crypto.randomUUID() });
+    const data = await api('/v0/enrollment-tickets','POST',node ? {node_uid:node.node_uid} : ticketAttempt);
     if (e !== epoch) return;
+    if (!node && data.short_code === null) {
+      await recoverTicket(data.ticket, e);
+      return;
+    }
     text('delivery-node',data.ticket.node_uid); text('short-code',data.short_code); text('expires',date(data.ticket.expires_at));
-    text('command',installCommand(data.ticket.ticket_id, Boolean(node))); $('delivery').hidden = false; $('label').value = ''; await refresh();
-  } catch (error) { if (e === epoch) feedback(t('uncertain') + ' ' + error.message); }
+    text('command',installCommand(data.ticket.ticket_id, Boolean(node)));
+    $('delivery').hidden = false;
+    if (!node) { saveTicketAttempt(null); $('label').value = ''; }
+    await refresh();
+  } catch (error) {
+    if (e === epoch) {
+      if (!node && error.message === 'ENROLLMENT_ATTEMPT_CONFLICT' && error.ticket?.node_uid) {
+        await recoverTicket(error.ticket, e);
+        return;
+      }
+      // A previous Worker may reject an unknown field. Keep the original
+      // attempt through rollback until the server can reconcile it.
+      if (!node && ['INVALID_LABEL', 'LABEL_REQUIRED', 'INVALID_ENROLLMENT_ATTEMPT'].includes(error.message)) saveTicketAttempt(null);
+      feedback(t(!node && ticketAttempt ? 'issueUncertain' : 'uncertain') + ' ' + error.message);
+    }
+  }
   finally { if (e === epoch) { busy = false; controls(); render(); } }
 }
 async function revoke(node) {
