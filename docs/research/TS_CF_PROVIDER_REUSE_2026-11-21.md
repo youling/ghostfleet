@@ -79,6 +79,20 @@ Tailscale 与 Cloudflare 已经是节点网络身份、设备连接状态、隧�
 - 记录缺测率、延迟、相互矛盾比例、上游 API/事件中断、权限/维护成本、实际 CPU/带宽及是否独立识别 TS/CF 双断但一般 HTTPS 仍通等情况。禁用“一个指标推全绿”。
 - 试验完成后才决策：① **provider-first** 页面不再用 GhostFleet heartbeat 证明 TS/CF 在线；② **host-augmented** 继续装 one-shot 以观测本机核心 unit；③ 可选 **provider-only** 模式不安装 reporter，但 UI 明确显示 OS service state UNKNOWN。要降频或废除心跳需另行兼容性/安全决策，不原地改 v1 时效阈值。
 
+**Stage B 的纯离线比较器（SOURCE_ONLY）**：`src/control-plane/provider-shadow.js` 导出 `projectProviderShadow(node_uid, observations, now_ms)`。它不调用 TS/CF API，也不读取原始 Device ID/Tunnel ID/Tag/IP/Token。由私有 Owner **先**确认某个 Provider 设备/隧道与不可变 `node_uid` 的对应关系，再向比较器提供仅有五个字段的脱敏事实：
+
+```text
+{node_uid, source_kind, source_state, collected_at_ms, valid_until_ms}
+source_kind =
+    TAILSCALE_DEVICES | CLOUDFLARE_TUNNEL | GHOSTFLEET_HEARTBEAT
+source_state =
+    TAILSCALE_DEVICES: CONTROL_CONNECTED | CONTROL_DISCONNECTED
+    CLOUDFLARE_TUNNEL: EDGE_HEALTHY | EDGE_DEGRADED | EDGE_DOWN | INACTIVE
+    GHOSTFLEET_HEARTBEAT: PENDING | ONLINE | STALE | OFFLINE | REVOKED | UNKNOWN
+```
+
+每个来源各自给出 `CURRENT/STALE/UNKNOWN/CONFLICT`，不会把 TS 在线 + CF 健康推断为主机 SSH 可用或 Job admissible。过期、未来、错 UID、相同时间戳冲突及未识别字段 fail closed；输入最多 32 条，观测有效期最多 15 分钟。输出永久声明 `authorization/ssh_authentication/job_admission=NOT_EVALUATED`，`execution_effect/heartbeat_configuration_effect=NONE`。**它不是实时采集器，也不是可自动停止心跳的统计结论**；48–72 小时的取样、来源鉴权、配额、保存与删除仍由私有 Owner 持有。
+
 **Stage C — 逐步消费**
 - Cloudflare Tunnel 健康优先使用官方通知，Webhook 须受控、验签/防重放或使用经保护的接收渠道并定期与 API 对账。
 - Tailscale Webhook 主要是管理与密钥事件，没有通用 online/offline 事件，不能省去对当前连接状态的读取。
