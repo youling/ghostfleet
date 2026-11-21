@@ -6,6 +6,7 @@
 - [固定摘要的 POSIX 首次引导 ADR005 / Pinned bootstrap decision](adr/005-pinned-posix-join-bootstrap.md)
 - [节点身份、服务端点与被动连通证据 ADR006（仅源码候选）](adr/006-node-connectivity-evidence.md)
 - [Tailscale × Cloudflare 原生能力复用地图 / Provider-first observability research · 2026-11-21](research/TS_CF_PROVIDER_REUSE_2026-11-21.md)
+- [全自动下位机纳管 ADR007（真实搬瓦工 Canary → 国内生产力服务器）](adr/007-fully-managed-lower-node-enrollment.md)
 - [阶段交付与依赖图 / Staged delivery and dependencies](DELIVERY.md)
 - [面板、安装与修复 / Presence deployment and recovery](PRESENCE.md)
 - [原生 SSH 安装与连接 / Native transport setup](REMOTE_ACCESS.md)
