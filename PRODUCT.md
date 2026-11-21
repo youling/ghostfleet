@@ -12,6 +12,14 @@ GhostFleet 的目标是尽快提供可用的原生远控通道，再以最薄的
 
 源码、确定性测试、真实隔离运行、独立审查、系统级安装、受保护生产浏览器体验与发布分别报告。不以 CI 或示例截图冒充上线。Cloudflare 私有配置、真实域名、节点和凭据仍归实例所有者。
 
+### 正式版扩展：全自动 Managed 下位机纳管（ADR007）
+
+上面的 ADR004 是轻量 Reporter/Presence 子能力，不是完整纳管终点。正式版另提供受 Owner 授权的 `FULL_MANAGED_LOWER_NODE` profile：面板创建一次性 ticket + 短码；目标 Linux 机器在可信终端执行一次固定摘要 root bootstrap；同一 ceremony 自动完成主机预检、原生传输、复用现有 Tailscale/Cloudflare、DCR 节点身份/策略、专用 Root helper/签名租约与 ChatGPT 实际验收。
+
+**TP 是唯一 Controller；搬瓦工 Canary 与国内生产力服务器都是 Managed 下位节点。** 新节点不能因为完成 heartbeat Claim 就获得任意 root；Root profile 来自受保护 Operator 对指定下位机 profile 的一次授权。授权范围内连续日常 Root 运维不逐条弹卡，超出范围的高影响操作另行授权。
+
+全自动意味着新增节点不再要求手改 Worker 源码、复制 UID/公钥或逐台手工创建 Tunnel。应由现有 Worker/DO 与私有 Fleet registry 动态发布经审核的 Node UID、传输定位符、Host Key pin 和能力策略；已有 TS/CF 先探测并复用，不为形式统一重复安装。真实搬瓦工 VPS 是首个 E2E Canary，**不使用虚拟机**；通过后再分批纳管国内生产力服务器。完整状态与验收见 [ADR007](docs/adr/007-fully-managed-lower-node-enrollment.md) 和 [GhostFleet #11](https://github.com/youling/ghostfleet/issues/11)。
+
 ## English
 
 Deliver useful native remote access quickly, with a minimal enrollment/presence UI. Native OpenSSH and upstream network providers own the session. No command parsing, filtering, approval, queue or replay is added. Root public-key authentication does not change ordinary users' OS policy.
