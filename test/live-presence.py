@@ -4,6 +4,7 @@ Requires npm ci and npm run build. Never deploys or changes SSH/providers.
 """
 import argparse
 import concurrent.futures
+from hashlib import sha256
 import json
 import os
 import re
@@ -122,6 +123,21 @@ def main():
 
         try:
             start(); check('real_workerd_DO_started')
+            manifest = json.loads((root / 'dist/installer.json').read_text())
+            access_status, access = api('/v0/access')
+            assert access_status == 200
+            installer = access['installer']
+            for advertised, pin, size, extension in (
+                (installer, manifest['sha256'], manifest['bytes'], '.py'),
+                (installer['bootstrap'], manifest['bootstrap_sha256'], manifest['bootstrap_bytes'], '.sh'),
+            ):
+                url = origin + '/bootstrap/' + pin + extension
+                assert advertised['url'] == url and advertised['sha256'] == pin
+                with urllib.request.urlopen(url, timeout=12) as downloaded:
+                    body = downloaded.read(size + 1)
+                    assert downloaded.status == 200 and len(body) == size
+                    assert sha256(body).hexdigest() == pin
+            check('advertised_installer_and_bootstrap_serve_exact_build_bytes')
             status, delivery = api('/v0/enrollment-tickets', {'label': 'synthetic-live-fixture'})
             assert status == 201
             path = '/v1/enrollment-tickets/' + delivery['ticket']['ticket_id'] + '/claim'
