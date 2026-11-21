@@ -123,18 +123,37 @@ test('refuses reserved build outputs as either config before writing anything', 
   mkdirSync(dist);
   const manifest = path.join(dist, 'installer.json');
   const draft = path.join(dist, 'private.json');
-  const manifestAlias = path.join(dist, 'private-alias.json');
   const original = JSON.stringify(f.config);
   writeFileSync(manifest, original);
   writeFileSync(draft, original);
-  linkSync(manifest, manifestAlias);
   const release = path.join(dist, 'release.json');
-  for (const [input, output] of [[manifest, release], [draft, manifest], [manifestAlias, release], [draft, manifestAlias]]) {
+  for (const [input, output] of [[manifest, release], [draft, manifest]]) {
     const result = f.build(input, output);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /OUTPUT_CONFIG_MUST_BE_SEPARATE/);
     assert.equal(readFileSync(manifest, 'utf8'), original);
-    assert.ok(!existsSync(path.join(dist, 'console')));
+    assert.ok(!existsSync(path.join(dist, 'release-assets')));
+  }
+});
+
+test('refuses generated manifests linked to an unrelated file before staging assets', t => {
+  const f = fixture(t);
+  writeFileSync(f.input, JSON.stringify(f.config));
+  const dist = path.join(f.root, 'dist');
+  mkdirSync(dist);
+  const unrelated = path.join(f.root, 'unrelated.json');
+  const original = 'existing file outside the build';
+  writeFileSync(unrelated, original);
+  for (const name of ['installer.json', 'wrangler.json']) {
+    const generated = path.join(dist, name);
+    linkSync(unrelated, generated);
+    const result = f.build();
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /GENERATED_CONFIG_PATH_UNSAFE/);
+    assert.equal(readFileSync(unrelated, 'utf8'), original);
+    assert.ok(!existsSync(path.join(dist, 'release-assets')));
+    assert.ok(!existsSync(f.output));
+    rmSync(generated);
   }
 });
 

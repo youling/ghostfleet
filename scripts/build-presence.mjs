@@ -27,16 +27,6 @@ function canonicalPath(file) {
   }
 }
 
-function hardlinkIdentity(file) {
-  try {
-    const stat = lstatSync(file, { bigint: true });
-    return stat.isFile() && stat.nlink > 1n ? stat.dev + ':' + stat.ino : null;
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-    return null;
-  }
-}
-
 function releaseConfig(args) {
   if (args.length === 0) return null;
   if (args.length !== 4 || args[0] !== '--deployment-config' || args[2] !== '--output-config') {
@@ -45,7 +35,7 @@ function releaseConfig(args) {
   const source = path.resolve(args[1]);
   const target = path.resolve(args[3]);
   const pathKey = value => process.platform === 'win32' ? value.toLowerCase() : value;
-  let sourceDir, targetDir, locations, publicAssets, reservedFiles, aliasesReservedFile;
+  let sourceDir, targetDir, locations, publicAssets, generatedPaths, generatedStats;
   try {
     sourceDir = canonicalPath(path.dirname(source));
     targetDir = canonicalPath(path.dirname(target));
@@ -58,21 +48,20 @@ function releaseConfig(args) {
     publicAssets = [path.join(out, 'console'), releaseAssets].flatMap(file => [
       path.join(distDir, path.basename(file)), canonicalPath(file),
     ]).map(pathKey);
-    const generatedPaths = ['wrangler.json', 'installer.json'].flatMap(name => [
-      path.join(distDir, name), canonicalPath(path.join(out, name)),
-    ]);
-    reservedFiles = generatedPaths.map(pathKey);
-    const reservedInodes = new Set(generatedPaths.map(hardlinkIdentity).filter(Boolean));
-    aliasesReservedFile = configPaths.some(file => reservedInodes.has(hardlinkIdentity(file)));
+    generatedPaths = ['wrangler.json', 'installer.json'].map(name => path.join(distDir, name));
+    generatedStats = generatedPaths.map(file => lstatSync(file, { throwIfNoEntry: false }));
   } catch {
     throw new Error('RELEASE_CONFIG_PATHS_UNVERIFIED');
   }
   if (pathKey(sourceDir) !== pathKey(targetDir)) {
     throw new Error('OUTPUT_MUST_SHARE_CONFIG_DIRECTORY');
   }
-  if (aliasesReservedFile || locations[0] === locations[1] || locations[2] === locations[3] ||
-      locations.some(file => reservedFiles.includes(file))) {
+  if (locations[0] === locations[1] || locations[2] === locations[3] ||
+      generatedPaths.map(pathKey).some(file => locations.includes(file))) {
     throw new Error('OUTPUT_CONFIG_MUST_BE_SEPARATE');
+  }
+  if (generatedStats.some(stat => stat && (!stat.isFile() || stat.nlink !== 1))) {
+    throw new Error('GENERATED_CONFIG_PATH_UNSAFE');
   }
   if (locations.some(file => publicAssets.some(directory => file === directory || file.startsWith(directory + path.sep)))) {
     throw new Error('PRIVATE_CONFIG_INSIDE_ASSETS');
