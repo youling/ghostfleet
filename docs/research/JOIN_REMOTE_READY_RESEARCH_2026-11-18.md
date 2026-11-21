@@ -102,3 +102,17 @@ DO 存储具有事务与强一致语义；Worker/DO 代码发布却可能暂时�
 后续范围仍需在现有主工单中确定：默认保留一次复制加短码，还是提供完全无人值守入口；可选首次公钥配置的范围；多操作者的身份和私钥保管方式；真实端点归属、主机身份及各来源路径的现场结果；生产限流和日志保留配置。现有源码与官方证据足以支持小型设计候选。若选择改变 token 语义或首次 root 配置，应明确相应实现合同并验证相关反例；无需引入整套 RMM、MDM 或新的 overlay 平台。
 
 **建议的下一步**：沿现有 #11 收敛“加入体验与可恢复原生 SSH 就绪向导”，优先减少无需扩大 SSH 写入范围的信息搬运；token 语义、自动公钥写入和端点字段模型作为后续明确的版本变更。候选方案不代表已实现或已获现场验收。
+
+
+## 8. Owner 决策更新 · 2026-11-22：真实 VPS 全自动下位机
+
+本节更新第 7 节尚未决定的入口形式，历史研究结论仍保留。
+
+- **验收环境已决定：真实搬瓦工 VPS，不使用虚拟机。** Canary 必须实际经过正式 Panel 域名、真实 HTTPS、ticket/短码、Provider、原生 SSH、Worker/DCR 和 ChatGPT 对话；本机 SSH/CI/已有节点迁移不替代首次加入。
+- **交互模式已决定：全自动 Managed 下位机。** Operator 在受保护 Panel 创建 `FULL_MANAGED_LOWER_NODE` ticket；目标机只做一次 root bootstrap + 短码输入。其后同一受授权流程自动完成主机预检、原生传输、TS/CF 发现与复用、DCR identity/policy、Root helper/签名 lease 与 ChatGPT 实际验收。
+- **角色固定：TP 是唯一 Controller。** 搬瓦工 Canary 及后续国内生产力服务器都是 Managed Nodes，不允许自报升格 Controller 或获得 Managed→Managed 新管理权限。
+- **不再要求逐节点静态 Worker 源码/Wrangler 配置。** 私有 Fleet/DCR 需要把已审核的 immutable Node UID、Provider/transport locator、Host Key pin 和 capability profile 动态发布。当前 static VPC binding 若不能支持新增节点，应在产品发布前修正；不能手工改一份 Worker 配置后声称自动纳管。
+- **已有 Provider 优先复用。** 自动发现 Tailscale/Cloudflare 现状，健康且身份符合就复用；只有所选控制路径确实需要、且无现成可用资源时才按 Owner profile 创建。Provider 健康不替代 SSH/Root 真实握手。
+- **Root 是 FULLY_MANAGED 的必要能力。** 固定 root-probe 之后，还要证明一次 Owner 授权覆盖指定 Node/任务范围/期限内的连续 Root session；普通 `fleet-job/v1` 不是 Root 通道。
+
+实现与验收细节见 [ADR007](../adr/007-fully-managed-lower-node-enrollment.md)。这一决策只确定正式版目标和真实 Canary 选择，不表示 bootstrap、动态 DCR 或连续 Root session 已经全部实现。
