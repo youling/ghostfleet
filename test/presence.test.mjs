@@ -91,6 +91,44 @@ test('lost claim response recovery reissues for SAME node and invalidates old to
   assert.notEqual(next.reporting_token, token);
   assert.equal(heartbeat(state, uid, next.reporting_token).status, 200);
 });
+test('replaying an initial issue after a lost response returns the original ticket without its code', () => {
+  const state = { nodes: {} };
+  const attempt = { label: 'synthetic-node', attempt_id: '11111111-1111-4111-8111-111111111111' };
+  const first = send(state, 'POST', '/v0/enrollment-tickets', attempt);
+  assert.equal(first.status, 201);
+  assert.match(first.data.short_code, /^\d{8}$/);
+
+  const restored = structuredClone(state);
+  const replay = send(restored, 'POST', '/v0/enrollment-tickets', attempt);
+  assert.deepEqual(replay, {
+    status: 200, dirty: false, data: { ok: true, ticket: first.data.ticket, short_code: null },
+  });
+  assert.deepEqual(restored, state);
+  assert.equal(Object.keys(restored.nodes).length, 1);
+  assert.equal(Object.keys(restored.presence_tickets).length, 1);
+
+  const originalUid = first.data.ticket.node_uid;
+  const replacement = issue(restored, { node_uid: originalUid });
+  const claimed = claim(restored, replacement);
+  assert.equal(claimed.status, 200);
+  assert.equal(claimed.data.node_uid, originalUid);
+  const afterClaim = structuredClone(restored);
+  assert.deepEqual(send(restored, 'POST', '/v0/enrollment-tickets', attempt), replay);
+  assert.deepEqual(restored, afterClaim);
+});
+test('initial issue attempt cannot be changed or used to reissue an existing node', () => {
+  const state = { nodes: {} };
+  const attempt = { label: 'synthetic-node', attempt_id: '11111111-1111-4111-8111-111111111111' };
+  const first = send(state, 'POST', '/v0/enrollment-tickets', attempt);
+  const snapshot = structuredClone(state);
+  const conflict = send(state, 'POST', '/v0/enrollment-tickets', { ...attempt, label: 'other' });
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.data.error, 'ENROLLMENT_ATTEMPT_CONFLICT');
+  const invalid = send(state, 'POST', '/v0/enrollment-tickets', { ...attempt, node_uid: first.data.ticket.node_uid });
+  assert.equal(invalid.status, 400);
+  assert.equal(invalid.data.error, 'INVALID_ENROLLMENT_ATTEMPT');
+  assert.deepEqual(state, snapshot);
+});
 test('revocation is idempotent, disables reporting only, preserves identity and other state', () => {
   const { state, uid, token } = enrolled();
   state.nodes[uid].asset_ref = 'synthetic-asset'; state.nodes[uid].lifecycle = 'ACTIVE';

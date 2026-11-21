@@ -4,6 +4,10 @@
 
 本文描述的现有 `join.sh` / Python installer 仍然只负责 GhostFleet reporter、systemd timer 和 heartbeat；它**不会**配置 SSH、Provider、DCR 或 Root helper。这是 ADR004 的既有轻量子能力，不能因 ADR007 的产品决策就误报已经升级。
 
+面板的「注册心跳」遇到签发响应丢失时，可在同一标签页点「核对票据」。首次请求用 UUID 绑定同一节点和原票据。若 Worker 已提交，核对只返回原 UID 和票据元数据。如未看到短码，在原节点行重发。浏览器仅暂存待确认的请求 UUID 和节点名称。
+
+If the initial **Register heartbeat** response is lost, use **Check ticket** in the same tab. A retry with the same request UUID recovers the original node and ticket metadata. If you missed the one-time code, reissue from the original node’s row. The browser temporarily stores the pending request UUID and node label.
+
 Owner 已决定正式版增加独立的 `FULL_MANAGED_LOWER_NODE` profile：一次 Panel ticket/短码 + 目标机一次 root bootstrap，在同一受授权流程内自动完成 Host preflight、复用已有 Tailscale/Cloudflare、原生 SSH、动态 DCR、Root helper/lease 与 ChatGPT 实际验收。该全流程合同见 [ADR007](adr/007-fully-managed-lower-node-enrollment.md)；首个真实 Canary 是搬瓦工 VPS，不使用虚拟机。**当前源码尚未实现这条完整流水线**；直到新 bootstrap/动态 DCR/Root session 的真实 ChatGPT E2E 通过前，现有 reporter-only 安装不能称为 FULLY_MANAGED。
 
 ## 中文
