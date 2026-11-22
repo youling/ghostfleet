@@ -22,6 +22,10 @@ The trusted client package supplies a root-owned `/etc/ghostfleet/enrollment-tru
 
 `npm run build:managed-host-bootstrap -- --output dist/managed-host-review.sh` creates a digest-pinned host/reporter stage for review. It reuses the reporter installer and checks Linux root, systemd, installation paths and the existing reporter origin before claim. OMV uses the separate owner preflight. An existing UID constrains the claim, and an uncertain claim is sent only once. `REPORTER_STARTED` reports local reporter activation. Private provider, transport, DCR and signed lease receipts are still required for full enrollment.
 
+私有 broker 可通过 Worker service binding 调用 `ManagedPanelDecisionReader.readManagedEnrollment(node_uid, ticket_id)`，取得同一 UID 最近一次有效领取的 Panel 决定摘要。重发待领取期间，原决定继续可读。替换领取、撤销上报或摘要换代后，旧决定不可读。读取只带 UID、票据、制品摘要和时间，后续私有准入仍须独立验证传输和能力。
+
+The private broker can bind to `ManagedPanelDecisionReader.readManagedEnrollment(node_uid, ticket_id)` for the most recently consumed decision for that UID. An issued replacement keeps the current decision readable until the replacement is claimed. Reporting revocation and bootstrap pin changes invalidate the corresponding readback. The receipt contains identifiers, pins and timestamps. The private broker still verifies its separate authority and reviewed transport evidence.
+
 ## 中文
 
 ### 开发与验证

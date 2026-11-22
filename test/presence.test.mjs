@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { dispatch, presence, MANAGED_PROFILE } from '../src/control-plane/presence.js';
+import { dispatch, presence, MANAGED_PROFILE, readManagedPanelDecision } from '../src/control-plane/presence.js';
 import { prepare } from '../src/control-plane/http.js';
 import worker, { GhostFleetState } from '../src/adapters/cloudflare/worker.js';
 
@@ -234,6 +234,38 @@ test('operator upgrades an existing UID without replacing a live reporter before
   assert.equal(claim(state, updated.data).status, 404);
   assert.equal(claimManaged(state, updated.data).status, 200);
   assert.equal(heartbeat(state, uid, token).status, 401);
+});
+
+test('decision RPC readback contains only the current timely managed claim and its digest', () => {
+  const state = {};
+  pair(state);
+  const delivery = issueManaged(state).data;
+  const { node_uid: uid, ticket_id: id } = delivery.ticket;
+  const read = (ticket = id, node = uid, pin = managedPin) => readManagedPanelDecision(state, node, ticket, pin);
+  assert.equal(read().ok, false);
+  const claimed = claimManaged(state, delivery);
+  assert.equal(claimed.status, 200);
+  const granted = read();
+  assert.equal(granted.ok, true);
+  assert.deepEqual(granted.decision, { protocol: 'ghostfleet-managed-panel-decision/v1', node_uid: uid,
+    panel_ticket_id: id, profile: MANAGED_PROFILE, role: 'managed', bootstrap_sha256: managedPin,
+    issued_at: new Date(clock).toISOString(), claimed_at: new Date(clock).toISOString(),
+    code_expires_at: delivery.ticket.expires_at });
+  assert.equal(granted.owner_decision_digest, 'sha256:' + createHash('sha256').update(JSON.stringify(granted.decision)).digest('hex'));
+  assert.ok(!JSON.stringify(granted).includes(claimed.data.reporting_token));
+  assert.equal(read(id, uid, 'b'.repeat(64)).ok, false);
+  assert.equal(read(id, 'node-' + managedAttempt).ok, false);
+
+  pair(state, replacementSecret);
+  const replacement = issueManaged(state, { node_uid: uid, profile: MANAGED_PROFILE, request_id: requestId(replacementSecret),
+    attempt_id: '44444444-4444-4444-8444-444444444444' }).data;
+  assert.deepEqual(read(), granted);
+  assert.equal(read(replacement.ticket.ticket_id).ok, false);
+  assert.equal(claimManaged(state, replacement, { expected_node_uid: uid }, managedPin, replacementSecret).status, 200);
+  assert.equal(read().ok, false);
+  assert.equal(read(replacement.ticket.ticket_id).ok, true);
+  assert.equal(send(state, 'POST', '/v0/nodes/' + uid + '/revoke').status, 200);
+  assert.equal(read(replacement.ticket.ticket_id).ok, false);
 });
 
 test('wrong code attempts affect only their authenticated pairing', () => {

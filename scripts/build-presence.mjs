@@ -234,7 +234,7 @@ if (release) {
 }
 
 const config = JSON.parse(readFileSync(path.join(root, 'wrangler.jsonc'), 'utf8'));
-config.main = '../src/adapters/cloudflare/worker.js';
+config.main = '../src/adapters/cloudflare/index.js';
 config.assets.directory = './' + path.relative(out, assets).split(path.sep).join('/');
 config.vars.GHOSTFLEET_INSTALLER_SHA256 = sha256;
 config.vars.GHOSTFLEET_BOOTSTRAP_SHA256 = bootstrapSha256;

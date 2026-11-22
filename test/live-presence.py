@@ -55,7 +55,19 @@ def main():
         reader = 'synthetic-reader-' + uuid.uuid4().hex
         config = json.loads((root / 'dist/wrangler.json').read_text())
         manifest = json.loads((root / 'dist/installer.json').read_text())
-        config['main'] = str(root / 'src/adapters/cloudflare/worker.js')
+        entrypoint = json.dumps(str((root / 'dist' / config['main']).resolve()))
+        fixture = run / 'local-entry.mjs'
+        fixture.write_text(f'import worker from {entrypoint};\nexport * from {entrypoint};\n' + '''
+export default { async fetch(request, env, ctx) {
+    if (new URL(request.url).pathname === '/__test/panel-readback' && request.method === 'POST') {
+        const body = await request.json();
+        return Response.json(await ctx.exports.ManagedPanelDecisionReader.readManagedEnrollment(body.uid, body.ticket));
+    }
+    return worker.fetch(request, env, ctx);
+}};
+''')
+        config['main'] = str(fixture)
+        config['compatibility_flags'].append('enable_ctx_exports')
         assets = run / 'assets'
         shutil.copytree(root / 'dist' / config['assets']['directory'], assets)
         config['assets']['directory'] = str(assets)
@@ -175,6 +187,8 @@ def main():
             assert status == 201 and len(managed['short_code']) == 6, 'MANAGED_ISSUE_' + str(status) + '_' + managed.get('error', '')
             assert api(issue_path, choice)[1]['short_code'] is None
             old_claim = '/v1/enrollment-tickets/' + managed['ticket']['ticket_id'] + '/claim'
+            readback = {'uid': managed['ticket']['node_uid'], 'ticket': managed['ticket']['ticket_id']}
+            assert api('/__test/panel-readback', readback, token='')[1]['ok'] is False
             assert api(old_claim, {'short_code': managed['short_code']}, token='')[0] == 404
             claim_body = {'short_code': managed['short_code'].lower(), 'request_id': request_id, 'request_secret': secret}
             status, receipt = api('/v1/managed-enrollment/claim', claim_body, token='')
@@ -182,6 +196,12 @@ def main():
             assert receipt['node_uid'] == managed['ticket']['node_uid']
             assert api('/v1/managed-enrollment/claim', claim_body, token='')[0] == 409
             check('managed_domain_pairing_and_operator_code')
+            rpc = api('/__test/panel-readback', readback, token='')[1]
+            decision = rpc['decision']
+            assert rpc['ok'] and decision['node_uid'] == readback['uid'] and decision['panel_ticket_id'] == readback['ticket']
+            assert rpc['owner_decision_digest'] == 'sha256:' + sha256(json.dumps(decision, separators=(',', ':')).encode()).hexdigest()
+            assert receipt['reporting_token'] not in json.dumps(rpc)
+            check('named_panel_decision_rpc_reads_only_consumed_receipt')
             attempt = {'label': 'synthetic-live-fixture', 'attempt_id': str(uuid.uuid4())}
             with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
                 issues = list(pool.map(lambda _: api('/v0/enrollment-tickets', attempt), range(12)))

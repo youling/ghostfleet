@@ -86,6 +86,25 @@ function managedEnrollment(state, node, now) {
   return { enrollment: { profile: MANAGED_PROFILE, role: 'managed', ticket_state: status, expires_at: ticket.expires_at } };
 }
 
+// Service-binding readback only. A successful reporter claim does not create
+// transport, provider or execution authority.
+export function readManagedPanelDecision(state, nodeUid, ticketId, bootstrapSha) {
+  const denied = { ok: false, error: 'MANAGED_PANEL_DECISION_UNAVAILABLE' };
+  if (typeof nodeUid !== 'string' || !UID.test(nodeUid) || typeof ticketId !== 'string' || !TICKET.test(ticketId) ||
+      typeof bootstrapSha !== 'string' || !/^[0-9a-f]{64}$/.test(bootstrapSha)) return denied;
+  const node = state.nodes?.[nodeUid];
+  const ticket = state.managed_enrollment_tickets?.[ticketId];
+  if (node?.managed_enrollment?.claimed_ticket_id !== ticketId || !node.reporting?.digest || node.reporting.revoked_at ||
+      ticket?.node_uid !== nodeUid || ticket.state !== 'CONSUMED' || ticket.profile !== MANAGED_PROFILE ||
+      ticket.bootstrap_sha256 !== bootstrapSha || !ticket.claimed_at || node.reporting?.registered_at !== ticket.claimed_at) return denied;
+  const issued = Date.parse(ticket.created_at), claimed = Date.parse(ticket.claimed_at), deadline = Date.parse(ticket.expires_at);
+  if (!(issued <= claimed && claimed < deadline && deadline - issued === TICKET_TTL_MS)) return denied;
+  const decision = { protocol: 'ghostfleet-managed-panel-decision/v1', node_uid: nodeUid, panel_ticket_id: ticketId,
+    profile: MANAGED_PROFILE, role: 'managed', bootstrap_sha256: bootstrapSha,
+    issued_at: ticket.created_at, claimed_at: ticket.claimed_at, code_expires_at: ticket.expires_at };
+  return { ok: true, decision, owner_decision_digest: 'sha256:' + digest(JSON.stringify(decision)) };
+}
+
 // Synchronous mutation, called once per durable storage transaction attempt.
 // There are no network/provider effects here. Responses are returned only after commit.
 export function dispatch(input, state, now = Date.now()) {
@@ -186,7 +205,7 @@ export function dispatch(input, state, now = Date.now()) {
         label: label ?? existing.label ?? existing.node_id,
         reporting: (managed && existing?.reporting) ||
           { registered_at: null, last_seen_at: null, last_report: null, digest: null, revoked_at: null },
-        ...(managed ? { managed_enrollment: { ticket_id: ticketId } } : {}) };
+        ...(managed ? { managed_enrollment: { ...(existing?.managed_enrollment ?? {}), ticket_id: ticketId } } : {}) };
       tickets[ticketId] = ticket;
       if (pairing) { pairing.ticket_id = ticketId; pairing.expires_at = ticket.expires_at; }
       return ok(deliver(ticket, code), true, 201);
@@ -250,6 +269,10 @@ export function dispatch(input, state, now = Date.now()) {
       const token = 'gf_hb_' + randomBytes(32).toString('base64url');
       node.reporting.digest = digest(token); node.reporting.registered_at = iso(now);
       t.state = 'CONSUMED'; t.code_digest = null;
+      if (managedClaim) {
+        t.claimed_at = iso(now);
+        node.managed_enrollment.claimed_ticket_id = t.ticket_id;
+      }
       return ok({ node_uid: node.node_uid, reporting_token: token, ...(managedClaim ? { profile: MANAGED_PROFILE } : {}) }, true);
     }
     match = /^\/v1\/nodes\/([^/]+)\/heartbeat$/.exec(path);
