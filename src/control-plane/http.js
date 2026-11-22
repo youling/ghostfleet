@@ -1,4 +1,4 @@
-import { authorizeApi, getAccessLevel } from '../adapters/cloudflare/auth.js';
+import { authorizePanel } from '../adapters/cloudflare/auth.js';
 export const MAX_BODY_BYTES = 4096;
 export const json = (data, status = 200) => Response.json(data, { status, headers: {
   'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
@@ -11,22 +11,16 @@ export async function prepare(request, env) {
   if (!['GET', 'POST'].includes(request.method)) return { response: deny('METHOD_NOT_ALLOWED', 405) };
   let access = null;
   if (url.pathname.startsWith('/v0/')) {
-    if (env.GHOSTFLEET_OPERATOR_TOKEN && env.GHOSTFLEET_OPERATOR_TOKEN === env.GHOSTFLEET_READ_TOKEN) {
-      return { response: deny('AUTH_CONFIG_CONFLICT', 503) };
-    }
-    const denial = await authorizeApi(request, env);
-    if (denial) return { response: denial };
-    access = await getAccessLevel(request, env);
-    const origin = request.headers.get('origin');
-    if (request.method === 'POST' && origin && origin !== env.GHOSTFLEET_PANEL_ORIGIN) {
-      return { response: deny('ORIGIN_DENIED', 403) };
-    }
+    const authority = await authorizePanel(request, env);
+    if (authority instanceof Response) return { response: authority };
+    access = authority.access;
     if (request.method === 'GET' && url.pathname === '/v0/access') {
       const sha = env.GHOSTFLEET_INSTALLER_SHA256;
       const bootstrapSha = env.GHOSTFLEET_BOOTSTRAP_SHA256;
       const installerReady = typeof sha === 'string' && /^[0-9a-f]{64}$/.test(sha);
       const bootstrapReady = typeof bootstrapSha === 'string' && /^[0-9a-f]{64}$/.test(bootstrapSha);
       return { response: json({ ok: true, access, node_origin: env.GHOSTFLEET_NODE_ORIGIN,
+        ...(authority.authMode === 'cloudflare_access' ? { auth_mode: authority.authMode } : {}),
         installer: installerReady && bootstrapReady ? {
           url: env.GHOSTFLEET_NODE_ORIGIN + '/bootstrap/' + sha + '.py', sha256: sha,
           bootstrap: { url: env.GHOSTFLEET_NODE_ORIGIN + '/bootstrap/' + bootstrapSha + '.sh', sha256: bootstrapSha },

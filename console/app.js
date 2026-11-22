@@ -1,9 +1,14 @@
-import { FIRST_USE, probeFirstUse } from './shared/first-use.js';
+import { FIRST_USE, classifyFirstUseResponse } from './shared/first-use.js';
 const $ = id => document.getElementById(id);
 const copy = {
   zh: { subtitle:'首次纳管与心跳状态 · 远程会话仍由原生 OpenSSH 提供', login:'连接控制面', connect:'连接', disconnect:'断开', refresh:'刷新',
     credential:'这里只接受 GhostFleet Operator / Read 访问令牌，不是 Cloudflare 或 SSH 凭据。令牌仅留在页面内存。',
     missing:'控制面尚未初始化，请实例所有者通过原生部署流程设置应用访问令牌。', required:'请输入实例所有者提供的访问令牌。', unknown:'尚不能确认控制面状态，请检查部署或登录入口。',
+    panelAccess:'面板访问', checkingAccess:'正在检查面板访问权限…', reconnect:'重新打开面板',
+    accessRequired:'当前 Cloudflare Access 会话不可用。重新打开面板以继续。',
+    accessDenied:'当前 Cloudflare Access 身份没有面板权限。请联系实例所有者。',
+    accessMissing:'面板的 Cloudflare Access 验证尚未配置完成。请联系实例所有者。',
+    accessDisconnected:'已断开面板。重新打开面板可复用当前 Cloudflare Access 会话。',
     boundary:'“在线”仅表示最近收到本节点心跳；服务栏是本机进程观测，不代表 Cloudflare/Tailscale 入口或 SSH 登录已通过。',
     create:'首次纳管', label:'节点名称', columns:['节点','心跳状态','最后收到','SSH','Cloudflare','Tailscale','操作'],
     reissue:'重发票据', revoke:'撤销上报', replaceConfirm:'重发将使该节点旧心跳凭据失效，但不改变 SSH。继续？', revokeConfirm:'只撤销心跳上报，不撤销 SSH 或网络权限。继续？',
@@ -17,6 +22,11 @@ const copy = {
   en: { subtitle:'Enrollment and presence · native OpenSSH remains the session transport', login:'Connect to control plane', connect:'Connect', disconnect:'Disconnect', refresh:'Refresh',
     credential:'Use a GhostFleet Operator / Read token, not a Cloudflare or SSH credential. It stays only in page memory.',
     missing:'Application authentication is not initialized. The deployment owner must configure it through the native deployment flow.', required:'Enter the access token supplied by the instance owner.', unknown:'Backend status is unknown. Check the deployment or login entry.',
+    panelAccess:'Panel access', checkingAccess:'Checking panel access…', reconnect:'Reopen panel',
+    accessRequired:'Your Cloudflare Access session is unavailable. Reopen the panel to continue.',
+    accessDenied:'Your Cloudflare Access identity lacks panel permissions. Contact the instance owner.',
+    accessMissing:'Cloudflare Access verification is not configured for the panel. Contact the instance owner.',
+    accessDisconnected:'The panel is disconnected. Reopen it to use your current Cloudflare Access session.',
     boundary:'Online means a recent authenticated heartbeat. Service states are local process observations, not proof of inbound Cloudflare/Tailscale or SSH connectivity.',
     create:'Enroll node',label:'Node label',columns:['Node','Presence','Last received','SSH','Cloudflare','Tailscale','Actions'],
     reissue:'Reissue',revoke:'Revoke reporting',replaceConfirm:'Reissuing disables the former reporting credential, not SSH. Continue?',revokeConfirm:'Revoke heartbeat reporting only, not SSH or network access. Continue?',
@@ -27,6 +37,7 @@ const copy = {
     states:{active:'Active',inactive:'Inactive',failed:'Failed',activating:'Starting',deactivating:'Stopping',reloading:'Reloading',not_found:'Not found',unknown:'Unknown'} },
 };
 let lang = 'zh', token = '', access = null, installer = null, nodeOrigin = '', rows = [], receivedAt = null;
+let authMode = null, loginStatus = FIRST_USE.CHECKING;
 let epoch = 0, session = new AbortController(), timer = null, busy = false;
 const t = key => copy[lang][key];
 function text(id, value) { $(id).textContent = value; }
@@ -34,36 +45,64 @@ function feedback(value) { text('feedback', value); }
 function date(value) { return value ? new Date(value).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en') : '—'; }
 function cell(value) { const td = document.createElement('td'); td.textContent = value; return td; }
 function controls() { $('create-ticket').disabled = busy || access !== 'operator' || !installer; $('refresh').disabled = busy; }
+function renderLogin() {
+  const tokenMode = [FIRST_USE.TOKEN_REQUIRED, FIRST_USE.NOT_INITIALIZED].includes(loginStatus);
+  $('login-card').hidden = Boolean(access);
+  $('fleet-card').hidden = !access;
+  $('login-form').hidden = !tokenMode;
+  $('credential-help').hidden = !tokenMode;
+  $('reconnect').hidden = ![FIRST_USE.SESSION_REQUIRED, FIRST_USE.DISCONNECTED, FIRST_USE.UNKNOWN].includes(loginStatus);
+  text('login-title', t(tokenMode ? 'login' : 'panelAccess'));
+  text('first-use', t(loginStatus));
+}
 function translate() {
   document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
-  for (const [id, key] of Object.entries({subtitle:'subtitle','login-title':'login',connect:'connect',disconnect:'disconnect',refresh:'refresh','credential-help':'credential',boundary:'boundary','create-ticket':'create','delivery-title':'delivery','delivery-warning':'warning','code-label':'code','expires-label':'expires','copy-command':'copy','hide-delivery':'hide','root-help':'root','footer-note':'footer'})) text(id, t(key));
+  for (const [id, key] of Object.entries({subtitle:'subtitle',connect:'connect',disconnect:'disconnect',reconnect:'reconnect',refresh:'refresh','credential-help':'credential',boundary:'boundary','create-ticket':'create','delivery-title':'delivery','delivery-warning':'warning','code-label':'code','expires-label':'expires','copy-command':'copy','hide-delivery':'hide','root-help':'root','footer-note':'footer'})) text(id, t(key));
   $('label').placeholder = t('label');
   $('columns').replaceChildren(...t('columns').map(v => { const th = document.createElement('th'); th.textContent = v; return th; }));
-  render();
+  renderLogin(); render();
 }
 async function api(path, method = 'GET', body) {
-  const response = await fetch(path, { method, redirect:'error', cache:'no-store', credentials:'same-origin',
-    headers:{authorization:'Bearer ' + token, ...(body !== undefined ? {'content-type':'application/json'} : {})},
+  const response = await fetch(path, { method, redirect:'manual', cache:'no-store', credentials:'same-origin',
+    headers:{accept:'application/json', 'x-requested-with':'XMLHttpRequest', ...(token ? {authorization:'Bearer ' + token} : {}),
+      ...(body !== undefined ? {'content-type':'application/json'} : {})},
     ...(body !== undefined ? {body:JSON.stringify(body)} : {}), signal:AbortSignal.any([session.signal, AbortSignal.timeout(10000)]) });
-  if (!response.headers.get('content-type')?.includes('application/json')) throw new Error('UNEXPECTED_RESPONSE');
+  if (!response.headers.get('content-type')?.toLowerCase().includes('application/json')) {
+    let state = classifyFirstUseResponse(response);
+    if (response.status === 401) state = FIRST_USE.SESSION_REQUIRED;
+    if (response.status === 403) state = FIRST_USE.IDENTITY_DENIED;
+    throw Object.assign(new Error('UNEXPECTED_RESPONSE'), { loginStatus:state });
+  }
   const data = await response.json();
-  if (!response.ok || data.ok !== true) throw new Error(data.error ?? 'REQUEST_FAILED');
+  if (!response.ok || data?.ok !== true || response.redirected) {
+    throw Object.assign(new Error(data?.error ?? 'REQUEST_FAILED'), { loginStatus:classifyFirstUseResponse(response, data) });
+  }
   return data;
 }
 function clearDelivery() { $('delivery').hidden = true; for (const id of ['short-code','delivery-node','expires','command']) text(id,''); }
-function disconnect() {
+function disconnect(status = authMode === 'cloudflare_access' ? FIRST_USE.DISCONNECTED : FIRST_USE.TOKEN_REQUIRED) {
   epoch++; session.abort(); session = new AbortController(); clearTimeout(timer);
-  token = ''; access = null; installer = null; rows = []; receivedAt = null; busy = false;
-  $('token').value = ''; $('fleet-card').hidden = true; $('login-card').hidden = false;
-  clearDelivery(); feedback(''); render();
+  token = ''; access = null; authMode = null; installer = null; nodeOrigin = ''; rows = []; receivedAt = null; busy = false;
+  $('token').value = ''; loginStatus = status;
+  clearDelivery(); feedback(''); renderLogin(); render();
+}
+function handleSessionFailure(error) {
+  const status = error.loginStatus;
+  const accessFailure = [FIRST_USE.SESSION_REQUIRED, FIRST_USE.IDENTITY_DENIED, FIRST_USE.ACCESS_NOT_CONFIGURED].includes(status);
+  const accessDisabled = authMode === 'cloudflare_access' && [FIRST_USE.TOKEN_REQUIRED, FIRST_USE.NOT_INITIALIZED].includes(status);
+  if (!accessFailure && !accessDisabled) return false;
+  disconnect(status);
+  return true;
 }
 async function refresh() {
+  if (!access) return;
   const e = epoch;
   try {
     const data = await api('/v0/nodes'); if (e !== epoch) return;
     rows = data.nodes; receivedAt = data.received_at; render(); feedback('');
-  } catch (error) { if (e === epoch) feedback(t('stale') + ' ' + error.message); }
-  finally { if (e === epoch && token) { clearTimeout(timer); timer = setTimeout(refresh, 30000); } }
+    return true;
+  } catch (error) { if (e === epoch && !handleSessionFailure(error)) feedback(t('stale') + ' ' + error.message); }
+  finally { if (e === epoch && access) { clearTimeout(timer); timer = setTimeout(refresh, 30000); } }
 }
 const quote = value => "'" + String(value).replaceAll("'", "'\\''") + "'";
 function installCommand(ticket, replace = false) {
@@ -90,14 +129,18 @@ async function makeTicket(node) {
     if (e !== epoch) return;
     text('delivery-node',data.ticket.node_uid); text('short-code',data.short_code); text('expires',date(data.ticket.expires_at));
     text('command',installCommand(data.ticket.ticket_id, Boolean(node))); $('delivery').hidden = false; $('label').value = ''; await refresh();
-  } catch (error) { if (e === epoch) feedback(t('uncertain') + ' ' + error.message); }
+  } catch (error) {
+    if (e === epoch) feedback(t('uncertain') + (handleSessionFailure(error) ? '' : ' ' + error.message));
+  }
   finally { if (e === epoch) { busy = false; controls(); render(); } }
 }
 async function revoke(node) {
   if (busy || !confirm(t('revokeConfirm'))) return;
   const e = epoch; busy = true; controls(); clearDelivery();
   try { await api('/v0/nodes/' + node.node_uid + '/revoke','POST',{}); if (e === epoch) await refresh(); }
-  catch (error) { if (e === epoch) feedback(t('uncertain') + ' ' + error.message); }
+  catch (error) {
+    if (e === epoch) feedback(t('uncertain') + (handleSessionFailure(error) ? '' : ' ' + error.message));
+  }
   finally { if (e === epoch) { busy = false; controls(); render(); } }
 }
 function render() {
@@ -117,18 +160,41 @@ function render() {
   if (!rows.length) { const tr=document.createElement('tr'),td=cell(t('empty')); td.colSpan=7;tr.append(td);body.append(tr); }
   controls();
 }
-$('login-form').addEventListener('submit',async event=>{
-  event.preventDefault(); const entered=$('token').value; disconnect(); token=entered; const e=epoch;
-  try { const data=await api('/v0/access'); if(e!==epoch)return; access=data.access;installer=data.installer;nodeOrigin=data.node_origin;
-    $('login-card').hidden=true;$('fleet-card').hidden=false;await refresh();if(!installer)feedback(t('noInstaller'));
-  } catch(error) { if(e===epoch){disconnect();feedback(error.message);} }
+async function connect(entered = '') {
+  disconnect(FIRST_USE.CHECKING);
+  token = entered;
+  const e = epoch;
+  try {
+    const data = await api('/v0/access');
+    if (e !== epoch) return;
+    const cloudflareAccess = data.auth_mode === 'cloudflare_access';
+    if ((!entered && !cloudflareAccess) || !['operator', 'read_only'].includes(data.access)) throw new Error('UNEXPECTED_RESPONSE');
+    authMode = cloudflareAccess ? 'cloudflare_access' : 'bearer';
+    if (cloudflareAccess) token = '';
+    access = data.access; installer = data.installer; nodeOrigin = data.node_origin;
+    renderLogin(); render();
+    if (await refresh() && e === epoch && !installer) feedback(t('noInstaller'));
+  } catch (error) {
+    if (e !== epoch) return;
+    const status = error.loginStatus ?? FIRST_USE.UNKNOWN;
+    const retryBearer = entered && [FIRST_USE.UNKNOWN, FIRST_USE.TOKEN_REQUIRED].includes(status);
+    disconnect(retryBearer ? FIRST_USE.TOKEN_REQUIRED : status);
+    if (retryBearer) feedback(error.message);
+  }
+}
+$('login-form').addEventListener('submit', event=>{
+  event.preventDefault();
+  const entered = $('token').value;
+  if (!$('login-form').hidden && entered) return connect(entered);
 });
-$('disconnect').addEventListener('click',disconnect);$('refresh').addEventListener('click',refresh);
+$('disconnect').addEventListener('click',()=>disconnect());$('refresh').addEventListener('click',refresh);
+$('reconnect').addEventListener('click',()=>window.location.reload());
 $('enroll-form').addEventListener('submit',e=>{e.preventDefault();makeTicket(null);});
 $('hide-delivery').addEventListener('click',clearDelivery);
 $('copy-command').addEventListener('click',async()=>{try{await navigator.clipboard.writeText($('command').textContent);feedback(t('copied'));}catch{feedback('CLIPBOARD_UNAVAILABLE');}});
 $('language').addEventListener('change',()=>{lang=$('language').value;translate();});
 $('theme').addEventListener('click',()=>{document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark';});
-window.addEventListener('pagehide',disconnect);
+window.addEventListener('pagehide',()=>disconnect(FIRST_USE.CHECKING));
+window.addEventListener('pageshow',event=>{ if (event.persisted) void connect(); });
 translate();
-probeFirstUse().then(state=>text('first-use',state===FIRST_USE.NOT_INITIALIZED?t('missing'):state===FIRST_USE.TOKEN_REQUIRED?t('required'):t('unknown')));
+void connect();
