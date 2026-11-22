@@ -56,7 +56,9 @@ def trusted_origins():
 
 
 def download(opener, url, limit, document=None):
-    request = urllib.request.Request(url, headers={'Accept': 'application/json' if document is not None else '*/*'},
+    headers = {'Accept': 'application/json' if document is not None else '*/*',
+               'User-Agent': 'GhostFleet-Enrollment/1'}
+    request = urllib.request.Request(url, headers=headers,
         data=None if document is None else json.dumps(document).encode('ascii'))
     if document is not None:
         request.add_header('Content-Type', 'application/json')

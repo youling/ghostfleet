@@ -31,7 +31,7 @@ class EnrollmentTest(unittest.TestCase):
         calls = []
 
         def open_url(request, timeout):
-            calls.append((request.full_url, request.data))
+            calls.append(request)
             body = io.BytesIO(files[request.full_url])
             body.status = 201 if request.data else 200
             body.geturl = lambda: request.full_url
@@ -45,7 +45,7 @@ class EnrollmentTest(unittest.TestCase):
 
         def launch(argv, *, input, text, env):
             payload = json.loads(input)
-            only_request = json.loads(calls[-1][1])
+            only_request = json.loads(calls[-1].data)
             self.assertEqual(payload['request_id'], only_request['request_id'])
             self.assertEqual(payload['request_id'], hashlib.sha256(payload['request_secret'].encode()).hexdigest())
             self.assertEqual(shown, [payload['request_id'][-12:]])
@@ -58,7 +58,15 @@ class EnrollmentTest(unittest.TestCase):
             return SimpleNamespace(returncode=0)
 
         wizard.enroll('Panel.Example.Invalid', lambda: 'ab2xy3', shown.append, trusted=self.trusted, opener=opener, launch=launch)
-        self.assertEqual(calls[0][0], self.node + wizard.DISCOVERY)
+        pin = hashlib.sha256(self.script).hexdigest()
+        self.assertEqual([(request.get_method(), request.full_url) for request in calls], [
+            ('GET', self.node + wizard.DISCOVERY),
+            ('GET', self.node + '/bootstrap/' + pin + '.managed.sh'),
+            ('POST', self.node + '/v1/managed-enrollment/requests'),
+        ])
+        for request in calls:
+            with self.subTest(url=request.full_url):
+                self.assertEqual(request.get_header('User-agent'), 'GhostFleet-Enrollment/1')
 
     def test_wrong_digest_stops_before_pairing_or_prompt(self):
         opener, calls = self.opener(script_body=b'wrong bytes')
