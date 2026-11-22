@@ -19,12 +19,13 @@ class EnrollmentTest(unittest.TestCase):
     trusted = {panel: node}
     script = b'#!/bin/sh\nexit 1\n'
 
-    def opener(self, *, script_body=None, request_result=b'{"ok": true}'):
+    def opener(self, *, script_body=None, request_result=b'{"ok": true}', advertised_origin=None):
         pin = hashlib.sha256(self.script).hexdigest()
         url = self.node + '/bootstrap/' + pin + '.managed.sh'
-        response = {'ok': True, 'protocol': 'ghostfleet-managed-enrollment/v1', 'node_origin': self.node,
-                    'artifact': {'sha256': pin, 'url': url}}
-        files = {self.panel + wizard.DISCOVERY: json.dumps(response).encode(),
+        advertised_origin = advertised_origin or self.node
+        response = {'ok': True, 'protocol': 'ghostfleet-managed-enrollment/v1', 'node_origin': advertised_origin,
+                    'artifact': {'sha256': pin, 'url': advertised_origin + '/bootstrap/' + pin + '.managed.sh'}}
+        files = {self.node + wizard.DISCOVERY: json.dumps(response).encode(),
                  url: self.script if script_body is None else script_body,
                  self.node + '/v1/managed-enrollment/requests': request_result}
         calls = []
@@ -57,6 +58,7 @@ class EnrollmentTest(unittest.TestCase):
             return SimpleNamespace(returncode=0)
 
         wizard.enroll('Panel.Example.Invalid', lambda: 'ab2xy3', shown.append, trusted=self.trusted, opener=opener, launch=launch)
+        self.assertEqual(calls[0][0], self.node + wizard.DISCOVERY)
 
     def test_wrong_digest_stops_before_pairing_or_prompt(self):
         opener, calls = self.opener(script_body=b'wrong bytes')
@@ -74,9 +76,10 @@ class EnrollmentTest(unittest.TestCase):
         with self.assertRaisesRegex(wizard.EnrollmentError, 'UNTRUSTED_ENROLLMENT_DOMAIN'):
             wizard.enroll('other.example.invalid', lambda: self.fail('prompt called'), trusted=self.trusted, opener=opener)
         self.assertEqual(calls, [])
+        opener, calls = self.opener(advertised_origin='https://other.example.invalid')
         with self.assertRaisesRegex(wizard.EnrollmentError, 'UNTRUSTED_NODE_ORIGIN'):
             wizard.enroll('panel.example.invalid', lambda: self.fail('prompt called'),
-                          trusted={self.panel: 'https://other.example.invalid'}, opener=opener)
+                          trusted=self.trusted, opener=opener)
         self.assertEqual(len(calls), 1)
 
     def test_domain_requires_bare_dns_name(self):

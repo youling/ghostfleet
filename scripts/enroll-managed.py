@@ -90,13 +90,14 @@ def metadata(raw):
 
 
 def enroll(domain, read_code, show_request=print, *, trusted, opener=None, launch=subprocess.run):
-    panel_origin = origin_for(domain)
-    if panel_origin not in trusted:
+    enrollment_origin = origin_for(domain)
+    expected_node_origin = trusted.get(enrollment_origin)
+    if expected_node_origin is None:
         raise EnrollmentError('UNTRUSTED_ENROLLMENT_DOMAIN')
     if opener is None:
         opener = urllib.request.build_opener(NoRedirect())
-    node_origin, pin, url = metadata(download(opener, panel_origin + DISCOVERY, 4096))
-    if node_origin != trusted[panel_origin]:
+    node_origin, pin, url = metadata(download(opener, expected_node_origin + DISCOVERY, 4096))
+    if node_origin != expected_node_origin:
         raise EnrollmentError('UNTRUSTED_NODE_ORIGIN')
     script = download(opener, url, MAX_BOOTSTRAP_BYTES)
     if not hmac.compare_digest(hashlib.sha256(script).hexdigest(), pin):
