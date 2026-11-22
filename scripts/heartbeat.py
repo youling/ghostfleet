@@ -302,6 +302,14 @@ def systemctl(*args: str) -> None:
     p = subprocess.run(['/usr/bin/systemctl', *args], timeout=50, capture_output=True, check=False)
     if p.returncode: raise ClientError('SYSTEMD_ACTION_FAILED_SEE_LOCAL_JOURNAL')
 
+def install_claimed_reporter(config: dict, source: bytes, existing: dict | None = None) -> None:
+    if existing and config['node_uid'] != existing['node_uid']: raise ClientError('NODE_IDENTITY_CONFLICT')
+    if existing: systemctl('stop', TIMER.name, SERVICE.name)
+    install_files(config, source)
+    systemctl('daemon-reload')
+    systemctl('enable', '--now', TIMER.name)
+    systemctl('start', SERVICE.name)
+
 def install(args) -> None:
     if os.geteuid() != 0: raise ClientError('INSTALL_REQUIRES_OWNER_ROOT_CEREMONY')
     if sys.platform != 'linux' or not sys.stdin.isatty():
@@ -327,12 +335,7 @@ def install(args) -> None:
         raise ClientError(str(error) + '; CLAIM_NOT_RETRIED_REISSUE_SAME_NODE_IF_NEEDED') from None
     config = validate_config({'origin': origin, 'node_uid': received.get('node_uid'),
                               'reporting_token': received.get('reporting_token'), 'units': units})
-    if existing and config['node_uid'] != existing['node_uid']: raise ClientError('NODE_IDENTITY_CONFLICT')
-    if existing: systemctl('stop', TIMER.name, SERVICE.name)
-    install_files(config, Path(__file__).read_bytes())
-    systemctl('daemon-reload')
-    systemctl('enable', '--now', TIMER.name)
-    systemctl('start', SERVICE.name)
+    install_claimed_reporter(config, Path(__file__).read_bytes(), existing)
     print('GF_INSTALLED; SSH_AND_PROVIDER_CONFIG_UNCHANGED')
 
 def repair() -> None:

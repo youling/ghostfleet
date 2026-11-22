@@ -214,7 +214,7 @@ export function dispatch(input, state, now = Date.now()) {
     match = /^\/v1\/enrollment-tickets\/([^/]+)\/claim$/.exec(path);
     const managedClaim = path === '/v1/managed-enrollment/claim';
     if (method === 'POST' && (match || managedClaim)) {
-      shape(body, managedClaim ? ['short_code', 'request_id', 'request_secret'] : ['short_code', 'expected_node_uid'],
+      shape(body, managedClaim ? ['short_code', 'request_id', 'request_secret', 'expected_node_uid'] : ['short_code', 'expected_node_uid'],
         managedClaim ? ['short_code', 'request_id', 'request_secret'] : ['short_code']);
       if (body.expected_node_uid !== undefined &&
           (typeof body.expected_node_uid !== 'string' || !UID.test(body.expected_node_uid))) reject('INVALID_NODE_UID');
