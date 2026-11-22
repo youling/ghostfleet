@@ -17,7 +17,8 @@ export class GhostFleetState extends DurableObject {
 
   async readManagedEnrollment(nodeUid, ticketId) {
     const snapshot = (await this.ctx.storage.get('ghostfleet-state')) ?? {};
-    return readManagedPanelDecision(snapshot, nodeUid, ticketId, managedBootstrap(this.env)?.sha256);
+    return readManagedPanelDecision(snapshot, nodeUid, ticketId, managedBootstrap(this.env)?.sha256,
+      this.env.GHOSTFLEET_MANAGED_DECISION_RETAINED_PINS);
   }
 }
 

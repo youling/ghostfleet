@@ -268,6 +268,43 @@ test('decision RPC readback contains only the current timely managed claim and i
   assert.equal(read(replacement.ticket.ticket_id).ok, false);
 });
 
+test('pin rotation preserves the original decision only for explicitly retained, current claims', () => {
+  const state = {};
+  pair(state);
+  const { data: original } = issueManaged(state);
+  const { node_uid: uid, ticket_id: id } = original.ticket;
+  const claimed = claimManaged(state, original);
+  assert.equal(claimed.status, 200);
+  const before = readManagedPanelDecision(state, uid, id, managedPin);
+  assert.equal(before.ok, true);
+
+  const activePin = 'b'.repeat(64);
+  const read = retained => readManagedPanelDecision(state, uid, id, activePin, retained);
+  assert.deepEqual(read([managedPin]), before);
+  const fourPins = [managedPin, ...['c', 'd', 'e'].map(digit => digit.repeat(64))];
+  assert.deepEqual(read(fourPins), before);
+  for (const rejected of [undefined, [], [activePin], managedPin, [managedPin, 'bad'], [...fourPins, activePin]]) {
+    assert.equal(read(rejected).error, 'MANAGED_PANEL_DECISION_UNAVAILABLE');
+  }
+  assert.equal(readManagedPanelDecision(state, uid, id, undefined, [managedPin]).ok, false);
+  assert.equal(readManagedPanelDecision(state, uid, id, activePin + '\n', [managedPin]).ok, false);
+  const revoked = structuredClone(state);
+  assert.equal(send(revoked, 'POST', '/v0/nodes/' + uid + '/revoke').status, 200);
+  assert.equal(readManagedPanelDecision(revoked, uid, id, activePin, [managedPin]).ok, false);
+
+  pair(state, replacementSecret);
+  const { data: replacement } = issueManaged(state, { node_uid: uid, profile: MANAGED_PROFILE,
+    request_id: requestId(replacementSecret), attempt_id: '44444444-4444-4444-8444-444444444444' }, activePin);
+  assert.deepEqual(read([managedPin]), before);
+  assert.equal(claimManaged(state, replacement, { expected_node_uid: uid }, managedPin, replacementSecret).data.error,
+    'MANAGED_BOOTSTRAP_CHANGED');
+  assert.equal(claimManaged(state, replacement, { expected_node_uid: uid }, activePin, replacementSecret).status, 200);
+  assert.equal(read([managedPin]).ok, false);
+  const after = readManagedPanelDecision(state, uid, replacement.ticket.ticket_id, activePin);
+  assert.equal(after.decision.bootstrap_sha256, activePin);
+  assert.notEqual(after.owner_decision_digest, before.owner_decision_digest);
+});
+
 test('wrong code attempts affect only their authenticated pairing', () => {
   const state = {};
   pair(state);
