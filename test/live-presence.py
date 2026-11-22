@@ -20,6 +20,11 @@ import urllib.request
 import uuid
 
 
+class DirectDownload(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        return None
+
+
 def assert_reporter_ok(result):
     # Emit only fixed reporter diagnostic codes, never raw output or credentials.
     codes = re.findall(r'^GF_ERROR ([A-Z0-9_]+)', result.stderr, re.MULTILINE)
@@ -49,14 +54,21 @@ def main():
         operator = 'synthetic-operator-' + uuid.uuid4().hex
         reader = 'synthetic-reader-' + uuid.uuid4().hex
         config = json.loads((root / 'dist/wrangler.json').read_text())
+        manifest = json.loads((root / 'dist/installer.json').read_text())
         config['main'] = str(root / 'src/adapters/cloudflare/worker.js')
         assets = run / 'assets'
         shutil.copytree(root / 'dist' / config['assets']['directory'], assets)
         config['assets']['directory'] = str(assets)
-        managed_fixture = b'#!/bin/sh\n# Synthetic fixture. Never executed.\nexit 1\n'
-        managed_pin = sha256(managed_fixture).hexdigest()
+        managed_pin = config['vars'].get('GHOSTFLEET_MANAGED_BOOTSTRAP_SHA256')
+        if managed_pin:
+            managed_fixture = (assets / 'bootstrap' / (managed_pin + '.managed.sh')).read_bytes()
+            assert managed_pin == manifest['managed_bootstrap_sha256'] == sha256(managed_fixture).hexdigest()
+            assert len(managed_fixture) == manifest['managed_bootstrap_bytes']
+        else:
+            managed_fixture = b'#!/bin/sh\n# Synthetic fixture. Never executed.\nexit 1\n'
+            managed_pin = sha256(managed_fixture).hexdigest()
+            (assets / 'bootstrap' / (managed_pin + '.managed.sh')).write_bytes(managed_fixture)
         managed_path = '/bootstrap/' + managed_pin + '.managed.sh'
-        (assets / managed_path.lstrip('/')).write_bytes(managed_fixture)
         config['vars'].update(GHOSTFLEET_PANEL_ORIGIN=origin, GHOSTFLEET_NODE_ORIGIN=origin,
                               GHOSTFLEET_OPERATOR_TOKEN=operator, GHOSTFLEET_READ_TOKEN=reader,
                               GHOSTFLEET_MANAGED_BOOTSTRAP_SHA256=managed_pin)
@@ -130,12 +142,26 @@ def main():
 
         try:
             start(); check('real_workerd_DO_started')
+            access_status, access = api('/v0/access')
+            assert access_status == 200
+            installer = access['installer']
+            direct = urllib.request.build_opener(DirectDownload())
+            for advertised, pin, size, extension in (
+                (installer, manifest['sha256'], manifest['bytes'], '.py'),
+                (installer['bootstrap'], manifest['bootstrap_sha256'], manifest['bootstrap_bytes'], '.sh'),
+            ):
+                url = origin + '/bootstrap/' + pin + extension
+                assert advertised['url'] == url and advertised['sha256'] == pin
+                with direct.open(url, timeout=12) as downloaded:
+                    body = downloaded.read(size + 1)
+                    assert downloaded.status == 200 and downloaded.geturl() == url and len(body) == size
+                    assert sha256(body).hexdigest() == pin
+            check('advertised_installer_and_bootstrap_serve_exact_build_bytes')
             discovery_status, discovery = api('/.well-known/ghostfleet-enrollment', token='')
             assert discovery_status == 200 and discovery['artifact'] == {'url': origin + managed_path, 'sha256': managed_pin}
-            with urllib.request.urlopen(origin + managed_path, timeout=12) as download:
+            with direct.open(origin + managed_path, timeout=12) as download:
                 assert download.status == 200 and download.read() == managed_fixture
-            access_status, access = api('/v0/access')
-            assert access_status == 200 and access['managed_bootstrap'] == discovery['artifact'], 'PANEL_ASSET_VERIFICATION_FAILED'
+            assert access['managed_bootstrap'] == discovery['artifact'], 'PANEL_ASSET_VERIFICATION_FAILED'
             secret = uuid.uuid4().hex + uuid.uuid4().hex
             request_id = sha256(secret.encode()).hexdigest()
             assert api('/v1/managed-enrollment/requests', {'request_id': request_id}, token='')[0] == 201
