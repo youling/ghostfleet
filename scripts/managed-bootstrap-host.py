@@ -74,8 +74,9 @@ def install(origin, raw, reporter_source):
         raise heartbeat.ClientError(str(error) + ' MANAGED_CLAIM_NOT_RETRIED') from None
     if receipt.get('profile') != MANAGED_PROFILE or set(receipt) != {'ok', 'node_uid', 'profile', 'reporting_token'}:
         raise heartbeat.ClientError('INVALID_MANAGED_REPORTER_RECEIPT')
+    units = existing['units'] if existing else heartbeat.DEFAULT_UNITS
     config = heartbeat.validate_config({'origin': approved_origin, 'node_uid': receipt['node_uid'],
-        'reporting_token': receipt['reporting_token'], 'units': heartbeat.DEFAULT_UNITS})
+        'reporting_token': receipt['reporting_token'], 'units': units})
     heartbeat.install_claimed_reporter(config, reporter_source, existing)
 
 

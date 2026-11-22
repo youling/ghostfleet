@@ -54,6 +54,20 @@ class ManagedHostStageTests(unittest.TestCase):
         self.activate.assert_called_once_with({'origin': ORIGIN, 'node_uid': UID,
             'reporting_token': RECEIPT['reporting_token'], 'units': heartbeat.DEFAULT_UNITS}, b'pinned reporter', None)
 
+    def test_managed_reissue_keeps_same_uid_and_existing_observation_units(self):
+        units = {'ssh': 'custom-ssh.service', 'cloudflared': 'custom-tunnel.service',
+                 'tailscaled': 'custom-mesh.service'}
+        existing = heartbeat.validate_config({'origin': ORIGIN, 'node_uid': UID,
+            'reporting_token': 'gf_hb_' + 'b' * 43, 'units': units})
+        self.config.touch()
+        with patch.object(heartbeat, 'load_config', return_value=existing):
+            host.install(ORIGIN, RAW, b'pinned reporter')
+
+        self.claim.assert_called_once_with(ORIGIN, '/v1/managed-enrollment/claim',
+            {**PROOF, 'short_code': 'AB2XY3', 'expected_node_uid': UID})
+        self.activate.assert_called_once_with({**existing, 'reporting_token': RECEIPT['reporting_token']},
+            b'pinned reporter', existing)
+
     def test_existing_uid_is_checked_by_the_server_and_ambiguous_claim_is_never_retried(self):
         self.config.touch()
         config = {'origin': ORIGIN, 'node_uid': UID}
