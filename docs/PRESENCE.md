@@ -18,6 +18,10 @@ The trusted target enrollment client accepts the domain and short code. `scripts
 
 The trusted client package supplies a root-owned `/etc/ghostfleet/enrollment-trust.json` mapping approved bare domain names to their approved Node Origin names, for example `{"panel.example.invalid":"node.example.invalid","node.example.invalid":"node.example.invalid"}`. This lets the client reject mistyped domains before download. A domain accepted for discovery serves `/.well-known/ghostfleet-enrollment`. Panel management routes retain their Access policy.
 
+`npm run build:managed-host-bootstrap -- --output dist/managed-host-review.sh` 生成待审查的 Host/reporter 阶段制品，输出 SHA-256。它复用原版 reporter 安装逻辑。领取前只读核查 Linux root、systemd、安装路径和既有 reporter 的 origin，遇到 OMV 停在专用预检边界。补领时把现有 UID 作为领取条件，领取结果不确定时只报告失败，保留原节点供同 UID 重发。`REPORTER_STARTED` 表示本机 reporter 已启动，完整纳管还需私有 Provider、传输、DCR 和签名 lease 的回执。
+
+`npm run build:managed-host-bootstrap -- --output dist/managed-host-review.sh` creates a digest-pinned host/reporter stage for review. It reuses the reporter installer and checks Linux root, systemd, installation paths and the existing reporter origin before claim. OMV uses the separate owner preflight. An existing UID constrains the claim, and an uncertain claim is sent only once. `REPORTER_STARTED` reports local reporter activation. Private provider, transport, DCR and signed lease receipts are still required for full enrollment.
+
 ## 中文
 
 ### 开发与验证

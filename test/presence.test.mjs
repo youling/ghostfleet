@@ -182,7 +182,7 @@ test('managed claim is isolated from legacy claims, fails on release drift and i
   const started = structuredClone(state);
   assert.equal(claim(state, delivery).status, 404);
   assert.equal(claimManaged(state, delivery, { request_secret: replacementSecret }).status, 403);
-  assert.equal(claimManaged(state, delivery, { expected_node_uid: 'node-' + managedAttempt }).status, 400);
+  assert.equal(claimManaged(state, delivery, { expected_node_uid: 'node-' + managedAttempt }).data.error, 'NODE_IDENTITY_CONFLICT');
   assert.equal(claimManaged(state, delivery, { role: 'controller' }).status, 400);
   assert.equal(claimManaged(state, delivery, {}, 'a'.repeat(64)).data.error, 'MANAGED_BOOTSTRAP_CHANGED');
   assert.deepEqual(state, started);
@@ -218,7 +218,7 @@ test('managed same-UID reissue recovers idempotently and rotates reporting only 
   assert.equal(issueManaged(state, request).data.short_code, null);
   assert.equal(send(state, 'POST', '/v0/enrollment-tickets', { node_uid: uid }).data.error, 'ENROLLMENT_PROFILE_CONFLICT');
   assert.equal(heartbeat(state, uid, previous).status, 200);
-  assert.equal(claimManaged(state, second.data, {}, managedPin, replacementSecret).status, 200);
+  assert.equal(claimManaged(state, second.data, { expected_node_uid: uid }, managedPin, replacementSecret).status, 200);
   assert.equal(heartbeat(state, uid, previous).status, 401);
 });
 
