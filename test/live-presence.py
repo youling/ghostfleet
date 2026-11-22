@@ -4,6 +4,7 @@ Requires npm ci and npm run build. Never deploys or changes SSH/providers.
 """
 import argparse
 import concurrent.futures
+from hashlib import sha256
 import json
 import os
 import re
@@ -17,6 +18,11 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+
+
+class DirectDownload(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        return None
 
 
 def assert_reporter_ok(result):
@@ -48,10 +54,24 @@ def main():
         operator = 'synthetic-operator-' + uuid.uuid4().hex
         reader = 'synthetic-reader-' + uuid.uuid4().hex
         config = json.loads((root / 'dist/wrangler.json').read_text())
+        manifest = json.loads((root / 'dist/installer.json').read_text())
         config['main'] = str(root / 'src/adapters/cloudflare/worker.js')
-        config['assets']['directory'] = str(root / 'dist/console')
+        assets = run / 'assets'
+        shutil.copytree(root / 'dist' / config['assets']['directory'], assets)
+        config['assets']['directory'] = str(assets)
+        managed_pin = config['vars'].get('GHOSTFLEET_MANAGED_BOOTSTRAP_SHA256')
+        if managed_pin:
+            managed_fixture = (assets / 'bootstrap' / (managed_pin + '.managed.sh')).read_bytes()
+            assert managed_pin == manifest['managed_bootstrap_sha256'] == sha256(managed_fixture).hexdigest()
+            assert len(managed_fixture) == manifest['managed_bootstrap_bytes']
+        else:
+            managed_fixture = b'#!/bin/sh\n# Synthetic fixture. Never executed.\nexit 1\n'
+            managed_pin = sha256(managed_fixture).hexdigest()
+            (assets / 'bootstrap' / (managed_pin + '.managed.sh')).write_bytes(managed_fixture)
+        managed_path = '/bootstrap/' + managed_pin + '.managed.sh'
         config['vars'].update(GHOSTFLEET_PANEL_ORIGIN=origin, GHOSTFLEET_NODE_ORIGIN=origin,
-                              GHOSTFLEET_OPERATOR_TOKEN=operator, GHOSTFLEET_READ_TOKEN=reader)
+                              GHOSTFLEET_OPERATOR_TOKEN=operator, GHOSTFLEET_READ_TOKEN=reader,
+                              GHOSTFLEET_MANAGED_BOOTSTRAP_SHA256=managed_pin)
         config_path = run / 'wrangler.json'
         config_path.write_text(json.dumps(config)); config_path.chmod(0o600)
         # No provider/account credential environment or native owner config.
@@ -122,8 +142,56 @@ def main():
 
         try:
             start(); check('real_workerd_DO_started')
-            status, delivery = api('/v0/enrollment-tickets', {'label': 'synthetic-live-fixture'})
-            assert status == 201
+            access_status, access = api('/v0/access')
+            assert access_status == 200
+            installer = access['installer']
+            direct = urllib.request.build_opener(DirectDownload())
+            for advertised, pin, size, extension in (
+                (installer, manifest['sha256'], manifest['bytes'], '.py'),
+                (installer['bootstrap'], manifest['bootstrap_sha256'], manifest['bootstrap_bytes'], '.sh'),
+            ):
+                url = origin + '/bootstrap/' + pin + extension
+                assert advertised['url'] == url and advertised['sha256'] == pin
+                with direct.open(url, timeout=12) as downloaded:
+                    body = downloaded.read(size + 1)
+                    assert downloaded.status == 200 and downloaded.geturl() == url and len(body) == size
+                    assert sha256(body).hexdigest() == pin
+            check('advertised_installer_and_bootstrap_serve_exact_build_bytes')
+            discovery_status, discovery = api('/.well-known/ghostfleet-enrollment', token='')
+            assert discovery_status == 200 and discovery['artifact'] == {'url': origin + managed_path, 'sha256': managed_pin}
+            with direct.open(origin + managed_path, timeout=12) as download:
+                assert download.status == 200 and download.read() == managed_fixture
+            assert access['managed_bootstrap'] == discovery['artifact'], 'PANEL_ASSET_VERIFICATION_FAILED'
+            secret = uuid.uuid4().hex + uuid.uuid4().hex
+            request_id = sha256(secret.encode()).hexdigest()
+            assert api('/v1/managed-enrollment/requests', {'request_id': request_id}, token='')[0] == 201
+            issue_path = '/v0/enrollment-tickets'
+            choice = {'label': 'synthetic-managed-live', 'profile': 'FULL_MANAGED_LOWER_NODE',
+                'attempt_id': str(uuid.uuid4()), 'request_id': request_id}
+            status, pending = api('/v0/managed-enrollment-requests')
+            assert status == 200 and len(pending['requests']) == 1 and pending['requests'][0]['request_id'] == request_id
+            assert api(issue_path, choice, token=reader)[0] == 403
+            status, managed = api(issue_path, choice)
+            assert status == 201 and len(managed['short_code']) == 6, 'MANAGED_ISSUE_' + str(status) + '_' + managed.get('error', '')
+            assert api(issue_path, choice)[1]['short_code'] is None
+            old_claim = '/v1/enrollment-tickets/' + managed['ticket']['ticket_id'] + '/claim'
+            assert api(old_claim, {'short_code': managed['short_code']}, token='')[0] == 404
+            claim_body = {'short_code': managed['short_code'].lower(), 'request_id': request_id, 'request_secret': secret}
+            status, receipt = api('/v1/managed-enrollment/claim', claim_body, token='')
+            assert status == 200 and set(receipt) == {'ok', 'node_uid', 'profile', 'reporting_token'}
+            assert receipt['node_uid'] == managed['ticket']['node_uid']
+            assert api('/v1/managed-enrollment/claim', claim_body, token='')[0] == 409
+            check('managed_domain_pairing_and_operator_code')
+            attempt = {'label': 'synthetic-live-fixture', 'attempt_id': str(uuid.uuid4())}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+                issues = list(pool.map(lambda _: api('/v0/enrollment-tickets', attempt), range(12)))
+            assert sum(s == 201 for s, _ in issues) == 1
+            assert sum(s == 200 for s, _ in issues) == 11
+            delivery = next(p for s, p in issues if s == 201)
+            assert all(p['ticket'] == delivery['ticket'] and p['short_code'] is None for s, p in issues if s == 200)
+            listed = api('/v0/nodes', token=reader)[1]['nodes']
+            assert {node['node_uid'] for node in listed} == {delivery['ticket']['node_uid'], receipt['node_uid']}
+            check('real_DO_12_issue_retries_same_uid_no_code_replay')
             path = '/v1/enrollment-tickets/' + delivery['ticket']['ticket_id'] + '/claim'
             with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
                 claims = list(pool.map(lambda _: api(path, {'short_code': delivery['short_code']}, token=''), range(12)))
@@ -135,9 +203,19 @@ def main():
             assert api('/v0/enrollment-tickets', {'label': 'denied'}, token=reader)[0] == 403
             check('read_role_mutation_denied')
             credential = run / 'presence.json'
+            absent_unit = 'ghostfleet-synthetic-absent-' + uuid.uuid4().hex + '.service'
             credential.write_text(json.dumps({'origin': origin, 'node_uid': uid, 'reporting_token': token,
-                'units': {'ssh': 'ssh.service', 'cloudflared': 'ghostfleet-synthetic-absent.service', 'tailscaled': 'tailscaled.service'}}))
+                'units': {'ssh': 'ssh.service', 'cloudflared': absent_unit, 'tailscaled': 'tailscaled.service'}}))
             credential.chmod(0o600)
+            # A missing system manager (for example in WSL) cannot attest that a unit is absent.
+            expected_unit_state = 'unknown'
+            try:
+                observed = subprocess.run(['/usr/bin/systemctl', '--system', 'show', '--property=LoadState', '--', absent_unit],
+                    capture_output=True, text=True, timeout=5)
+                if 'LoadState=not-found' in observed.stdout.splitlines():
+                    expected_unit_state = 'not_found'
+            except (OSError, subprocess.TimeoutExpired):
+                pass
             python = shutil.which('python3')
             command = [python, '-I', str(root / 'scripts/heartbeat.py'), 'report', '--config', str(credential), '--allow-loopback-http']
             result = subprocess.run(command, capture_output=True, text=True, timeout=35)
@@ -145,8 +223,8 @@ def main():
             assert token not in result.stdout + result.stderr
             n = current(uid)
             assert n['presence'] == 'ONLINE' and n['lifecycle'] == 'PROVISIONAL'
-            assert n['report']['services']['cloudflared'] == 'not_found'
-            check('actual_Python_reporter_HTTP_and_truthful_missing_unit')
+            assert n['report']['services']['cloudflared'] == expected_unit_state
+            check('actual_Python_reporter_HTTP_and_unit_state_' + expected_unit_state)
             stop(); start()
             assert current(uid)['presence'] == 'ONLINE'
             assert_reporter_ok(subprocess.run(command, capture_output=True, text=True, timeout=35))

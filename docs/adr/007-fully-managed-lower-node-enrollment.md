@@ -11,7 +11,7 @@ Owner：Fleet Owner
 
 目标体验是：
 
-> 操作者在 GhostFleet 控制面板选择“完全纳管下位机”，复制面板生成的固定摘要引导命令；在目标机可信终端以 root 执行一次，并输入短码。此后安装、身份登记、Provider 复用、传输建立、DCR 能力发布、root 执行器配置和真实验收由同一受授权流程自动完成。最终 ChatGPT 对话可直接调用目标节点。
+> 操作者在目标机打开可信的 GhostFleet 纳管入口，输入纳管域名。在控制面板选择这台机器发起的配对请求，手动签发短码，然后在目标机输入短码。此后安装、身份登记、Provider 复用、传输建立、DCR 能力发布、root 执行器配置和真实验收由同一受授权流程自动完成。最终 ChatGPT 对话可直接调用目标节点。
 
 “全自动”是指**一次显式 Owner 授权 + 一次目标机 root 引导**后，不再要求操作者逐台编辑 Worker 源码、复制 Node UID/公钥、手工建 Tunnel/策略或逐条批准日常运维。它不等于任何持有心跳 Claim 的节点都自动获得 root。
 
@@ -47,9 +47,9 @@ Canary 通过后，按同一流程逐台纳入国内生产力服务器。首批�
 Operator 登录受保护的 Panel，选择 `FULL_MANAGED_LOWER_NODE`。Panel/既有 DO：
 
 1. 预留稳定 UUIDv4 `node_uid`，节点角色固定 `managed`。
-2. 生成十分钟有效的一次性 ticket + 独立短码，错误次数和原子消费沿用 ADR004；不重新发明凭据协议。
+2. 操作者选择目标机发起的待配对请求并手动签发一次性 ticket 和短码。短码为六位去掉易混字符的数字字母，自签发起十分钟内有效，忽略大小写。每张票据绑定设备保存在内存中的随机配对秘密，错误次数和原子消费沿用 ADR004。
 3. 记录本次授权的节点 profile、Provider/传输选择策略、R0/Job/Root 能力范围、有效期与撤销句柄。Owner 对该 profile 的授权发生在 Panel 的受保护 Operator 操作中。
-4. 展示固定摘要的 bootstrap URL/命令、目标 Node UID、短码与过期时间。短码单独显示，不能进入 URL、shell argv、环境变量、命令历史或日志。
+4. 展示纳管域名、目标 Node UID、短码与过期时间。目标机自己发现和校验独立引导制品。短码不能进入 URL、shell argv、环境变量、命令历史或日志。
 5. 同一节点恢复走同一 UID 的 repair/resume/reissue；不因安装中断创建第二个 Node UID。
 
 ### 4.2 目标机只进行一次 root ceremony
@@ -134,8 +134,8 @@ Owner 选择 `FULL_MANAGED_LOWER_NODE` 即授权该节点进入既定的 Root-ca
 ### Canary 验收顺序
 
 1. **干净基线**：记录实例别名、当前 Node UID（若已存在）、OS/内核、SSH 端口、host-key fingerprint、数据/业务可恢复性、当前 Tailscale/Cloudflare 状态。不要先重装/清盘。
-2. **真实 Panel**：通过正式域名访问生产候选控制面板，Operator 登录、创建 `FULL_MANAGED_LOWER_NODE` ticket，复制命令与短码。
-3. **一次 Root 引导**：在搬瓦工 VPS 可信终端运行命令并输入短码；全程不再手工复制 UID、公钥、Tunnel ID、策略 JSON 或改 Worker 源码。
+2. **真实 Panel**：在搬瓦工 VPS 的可信纳管入口输入域名。Operator 在生产候选 Panel 中匹配设备请求并手动签发 `FULL_MANAGED_LOWER_NODE` 短码。
+3. **一次 Root 引导**：在目标机输入短码。入口获取并校验独立的引导制品，用本次配对凭据完成领取。其余 UID、公钥、Tunnel ID 和策略数据均沿已授权流程传递。
 4. **自动完成**：bootstrap preflight、claim、host provisioning、Provider reuse、SSH host-key pin、DCR dynamic catalog/capability、Root helper/lease、heartbeat。每步有持久 receipt。
 5. **ChatGPT 正向验证**：当前普通 ChatGPT 对话 list_nodes → node.inspect → nonroot `/usr/bin/id` → fixed root-probe → Root session 两条连续无害命令，回执全部绑定同一 Node UID。
 6. **负测**：短码过期/错误次数锁定、重复 Claim、下载摘要不符、Provider API 不可用、DNS/Edge/Origin 区别、host-key 漂移、策略撤销、Root lease 到期/撤销、Worker 版本回退、安装中断恢复。
@@ -173,4 +173,4 @@ Owner 选择 `FULL_MANAGED_LOWER_NODE` 即授权该节点进入既定的 Root-ca
 
 ### English summary
 
-The first end-to-end acceptance target is a **real Bandwagon VPS, not a VM**. All test and future domestic production machines are Managed lower nodes; ThinkPad remains the only Controller. An Owner-authorized Panel profile issues one short-lived ticket and a pinned bootstrap. The target executes one root ceremony and enters the short code; the existing stack then discovers/reuses Tailscale and Cloudflare, provisions native SSH/DCR identity and policy, installs the signed root helper/lease integration, and verifies actual ChatGPT R0, Job and continuous delegated Root operations. New nodes must not require per-node source edits or manual Worker/Tunnel setup. Only a fresh real ChatGPT end-to-end receipt can mark a node FULLY_MANAGED.
+The first end-to-end acceptance target is a **real Bandwagon VPS**. All test and future domestic production machines are Managed lower nodes; ThinkPad remains the only Controller. On the target, open the trusted enrollment client and enter the enrollment domain. In the Panel, match the pending request and manually issue a six-character code valid for ten minutes. Enter the code in the client. The client fetches the pinned bootstrap and binds the claim to that device's pairing proof. The existing stack then handles provider reuse, SSH/DCR, the signed root helper and actual ChatGPT R0, Job and consecutive delegated root receipts. Only a fresh real ChatGPT end-to-end receipt can mark a node FULLY_MANAGED.

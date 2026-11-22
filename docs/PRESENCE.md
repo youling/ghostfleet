@@ -4,7 +4,19 @@
 
 本文描述的现有 `join.sh` / Python installer 仍然只负责 GhostFleet reporter、systemd timer 和 heartbeat；它**不会**配置 SSH、Provider、DCR 或 Root helper。这是 ADR004 的既有轻量子能力，不能因 ADR007 的产品决策就误报已经升级。
 
+面板的「注册心跳」遇到签发响应丢失时，可在同一标签页点「核对票据」。首次请求用 UUID 绑定同一节点和原票据。若 Worker 已提交，核对只返回原 UID 和票据元数据。如未看到短码，在原节点行重发。浏览器仅暂存待确认的请求 UUID 和节点名称。
+
+If the initial **Register heartbeat** response is lost, use **Check ticket** in the same tab. A retry with the same request UUID recovers the original node and ticket metadata. If you missed the one-time code, reissue from the original node’s row. The browser temporarily stores the pending request UUID and node label.
+
 Owner 已决定正式版增加独立的 `FULL_MANAGED_LOWER_NODE` profile：一次 Panel ticket/短码 + 目标机一次 root bootstrap，在同一受授权流程内自动完成 Host preflight、复用已有 Tailscale/Cloudflare、原生 SSH、动态 DCR、Root helper/lease 与 ChatGPT 实际验收。该全流程合同见 [ADR007](adr/007-fully-managed-lower-node-enrollment.md)；首个真实 Canary 是搬瓦工 VPS，不使用虚拟机。**当前源码尚未实现这条完整流水线**；直到新 bootstrap/动态 DCR/Root session 的真实 ChatGPT E2E 通过前，现有 reporter-only 安装不能称为 FULLY_MANAGED。
+
+`FULL_MANAGED_LOWER_NODE` 的目标端在可信安装的纳管入口输入域名和短码。`scripts/enroll-managed.py` 通过 `/.well-known/ghostfleet-enrollment` 发现并校验独立 `.managed.sh` 制品，创建配对请求。在 Panel 选择与目标端匹配的请求后手动签发六位短码，有效十分钟，大小写等价。入口把随机配对秘密和短码通过标准输入交给校验过的引导制品，供其在完成预检后调用 `POST /v1/managed-enrollment/claim`。旧 reporter Worker 无法领取该票据。Operator 可对同一 UID 用新配对请求重发，旧 reporter 在新票据领取前继续上报。Panel 只根据各阶段实际证据显示进展。默认构建仍只发布 reporter。Managed 选项要求实例发布独立制品、配置 `GHOSTFLEET_MANAGED_BOOTSTRAP_SHA256` 并绑定 `ASSETS`。
+
+The trusted target enrollment client accepts the domain and short code. `scripts/enroll-managed.py` discovers and verifies a pinned `.managed.sh`, starts a device pairing and prompts for the six-character code manually issued in the Panel. The code is case-insensitive and valid for ten minutes. The verified installer gets the pairing secret and code on standard input and calls `POST /v1/managed-enrollment/claim` after preflight. Older reporter workers cannot consume that ticket. Reissuing for a known UID preserves the existing reporter until the new claim. `ASSETS` and `GHOSTFLEET_MANAGED_BOOTSTRAP_SHA256` enable the managed profile after the managed artifact is released. The default build ships only the reporter installer.
+
+可信客户端包同时安装由 root 拥有的 `/etc/ghostfleet/enrollment-trust.json`，记录允许输入的域名及其对应 Node Origin。这样输错域名时，客户端会在下载前停下。若 Panel 和 Node Origin 都应可输入，配置中各有一条映射。入口域名须能读取 `/.well-known/ghostfleet-enrollment`，Panel 的管理路由继续使用 Access。
+
+The trusted client package supplies a root-owned `/etc/ghostfleet/enrollment-trust.json` mapping approved bare domain names to their approved Node Origin names, for example `{"panel.example.invalid":"node.example.invalid","node.example.invalid":"node.example.invalid"}`. This lets the client reject mistyped domains before download. A domain accepted for discovery serves `/.well-known/ghostfleet-enrollment`. Panel management routes retain their Access policy.
 
 ## 中文
 
@@ -32,8 +44,21 @@ python3 test/live-presence.py --with-user-systemd
 1. 从已审查提交构建。保留真实部署的 Worker 名称、DO绑定/命名空间和既有 `v1` migration；不要重新创建 namespace 或抹掉 snapshot。发布前保留上一 Worker 版本与数据备份。
 2. 在私有部署覆盖中把 panel/node 两个 HTTPS origin、域名路由配置到**同一个 Worker**。示例 `example.invalid` 不是可发布地址。Panel 全站 Access；node origin 不套浏览器登录页，但仅允许实现中的机器路由。保持 workers.dev/preview 关闭。
 3. 所有者通过原生 secret 配置设置不同的 `GHOSTFLEET_OPERATOR_TOKEN` 和 `GHOSTFLEET_READ_TOKEN`（各至少32字符的高熵随机值）。不要交给聊天、Issue、CI或仓库。Access 登录不自动成为应用 Operator。
-4. 私有覆盖应用在生成的 `dist/wrangler.json` 上，保留构建生成的 `GHOSTFLEET_INSTALLER_SHA256` 和 `GHOSTFLEET_BOOTSTRAP_SHA256`。先执行 `wrangler deploy --dry-run --config <private-config>`；正式发布/域名操作由实例 owner 按现行授权完成，不由 CI 自动发布。
+4. 从实例当前的 GhostFleet 私有配置生成候选配置，保留 Worker 名称、域名路由、DO 绑定和迁移。构建将两份 LF 制品、摘要和静态资源绑定一并生成，候选只使用隔离的发布资源目录。私有输入和输出置于同一目录，且都在静态资源目录之外。
 5. 先验证匿名 panel 的 Access 拦截、Read 写入拒绝、node origin 管理 API 404、错误/撤销心跳凭据401、正确安装器字节哈希，再做第一台经授权节点的系统级安装。检查普通用户 SSH 与已有 root 公钥入口未改变。
+
+```sh
+npm run build -- --deployment-config dist/wrangler.private.json --output-config dist/wrangler.release.json
+npx --no-install wrangler deploy --dry-run --config dist/wrangler.release.json
+```
+
+生成和预演均为本地操作。实例 owner 发布前仍需核对 Cloudflare 的 Custom Domain 与路径路由，确认 Node Origin 和 `/bootstrap/*` 由预期的 GhostFleet Worker 提供。发布后，从已授权的 `/v0/access` 读取两份实际 URL，再核对实际下载大小和字节摘要。根路径返回 404 只能说明该路径没有对应资源。
+
+Build the release candidate from the instance's current GhostFleet configuration using the commands above. Keep the output beside the input and keep both outside the static asset directories. The generated configuration retains the Worker, routes, DO bindings and migrations and includes both LF assets and their pins from an isolated release directory. The instance owner checks the live Custom Domain and path-route ownership before deploying. After deployment, read both advertised URLs from the protected `/v0/access` response and verify the downloaded byte counts and digests.
+
+要发布完全纳管版本，在构建命令末尾加 `--managed-bootstrap /path/to/reviewed-managed.sh --managed-bootstrap-sha256 "$reviewed_sha256"`。使用独立审查确定的摘要。构建将原始字节和摘要写入同一候选，并拒绝沿用缺少制品的旧摘要。发布后在已有两份捕获正文核验参数后加 `--managed-body` 和实际下载的正文路径，三份制品一起核对。
+
+For a managed release, append `--managed-bootstrap /path/to/reviewed-managed.sh --managed-bootstrap-sha256 "$reviewed_sha256"` to the build command. Use the digest from the independent artifact review. The build publishes the exact bytes with the matching pin and refuses an overlay that carries an old managed pin without its artifact. Add `--managed-body` and the downloaded file path to the offline check when comparing all three response bodies.
 
 旧 Worker 的 command/MCP/helper/七证据纳管 API 不再挂载，旧 node 数据和 lifecycle 字段保留。若有旧消费者，先确认切换与回滚；不能直接覆盖仍在使用旧 API 的生产实例。需要回退时回退该 Worker 版本并停用本 reporter；不要为回退删除原节点、DO或 SSH 凭据。
 
@@ -127,7 +152,7 @@ node scripts/check-presence-release.mjs \
   --access-json /private/access-readback.json
 ```
 
-退出码 `0` 只表示当前本地发行包的 **installer + bootstrap 两个固定 SHA** 都与线上 Worker 对外宣告的摘要相同；退出码 `3` 表示任一 SHA 不匹配或线上未配置；退出码 `4` 表示输入不合规。该工具不调用 API、不含凭据、不部署。**即使摘要匹配，也不证明某台已安装节点的 reporter 或 systemd unit 已升级**；还要按原本的 `presence-install.json`、脚本/Unit SHA 与实际 timer/快照回执确认。摘要不匹配时先由 owner 修复部署一致性，再考虑对同一 node_uid 重发票据，避免提前失效现有心跳。
+仅核对元数据时，`MATCHED_BUILD_PINS` 表示两个摘要都相符。另存两份 URL 的响应体后，可追加 `--installer-body <本地 .py> --bootstrap-body <本地 .sh>`，用 `MATCHED_BUILD_PINS_AND_CAPTURED_BODIES` 确认字节数和摘要。两种匹配均返回 `0`。退出码 `3` 表示不匹配或线上未配置，`4` 表示输入不合规。核验器离线运行，不读取凭据。已安装节点的版本需另外核对 `presence-install.json`、脚本和 unit 摘要及实际 timer 回执。
 
 升级已有节点时，按以下顺序操作：
 
@@ -152,7 +177,7 @@ node scripts/check-presence-release.mjs \
   --access-json /private/access-readback.json
 ```
 
-Exit `0` proves only that both **installer and bootstrap SHA-256 pins** match the Worker-advertised distribution. Exit `3` means a mismatch or unconfigured metadata; exit `4` means invalid input. The tool makes no API call, reads no token and performs no deployment. **Matching distribution pins do not prove any already-enrolled node's script or systemd unit was updated.** Reconcile its local `presence-install.json`, installed source/unit hashes, timer and snapshot receipts separately. If the pins differ, align the reviewed deployment first; do not reissue a reporting credential prematurely.
+`MATCHED_BUILD_PINS` confirms that the supplied metadata matches both build pins. To check the actual bytes as well, save both response bodies and append `--installer-body <local .py> --bootstrap-body <local .sh>`. The status `MATCHED_BUILD_PINS_AND_CAPTURED_BODIES` confirms both sizes and digests. Both match statuses exit `0`. Exit `3` indicates a mismatch or unconfigured metadata. Exit `4` indicates invalid input. The checker runs offline and reads no credentials. Verify installed-node currentness separately using `presence-install.json`, the installed source and unit hashes, and real timer receipts.
 
 To update an existing node:
 
