@@ -92,6 +92,8 @@ test('a reviewed managed bootstrap travels with its pin and exact bytes in the i
   const body = Buffer.from('#!/bin/sh\n# Synthetic fixture.\nexit 1\n');
   const script = path.join(f.root, 'reviewed.managed.sh');
   const expected = hash(body);
+  const retained = hash(Buffer.from('synthetic prior artifact'));
+  f.config.vars.GHOSTFLEET_MANAGED_DECISION_RETAINED_PINS = [retained];
   writeFileSync(f.input, JSON.stringify(f.config));
   writeFileSync(script, body);
   const built = f.build(f.input, f.output, '--managed-bootstrap', script, '--managed-bootstrap-sha256', expected);
@@ -99,10 +101,12 @@ test('a reviewed managed bootstrap travels with its pin and exact bytes in the i
   const config = JSON.parse(readFileSync(f.output));
   const manifest = JSON.parse(readFileSync(path.join(f.root, 'dist/installer.json')));
   assert.equal(config.vars.GHOSTFLEET_MANAGED_BOOTSTRAP_SHA256, expected);
+  assert.deepEqual(config.vars.GHOSTFLEET_MANAGED_DECISION_RETAINED_PINS, [retained]);
   assert.equal(manifest.managed_bootstrap_sha256, expected);
   assert.equal(manifest.managed_bootstrap_bytes, body.length);
   const file = path.resolve(path.dirname(f.output), config.assets.directory, 'bootstrap', expected + '.managed.sh');
   assert.deepEqual(readFileSync(file), body);
+  assert.ok(!existsSync(path.join(path.dirname(file), retained + '.managed.sh')));
 });
 
 test('an omitted, mutated or noncanonical managed bootstrap cannot publish a stale pin', t => {

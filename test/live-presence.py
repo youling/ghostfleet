@@ -245,10 +245,26 @@ export default { async fetch(request, env, ctx) {
             assert n['presence'] == 'ONLINE' and n['lifecycle'] == 'PROVISIONAL'
             assert n['report']['services']['cloudflared'] == expected_unit_state
             check('actual_Python_reporter_HTTP_and_unit_state_' + expected_unit_state)
-            stop(); start()
+            stop()
+            rotated_fixture = b'#!/bin/sh\n# Synthetic rotation fixture. Never executed.\nexit 1\n'
+            rotated_pin = sha256(rotated_fixture).hexdigest()
+            rotated_path = '/bootstrap/' + rotated_pin + '.managed.sh'
+            (assets / managed_path.lstrip('/')).unlink()
+            (assets / rotated_path.lstrip('/')).write_bytes(rotated_fixture)
+            config['vars'].update(GHOSTFLEET_MANAGED_BOOTSTRAP_SHA256=rotated_pin,
+                                  GHOSTFLEET_MANAGED_DECISION_RETAINED_PINS=[managed_pin])
+            config_path.write_text(json.dumps(config))
+            start()
             assert current(uid)['presence'] == 'ONLINE'
             assert_reporter_ok(subprocess.run(command, capture_output=True, text=True, timeout=35))
             check('real_DO_persistence_after_runtime_restart')
+            assert api('/__test/panel-readback', readback, token='')[1] == rpc
+            assert api('/.well-known/ghostfleet-enrollment', token='')[1]['artifact'] == {
+                'url': origin + rotated_path, 'sha256': rotated_pin}
+            assert api(managed_path, token='')[0] == 404
+            with direct.open(origin + rotated_path, timeout=12) as download:
+                assert download.status == 200 and download.read() == rotated_fixture
+            check('retained_decision_survives_rotation_without_offering_old_artifact')
             if args.with_user_systemd:
                 name = 'ghostfleet-presence-test-' + uuid.uuid4().hex[:10]
                 timer, service = name + '.timer', name + '.service'

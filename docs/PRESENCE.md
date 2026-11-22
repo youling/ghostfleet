@@ -26,9 +26,13 @@ The trusted client package supplies a root-owned `/etc/ghostfleet/enrollment-tru
 
 A same-UID reissue preserves the reporter’s validated systemd unit mapping. A first install uses the default unit names.
 
-私有 broker 可通过 Worker service binding 调用 `ManagedPanelDecisionReader.readManagedEnrollment(node_uid, ticket_id)`，取得同一 UID 最近一次有效领取的 Panel 决定摘要。重发待领取期间，原决定继续可读。替换领取、撤销上报或摘要换代后，旧决定不可读。读取只带 UID、票据、制品摘要和时间，后续私有准入仍须独立验证传输和能力。
+私有 broker 可通过 Worker service binding 调用 `ManagedPanelDecisionReader.readManagedEnrollment(node_uid, ticket_id)`，取得同一 UID 最近一次有效领取的 Panel 决定摘要。重发待领取期间，原决定继续可读。替换领取或撤销上报后，旧决定不可读。读取只带 UID、票据、制品摘要和时间，后续私有准入仍须独立验证传输和能力。
 
-The private broker can bind to `ManagedPanelDecisionReader.readManagedEnrollment(node_uid, ticket_id)` for the most recently consumed decision for that UID. An issued replacement keeps the current decision readable until the replacement is claimed. Reporting revocation and bootstrap pin changes invalidate the corresponding readback. The receipt contains identifiers, pins and timestamps. The private broker still verifies its separate authority and reviewed transport evidence.
+切换 managed 制品时，实例 owner 可在同次发布的私有配置 `vars.GHOSTFLEET_MANAGED_DECISION_RETAINED_PINS` 中保留最多四个旧 SHA-256。使用 JSON 数组，每项为 64 位小写十六进制。仍有效的旧决定继续返回原摘要，从列表移除即停止读回。当前制品仍须配置，发现、下载与新票据领取只使用当前摘要。
+
+The private broker can bind to `ManagedPanelDecisionReader.readManagedEnrollment(node_uid, ticket_id)` for the most recently consumed decision for that UID. An issued replacement keeps the current decision readable until the replacement is claimed. Reporting revocation invalidates the corresponding readback. The receipt contains identifiers, pins and timestamps. The private broker still verifies its separate authority and reviewed transport evidence.
+
+When rotating the managed artifact, the instance owner can retain up to four prior SHA-256 pins in `vars.GHOSTFLEET_MANAGED_DECISION_RETAINED_PINS` in the same private release configuration. Use a JSON array of 64-character lowercase hexadecimal strings. Still-current decisions keep their original digest until their pin is removed. The active managed artifact remains required and its pin alone controls discovery, download, and new claims.
 
 ## 中文
 

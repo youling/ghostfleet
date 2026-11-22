@@ -15,6 +15,8 @@ const PAIR = /^[0-9a-f]{64}$/;
 const SHORT_CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const TICKET_TTL_MS = 600_000;
 const MAX_PAIRING_REQUESTS = 128;
+const MAX_RETAINED_MANAGED_DECISION_PINS = 4;
+const validManagedPin = pin => typeof pin === 'string' && pin.length === 64 && /^[0-9a-f]{64}$/.test(pin);
 const own = (o, k) => o && Object.hasOwn(o, k);
 const digest = s => createHash('sha256').update(s).digest('hex');
 const iso = ms => new Date(ms).toISOString();
@@ -88,19 +90,23 @@ function managedEnrollment(state, node, now) {
 
 // Service-binding readback only. A successful reporter claim does not create
 // transport, provider or execution authority.
-export function readManagedPanelDecision(state, nodeUid, ticketId, bootstrapSha) {
+export function readManagedPanelDecision(state, nodeUid, ticketId, bootstrapSha, retainedPins) {
   const denied = { ok: false, error: 'MANAGED_PANEL_DECISION_UNAVAILABLE' };
   if (typeof nodeUid !== 'string' || !UID.test(nodeUid) || typeof ticketId !== 'string' || !TICKET.test(ticketId) ||
-      typeof bootstrapSha !== 'string' || !/^[0-9a-f]{64}$/.test(bootstrapSha)) return denied;
+      !validManagedPin(bootstrapSha)) return denied;
   const node = state.nodes?.[nodeUid];
   const ticket = state.managed_enrollment_tickets?.[ticketId];
   if (node?.managed_enrollment?.claimed_ticket_id !== ticketId || !node.reporting?.digest || node.reporting.revoked_at ||
       ticket?.node_uid !== nodeUid || ticket.state !== 'CONSUMED' || ticket.profile !== MANAGED_PROFILE ||
-      ticket.bootstrap_sha256 !== bootstrapSha || !ticket.claimed_at || node.reporting?.registered_at !== ticket.claimed_at) return denied;
+      !ticket.claimed_at || node.reporting?.registered_at !== ticket.claimed_at) return denied;
+  const ticketPin = ticket.bootstrap_sha256;
+  if (!validManagedPin(ticketPin)) return denied;
+  if (ticketPin !== bootstrapSha && (!Array.isArray(retainedPins) || retainedPins.length > MAX_RETAINED_MANAGED_DECISION_PINS ||
+      !retainedPins.every(validManagedPin) || !retainedPins.includes(ticketPin))) return denied;
   const issued = Date.parse(ticket.created_at), claimed = Date.parse(ticket.claimed_at), deadline = Date.parse(ticket.expires_at);
   if (!(issued <= claimed && claimed < deadline && deadline - issued === TICKET_TTL_MS)) return denied;
   const decision = { protocol: 'ghostfleet-managed-panel-decision/v1', node_uid: nodeUid, panel_ticket_id: ticketId,
-    profile: MANAGED_PROFILE, role: 'managed', bootstrap_sha256: bootstrapSha,
+    profile: MANAGED_PROFILE, role: 'managed', bootstrap_sha256: ticketPin,
     issued_at: ticket.created_at, claimed_at: ticket.claimed_at, code_expires_at: ticket.expires_at };
   return { ok: true, decision, owner_decision_digest: 'sha256:' + digest(JSON.stringify(decision)) };
 }
