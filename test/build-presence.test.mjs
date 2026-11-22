@@ -66,7 +66,7 @@ test('release embeds both Linux asset pins while keeping the existing Worker and
   assert.equal(packaged.vars.GHOSTFLEET_BOOTSTRAP_SHA256, manifest.bootstrap_sha256);
   assert.equal(packaged.assets.binding, 'ASSETS');
   assert.equal(packaged.assets.run_worker_first, true);
-  assert.equal(path.resolve(path.dirname(f.output), packaged.main), path.join(f.root, 'src/adapters/cloudflare/worker.js'));
+  assert.equal(path.resolve(path.dirname(f.output), packaged.main), path.join(f.root, 'src/adapters/cloudflare/index.js'));
   const assets = path.resolve(path.dirname(f.output), packaged.assets.directory);
   assert.notEqual(assets, previousAssets);
   assert.ok(!existsSync(path.join(assets, 'unrelated.json')));
