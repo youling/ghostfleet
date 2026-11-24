@@ -46,13 +46,13 @@ The reporter is scheduled, one-shot, and command-free. A service result of `not_
 
 ## 正式版扩展：全自动下位机纳管 / Full-managed lower-node provisioning
 
-ADR004 的 reporter-only 流程继续作为独立子能力，不再代表完整远控纳管。正式版增加一个受 Owner profile 授权的 provisioning orchestration：Panel/既有 DO 签发一次性 ticket；目标机运行固定摘要 root bootstrap；私有 Host/DCR owner 在同一 Node UID 下完成原生 SSH、Provider 复用、DCR policy、Root helper/lease 和真实 ChatGPT receipt。
+ADR004 的 reporter-only 流程继续作为独立子能力，不再代表完整远控纳管。正式版增加受 Owner profile 授权的 provisioning orchestration：目标机端主动输入纳管域名发起配对；受保护 Panel/既有 DO 审核请求并手动签发短码；目标机可信终端输入短码，校验固定摘要制品并完成一次 root bootstrap；私有 Host/DCR owner 在同一 Node UID 下完成原生 SSH、Provider 复用、DCR policy、Root helper/lease 和真实 ChatGPT receipt。
 
 ```mermaid
 flowchart TD
-  Operator["受保护 Panel / Operator"] --> Ticket["FULL_MANAGED_LOWER_NODE ticket"]
-  Ticket --> Bootstrap["目标机一次 root bootstrap + 短码"]
-  Bootstrap --> Preflight["Host preflight / recoverability"]
+  TargetInit["目标机：可信纳管入口输入域名发起配对"] --> Operator["受保护 Panel：Operator 匹配设备请求并签发短码"]
+  Operator --> CodeEntry["目标机终端：输入短码并校验固定摘要 bootstrap"]
+  CodeEntry --> Preflight["Host preflight / recoverability"]
   Preflight --> Provider["发现并复用 Tailscale / Cloudflare"]
   Provider --> SSH["原生 SSH / host-key pin"]
   SSH --> DCR["动态 DCR catalog / policy"]
@@ -71,7 +71,7 @@ flowchart TD
 | Host bootstrap | 一次授权下完成本机预检与受限安装；不暴露长期 root private key |
 | ChatGPT | 通过现有 DCR 工具完成真实 R0、Job、root-probe 和受委托 Root session |
 
-**角色合同：TP 唯一 Controller；搬瓦工 Canary、JG、NAS、WCX、SYJ 与未来国内生产力服务器全部为 Managed 下位机。** Managed→Controller 与 Managed→Managed 的新管理连接不因纳管自动开放。
+**角色合同：Controller 集合、独立身份、授权范围与接替由实例 Owner 确定。** 多个获准控制主体可分工与冗余；核心主机也可成为明确授权的管理目标。此次真实 VPS Canary 与后续生产力服务器仍使用 `MANAGED_ONLY` profile，下位机不能因纳管取得反向或横向管理权。旧单 Controller 实例范围不等于永久产品约束；实际拓扑与证据归私有实例 Work，通用角色和接替语义见 [ADR007 §2](adr/007-fully-managed-lower-node-enrollment.md) 与 [#64](https://github.com/youling/ghostfleet/issues/64)。
 
 首个全新纳管验收目标为真实搬瓦工 VPS，不使用虚拟机；通过后再按单节点 canary → 小批次 → 全量 rollout 纳管国内生产力服务器。新节点不得要求逐台修改 Worker 源码或 Wrangler VPC 静态 binding；若当前 transport 仍有静态 binding 瓶颈，必须在 FULLY_MANAGED 发布前解决动态 locator/route 消费，不得把手工补配置称为全自动。
 
