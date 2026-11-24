@@ -144,47 +144,29 @@ Tailscale 只负责网络连通，OpenSSH 仍然负责 OS 登录身份和权限�
 
 ### 5.1 GhostFleet 单向管理角色 / Controller-to-managed topology
 
-**当前 Owner 角色裁决：ThinkPad（TP）是唯一上位 Controller；JG、WCX、SYJ 是 Managed Nodes。** 角色由 Owner 的架构裁决确定，不从 Tailscale tag、主机名、IP、SSH 用户或“当前能连通”推断。GhostFleet 不实现第二套控制面；网络准入仍由现有 Tailscale tailnet policy 执行。
+**通用规则：控制权由 Owner 明确授权，Controller 可以有多个。** `CONTROLLER_CAPABLE` 表示控制资质，不等于已取得每个目标的实际授权；`MANAGED_ONLY` 不持有跨节点管理权。高信任主机也可能是受管理目标；同处 LAN、网络在线、tag 或 OS root 均不授予控制资格。实例的历史单 Controller 范围与新冗余目标、当前真实验收分开记录，见 [#64](https://github.com/youling/ghostfleet/issues/64)；本节不是实例策略真值。
 
-| 新连接发起方 | 目标 | TCP 端口 | 期望 |
-|---|---|---:|---|
-| TP Controller | JG Managed | 22 | 允许 |
-| TP Controller | WCX Managed | 22 | 允许 |
-| TP Controller | SYJ Managed | 8280 | 允许 |
-| JG Managed | TP Controller | 22 | 拒绝 |
-| WCX Managed | TP Controller | 22 | 拒绝 |
-| SYJ Managed | TP Controller | 22 | 拒绝 |
-| 任一 Managed Node | 其他 Managed Node | 目标实际 SSH 端口 | 拒绝 |
+| 新连接发起方 | 目标 | 端口 | 期望 |
+|---|---|---|---|
+| 已获授权的控制主体 | 确切授权目标（可为核心主机或下位机） | 实际管理监听端口 | 允许 |
+| 控制主体 | 未获网络准入授权的目标 | 实际管理监听端口 | 拒绝 |
+| MANAGED_ONLY | 控制主机或其他节点的管理接口 | 全部相关实际端口 | 拒绝 |
+| 已获授权的 Operator / 救援主体 | 确切救援目标 | 实际救援端口 | 按 scope 允许 |
+| 下位机业务/Reporter | 已批准业务或自身上报接口 | 显式协议/端口 | 按业务 scope 允许，不产生管理权 |
 
-这里限制的是**新建的主动连接**。TP 发起并获准的 TCP 会话，其返回流量由 Tailscale 有状态连接跟踪自动放行；返回流量不需要第二条反向 grant，也不构成 Managed Node 主动管理 TP 的权限。
+这里限制的是**新建主动连接**。已获准 TCP 会话的返回流量不需另授反向 grant，不构成新建管理权限。网络准入、应用授权和 OpenSSH OS 认证是独立边界。已准入的 TCP 连接内仍须由相应应用/OS 授权边界拒绝未授权动作，不能假设网络 ACL 理解业务动作。GhostFleet 继续使用原生 OpenSSH over Tailscale；`grants` / `acls` 限制实际 source → destination → listener port；Tailscale `ssh` 只适用于 Tailscale SSH，不替代原生 OpenSSH 的 TCP 准入。
 
-**本项目当前使用原生 OpenSSH over Tailscale，不使用 Tailscale SSH。** 四节点 `RunSSH=false`；Tailscale 只提供 WireGuard 网络路径，目标机的 OpenSSH/authorized_keys 负责 SSH 身份认证和 OS 权限。因此：
-- 用 tailnet policy 的 `grants` / `acls` 限制 source → destination → TCP listener port；
-- Tailscale policy 的 `ssh` 段只控制 Tailscale SSH，不替代原生 OpenSSH 的网络准入；
-- 不要把 Tailscale SSH 对 tagged/user identity 的登录限制误当作 native OpenSSH TCP grant 的结果。
+**身份、出站凭据与接替：**
+- tag 与 user-bound 身份不可混为同一选择器；tag 会替代设备用户身份，迁移须单独审查。通过完整 Policy 与真实设备读回选择精确 source/destination（必要时使用受审 `hosts` 或 IP selector），不能从 tag、IP 或 hostname 反推 `node_uid` 或控制资质。控制主体所在节点也可作为受授权目标。
+- 从每个实际 Controller principal 新建非复用 SSH 会话，严格校验 host key，按授权验证 exec、PTY 或 SFTP。入站 `authorized_keys`、Tunnel connector、Reporter、其他 Operator 的登录不能证明当前主体具有出站认证。
+- 各控制主体独立保管可撤销凭据，按目标授予，不复制节点或 Human 救援私钥。避免将可转发的管理 agent、共享密钥或凭据暴露给业务进程、普通 CI 和下位机。无需为了控制能力新增常驻 daemon。
+- 独立任务可并行；同一独占资源的接替必须维持既有授权，按原 Work/资源 ownership、generation/fencing 和在途 UNKNOWN 对账执行。原生 SSH 没有天然 fencing；不能证明安全接管则只阻断该动作。以独立救援、接替者新会话及旧 generation 拒绝（适用时）验证冗余，而不是把同网可达或共享密钥视为接替完成。
 
-**身份选择与当前映射：**
-- TP 当前 CLI 身份读回为 `tag:fleet-ssh-target`，但其逻辑角色是 Controller；不能把它纳入 managed destination 集合。
-- WCX/SYJ 是 tagged VPS；JG 当前为 user-bound。四台身份类型并不一致，不能假设所有 Managed Node 都有同一 tag。
-- Tailscale tag 是非用户设备身份，会替代 user-based authentication；官方建议仅用于非人类设备。TP 当前已是 tagged machine identity，且本轮 DCR 只读执行上下文使用 Fleet control service account；其逻辑角色是 Controller，因此从标签语义看，`tag:fleet-controller` 是比 `tag:fleet-ssh-target` 更合适的候选，target tag 应只标识 Managed Nodes。若 TP 同时承担人类交互设备身份，Owner 需先评估 tag 替代 user identity 的影响。任何 tag 迁移仍需单独授权，本轮未执行。
-- 在不改变设备身份的前提下，可优先用 tailnet policy 的 `hosts` 别名或精确 Tailscale IP 作为 grants 的 source/destination selector，例如为 TP、JG、WCX、SYJ 分别定义稳定别名。该选择器只表达现有设备的精确网络身份，不创建 GhostFleet 控制面；IP/设备重注册变化时必须同步维护。最终选择必须先对照 Owner 当前 tailnet policy 原件。
-
-### Controller 的出站 SSH 凭据 / Controller outbound SSH credentials
-
-**网络可达不等于 SSH 管理能力。** TP 能建立到目标 TCP listener 的连接，只证明 Tailscale 网络层允许；Controller 还必须在实际执行管理任务的服务身份下，具备到每个目标的出站 SSH 认证能力，并严格校验目标 host key。TP 上的 `authorized_keys` 只控制谁能登录 TP，是入站公钥，不是 TP 登录其他节点的出站私钥。
-
-- 由 Owner/Foreman 明确选择凭据保管方式：优先使用专属于 TP Controller 的管理身份/密钥，并通过系统支持的受保护凭据存储交给实际执行服务；若选择 SSH agent forwarding，必须限定在可信连接与明确会话范围内，并确认自动化任务运行时确实能访问该 agent。
-- 绝不把 JG/WCX/SYJ 的节点私钥复制到 TP；也不把 Windows 管理客户端上“能登录目标”的结果当成 TP 服务身份已具备出站凭据。
-- 对每个目标使用新建 SSH 会话、禁用连接复用、`BatchMode=yes`、`StrictHostKeyChecking=yes`，从 TP 的实际 Controller 执行身份验证 root exec 与所需 SFTP；记录认证身份、host-key alias、目标端口和退出状态，不记录私钥或 token。
-- 当前四节点使用原生 OpenSSH（`RunSSH=false`）；不能为了绕过凭据设计而悄悄切换为 Tailscale SSH。
-
-
-
-**策略实现前置条件：**
-1. 先读取并保存当前 tailnet policy 原件，逐项检查 `hosts`、`tagOwners`、`groups`、`grants`、`acls`、`ssh`、`tests`；当前四台设备的有效 `PacketFilterRules` 曾读回为全 tailnet IPv4/IPv6 source pool → 任意目标 / 任意端口，A09 因而 FAIL。
-2. Tailscale 的 grants/ACL 都是累加式 allow；更具体的新规则不能覆盖或收窄旧的宽泛 allow。省略 `acls` 会套用默认 allow-all；必须先移除/替换默认或显式的全网放行，再只保留 TP → 三个 Managed Nodes 的精确端口许可。不能只追加三条窄 grants 就宣称已隔离。
-3. 在 policy 的 `tests` 中固定正向用例（TP → JG:22、WCX:22、SYJ:8280）和反向拒绝用例（JG/WCX/SYJ → TP:22，以及三者之间的 SSH 端口）。测试通过后，再经 Owner 授权做真实 TCP deny probe。
-4. 生产 policy、tag、设备身份或 key expiry 的变更必须由 Owner 单独批准并准备回滚路径；本指南不授权执行这些变更。
+**策略实施前置：**
+1. 先完整读取 `hosts`、`tagOwners`、`groups`、`grants`、`acls`、`ssh`、`tests` 与其他相关段，并保存私有版本/ETag 与生效设备过滤规则。
+2. grants/ACL 为累加式 allow；窄规则不能覆盖宽规则。移除或替换与目标隔离冲突的 broad allow，保留合法业务和独立救援；不得仅追加窄 grants 后宣称隔离完成。
+3. 按实际主体、目标、端口生成正负矩阵，包含各已获准 Controller、未授权动作、下位机反向和横向管理、Operator 救援、必要业务。按 [ACCEPTANCE §7](ACCEPTANCE.md) 验证新建会话与真实拒绝；其他 LAN/WAN/IPv6、CF、代理和凭据路径分别验收。
+4. 生产变更仍依 Owner 现有授权、原 Work、可恢复切换。无授权或无实时证据不扩大角色，也不将历史 TP-only 结果外推为多 Controller 已通过。
 
 官方依据：[Tailnet policy syntax（hosts/grants/tests）](https://tailscale.com/docs/reference/syntax/policy-file) · [Grants explained（allow 累加与返回流量）](https://tailscale.com/docs/features/access-control/grants/grants-explained) · [Tags（tag 与 user identity 互斥）](https://tailscale.com/docs/features/tags) · [Tailscale SSH 与原生 SSH 区别](https://tailscale.com/docs/features/tailscale-ssh)
 
@@ -439,49 +421,25 @@ Tailscale is the network path; OpenSSH remains the SSH server and OS login autho
 
 ### 5.1 GhostFleet one-way management roles
 
-**Current Owner role decision: ThinkPad (TP) is the sole upper-level Controller; JG, WCX and SYJ are Managed Nodes.** Roles come from the Owner's architecture decision. They must not be inferred from a Tailscale tag, hostname, IP, SSH user or observed reachability. GhostFleet does not implement a second control plane; network admission remains enforced by the existing Tailscale tailnet policy.
+Controller cardinality and assignments are instance-owned, not a product constant. `CONTROLLER_CAPABLE` is eligibility, not authority over every target; a controller-capable host may itself be a managed destination. `MANAGED_ONLY` cannot initiate reverse or lateral management. LAN membership, tags, reachability and local root never grant Fleet authority. Historical single-controller scope and multi-controller readiness are recorded separately in [#64](https://github.com/youling/ghostfleet/issues/64).
 
-| New connection source | Destination | TCP port | Expected |
-|---|---|---:|---|
-| TP Controller | JG Managed | 22 | Allow |
-| TP Controller | WCX Managed | 22 | Allow |
-| TP Controller | SYJ Managed | 8280 | Allow |
-| JG Managed | TP Controller | 22 | Deny |
-| WCX Managed | TP Controller | 22 | Deny |
-| SYJ Managed | TP Controller | 22 | Deny |
-| Any Managed Node | Another Managed Node | Destination's actual SSH port | Deny |
+| New connection source | Destination | Port | Expected |
+|---|---|---|---|
+| Authorized controller principal | Exact authorized target, including an eligible core host | Actual management listener | Allow |
+| Controller principal | Target without network-admission authorization | Actual management listener | Deny |
+| MANAGED_ONLY | Controller or any other node's management interface | All relevant actual ports | Deny |
+| Authorized operator / recovery principal | Exact recovery target | Actual recovery port | Scoped allow |
+| Lower-node business / reporter | Approved business or own reporting endpoint | Explicit protocol/port | Scoped allow, no control authority |
 
-This governs **new connections initiated by a node**. Return traffic for a TCP connection initiated and allowed by TP is automatically permitted by Tailscale's stateful connection tracking. It does not require a reverse grant and does not give a Managed Node permission to initiate a new management connection to TP.
+Reply traffic on an approved connection does not authorize a new management connection. The applicable application/OS boundary must reject ungranted operations within a network-admitted connection; network ACLs do not interpret business actions. Native OpenSSH remains the OS authentication authority; Tailscale grants/ACLs enforce network admission, while Tailscale SSH rules apply only to Tailscale SSH. Use actual listener ports and reviewed identity selectors. A tag may replace user identity; do not derive node identity or control authority from tags, addresses, or hostnames.
 
-**This project uses native OpenSSH over Tailscale, not Tailscale SSH.** All four nodes report `RunSSH=false`. Tailscale provides the WireGuard network path; OpenSSH/`authorized_keys` on the target handles SSH authentication and OS permissions. Therefore:
-- Use the tailnet policy's `grants` / `acls` to constrain source → destination → TCP listener port.
-- The policy's `ssh` section controls Tailscale SSH only; it does not replace network admission for native OpenSSH.
-- Do not mistake Tailscale SSH restrictions involving tagged/user identities for the result of a native OpenSSH TCP grant.
+Each controller principal has independently revocable, protected credentials and explicit targets. Establish fresh non-multiplexed sessions with strict host-key verification; prove exec, PTY or SFTP only within the authorized scope. Inbound authorized_keys, tunnel connectors, reporters and another operator's login cannot prove that controller's outbound authentication. Never copy node or Human rescue private keys or expose a management agent to lower nodes or ordinary workloads.
 
-**Identity selectors and current enrollment:**
-- TP currently reads back as `tag:fleet-ssh-target`, but its logical role is Controller; it must not be included in the managed-destination set.
-- WCX/SYJ are tagged VPS nodes; JG is currently user-bound. The four devices do not share one identity type, so do not assume every Managed Node has the same tag.
-- A Tailscale tag is a non-user device identity and replaces user-based authentication. Tailscale recommends tags for non-human devices. TP is already a tagged machine identity, and this round's read-only DCR execution context uses a Fleet control service account. Given its Controller role, `tag:fleet-controller` is semantically better aligned than `tag:fleet-ssh-target`; the target tag should identify Managed Nodes only. If TP also serves as a human-interactive device identity, the Owner must first review the effect of replacing user identity with a tag. Any tag migration still requires separate authorization and was not performed in this round.
-- Without changing device identity, prefer `hosts` aliases or exact Tailscale IPs as grants source/destination selectors, defining a stable alias for TP, JG, WCX and SYJ. These selectors express exact existing network identities; they do not create a GhostFleet control plane. Keep them synchronized if a device is re-enrolled or its IP changes. Make the final choice only after reading the Owner's actual tailnet policy.
+Independent Work may proceed concurrently. Takeover of an exclusive resource uses existing ownership, generation/fencing and UNKNOWN reconciliation; native SSH does not inherently fence stale writes. Stop only the unsafe takeover when identity, authority or in-flight effects cannot be reconciled. Verify independently recoverable state and recovery paths, not just connectivity or a shared credential.
 
-### Controller outbound SSH credentials
+Read the complete current policy and its effective device rules before proposing changes. Additive grants cannot narrow an existing broad allow. Use the scoped positive/negative matrix in [ACCEPTANCE](ACCEPTANCE.md), preserve legitimate business and recovery paths, and verify alternative LAN/WAN/IPv6, Cloudflare, forwarding and credential boundaries independently. Changes to production require the existing Owner authority and recovery plan; historical results cannot authorize a new controller.
 
-**Network reachability is not SSH management capability.** A successful TCP connection from TP to a target listener proves only that the Tailscale network layer permits the path. The Controller must also have an outbound SSH authentication method under the actual service identity that executes management tasks, and it must strictly verify each target host key. TP's `authorized_keys` controls who may log in to TP; it is an inbound public-key file, not an outbound private key for TP to log in to other nodes.
-
-- The Owner/Foreman must choose credential custody explicitly: prefer a TP-Controller-only management identity/key delivered to the actual execution service through an OS-supported protected credential store; if SSH agent forwarding is chosen, scope it to trusted connections and explicit sessions, and verify that the automation runtime can actually access the agent.
-- Never copy a Managed Node's private key from JG/WCX/SYJ to TP. A successful login from the Windows operator client does not prove that TP's controller service identity has outbound credentials.
-- For each target, use a fresh SSH session with connection multiplexing disabled, `BatchMode=yes` and `StrictHostKeyChecking=yes`; from TP's actual Controller execution identity, verify root exec and required SFTP. Record the authenticating identity, host-key alias, target port and exit status, never private keys or tokens.
-- All four current nodes use native OpenSSH (`RunSSH=false`); do not silently switch to Tailscale SSH to bypass the credential-custody design.
-
-
-
-**Prerequisites before policy implementation:**
-1. Read and preserve the original tailnet policy. Inspect `hosts`, `tagOwners`, `groups`, `grants`, `acls`, `ssh` and `tests`. The four nodes' effective `PacketFilterRules` were previously read back as the entire tailnet IPv4/IPv6 source pool → any destination / any port; A09 therefore FAILS.
-2. Tailscale grants and ACLs are additive allow rules. A narrower new rule cannot override or restrict an existing broad allow. Omitting `acls` invokes the default allow-all policy. Remove or replace the default/explicit broad allow before retaining only the exact TP → three Managed Node port permissions. Merely appending three narrow grants does not create isolation.
-3. Add policy `tests` for positive cases (TP → JG:22, WCX:22, SYJ:8280) and denied cases (JG/WCX/SYJ → TP:22 and SSH ports between the three Managed Nodes). After policy tests pass, perform real TCP denial probes only with Owner authorization.
-4. Any production policy, tag, device-identity or key-expiry change requires separate Owner approval and a rollback path. This guide does not authorize those changes.
-
-Official references: [Tailnet policy syntax (hosts/grants/tests)](https://tailscale.com/docs/reference/syntax/policy-file) · [Grants explained (additive allows and reply traffic)](https://tailscale.com/docs/features/access-control/grants/grants-explained) · [Tags (tag and user identities are mutually exclusive)](https://tailscale.com/docs/features/tags) · [Tailscale SSH vs native SSH](https://tailscale.com/docs/features/tailscale-ssh)
+Official references: [Tailnet policy syntax](https://tailscale.com/docs/reference/syntax/policy-file) · [Grants explained](https://tailscale.com/docs/features/access-control/grants/grants-explained) · [Tags](https://tailscale.com/docs/features/tags) · [Tailscale SSH](https://tailscale.com/docs/features/tailscale-ssh)
 
 ## 6. Client configuration
 
