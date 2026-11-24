@@ -16,7 +16,7 @@ GhostFleet 的目标是尽快提供可用的原生远控通道，再以最薄的
 
 上面的 ADR004 是轻量 Reporter/Presence 子能力，不是完整纳管终点。正式版另提供受 Owner 授权的 `FULL_MANAGED_LOWER_NODE` profile：面板创建一次性 ticket + 短码；目标 Linux 机器在可信终端执行一次固定摘要 root bootstrap；同一 ceremony 自动完成主机预检、原生传输、复用现有 Tailscale/Cloudflare、DCR 节点身份/策略、专用 Root helper/签名租约与 ChatGPT 实际验收。
 
-**Controller 的数量和分工属于实例拓扑，不是 GhostFleet 固定角色。** Owner 可以为多个独立的高信任控制主体授权日常分工与故障接替；每个主体必须独立验证身份、目标范围和撤销能力。公网及其他 `MANAGED_ONLY` 下位节点只接收获授权的管理，不能自行晋升或反向、横向取得控制权。新节点的 heartbeat Claim 不授予 root；Root profile 仍由受保护 Operator 对指定下位机的一次授权产生，已授权范围内的连续运维不逐条弹卡。详见 [ADR007 §2](docs/adr/007-fully-managed-lower-node-enrollment.md) 与 [拓扑验收](docs/ACCEPTANCE.md#7-controller--managed-单向网络角色--one-way-controller-to-managed-network-roles)。
+**Controller 的数量和分工属于实例拓扑，不是 GhostFleet 固定角色。** Owner 可以为多个独立的高信任控制主体授权日常分工与故障接替；每个主体必须独立验证身份、目标范围和撤销能力。公网及其他 `MANAGED_ONLY` 下位节点只接收获授权的管理，不能自行晋升或反向、横向取得控制权。新节点的 heartbeat Claim 不授予 root；Root profile 仍由受保护 Operator 对指定下位机的一次授权产生，已授权范围内的连续运维不逐条弹卡。详见 [ADR007 §2](docs/adr/007-fully-managed-lower-node-enrollment.md) 与 [拓扑验收](docs/ACCEPTANCE.md)。
 
 全自动意味着新增节点不再要求手改 Worker 源码、复制 UID/公钥或逐台手工创建 Tunnel。应由现有 Worker/DO 与私有 Fleet registry 动态发布经审核的 Node UID、传输定位符、Host Key pin 和能力策略；已有 TS/CF 先探测并复用，不为形式统一重复安装。真实搬瓦工 VPS 是首个 E2E Canary，**不使用虚拟机**；通过后再分批纳管国内生产力服务器。完整状态与验收见 [ADR007](docs/adr/007-fully-managed-lower-node-enrollment.md) 和 [GhostFleet #11](https://github.com/youling/ghostfleet/issues/11)。
 

@@ -149,12 +149,12 @@ Tailscale 只负责网络连通，OpenSSH 仍然负责 OS 登录身份和权限�
 | 新连接发起方 | 目标 | 端口 | 期望 |
 |---|---|---|---|
 | 已获授权的控制主体 | 确切授权目标（可为核心主机或下位机） | 实际管理监听端口 | 允许 |
-| 控制主体 | 未获授权的目标或动作 | 实际管理监听端口 | 拒绝 |
+| 控制主体 | 未获网络准入授权的目标 | 实际管理监听端口 | 拒绝 |
 | MANAGED_ONLY | 控制主机或其他节点的管理接口 | 全部相关实际端口 | 拒绝 |
 | 已获授权的 Operator / 救援主体 | 确切救援目标 | 实际救援端口 | 按 scope 允许 |
 | 下位机业务/Reporter | 已批准业务或自身上报接口 | 显式协议/端口 | 按业务 scope 允许，不产生管理权 |
 
-这里限制的是**新建主动连接**。已获准 TCP 会话的返回流量不需另授反向 grant，不构成新建管理权限。网络准入、应用授权和 OpenSSH OS 认证是独立边界。GhostFleet 继续使用原生 OpenSSH over Tailscale；`grants` / `acls` 限制实际 source → destination → listener port；Tailscale `ssh` 只适用于 Tailscale SSH，不替代原生 OpenSSH 的 TCP 准入。
+这里限制的是**新建主动连接**。已获准 TCP 会话的返回流量不需另授反向 grant，不构成新建管理权限。网络准入、应用授权和 OpenSSH OS 认证是独立边界。已准入的 TCP 连接内仍须由相应应用/OS 授权边界拒绝未授权动作，不能假设网络 ACL 理解业务动作。GhostFleet 继续使用原生 OpenSSH over Tailscale；`grants` / `acls` 限制实际 source → destination → listener port；Tailscale `ssh` 只适用于 Tailscale SSH，不替代原生 OpenSSH 的 TCP 准入。
 
 **身份、出站凭据与接替：**
 - tag 与 user-bound 身份不可混为同一选择器；tag 会替代设备用户身份，迁移须单独审查。通过完整 Policy 与真实设备读回选择精确 source/destination（必要时使用受审 `hosts` 或 IP selector），不能从 tag、IP 或 hostname 反推 `node_uid` 或控制资质。控制主体所在节点也可作为受授权目标。
@@ -426,12 +426,12 @@ Controller cardinality and assignments are instance-owned, not a product constan
 | New connection source | Destination | Port | Expected |
 |---|---|---|---|
 | Authorized controller principal | Exact authorized target, including an eligible core host | Actual management listener | Allow |
-| Controller principal | Ungranted target or operation | Actual management listener | Deny |
+| Controller principal | Target without network-admission authorization | Actual management listener | Deny |
 | MANAGED_ONLY | Controller or any other node's management interface | All relevant actual ports | Deny |
 | Authorized operator / recovery principal | Exact recovery target | Actual recovery port | Scoped allow |
 | Lower-node business / reporter | Approved business or own reporting endpoint | Explicit protocol/port | Scoped allow, no control authority |
 
-Reply traffic on an approved connection does not authorize a new management connection. Native OpenSSH remains the OS authentication authority; Tailscale grants/ACLs enforce network admission, while Tailscale SSH rules apply only to Tailscale SSH. Use actual listener ports and reviewed identity selectors. A tag may replace user identity; do not derive node identity or control authority from tags, addresses, or hostnames.
+Reply traffic on an approved connection does not authorize a new management connection. The applicable application/OS boundary must reject ungranted operations within a network-admitted connection; network ACLs do not interpret business actions. Native OpenSSH remains the OS authentication authority; Tailscale grants/ACLs enforce network admission, while Tailscale SSH rules apply only to Tailscale SSH. Use actual listener ports and reviewed identity selectors. A tag may replace user identity; do not derive node identity or control authority from tags, addresses, or hostnames.
 
 Each controller principal has independently revocable, protected credentials and explicit targets. Establish fresh non-multiplexed sessions with strict host-key verification; prove exec, PTY or SFTP only within the authorized scope. Inbound authorized_keys, tunnel connectors, reporters and another operator's login cannot prove that controller's outbound authentication. Never copy node or Human rescue private keys or expose a management agent to lower nodes or ordinary workloads.
 
