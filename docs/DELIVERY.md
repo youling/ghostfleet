@@ -79,15 +79,15 @@ Cloudflare does not require a new class migration for a code-only update to an e
 The receipt distinguishes source integration, package preparation, panel release, first-node usability, second-node replication and dual-path transport, with evidence and remaining limits. Deliver each established scope without using CI, heartbeat or plans as substitutes for unexecuted live capability.
 
 
-## 4. 正式版 FULLY_MANAGED 交付 / Full-managed release gates
+## 5. 正式版 FULLY_MANAGED 交付 / Full-managed release gates
 
-Owner 于 2026-11-22 已选择真实搬瓦工 VPS 作为首次全流程 Canary，**不使用虚拟机**。通过后才分批纳管国内生产力服务器；这些目标全部是 Managed lower nodes，TP 是唯一 Controller。产品与端到端门禁见 [ADR007](adr/007-fully-managed-lower-node-enrollment.md)。
+Owner 于 2026-11-22 已选择真实搬瓦工 VPS 作为首次全流程 Canary，**不使用虚拟机**。通过后才分批纳管国内生产力服务器；这些目标均使用 `MANAGED_ONLY` profile。控制主体的数量、资格、目标 scope 与接替由实例 Owner 按实际授权和证据确定，历史单 Controller 基线不作为长期限制。产品与端到端门禁见 [ADR007](adr/007-fully-managed-lower-node-enrollment.md)。
 
 | Gate | 完成条件 | 不可替代的证据 |
 |---|---|---|
 | G0 Panel profile | Operator 能创建 `FULL_MANAGED_LOWER_NODE`，签发同一 immutable UID 的一次性 ticket/短码 | 真实受保护 Panel 操作、TTL/错误锁/重复 Claim 负测 |
 | G1 Root bootstrap | 目标 VPS 只需一次可信 root 引导和短码输入，固定摘要校验、预检、阶段 receipt | 真实 VPS shell/systemd receipt；不以 CI 或旧节点安装替代 |
-| G2 Provider/transport | 自动发现并复用现有 TS/CF，建立原生 SSH、Host Key pin 和可恢复路径 | Provider readback + 从 TP/Worker 发起的新 SSH 会话；Tunnel healthy 不是 origin SSH |
+| G2 Provider/transport | 自动发现并复用现有 TS/CF，建立原生 SSH、Host Key pin 和可恢复路径 | Provider readback + 从实际获授权 Controller/Worker 发起的新 SSH 会话；Tunnel healthy 不是 origin SSH |
 | G3 DCR | 同一 UID 自动进入动态 DCR catalog/target/policy，无逐节点源码改动 | 当前 ChatGPT 会话真实 `node.inspect` + typed Job receipt、准确策略版本 |
 | G4 Root | 专用 root-probe + 一次 Owner 委托覆盖范围/期限的连续 Root maintenance session | ChatGPT 真实 Root receipt，至少两条连续无害 Root 命令、撤销/过期负测 |
 | G5 FULLY_MANAGED | G0–G4 必需阶段全通过；修复/恢复路径可用 | Panel 最终状态与真实 ChatGPT 可操作性相互吻合 |

@@ -1,12 +1,20 @@
-import { FIRST_USE, probeFirstUse } from './shared/first-use.js';
+import { FIRST_USE, classifyFirstUseResponse } from './shared/first-use.js';
 const $ = id => document.getElementById(id);
+const MANAGED_PROFILE = 'FULL_MANAGED_LOWER_NODE';
 const copy = {
   zh: { subtitle:'首次纳管与心跳状态 · 远程会话仍由原生 OpenSSH 提供', login:'连接控制面', connect:'连接', disconnect:'断开', refresh:'刷新',
     credential:'这里只接受 GhostFleet Operator / Read 访问令牌，不是 Cloudflare 或 SSH 凭据。令牌仅留在页面内存。',
     missing:'控制面尚未初始化，请实例所有者通过原生部署流程设置应用访问令牌。', required:'请输入实例所有者提供的访问令牌。', unknown:'尚不能确认控制面状态，请检查部署或登录入口。',
+    panelAccess:'面板访问', checkingAccess:'正在检查面板访问权限…', reconnect:'重新打开面板',
+    accessRequired:'当前 Cloudflare Access 会话不可用。重新打开面板以继续。',
+    accessDenied:'当前 Cloudflare Access 身份没有面板权限。请联系实例所有者。',
+    accessMissing:'面板的 Cloudflare Access 验证尚未配置完成。请联系实例所有者。',
+    accessDisconnected:'已断开面板。重新打开面板可复用当前 Cloudflare Access 会话。',
     boundary:'“在线”仅表示最近收到本节点心跳；服务栏是本机进程观测，不代表 Cloudflare/Tailscale 入口或 SSH 登录已通过。',
-    create:'首次纳管', label:'节点名称', columns:['节点','心跳状态','最后收到','SSH','Cloudflare','Tailscale','操作'],
+    create:'注册心跳', retryTicket:'核对票据', issueUncertain:'尚未收到签发结果，可用「核对票据」查看同一请求。', ticketRecovered:'已找回原节点。短码仅显示一次，如未保存，请在该节点行重发票据。节点：', label:'节点名称', columns:['节点','心跳状态','最后收到','SSH','Cloudflare','Tailscale','操作'],
     reissue:'重发票据', revoke:'撤销上报', replaceConfirm:'重发将使该节点旧心跳凭据失效，但不改变 SSH。继续？', revokeConfirm:'只撤销心跳上报，不撤销 SSH 或网络权限。继续？',
+    reporterProfile:'仅心跳', managedProfile:'完全纳管下位机', profileLabel:'纳管模式', managedCreate:'签发短码', managedUnavailable:'完全纳管引导尚未发布', managedRoot:'在目标机的 GhostFleet 纳管入口输入域名和短码。', managedReplace:'为同一节点重发完全纳管短码？', managedUpgrade:'完全纳管', managedUpgradeConfirm:'为这个现有节点签发完全纳管短码？', domain:'纳管域名', selectRequest:'选择目标机显示的配对请求',
+    managedState:{ISSUED:'待领取',CONSUMED:'已领取，等待后续验收',REVOKED:'票据已撤销',EXPIRED:'票据已过期',LOCKED:'票据已锁定'},
     delivery:'一次性纳管材料', warning:'短码只在本次显示。响应丢失或安装中断时，先检查同一节点，不要重复创建节点。',
     code:'终端中输入的独立短码', expires:'过期时间', copy:'复制安装命令', hide:'清除此材料', root:'在目标 Linux 终端运行这一行命令。须已有可信 CA、curl 或 wget 和 sha256sum；命令先校验下载脚本，非 root 时请求 sudo，仅在缺少 Python 时安装 python3，不做系统升级。已有 Python 需为 3.10+。短码仍在终端隐藏提示中输入。已有节点重发自动使用 --replace。',
     footer:'面板中断不会切断现有 SSH。节点端没有命令接收器、任务队列或常驻 Agent。',
@@ -17,57 +25,149 @@ const copy = {
   en: { subtitle:'Enrollment and presence · native OpenSSH remains the session transport', login:'Connect to control plane', connect:'Connect', disconnect:'Disconnect', refresh:'Refresh',
     credential:'Use a GhostFleet Operator / Read token, not a Cloudflare or SSH credential. It stays only in page memory.',
     missing:'Application authentication is not initialized. The deployment owner must configure it through the native deployment flow.', required:'Enter the access token supplied by the instance owner.', unknown:'Backend status is unknown. Check the deployment or login entry.',
+    panelAccess:'Panel access', checkingAccess:'Checking panel access…', reconnect:'Reopen panel',
+    accessRequired:'Your Cloudflare Access session is unavailable. Reopen the panel to continue.',
+    accessDenied:'Your Cloudflare Access identity lacks panel permissions. Contact the instance owner.',
+    accessMissing:'Cloudflare Access verification is not configured for the panel. Contact the instance owner.',
+    accessDisconnected:'The panel is disconnected. Reopen it to use your current Cloudflare Access session.',
     boundary:'Online means a recent authenticated heartbeat. Service states are local process observations, not proof of inbound Cloudflare/Tailscale or SSH connectivity.',
-    create:'Enroll node',label:'Node label',columns:['Node','Presence','Last received','SSH','Cloudflare','Tailscale','Actions'],
+    create:'Register heartbeat',retryTicket:'Check ticket',issueUncertain:'No issue receipt yet. Check ticket to recover the result of the same request.',ticketRecovered:'The original node was recovered. If you missed the one-time code, reissue the ticket from that node’s row. Node: ',label:'Node label',columns:['Node','Presence','Last received','SSH','Cloudflare','Tailscale','Actions'],
     reissue:'Reissue',revoke:'Revoke reporting',replaceConfirm:'Reissuing disables the former reporting credential, not SSH. Continue?',revokeConfirm:'Revoke heartbeat reporting only, not SSH or network access. Continue?',
+    reporterProfile:'Heartbeat only', managedProfile:'Fully managed lower node', profileLabel:'Enrollment profile', managedCreate:'Issue code', managedUnavailable:'Managed bootstrap is not published', managedRoot:'Enter the domain and short code in the GhostFleet enrollment client on the target node.', managedReplace:'Reissue a managed code for the same node?', managedUpgrade:'Fully manage', managedUpgradeConfirm:'Issue a fully managed code for this existing node?', domain:'Enrollment domain', selectRequest:'Select the pairing request shown on the target',
+    managedState:{ISSUED:'Awaiting claim',CONSUMED:'Claimed, awaiting verification',REVOKED:'Ticket revoked',EXPIRED:'Ticket expired',LOCKED:'Ticket locked'},
     delivery:'One-time enrollment',warning:'The code is shown only now. On lost responses or interrupted installation, reconcile this same node instead of creating another.',code:'Separate terminal code',expires:'Expires',copy:'Copy installer command',hide:'Clear delivery',
     root:'Run this one-line command on the target Linux terminal with trusted CA certificates, curl or wget, and sha256sum already available. The command verifies the downloaded shim before execution. It requests sudo only when needed and installs only missing python3, without a system upgrade. An existing Python must be 3.10+. Enter the short code at the hidden terminal prompt. Reissue automatically uses --replace.',
     footer:'A panel outage does not terminate SSH. No command receiver, job queue, or resident agent is installed.',empty:'No nodes yet.',noInstaller:'Pinned installer is not published; ticket creation is disabled.',uncertain:'Outcome uncertain. Refresh and reconcile the same node before retrying.',stale:'Refresh failed. This is an old snapshot, not current online evidence.',copied:'Installer command copied; the separate code is not in it.',online:'online',total:'nodes',read:'read only',operator:'operator',readAt:'Snapshot',
     status:{ONLINE:'Online',STALE:'Stale',OFFLINE:'Heartbeat overdue',PENDING:'Awaiting heartbeat',REVOKED:'Reporting revoked',UNREGISTERED:'Not registered',UNKNOWN:'Unknown'},
     states:{active:'Active',inactive:'Inactive',failed:'Failed',activating:'Starting',deactivating:'Stopping',reloading:'Reloading',not_found:'Not found',unknown:'Unknown'} },
 };
-let lang = 'zh', token = '', access = null, installer = null, nodeOrigin = '', rows = [], receivedAt = null;
+let lang = 'zh', token = '', access = null, installer = null, managedBootstrap = null, nodeOrigin = '', rows = [], requests = [], receivedAt = null;
+let authMode = null, loginStatus = FIRST_USE.CHECKING;
 let epoch = 0, session = new AbortController(), timer = null, busy = false;
+const ticketAttemptKey = 'ghostfleet:initial-ticket-attempt';
+let ticketAttempt = null;
+try {
+  const saved = JSON.parse(sessionStorage.getItem(ticketAttemptKey));
+  if (typeof saved?.attempt_id === 'string') {
+    const managed = saved.profile === MANAGED_PROFILE && typeof saved.request_id === 'string';
+    if (managed && typeof saved.node_uid === 'string') {
+      ticketAttempt = { profile: MANAGED_PROFILE, node_uid: saved.node_uid, attempt_id: saved.attempt_id, request_id: saved.request_id };
+    } else if (typeof saved.label === 'string') {
+      ticketAttempt = { label: saved.label, attempt_id: saved.attempt_id,
+        ...(managed ? { profile: MANAGED_PROFILE, request_id: saved.request_id } : {}) };
+      $('label').value = saved.label;
+    }
+    if (ticketAttempt?.profile) $('enrollment-profile').value = ticketAttempt.profile;
+  }
+} catch { /* Use in-memory recovery when browser storage is unavailable. */ }
+function saveTicketAttempt(attempt) {
+  ticketAttempt = attempt;
+  try {
+    if (attempt) sessionStorage.setItem(ticketAttemptKey, JSON.stringify(attempt));
+    else sessionStorage.removeItem(ticketAttemptKey);
+  } catch { /* A normal response does not depend on browser storage. */ }
+}
 const t = key => copy[lang][key];
 function text(id, value) { $(id).textContent = value; }
 function feedback(value) { text('feedback', value); }
 function date(value) { return value ? new Date(value).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en') : '—'; }
 function cell(value) { const td = document.createElement('td'); td.textContent = value; return td; }
-function controls() { $('create-ticket').disabled = busy || access !== 'operator' || !installer; $('refresh').disabled = busy; }
+function selectedProfile() { return ticketAttempt?.profile ?? $('enrollment-profile').value; }
+function controls() {
+  const managed = selectedProfile() === MANAGED_PROFILE;
+  const bootstrapReady = managed ? managedBootstrap : installer;
+  $('create-ticket').disabled = busy || access !== 'operator' || (!ticketAttempt && (!bootstrapReady || (managed && !$('pairing-request').value)));
+  $('label').readOnly = busy || ticketAttempt !== null;
+  $('label').required = !ticketAttempt?.node_uid;
+  $('enrollment-profile').disabled = busy || ticketAttempt !== null;
+  $('managed-profile').disabled = !managedBootstrap;
+  $('pairing-request').hidden = !managedBootstrap || access !== 'operator';
+  $('pairing-request').disabled = busy || ticketAttempt !== null;
+  $('managed-domain').hidden = !managedBootstrap || access !== 'operator';
+  text('managed-domain', managedBootstrap && access === 'operator' ? t('domain') + ' · ' + new URL(nodeOrigin).host : '');
+  text('managed-profile', t(managedBootstrap ? 'managedProfile' : 'managedUnavailable'));
+  text('create-ticket', t(ticketAttempt ? 'retryTicket' : managed ? 'managedCreate' : 'create'));
+  $('refresh').disabled = busy;
+}
+function renderLogin() {
+  const tokenMode = [FIRST_USE.TOKEN_REQUIRED, FIRST_USE.NOT_INITIALIZED].includes(loginStatus);
+  $('login-card').hidden = Boolean(access);
+  $('fleet-card').hidden = !access;
+  $('login-form').hidden = !tokenMode;
+  $('credential-help').hidden = !tokenMode;
+  $('reconnect').hidden = ![FIRST_USE.SESSION_REQUIRED, FIRST_USE.DISCONNECTED, FIRST_USE.UNKNOWN].includes(loginStatus);
+  text('login-title', t(tokenMode ? 'login' : 'panelAccess'));
+  text('first-use', t(loginStatus));
+}
 function translate() {
   document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
-  for (const [id, key] of Object.entries({subtitle:'subtitle','login-title':'login',connect:'connect',disconnect:'disconnect',refresh:'refresh','credential-help':'credential',boundary:'boundary','create-ticket':'create','delivery-title':'delivery','delivery-warning':'warning','code-label':'code','expires-label':'expires','copy-command':'copy','hide-delivery':'hide','root-help':'root','footer-note':'footer'})) text(id, t(key));
+  for (const [id, key] of Object.entries({subtitle:'subtitle',connect:'connect',disconnect:'disconnect',reconnect:'reconnect',refresh:'refresh','credential-help':'credential',boundary:'boundary','create-ticket':'create','delivery-title':'delivery','delivery-warning':'warning','code-label':'code','expires-label':'expires','copy-command':'copy','hide-delivery':'hide','root-help':'root','footer-note':'footer'})) text(id, t(key));
   $('label').placeholder = t('label');
+  text('root-help', t(deliveryProfile === MANAGED_PROFILE ? 'managedRoot' : 'root'));
+  $('enrollment-profile').setAttribute('aria-label', t('profileLabel'));
+  $('pairing-request').setAttribute('aria-label', t('selectRequest'));
+  text('reporter-profile', t('reporterProfile'));
+  text('domain-label', t('domain'));
   $('columns').replaceChildren(...t('columns').map(v => { const th = document.createElement('th'); th.textContent = v; return th; }));
-  render();
+  renderLogin(); render();
 }
 async function api(path, method = 'GET', body) {
-  const response = await fetch(path, { method, redirect:'error', cache:'no-store', credentials:'same-origin',
-    headers:{authorization:'Bearer ' + token, ...(body !== undefined ? {'content-type':'application/json'} : {})},
+  const response = await fetch(path, { method, redirect:'manual', cache:'no-store', credentials:'same-origin',
+    headers:{accept:'application/json', 'x-requested-with':'XMLHttpRequest', ...(token ? {authorization:'Bearer ' + token} : {}),
+      ...(body !== undefined ? {'content-type':'application/json'} : {})},
     ...(body !== undefined ? {body:JSON.stringify(body)} : {}), signal:AbortSignal.any([session.signal, AbortSignal.timeout(10000)]) });
-  if (!response.headers.get('content-type')?.includes('application/json')) throw new Error('UNEXPECTED_RESPONSE');
+  if (!response.headers.get('content-type')?.toLowerCase().includes('application/json')) {
+    let state = classifyFirstUseResponse(response);
+    if (response.status === 401) state = FIRST_USE.SESSION_REQUIRED;
+    if (response.status === 403) state = FIRST_USE.IDENTITY_DENIED;
+    throw Object.assign(new Error('UNEXPECTED_RESPONSE'), { loginStatus:state });
+  }
   const data = await response.json();
-  if (!response.ok || data.ok !== true) throw new Error(data.error ?? 'REQUEST_FAILED');
+  if (!response.ok || data?.ok !== true || response.redirected) {
+    throw Object.assign(new Error(data?.error ?? 'REQUEST_FAILED'), {
+      loginStatus:classifyFirstUseResponse(response, data), ticket:data?.ticket,
+    });
+  }
   return data;
 }
-function clearDelivery() { $('delivery').hidden = true; for (const id of ['short-code','delivery-node','expires','command']) text(id,''); }
-function disconnect() {
+let deliveryProfile = null;
+function clearDelivery() { deliveryProfile = null; $('delivery').hidden = true; for (const id of ['short-code','delivery-node','expires','command','enrollment-domain']) text(id,''); }
+function disconnect(status = authMode === 'cloudflare_access' ? FIRST_USE.DISCONNECTED : FIRST_USE.TOKEN_REQUIRED) {
   epoch++; session.abort(); session = new AbortController(); clearTimeout(timer);
-  token = ''; access = null; installer = null; rows = []; receivedAt = null; busy = false;
-  $('token').value = ''; $('fleet-card').hidden = true; $('login-card').hidden = false;
-  clearDelivery(); feedback(''); render();
+  token = ''; access = null; authMode = null; installer = null; managedBootstrap = null; nodeOrigin = '';
+  rows = []; requests = []; receivedAt = null; busy = false;
+  $('token').value = ''; loginStatus = status;
+  clearDelivery(); feedback(''); renderLogin(); render();
+}
+function handleSessionFailure(error) {
+  const status = error.loginStatus;
+  const accessFailure = [FIRST_USE.SESSION_REQUIRED, FIRST_USE.IDENTITY_DENIED, FIRST_USE.ACCESS_NOT_CONFIGURED].includes(status);
+  const accessDisabled = authMode === 'cloudflare_access' && [FIRST_USE.TOKEN_REQUIRED, FIRST_USE.NOT_INITIALIZED].includes(status);
+  if (!accessFailure && !accessDisabled) return false;
+  disconnect(status);
+  return true;
 }
 async function refresh() {
+  if (!access) return;
   const e = epoch;
   try {
-    const data = await api('/v0/nodes'); if (e !== epoch) return;
-    rows = data.nodes; receivedAt = data.received_at; render(); feedback('');
-  } catch (error) { if (e === epoch) feedback(t('stale') + ' ' + error.message); }
-  finally { if (e === epoch && token) { clearTimeout(timer); timer = setTimeout(refresh, 30000); } }
+    const inventory = api('/v0/nodes');
+    const pairing = managedBootstrap && access === 'operator'
+      ? api('/v0/managed-enrollment-requests').catch(error => {
+        if (e === epoch) handleSessionFailure(error);
+        return null;
+      }) : null;
+    const [data, pending] = await Promise.all([inventory, pairing]);
+    if (e !== epoch) return;
+    rows = data.nodes; requests = pending?.requests ?? []; receivedAt = data.received_at; render(); feedback('');
+    return true;
+  } catch (error) { if (e === epoch && !handleSessionFailure(error)) feedback(t('stale') + ' ' + error.message); }
+  finally { if (e === epoch && access) { clearTimeout(timer); timer = setTimeout(refresh, 30000); } }
 }
 const quote = value => "'" + String(value).replaceAll("'", "'\\''") + "'";
-function installCommand(ticket, replace = false) {
-  const bootstrap = installer.bootstrap;
+function installCommand(ticketId, replace = false) {
+  const bootstrap = installer?.bootstrap;
+  if (!bootstrap) return null;
   const url = quote(bootstrap.url), sha = quote(bootstrap.sha256);
   const replaceArg = replace ? ' --replace' : '';
   return [
@@ -78,57 +178,138 @@ function installCommand(ticket, replace = false) {
     'd=$(mktemp -d) || exit 1; trap \'rm -rf "$d"\' 0; trap \'exit 130\' HUP INT TERM;',
     `if command -v curl >/dev/null 2>&1; then status=$(curl -q -fsS --proto '=https' --tlsv1.2 --max-redirs 0 --connect-timeout 10 --max-time 60 --max-filesize 262144 -H 'User-Agent: GhostFleet-Bootstrap/1' --cacert "$ca" -w '%{http_code}' ${url} -o "$d/join.sh") || exit 1; [ "$status" = 200 ] || { echo 'GF_BOOTSTRAP_ERROR BOOTSTRAP_HTTP_STATUS' >&2; exit 1; }; elif command -v wget >/dev/null 2>&1; then wget --no-config -q --https-only --max-redirect=0 --timeout=30 --tries=1 --user-agent='GhostFleet-Bootstrap/1' --ca-certificate="$ca" -O "$d/join.sh" ${url}; else echo 'GF_BOOTSTRAP_ERROR CURL_OR_WGET_REQUIRED' >&2; exit 1; fi;`,
     `printf '%s  %s\\n' ${sha} "$d/join.sh" | sha256sum -c -;`,
-    `/bin/sh "$d/join.sh" --origin ${quote(nodeOrigin)} --ticket ${quote(ticket)}${replaceArg})`,
+    `/bin/sh "$d/join.sh" --origin ${quote(nodeOrigin)} --ticket ${quote(ticketId)}${replaceArg})`,
   ].join(' ');
 }
-async function makeTicket(node) {
-  if (!installer || access !== 'operator' || busy) return;
-  if (node && !confirm(t('replaceConfirm'))) return;
+async function recoverTicket(ticket, requestEpoch) {
+  saveTicketAttempt(null); $('label').value = '';
+  await refresh();
+  if (requestEpoch === epoch) feedback(t('ticketRecovered') + ticket.node_uid);
+}
+async function makeTicket(node, upgrade = false) {
+  if (access !== 'operator' || busy || (node && ticketAttempt)) return;
+  const managed = upgrade || (node ? node.enrollment?.profile : selectedProfile()) === MANAGED_PROFILE;
+  const requestId = $('pairing-request').value;
+  if (!ticketAttempt && !(managed ? managedBootstrap && requestId : installer)) return;
+  if (node && !confirm(t(upgrade ? 'managedUpgradeConfirm' : managed ? 'managedReplace' : 'replaceConfirm'))) return;
   const e = epoch; busy = true; controls(); clearDelivery();
   try {
-    const data = await api('/v0/enrollment-tickets','POST',node ? {node_uid:node.node_uid} : {label:$('label').value.trim()});
+    if ((!node || managed) && !ticketAttempt) saveTicketAttempt({
+      ...(node ? { node_uid: node.node_uid } : { label: $('label').value.trim() }), attempt_id: crypto.randomUUID(),
+      ...(managed ? { profile: MANAGED_PROFILE, request_id: requestId } : {}),
+    });
+    const request = ticketAttempt ?? { node_uid: node.node_uid };
+    const data = await api('/v0/enrollment-tickets','POST',request);
     if (e !== epoch) return;
+    const deliveredManaged = data.ticket.profile === MANAGED_PROFILE;
+    const command = deliveredManaged ? null : installCommand(data.ticket.ticket_id, Boolean(request.node_uid));
+    if (data.short_code === null || (!deliveredManaged && !command)) {
+      await recoverTicket(data.ticket, e);
+      return;
+    }
     text('delivery-node',data.ticket.node_uid); text('short-code',data.short_code); text('expires',date(data.ticket.expires_at));
-    text('command',installCommand(data.ticket.ticket_id, Boolean(node))); $('delivery').hidden = false; $('label').value = ''; await refresh();
-  } catch (error) { if (e === epoch) feedback(t('uncertain') + ' ' + error.message); }
+    text('command',command ?? '');
+    text('enrollment-domain', deliveredManaged ? new URL(nodeOrigin).host : '');
+    for (const id of ['command', 'copy-command']) $(id).hidden = deliveredManaged;
+    for (const id of ['domain-label', 'enrollment-domain']) $(id).hidden = !deliveredManaged;
+    deliveryProfile = data.ticket.profile;
+    text('root-help', t(deliveryProfile === MANAGED_PROFILE ? 'managedRoot' : 'root'));
+    $('delivery').hidden = false;
+    if (ticketAttempt) { saveTicketAttempt(null); $('label').value = ''; }
+    await refresh();
+  } catch (error) {
+    if (e === epoch) {
+      if (handleSessionFailure(error)) {
+        feedback(t('uncertain'));
+        return;
+      }
+      if (ticketAttempt && error.message === 'ENROLLMENT_ATTEMPT_CONFLICT' && error.ticket?.node_uid) {
+        await recoverTicket(error.ticket, e);
+        return;
+      }
+      // A previous Worker may reject an unknown field. Keep the original
+      // attempt through rollback until the server can reconcile it.
+      if (ticketAttempt && ['INVALID_LABEL', 'LABEL_REQUIRED', 'INVALID_ENROLLMENT_ATTEMPT', 'ENROLLMENT_PROFILE_CONFLICT', 'ENROLLMENT_REQUEST_UNAVAILABLE'].includes(error.message)) saveTicketAttempt(null);
+      feedback(t(ticketAttempt ? 'issueUncertain' : 'uncertain') + ' ' + error.message);
+    }
+  }
   finally { if (e === epoch) { busy = false; controls(); render(); } }
 }
 async function revoke(node) {
   if (busy || !confirm(t('revokeConfirm'))) return;
   const e = epoch; busy = true; controls(); clearDelivery();
   try { await api('/v0/nodes/' + node.node_uid + '/revoke','POST',{}); if (e === epoch) await refresh(); }
-  catch (error) { if (e === epoch) feedback(t('uncertain') + ' ' + error.message); }
+  catch (error) {
+    if (e === epoch) feedback(t('uncertain') + (handleSessionFailure(error) ? '' : ' ' + error.message));
+  }
   finally { if (e === epoch) { busy = false; controls(); render(); } }
 }
 function render() {
+  const pairing = $('pairing-request');
+  const selected = pairing.value;
+  const option = (value, name) => { const elm = document.createElement('option'); elm.value = value; elm.textContent = name; return elm; };
+  pairing.replaceChildren(option('', t('selectRequest')), ...requests.map(v => option(v.request_id, v.request_id.slice(-12))));
+  pairing.value = requests.some(v => v.request_id === selected) ? selected : '';
   text('summary',rows.filter(n=>n.presence==='ONLINE').length+' '+t('online')+' / '+rows.length+' '+t('total')+' · '+(access==='operator'?t('operator'):t('read')));
   text('read-time',t('readAt')+': '+date(receivedAt));
   const body = $('nodes'); body.replaceChildren();
   for (const n of rows) {
     const tr = document.createElement('tr'), label = cell(n.label), small = document.createElement('small'); small.textContent = n.node_uid; label.append(small); tr.append(label);
+    const managed = n.enrollment?.profile === MANAGED_PROFILE;
+    if (managed) { const profile = document.createElement('small'); profile.textContent = t('managedProfile') + ' · ' + (t('managedState')[n.enrollment.ticket_state] ?? '—'); label.append(profile); }
     const state = cell(''), badge = document.createElement('span'); badge.className = 'status status-' + String(n.presence).toLowerCase(); badge.textContent = t('status')[n.presence] ?? t('status').UNKNOWN; state.append(badge); tr.append(state,cell(date(n.last_seen_at)));
     for (const role of ['ssh','cloudflared','tailscaled']) tr.append(cell(t('states')[n.report?.services?.[role]] ?? '—'));
     const actions = cell('');
-    if (access === 'operator') for (const [labelKey, handler] of [['reissue',makeTicket],['revoke',revoke]]) {
-      const b = document.createElement('button'); b.type='button'; b.textContent=t(labelKey); b.disabled=busy || (labelKey==='reissue'&&!installer); b.addEventListener('click',()=>handler(n)); actions.append(b);
+    if (access === 'operator') {
+      const items = [['reissue', () => makeTicket(n), ticketAttempt || !(managed ? managedBootstrap && pairing.value : installer)],
+        ['revoke', () => revoke(n), false]];
+      if (!managed && managedBootstrap) items.unshift(['managedUpgrade', () => makeTicket(n, true), ticketAttempt || !pairing.value]);
+      for (const [labelKey, handler, disabled] of items) {
+        const b = document.createElement('button'); b.type='button'; b.textContent=t(labelKey); b.disabled=busy || Boolean(disabled); b.addEventListener('click', handler); actions.append(b);
+      }
     }
     tr.append(actions); body.append(tr);
   }
   if (!rows.length) { const tr=document.createElement('tr'),td=cell(t('empty')); td.colSpan=7;tr.append(td);body.append(tr); }
   controls();
 }
-$('login-form').addEventListener('submit',async event=>{
-  event.preventDefault(); const entered=$('token').value; disconnect(); token=entered; const e=epoch;
-  try { const data=await api('/v0/access'); if(e!==epoch)return; access=data.access;installer=data.installer;nodeOrigin=data.node_origin;
-    $('login-card').hidden=true;$('fleet-card').hidden=false;await refresh();if(!installer)feedback(t('noInstaller'));
-  } catch(error) { if(e===epoch){disconnect();feedback(error.message);} }
+async function connect(entered = '') {
+  disconnect(FIRST_USE.CHECKING);
+  token = entered;
+  const e = epoch;
+  try {
+    const data = await api('/v0/access');
+    if (e !== epoch) return;
+    const cloudflareAccess = data.auth_mode === 'cloudflare_access';
+    if ((!entered && !cloudflareAccess) || !['operator', 'read_only'].includes(data.access)) throw new Error('UNEXPECTED_RESPONSE');
+    authMode = cloudflareAccess ? 'cloudflare_access' : 'bearer';
+    if (cloudflareAccess) token = '';
+    access = data.access; installer = data.installer; managedBootstrap = data.managed_bootstrap ?? null; nodeOrigin = data.node_origin;
+    renderLogin(); render();
+    if (await refresh() && e === epoch && !installer && !managedBootstrap) feedback(t('noInstaller'));
+  } catch (error) {
+    if (e !== epoch) return;
+    const status = error.loginStatus ?? FIRST_USE.UNKNOWN;
+    const retryBearer = entered && [FIRST_USE.UNKNOWN, FIRST_USE.TOKEN_REQUIRED].includes(status);
+    disconnect(retryBearer ? FIRST_USE.TOKEN_REQUIRED : status);
+    if (retryBearer) feedback(error.message);
+  }
+}
+$('login-form').addEventListener('submit', event=>{
+  event.preventDefault();
+  const entered = $('token').value;
+  if (!$('login-form').hidden && entered) return connect(entered);
 });
-$('disconnect').addEventListener('click',disconnect);$('refresh').addEventListener('click',refresh);
+$('disconnect').addEventListener('click',()=>disconnect());$('refresh').addEventListener('click',refresh);
+$('reconnect').addEventListener('click',()=>window.location.reload());
 $('enroll-form').addEventListener('submit',e=>{e.preventDefault();makeTicket(null);});
+$('enrollment-profile').addEventListener('change',controls);
+$('pairing-request').addEventListener('change',render);
 $('hide-delivery').addEventListener('click',clearDelivery);
 $('copy-command').addEventListener('click',async()=>{try{await navigator.clipboard.writeText($('command').textContent);feedback(t('copied'));}catch{feedback('CLIPBOARD_UNAVAILABLE');}});
 $('language').addEventListener('change',()=>{lang=$('language').value;translate();});
 $('theme').addEventListener('click',()=>{document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark';});
-window.addEventListener('pagehide',disconnect);
+window.addEventListener('pagehide',()=>disconnect(FIRST_USE.CHECKING));
+window.addEventListener('pageshow',event=>{ if (event.persisted) void connect(); });
 translate();
-probeFirstUse().then(state=>text('first-use',state===FIRST_USE.NOT_INITIALIZED?t('missing'):state===FIRST_USE.TOKEN_REQUIRED?t('required'):t('unknown')));
+void connect();

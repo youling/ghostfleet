@@ -1,9 +1,44 @@
-import { authorizeApi, getAccessLevel } from '../adapters/cloudflare/auth.js';
+import { createHash } from 'node:crypto';
+import { authorizePanel } from '../adapters/cloudflare/auth.js';
+import { MANAGED_PROFILE } from './presence.js';
 export const MAX_BODY_BYTES = 4096;
+const MAX_MANAGED_BOOTSTRAP_BYTES = 262144;
 export const json = (data, status = 200) => Response.json(data, { status, headers: {
   'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
 } });
 const deny = (error, status) => json({ ok: false, error }, status);
+
+export function managedBootstrap(env) {
+  const sha256 = env.GHOSTFLEET_MANAGED_BOOTSTRAP_SHA256;
+  if (!env.ASSETS || typeof sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(sha256) ||
+      sha256 === env.GHOSTFLEET_BOOTSTRAP_SHA256 || sha256 === env.GHOSTFLEET_INSTALLER_SHA256) return null;
+  return { url: env.GHOSTFLEET_NODE_ORIGIN + '/bootstrap/' + sha256 + '.managed.sh', sha256 };
+}
+
+async function verifiedManagedBootstrap(env) {
+  const bootstrap = managedBootstrap(env);
+  if (!bootstrap) return null;
+  try {
+    const response = await env.ASSETS.fetch(new Request(bootstrap.url, { redirect: 'manual' }));
+    if (response.status !== 200 || !response.body) {
+      await response.body?.cancel();
+      return null;
+    }
+    const reader = response.body.getReader();
+    const hash = createHash('sha256');
+    let bytes = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > MAX_MANAGED_BOOTSTRAP_BYTES) { await reader.cancel(); return null; }
+      hash.update(value);
+    }
+    return bytes > 0 && hash.digest('hex') === bootstrap.sha256 ? bootstrap : null;
+  } catch {
+    return null;
+  }
+}
 
 export async function prepare(request, env) {
   const url = new URL(request.url);
@@ -11,26 +46,20 @@ export async function prepare(request, env) {
   if (!['GET', 'POST'].includes(request.method)) return { response: deny('METHOD_NOT_ALLOWED', 405) };
   let access = null;
   if (url.pathname.startsWith('/v0/')) {
-    if (env.GHOSTFLEET_OPERATOR_TOKEN && env.GHOSTFLEET_OPERATOR_TOKEN === env.GHOSTFLEET_READ_TOKEN) {
-      return { response: deny('AUTH_CONFIG_CONFLICT', 503) };
-    }
-    const denial = await authorizeApi(request, env);
-    if (denial) return { response: denial };
-    access = await getAccessLevel(request, env);
-    const origin = request.headers.get('origin');
-    if (request.method === 'POST' && origin && origin !== env.GHOSTFLEET_PANEL_ORIGIN) {
-      return { response: deny('ORIGIN_DENIED', 403) };
-    }
+    const authority = await authorizePanel(request, env);
+    if (authority instanceof Response) return { response: authority };
+    access = authority.access;
     if (request.method === 'GET' && url.pathname === '/v0/access') {
       const sha = env.GHOSTFLEET_INSTALLER_SHA256;
       const bootstrapSha = env.GHOSTFLEET_BOOTSTRAP_SHA256;
       const installerReady = typeof sha === 'string' && /^[0-9a-f]{64}$/.test(sha);
       const bootstrapReady = typeof bootstrapSha === 'string' && /^[0-9a-f]{64}$/.test(bootstrapSha);
       return { response: json({ ok: true, access, node_origin: env.GHOSTFLEET_NODE_ORIGIN,
+        ...(authority.authMode === 'cloudflare_access' ? { auth_mode: authority.authMode } : {}),
         installer: installerReady && bootstrapReady ? {
           url: env.GHOSTFLEET_NODE_ORIGIN + '/bootstrap/' + sha + '.py', sha256: sha,
           bootstrap: { url: env.GHOSTFLEET_NODE_ORIGIN + '/bootstrap/' + bootstrapSha + '.sh', sha256: bootstrapSha },
-        } : null }) };
+        } : null, managed_bootstrap: await verifiedManagedBootstrap(env) }) };
     }
   }
   let body = {};
@@ -56,6 +85,9 @@ export async function prepare(request, env) {
       body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
     } catch { return { response: deny('INVALID_JSON', 400) }; }
   }
+  const managed = url.pathname === '/v0/enrollment-tickets' && body?.profile === MANAGED_PROFILE
+    ? await verifiedManagedBootstrap(env) : managedBootstrap(env);
   return { input: { method: request.method, path: url.pathname, body, access,
+    managedBootstrapSha: managed?.sha256 ?? null,
     authorization: request.headers.get('authorization') ?? '' } };
 }

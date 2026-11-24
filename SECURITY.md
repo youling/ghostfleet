@@ -10,7 +10,7 @@
 
 有效配置验证器只支持声明的静态检查；真实登录还受账户/PAM、密钥选项、forced command、网络等影响，见 [验收矩阵](docs/ACCEPTANCE.md)。公开源码扫描只是已列形状的检查，不是秘密永不泄漏的保证。
 
-轻量面板与传输独立。生产 panel origin 由实例 owner 配置全站 Access，应用另校验不同的 Operator/Read 凭据；node origin 仅提供受票据或本节点上报凭据保护的机器接口，以及固定哈希的公共安装器。Access 登录不自动授予应用写权限，心跳凭据也不能调用管理接口或取得 SSH 权限。
+轻量面板与传输独立。生产 panel origin 由实例 owner 配置全站 Access。启用 Cloudflare Access 登录模式时，应用验证签名、固定 issuer、应用 AUD、有效期和明确配置的操作员身份，写入还需要精确的面板 Origin。原 Bearer 模式分别校验 Operator 和 Read 凭据。node origin 只提供票据、上报和固定哈希安装器所需的路由。心跳凭据只授予同一节点的上报权限。
 
 服务器只保存上报凭据摘要；节点配置以 0600 保存，由 LoadCredential 投递给 DynamicUser oneshot 服务。短码在可信终端隐藏输入，不进入安装命令、URL 或日志。重发沿同一 node_uid 废止旧上报凭据；撤销 reporting 不撤销 SSH，心跳新鲜度不证明入站可达或 NodeLifecycle.ACTIVE。完整操作与恢复边界见 [PRESENCE](docs/PRESENCE.md) 和 [ADR004](docs/adr/004-lightweight-enrollment-presence.md)。
 
@@ -22,7 +22,7 @@ GhostFleet combines native transport with a thin enrollment/presence panel. It d
 
 ## Panel and reporting boundary
 
-The instance owner protects the production panel origin with whole-site Access; the application separately validates distinct Operator/Read credentials. The node origin exposes only ticket/node-authenticated machine routes and the pinned public installer. Access login does not grant application write authority. A reporting credential cannot call management routes or authorize SSH.
+The instance owner protects the production panel origin with whole-site Access. Cloudflare Access sign-in mode verifies the assertion signature, pinned issuer, application audience, lifetime and explicitly configured operator identity. Writes also require the exact panel Origin. Legacy Bearer mode authenticates Operator and Read credentials separately. The node origin exposes the ticket, reporting and pinned installer routes. A reporting credential is scoped to that node's heartbeat.
 
 The server stores only reporting-credential digests. Local configuration is mode 0600 and reaches the DynamicUser oneshot service through LoadCredential. The separate short code is entered through a hidden local prompt, never embedded in the installer command, URL or logs. Reissue keeps the same node_uid and invalidates the former reporting credential. Reporting revocation does not revoke SSH; fresh presence does not establish inbound reachability or NodeLifecycle.ACTIVE. See [PRESENCE](docs/PRESENCE.md) and [ADR004](docs/adr/004-lightweight-enrollment-presence.md) for operational and recovery boundaries.
 

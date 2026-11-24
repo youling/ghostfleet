@@ -14,9 +14,9 @@ GhostFleet 的目标是尽快提供可用的原生远控通道，再以最薄的
 
 ### 正式版扩展：全自动 Managed 下位机纳管（ADR007）
 
-上面的 ADR004 是轻量 Reporter/Presence 子能力，不是完整纳管终点。正式版另提供受 Owner 授权的 `FULL_MANAGED_LOWER_NODE` profile：面板创建一次性 ticket + 短码；目标 Linux 机器在可信终端执行一次固定摘要 root bootstrap；同一 ceremony 自动完成主机预检、原生传输、复用现有 Tailscale/Cloudflare、DCR 节点身份/策略、专用 Root helper/签名租约与 ChatGPT 实际验收。
+上面的 ADR004 是轻量 Reporter/Presence 子能力，不是完整纳管终点。正式版另提供受 Owner 授权的 `FULL_MANAGED_LOWER_NODE` profile：目标 Linux 机器在可信终端输入域名发起配对，面板匹配请求并手动签发六位短码；目标机输入短码校验固定摘要制品并完成一次 root bootstrap；同一 ceremony 自动完成主机预检、原生传输、复用现有 Tailscale/Cloudflare、DCR 节点身份/策略、专用 Root helper/签名租约与 ChatGPT 实际验收。
 
-**TP 是唯一 Controller；搬瓦工 Canary 与国内生产力服务器都是 Managed 下位节点。** 新节点不能因为完成 heartbeat Claim 就获得任意 root；Root profile 来自受保护 Operator 对指定下位机 profile 的一次授权。授权范围内连续日常 Root 运维不逐条弹卡，超出范围的高影响操作另行授权。
+**Controller 的数量和分工属于实例拓扑，不是 GhostFleet 固定角色。** Owner 可以为多个独立的高信任控制主体授权日常分工与故障接替；每个主体必须独立验证身份、目标范围和撤销能力。公网及其他 `MANAGED_ONLY` 下位节点只接收获授权的管理，不能自行晋升或反向、横向取得控制权。新节点的 heartbeat Claim 不授予 root；Root profile 仍由受保护 Operator 对指定下位机的一次授权产生，已授权范围内的连续运维不逐条弹卡。详见 [ADR007 §2](docs/adr/007-fully-managed-lower-node-enrollment.md) 与 [拓扑验收](docs/ACCEPTANCE.md)。
 
 全自动意味着新增节点不再要求手改 Worker 源码、复制 UID/公钥或逐台手工创建 Tunnel。应由现有 Worker/DO 与私有 Fleet registry 动态发布经审核的 Node UID、传输定位符、Host Key pin 和能力策略；已有 TS/CF 先探测并复用，不为形式统一重复安装。真实搬瓦工 VPS 是首个 E2E Canary，**不使用虚拟机**；通过后再分批纳管国内生产力服务器。完整状态与验收见 [ADR007](docs/adr/007-fully-managed-lower-node-enrollment.md) 和 [GhostFleet #11](https://github.com/youling/ghostfleet/issues/11)。
 
@@ -26,4 +26,4 @@ Deliver useful native remote access quickly, with a minimal enrollment/presence 
 
 The panel owns only Operator/Read login, one-time registration tickets, stable node identity, inventory, last-seen/local service observations and reporting revocation. The v1 installer adds reporting to an existing transport; it does not create provider networks or configure SSH. A systemd timer starts a one-shot Python reporter; local journald owns diagnostics. Only the latest report is retained.
 
-Presence is distinct from lifecycle and inbound reachability. Source tests, isolated runtime validation, independent review, production system installation and actual release require their respective evidence. Private domains, devices, credentials and rollout remain instance-owned. See ADR004 and the deployment runbook.
+The Owner defines each instance's controller set and independently authorized management scopes. Multiple eligible controllers may provide redundancy without sharing private keys or granting managed-only nodes outbound control. Local root is not Fleet authority; takeover of an exclusive resource uses the existing ownership and reconciliation contract. Presence is distinct from lifecycle and inbound reachability. Source tests, isolated runtime validation, independent review, production system installation and actual release require their respective evidence. Private domains, devices, credentials and rollout remain instance-owned. See ADR004 and the deployment runbook.
