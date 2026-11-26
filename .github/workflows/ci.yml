@@ -27,6 +27,8 @@ jobs:
         run: sh test/join-bootstrap.test.sh
       - name: Protocol and publication regressions
         run: npm test
+      - name: Next-generation core and Workerd migration checks
+        run: node --test 'nextgen/test/*.test.mjs'
       - name: Python client regressions
         run: npm run test:python
       - name: Deterministic installer and Console build
