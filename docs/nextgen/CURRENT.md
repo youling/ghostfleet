@@ -6,5 +6,6 @@
 - R0–R1 的输入、取舍和接口见 [架构记录](ARCHITECTURE.md)。
 - R2 已接通隔离 Worker/DO 中的邀请、恢复、报告、撤销与 v1 兼容；测试从原存储启动新版验证现有 UID 和凭据。Python 主机客户端已加入，随 R3 可信制品验证。
 - R3 已实现精确 Git 源码构建、签名 APT 渠道、原子激活和独立 systemd timer。真实 Debian APT 合成负控见 `nextgen/test/test_update.py`。
-- 下一步为 R4。接通原生发现、可信观测、受审的可选计算接入和隔离双机验证。
+- R4 新增 TS/CF 只读观测、OpenSSH 固定主机密钥探测、K3s 发现/计划/受审准备及面板视图。Debian 双机验证说明见 [隔离实验](LAB.md)。
+- 下一步为 R5。固定 clean-room 首纳、旧身份迁移、实际原生执行和更新回退验收。
 - 现役、#135 与 #64 由原 owner 管理。实际节点与密钥证据保留在实例侧。

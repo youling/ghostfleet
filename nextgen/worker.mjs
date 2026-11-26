@@ -16,6 +16,7 @@ const nodeOperations = new Map([
   ['adopt', ['panel', 'adopt']],
 ]);
 const SHA = /^[a-f0-9]{40}$/;
+const panelPaths = new Set(['/', '/index.html', '/app.js', '/style.css']);
 
 function route(request, url) {
   const fixed = routes.get(request.method + ' ' + url.pathname);
@@ -108,7 +109,18 @@ export class GhostFleetState extends LegacyState {
 
 export default {
   async fetch(request, env) {
-    const path = new URL(request.url).pathname;
+    const url = new URL(request.url);
+    const path = url.pathname;
+    if (env.NEXTGEN_ASSETS && panelPaths.has(path) && ['GET', 'HEAD'].includes(request.method)) {
+      if (url.origin !== env.GHOSTFLEET_PANEL_ORIGIN || url.search) return denied('NOT_FOUND', 404);
+      const asset = await env.NEXTGEN_ASSETS.fetch(request);
+      const headers = new Headers(asset.headers);
+      headers.set('content-security-policy', "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+      headers.set('cache-control', 'no-store');
+      headers.set('referrer-policy', 'no-referrer');
+      headers.set('x-content-type-options', 'nosniff');
+      return new Response(asset.body, { status: asset.status, headers });
+    }
     if (!path.startsWith('/v2/')) return legacy.fetch(request, env);
     const identity = await identify(request, env);
     if (identity.error) {

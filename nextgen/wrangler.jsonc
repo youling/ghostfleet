@@ -10,6 +10,7 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GhostFleetState"] }],
   "version_metadata": { "binding": "NEXTGEN_VERSION" },
+  "assets": { "directory": "../console/nextgen", "binding": "NEXTGEN_ASSETS", "run_worker_first": true },
   "vars": {
     "GHOSTFLEET_PANEL_ORIGIN": "https://panel.example.invalid",
     "GHOSTFLEET_NODE_ORIGIN": "https://node.example.invalid"

@@ -186,9 +186,10 @@ function claim(state, body, now) {
 }
 
 function observe(node, body, now) {
-  shape(body, ['source', 'dimension', 'verdict', 'observed_at']);
+  shape(body, ['source', 'dimension', 'verdict', 'observed_at'], ['version']);
   requireThat(typeof body.source === 'string' && keyed(SOURCES, body.source)?.includes(body.dimension) &&
-    VERDICTS.has(body.verdict), 'INVALID_OBSERVATION');
+    VERDICTS.has(body.verdict) && (!Object.hasOwn(body, 'version') || matches(/^[a-zA-Z0-9._+~-]{1,60}$/, body.version)),
+  'INVALID_OBSERVATION');
   const time = typeof body.observed_at === 'string' ? Date.parse(body.observed_at) : NaN;
   requireThat(Number.isFinite(time) && iso(time) === body.observed_at && time <= now &&
     time >= now - TEN_MINUTES, 'OBSERVATION_OUTSIDE_WINDOW');
@@ -226,7 +227,7 @@ export function apply(state, operation, { uid, token, body, role }, now = Date.n
     }
     if (operation === 'list') {
       requireThat(['operator', 'read_only'].includes(role), 'FORBIDDEN', 403);
-      return response(200, { schema: 'ghostfleet-evidence/v2',
+      return response(200, { schema: 'ghostfleet-evidence/v2', access: role,
         nodes: Object.values(state.nodes ?? {}).map((node) => catalogNode(node, now)) });
     }
     requireThat(role === 'operator', 'FORBIDDEN', 403);
