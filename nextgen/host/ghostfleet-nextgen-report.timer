@@ -1,0 +1,10 @@
+[Unit]
+Description=Report GhostFleet version evidence periodically
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=2min
+RandomizedDelaySec=15s
+
+[Install]
+WantedBy=timers.target

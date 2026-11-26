@@ -1,0 +1,11 @@
+[Unit]
+Description=Check the approved GhostFleet channel daily
+
+[Timer]
+OnBootSec=10min
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=45min
+
+[Install]
+WantedBy=timers.target
