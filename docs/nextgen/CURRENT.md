@@ -8,5 +8,5 @@
 - R3 已实现精确 Git 源码构建、签名 APT 渠道、原子激活和独立 systemd timer。真实 Debian APT 合成负控见 `nextgen/test/test_update.py`。
 - R4 新增 TS/CF 只读观测、OpenSSH 固定主机密钥探测、K3s 发现/计划/受审准备及面板视图。Debian 双机验证说明见 [隔离实验](LAB.md)。
 - R5 完成可丢弃 Debian VM 首纳、真实 systemd/UID 1000 SSH、更新/故障/前滚，旧 v1 身份续接由 Workerd 与主机 E2E 验证。见 [操作手册](OPERATIONS.md)。
-- 下一步为 R6。用本阶段固定 SHA 冷检出，独立复跑源码与负控；核对可复现制品、CR/摘录和剩余验收边界。
+- R6 候选增加领取入口的来源级限流，并修复独立审查发现的同 UID 观测连续性与冲突投影。精确源码复验、制品校验及剩余现场事项见本工单最新 R6 回执。
 - 现役、#135 与 #64 由原 owner 管理。实际节点与密钥证据保留在实例侧。

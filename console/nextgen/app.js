@@ -48,14 +48,16 @@ function nodeCard(node) {
   const versions = node.versions;
   card.append(properties([
     ['目标版本', versions.desired?.version], ['已安装', versions.installed?.version],
-    ['运行版本', versions.runtime?.version], ['旧版报告器', versions.legacy_reporter],
+    ['运行版本', versions.runtime?.version], ['旧版报告器', versions.legacy_reporter ??
+      (versions.previous_legacy_reporter ? versions.previous_legacy_reporter.version + '（历史）' : null)],
     ['版本状态', descriptions[versions.state]],
   ]));
   const details = tag('details');
   details.append(tag('summary', '健康与来源'), properties(Object.entries(node.health).map(([dimension, health]) => {
     const value = descriptions[health.verdict] ?? health.verdict;
-    const latest = health.observations.at(-1);
-    return [descriptions[dimension], [value, latest?.source, latest?.version, latest?.observed_at].filter(Boolean).join(' · ')];
+    const sources = health.observations.map((item) => [item.source, item.scope, item.version, item.observed_at]
+      .filter(Boolean).join(' · '));
+    return [descriptions[dimension], [value, ...sources].join(' / ')];
   })));
   if (versions.received_at) details.append(tag('p', '节点自报 · ' + versions.received_at, 'meta'));
   card.append(details);

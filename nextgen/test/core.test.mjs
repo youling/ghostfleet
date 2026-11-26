@@ -84,4 +84,29 @@ test('evidence preserves distinct readiness dimensions, time and provenance', ()
   assert.equal(list(base).health.rescue.verdict, 'UNKNOWN');
   assert.equal(list(base + 600_001).health.network.verdict, 'STALE');
   assert.equal(list(base).health.network.observations[0].provenance, 'trusted-observer');
+  assert.equal(apply(state, 'observe', { uid, role: 'observer', body: { source: 'ssh-probe', dimension: 'management',
+    scope: 'secondary', verdict: 'READY', observed_at: new Date(base).toISOString() } }, base).status, 200);
+  assert.equal(list(base).health.management.verdict, 'CONFLICT');
+});
+
+test('recovery preserves independently observed binding evidence and archives v1 versions', () => {
+  const state = {};
+  const first = issue(state);
+  assert.equal(apply(state, 'claim', { body: enrollment(first, token()) }, base).status, 200);
+  const uid = first.node_uid;
+  state.nodes[uid].reporting.last_report = { protocol: 'ghostfleet-heartbeat/v1', reporter_version: '1' };
+  state.nodes[uid].reporting.last_seen_at = new Date(base).toISOString();
+  const evidence = { source: 'ssh-probe', dimension: 'management', verdict: 'READY', observed_at: new Date(base).toISOString() };
+  assert.equal(apply(state, 'observe', { uid, role: 'observer', body: evidence }, base).status, 200);
+  const same = enrollment(issue(state, { node_uid: uid }, base + 1), token());
+  assert.equal(apply(state, 'claim', { body: same }, base + 1).status, 200);
+  const read = () => apply(state, 'list', { role: 'read_only' }, base + 2).body.nodes[0];
+  assert.equal(read().health.management.verdict, 'READY');
+  assert.equal(read().versions.legacy_reporter, null);
+  assert.equal(read().versions.previous_legacy_reporter.version, '1');
+  const changedProfile = { ...profile, config_revision: 'b'.repeat(64) };
+  const changed = enrollment(issue(state, { node_uid: uid, profile: changedProfile }, base + 2), token());
+  assert.equal(apply(state, 'claim', { body: { ...changed, config_revision: changedProfile.config_revision } }, base + 2).status, 200);
+  assert.equal(read().health.management.verdict, 'UNKNOWN');
+  assert.equal(read().versions.previous_legacy_reporter.version, '1');
 });

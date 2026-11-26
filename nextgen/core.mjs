@@ -97,6 +97,7 @@ function catalogNode(node, now) {
     profile: extension?.profile ?? null,
     versions: {
       desired, installed, runtime, legacy_reporter: v1?.reporter_version ?? null,
+      previous_legacy_reporter: extension?.previous_legacy_reporter ?? null,
       provenance: currentReport ? 'node-self-report' : v1 ? 'legacy-node-self-report' : null,
       received_at: currentReport?.received_at ?? reporting?.last_seen_at ?? null,
       state: !currentReport ? 'UNKNOWN' : !fresh ? 'STALE' : !desired || !installed ? 'UNKNOWN'
@@ -178,26 +179,37 @@ function claim(state, body, now) {
   state.nodes ??= {};
   state.nodes[node.node_uid] = node;
   node.label = ticket.label;
+  const priorReport = node.reporting?.last_report;
+  const previousLegacy = priorReport?.protocol === 'ghostfleet-heartbeat/v1' ? {
+    version: priorReport.reporter_version,
+    received_at: node.reporting.last_seen_at,
+  } : node.nextgen?.previous_legacy_reporter;
+  const sameBinding = node.nextgen?.profile?.config_revision === ticket.profile.config_revision;
+  const observations = sameBinding ? node.nextgen?.observations : undefined;
   node.reporting = { digest, registered_at: iso(now), revoked_at: null, last_seen_at: null, last_report: null };
-  node.nextgen = { profile: ticket.profile };
+  node.nextgen = { profile: ticket.profile, ...(observations ? { observations } : {}),
+    ...(previousLegacy ? { previous_legacy_reporter: previousLegacy } : {}) };
   ticket.consumed = digest;
   invalidateLegacyTickets(state, node.node_uid);
   return response(200, { node_uid: node.node_uid, registration: 'APPLIED' }, true);
 }
 
 function observe(node, body, now) {
-  shape(body, ['source', 'dimension', 'verdict', 'observed_at'], ['version']);
+  shape(body, ['source', 'dimension', 'verdict', 'observed_at'], ['version', 'scope']);
   requireThat(typeof body.source === 'string' && keyed(SOURCES, body.source)?.includes(body.dimension) &&
-    VERDICTS.has(body.verdict) && (!Object.hasOwn(body, 'version') || matches(/^[a-zA-Z0-9._+~-]{1,60}$/, body.version)),
-  'INVALID_OBSERVATION');
+    VERDICTS.has(body.verdict) && (!Object.hasOwn(body, 'version') || matches(/^[a-zA-Z0-9._+~-]{1,60}$/, body.version)) &&
+    (!Object.hasOwn(body, 'scope') || ['primary', 'secondary'].includes(body.scope)), 'INVALID_OBSERVATION');
   const time = typeof body.observed_at === 'string' ? Date.parse(body.observed_at) : NaN;
   requireThat(Number.isFinite(time) && iso(time) === body.observed_at && time <= now &&
     time >= now - TEN_MINUTES, 'OBSERVATION_OUTSIDE_WINDOW');
   node.nextgen ??= {};
   node.nextgen.observations ??= {};
-  const key = body.source + '/' + body.dimension;
-  const previous = node.nextgen.observations[key];
+  const key = `${body.source}/${body.dimension}/${body.scope ?? 'primary'}`;
+  const oldKey = `${body.source}/${body.dimension}`;
+  const isPrimary = !body.scope || body.scope === 'primary';
+  const previous = node.nextgen.observations[key] ?? (isPrimary ? node.nextgen.observations[oldKey] : undefined);
   requireThat(!previous || time > Date.parse(previous.observed_at), 'OBSERVATION_REPLAY', 409);
+  if (isPrimary) delete node.nextgen.observations[oldKey];
   node.nextgen.observations[key] = { ...body, received_at: iso(now), provenance: 'trusted-observer' };
 }
 

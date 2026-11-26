@@ -25,6 +25,7 @@ async function start(entryPoint, persistence) {
     modules: true, script: built.outputFiles[0].text, compatibilityDate: '2026-10-01',
     compatibilityFlags: ['nodejs_compat'],
     durableObjects: { GHOSTFLEET_STATE: { className: 'GhostFleetState', useSQLite: true } },
+    ratelimits: { NEXTGEN_CLAIM_LIMIT: { namespace_id: '14103', simple: { limit: 12, period: 60 } } },
     resourcePersistencePath: persistence,
     bindings: {
       GHOSTFLEET_PANEL_ORIGIN: panel, GHOSTFLEET_NODE_ORIGIN: node, GHOSTFLEET_OPERATOR_TOKEN: operator,
@@ -33,13 +34,14 @@ async function start(entryPoint, persistence) {
   }));
 }
 
-async function call(environment, origin, path, body, bearer, from) {
+async function call(environment, origin, path, body, bearer, from, source = '192.0.2.4') {
   const response = await environment.dispatchFetch(origin + path, {
     method: body === undefined ? 'GET' : 'POST',
     headers: {
       ...(bearer ? { authorization: 'Bearer ' + bearer } : {}),
       ...(body === undefined ? {} : { 'content-type': 'application/json' }),
       ...(from ? { origin: from } : {}),
+      ...(source ? { 'cf-connecting-ip': source } : {}),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
@@ -80,6 +82,12 @@ test('Workerd preserves preexisting storage, v1 credentials and new v2 enrollmen
     const claim = { invitation, config_revision: profile.config_revision, expected_node_uid: uid,
       reporting_token: token() };
     const competitor = { ...claim, reporting_token: token() };
+    assert.equal((await call(runtime, node, '/v2/claim', claim, null, null, 'invalid')).status, 503);
+    const invalid = { ...claim, invitation: 'gf_inv_' + randomBytes(32).toString('base64url') };
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      assert.equal((await call(runtime, node, '/v2/claim', invalid, null, null, '192.0.2.5')).status, 403);
+    }
+    assert.equal((await call(runtime, node, '/v2/claim', invalid, null, null, '192.0.2.5')).status, 429);
     const outcomes = await Promise.all([claim, competitor].map((body) => call(runtime, node, '/v2/claim', body)));
     assert.deepEqual(outcomes.map((item) => item.status).sort(), [200, 409]);
     const current = outcomes[0].status === 200 ? claim : competitor;

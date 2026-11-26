@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { isIP } from 'node:net';
 import legacy, { GhostFleetState as LegacyState } from '../src/adapters/cloudflare/worker.js';
 import { authorizeApi, getAccessLevel } from '../src/adapters/cloudflare/auth.js';
 import { prepare, json } from '../src/control-plane/http.js';
@@ -83,6 +84,20 @@ async function cancelBody(request) {
   if (!request.body?.locked) await request.body?.cancel().catch(() => {});
 }
 
+async function admitClaim(request, env, url) {
+  if (env.NEXTGEN_LOCAL_TEST === '1' && url.protocol === 'http:' && ['127.0.0.1', '[::1]'].includes(url.hostname)) {
+    return null;
+  }
+  const source = request.headers.get('cf-connecting-ip');
+  if (!source || !isIP(source) || !env.NEXTGEN_CLAIM_LIMIT) return denied('CLAIM_INGRESS_UNAVAILABLE', 503);
+  try {
+    const result = await env.NEXTGEN_CLAIM_LIMIT.limit({ key: source });
+    return result.success ? null : denied('CLAIM_RATE_LIMITED', 429);
+  } catch {
+    return denied('CLAIM_INGRESS_UNAVAILABLE', 503);
+  }
+}
+
 export class GhostFleetState extends LegacyState {
   async fetch(request) {
     const url = new URL(request.url);
@@ -126,6 +141,13 @@ export default {
     if (identity.error) {
       await cancelBody(request);
       return identity.error;
+    }
+    if (identity.operation === 'claim') {
+      const denial = await admitClaim(request, env, url);
+      if (denial) {
+        await cancelBody(request);
+        return denial;
+      }
     }
     const parsed = await prepare(request, env);
     if (parsed.response) {

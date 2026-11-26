@@ -62,6 +62,8 @@ python3 nextgen/release.py sign-channel --package 'dist/candidate/ghostfleet-nod
 
 面板部署规划使用两个 origin，Panel 上游可放已批准的 Access 策略。应用内由实例配置独立 operator、read-only、observer 凭据。面板凭据只在页面内存；节点和 observer 从本地受限文件读取各自凭据。真实密钥不使用候选默认值。Worker 版本由 provider metadata 读回，部署时单独把 `NEXTGEN_SOURCE_REVISION` 绑定到实际构建提交。
 
+公网领取使用 Cloudflare 的可信连接地址和 Worker Rate Limit binding，在调用 DO 前执行来源级限流。缺少来源或绑定时保守失败；超出预算返回 429。实际账户应为绑定分配独占 namespace，并在可信入口移除可伪造来源的非受信子请求。该限制按 Cloudflare 站点近似计数，领用授权和原子性仍由高熵邀请及 DO 决定。参见 [Cloudflare Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)。
+
 1. 在操作员面板选渠道、平台及审批 profile 摘要，签发一次性邀请。把邀请文件经受信通道以 0600 交给目标；只在节点侧读入。预置 root-owned `/etc/ghostfleet-nextgen/enrollment.json`，包含 `origin` 和 `config_revision`。配置摘要必须来自相同的已审批配置。
 2. 用 `sudo python3 -I /var/lib/ghostfleet-nextgen/software/current/node.py enroll --invitation-file /path/to/invitation.json`。验证面板 UID 和注册状态。若网络结果不确定，重试同一邀请，客户端沿已有 pending 凭据继续。
 3. 在已授权靶机 `sudo systemctl daemon-reload` 后，启用 `ghostfleet-nextgen-report.timer` 和 `ghostfleet-nextgen-update.timer`，先手动触发各自 oneshot 取证。实例另验普通用户的 pinned SSH 与独立救援。首次安装可跳过 K3s。
@@ -69,6 +71,8 @@ python3 nextgen/release.py sign-channel --package 'dist/candidate/ghostfleet-nod
 5. 可选 Agent profile 为 `node_uid`、`server`、`ca_sha256`、`version`、`sha256`、`node_name`，多接口可加 `node_ip` 和 `flannel_iface`。运行 `plan-agent PROFILE` 读出 digest。原生服务存在时先做所有权和可信绑定核验。需要新 Agent 时，经具体批准执行 `sudo python3 native.py apply-agent PROFILE --approve-plan DIGEST --artifact FILE --token-file FILE`。这个步骤只完整准备自己的目录。集群 owner 另行安装/启动 `ghostfleet-nextgen-k3s-agent.service`，检查真实 Node UID、Lease 和独立救援，再授予私有 Work scope。
 
 报告撤销立即阻断旧报告凭据。主机失陷处置由可信实例同时撤销网络/SSH/集群能力及已签发的权限，保留独立救援。面板 Ready、软件版本和 K3s Ready 均作为证据输入。
+
+同 UID 轮换凭据时，保持相同审批配置下的独立观测，旧报告器版本留作历史线索。配置摘要变化会清除之前的独立观测；再绑定通过真实 Provider/SSH 探测完成。Observer 可按 `primary`/`secondary` 两个有界来源分别提交同一维度，保留两份同时有效的相反结论。
 
 ## 迁移、回退与发行次序
 
