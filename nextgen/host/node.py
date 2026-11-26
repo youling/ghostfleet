@@ -2,6 +2,7 @@
 """Enroll once or submit GhostFleet's bounded version evidence."""
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -41,8 +42,8 @@ def read_json(path, private=False, systemd_credential=False):
         info = os.fstat(handle.fileno())
         require(stat.S_ISREG(info.st_mode) and info.st_size <= 4096, "INVALID_INPUT_FILE")
         if private:
-            allowed_group_read = systemd_credential and info.st_gid == os.getgid()
-            require(info.st_uid in (0, os.getuid()) and not info.st_mode & (0o037 if allowed_group_read else 0o077),
+            # systemd can grant DynamicUser an ACL on a root:root 0440 credential.
+            require(info.st_uid in (0, os.getuid()) and not info.st_mode & (0o037 if systemd_credential else 0o077),
                     "UNSAFE_CREDENTIAL")
         try:
             return json.loads(handle.read(4097))
@@ -119,12 +120,17 @@ def enroll(directory, trusted, invitation_path, local):
             valid(UID, incoming["node_uid"]) and valid(INVITATION, incoming["invitation"]), "INVALID_INVITATION")
     target, revision = config(trusted, local)
     uid = incoming["node_uid"]
+    invitation_digest = hashlib.sha256(incoming["invitation"].encode()).hexdigest()
     stored = directory / "identity.json"
     pending = directory / "pending.json"
     if stored.exists():
         current = identity(read_json(stored, private=True))
         require(current["node_uid"] == uid and current["origin"] == target, "IDENTITY_CONFLICT")
+        if current.get("last_invitation_digest") == invitation_digest:
+            pending.unlink(missing_ok=True)
+            return
     saved = read_json(pending, private=True) if pending.exists() else {}
+    require(isinstance(saved, dict), "INVALID_PENDING_CREDENTIAL")
     if (saved.get("invitation"), saved.get("node_uid"), saved.get("origin"), saved.get("config_revision")) != (
             incoming["invitation"], uid, target, revision):
         saved = {**incoming, "origin": target, "config_revision": revision,
@@ -135,7 +141,8 @@ def enroll(directory, trusted, invitation_path, local):
                                       "reporting_token": saved["reporting_token"], "config_revision": revision})
     require(result.get("node_uid") == uid and result.get("registration") in ("APPLIED", "ALREADY_APPLIED"),
             "INVALID_CLAIM_RECEIPT")
-    write_json(stored, {key: saved[key] for key in ("node_uid", "origin", "reporting_token")})
+    write_json(stored, {"node_uid": uid, "origin": target, "reporting_token": saved["reporting_token"],
+                        "last_invitation_digest": invitation_digest})
     pending.unlink(missing_ok=True)
 
 

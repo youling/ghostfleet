@@ -45,6 +45,10 @@ jobs:
           sudo apt-get install --yes openssh-server systemd apt-utils gnupg
       - name: Signed APT channel and activation checks
         run: sudo python3 -m unittest discover -v -s nextgen/test -p test_update.py
+      - name: Host and Workerd end-to-end migration
+        run: sudo "$(command -v node)" nextgen/test/host-e2e.mjs
+      - name: Build next-generation Worker and assets without deployment
+        run: npx --no-install wrangler deploy --dry-run --config nextgen/wrangler.jsonc --outdir dist/nextgen
       - name: Validate SSH client aliases
         run: |
           ssh -G -F config/ssh/ghostfleet.conf.example node-cf >/dev/null

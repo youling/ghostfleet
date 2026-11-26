@@ -16,16 +16,19 @@ import tarfile
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "host"))
-from update import ARCHITECTURES, COMMIT, FINGERPRINT, PAYLOAD, PKG, VERSION, check, matches  # noqa: E402
+from update import ARCHITECTURES, COMMIT, FINGERPRINT, MAX_SIZE, PAYLOAD, PKG, SHA, VERSION, check, matches  # noqa: E402
 
 HOST = "nextgen/host/"
 BOOTSTRAP = {
     HOST + "node.py": "node.py",
     HOST + "update.py": "update.py",
+    HOST + "report.py": "report.py",
     HOST + "ghostfleet-nextgen-report.service": "ghostfleet-nextgen-report.service",
     HOST + "ghostfleet-nextgen-report.timer": "ghostfleet-nextgen-report.timer",
     HOST + "ghostfleet-nextgen-update.service": "ghostfleet-nextgen-update.service",
     HOST + "ghostfleet-nextgen-update.timer": "ghostfleet-nextgen-update.timer",
+    HOST + "ghostfleet-nextgen-k3s-agent.service": "ghostfleet-nextgen-k3s-agent.service",
+    "nextgen/native.py": "native.py",
 }
 
 
@@ -62,7 +65,7 @@ def build(out, version, arch):
     check(not run("git", "status", "--porcelain=v1", "--untracked-files=all").strip(), "DIRTY_CHECKOUT")
     source = run("git", "rev-parse", "HEAD").decode().strip()
     epoch = int(run("git", "show", "-s", "--format=%ct", source))
-    snapshot = run("git", "archive", "--format=tar", source, "nextgen/host")
+    snapshot = run("git", "archive", "--format=tar", source, "nextgen/host", "nextgen/native.py")
     with tarfile.open(fileobj=io.BytesIO(snapshot)) as bundle:
         files = {}
         for original, filename in BOOTSTRAP.items():
@@ -86,10 +89,11 @@ def build(out, version, arch):
                       "sha256": artifacts}, sort_keys=True))
 
 
-def sign(out, package, channel, arch, home, fingerprint, *, now=None, valid_hours=24):
+def sign(out, package, channel, arch, home, fingerprint, *, expected_sha256, now=None, valid_hours=24):
     check(matches(FINGERPRINT, fingerprint) and channel in ("canary", "stable") and arch in ARCHITECTURES,
           "INVALID_SIGNING_INPUT")
     check(not out.exists() and out.parent.is_dir(), "ARCHIVE_OUTPUT_MUST_BE_NEW")
+    check(matches(SHA, expected_sha256) and 0 < package.stat().st_size <= MAX_SIZE, "INVALID_PROMOTION_DIGEST")
     fields = [run("dpkg-deb", "--field", package, field).decode().strip()
               for field in ("Package", "Version", "Architecture")]
     check(fields[0] == PKG and matches(VERSION, fields[1]) and fields[2] == arch, "WRONG_PACKAGE_TO_PROMOTE")
@@ -98,7 +102,9 @@ def sign(out, package, channel, arch, home, fingerprint, *, now=None, valid_hour
         stage = Path(directory) / "archive"
         pool = stage / "pool"
         pool.mkdir(parents=True)
-        shutil.copyfile(package, pool / f"{PKG}_{fields[1]}_{arch}.deb")
+        staged_package = pool / f"{PKG}_{fields[1]}_{arch}.deb"
+        shutil.copyfile(package, staged_package)
+        check(hashlib.sha256(staged_package.read_bytes()).hexdigest() == expected_sha256, "PROMOTION_DIGEST_MISMATCH")
         relative = f"dists/{channel}"
         dist = stage / relative
         index = dist / "main" / ("binary-" + arch)
@@ -131,13 +137,14 @@ def main():
     channel.add_argument("--arch", choices=ARCHITECTURES, required=True)
     channel.add_argument("--signing-home", type=Path, required=True)
     channel.add_argument("--fingerprint", required=True)
+    channel.add_argument("--expected-sha256", required=True)
     channel.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.action == "build":
         build(args.output.resolve(), args.version, args.arch)
     else:
         sign(args.output.resolve(), args.package.resolve(), args.channel, args.arch,
-             args.signing_home.resolve(), args.fingerprint)
+             args.signing_home.resolve(), args.fingerprint, expected_sha256=args.expected_sha256)
 
 
 if __name__ == "__main__":

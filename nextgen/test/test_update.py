@@ -67,7 +67,8 @@ class UpdateTest(unittest.TestCase):
             now = datetime.now(timezone.utc)
         archive = self.workspace / suffix
         key, fingerprint = signer or (self.trusted, self.fingerprint)
-        sign(archive, package, name, arch, key, fingerprint, now=now)
+        sign(archive, package, name, arch, key, fingerprint, now=now,
+             expected_sha256=hashlib.sha256(package.read_bytes()).hexdigest())
         return {"uri": archive.as_uri(), "channel": name, "keyring": str(self.keyring),
                 "fingerprint": self.fingerprint}, package
 
@@ -115,6 +116,8 @@ class UpdateTest(unittest.TestCase):
         first, _ = self.channel("0.3.0~rc1")
         rewritten, _ = self.channel("0.3.0~rc1", tag="rewritten", reporter=self.reporter + b"\n# different\n")
         second, _ = self.channel("0.3.0~rc2")
+        with self.assertRaisesRegex(UpdateError, "BELOW_APPROVED_FLOOR"):
+            pull(self.installed, {**first, "minimum_version": "0.3.0~rc2"}, "amd64")
         pull(self.installed, first, "amd64")
         before = active(self.installed)
         with self.assertRaisesRegex(UpdateError, "IMMUTABLE_VERSION_CONFLICT"):

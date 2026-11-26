@@ -55,7 +55,9 @@ def trusted_file(path):
 
 def settings(path, local):
     data = json.loads(trusted_file(path).read_bytes())
-    check(isinstance(data, dict) and set(data) == {"uri", "channel", "keyring", "fingerprint"}, "INVALID_UPDATE_SETTINGS")
+    required = {"uri", "channel", "keyring", "fingerprint"}
+    check(isinstance(data, dict) and required <= data.keys() <= required | {"minimum_version"}, "INVALID_UPDATE_SETTINGS")
+    check("minimum_version" not in data or matches(VERSION, data["minimum_version"]), "INVALID_MINIMUM_VERSION")
     uri_text = data["uri"]
     check(isinstance(uri_text, str) and uri_text.isascii() and not any(char.isspace() for char in uri_text),
           "INVALID_ARCHIVE_URI")
@@ -230,11 +232,11 @@ def pull(root, config, arch):
         scratch = Path(directory)
         env = sandbox(scratch, config, arch)
         version, digest, size = candidate(env, arch, config["channel"])
+        floor = config.get("minimum_version")
+        if floor:
+            check(not version_compare(version, "lt", floor), "BELOW_APPROVED_FLOOR")
         if installed:
-            compare = subprocess.run(["dpkg", "--compare-versions", version, "le", installed["version"]],
-                                     capture_output=True, timeout=15, check=False)
-            check(compare.returncode in (0, 1), "VERSION_COMPARE_FAILED")
-            if compare.returncode == 0:
+            if version_compare(version, "le", installed["version"]):
                 check(version == installed["version"], "ROLLBACK_REFUSED")
                 check(digest == installed["sha256"], "IMMUTABLE_VERSION_CONFLICT")
                 return "UNCHANGED"
@@ -246,6 +248,13 @@ def pull(root, config, arch):
         release, script = read_package(packages[0], (version, platform))
         activate(root, {**release, "sha256": digest}, script)
     return "ACTIVATED"
+
+
+def version_compare(version, comparison, reference):
+    result = subprocess.run(["dpkg", "--compare-versions", version, comparison, reference],
+                            capture_output=True, timeout=15, check=False)
+    check(result.returncode in (0, 1), "VERSION_COMPARE_FAILED")
+    return result.returncode == 0
 
 
 def main():
