@@ -1,6 +1,7 @@
 // The existing node_uid and ghostfleet-state remain canonical. Presence is a
 // reporting projection, not a promotion to NodeLifecycle.ACTIVE or SSH access.
 import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
+import { revokeLegacyTickets, revokeNextgenInvitations, revokeReporting } from './enrollment.js';
 
 const UUID_V4 = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 const UID = new RegExp('^node-' + UUID_V4 + '$');
@@ -15,6 +16,8 @@ const PAIR = /^[0-9a-f]{64}$/;
 const SHORT_CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const TICKET_TTL_MS = 600_000;
 const MAX_PAIRING_REQUESTS = 128;
+const MAX_RETAINED_MANAGED_DECISION_PINS = 4;
+const validManagedPin = pin => typeof pin === 'string' && pin.length === 64 && /^[0-9a-f]{64}$/.test(pin);
 const own = (o, k) => o && Object.hasOwn(o, k);
 const digest = s => createHash('sha256').update(s).digest('hex');
 const iso = ms => new Date(ms).toISOString();
@@ -88,19 +91,23 @@ function managedEnrollment(state, node, now) {
 
 // Service-binding readback only. A successful reporter claim does not create
 // transport, provider or execution authority.
-export function readManagedPanelDecision(state, nodeUid, ticketId, bootstrapSha) {
+export function readManagedPanelDecision(state, nodeUid, ticketId, bootstrapSha, retainedPins) {
   const denied = { ok: false, error: 'MANAGED_PANEL_DECISION_UNAVAILABLE' };
   if (typeof nodeUid !== 'string' || !UID.test(nodeUid) || typeof ticketId !== 'string' || !TICKET.test(ticketId) ||
-      typeof bootstrapSha !== 'string' || !/^[0-9a-f]{64}$/.test(bootstrapSha)) return denied;
+      !validManagedPin(bootstrapSha)) return denied;
   const node = state.nodes?.[nodeUid];
   const ticket = state.managed_enrollment_tickets?.[ticketId];
   if (node?.managed_enrollment?.claimed_ticket_id !== ticketId || !node.reporting?.digest || node.reporting.revoked_at ||
       ticket?.node_uid !== nodeUid || ticket.state !== 'CONSUMED' || ticket.profile !== MANAGED_PROFILE ||
-      ticket.bootstrap_sha256 !== bootstrapSha || !ticket.claimed_at || node.reporting?.registered_at !== ticket.claimed_at) return denied;
+      !ticket.claimed_at || node.reporting?.registered_at !== ticket.claimed_at) return denied;
+  const ticketPin = ticket.bootstrap_sha256;
+  if (!validManagedPin(ticketPin)) return denied;
+  if (ticketPin !== bootstrapSha && (!Array.isArray(retainedPins) || retainedPins.length > MAX_RETAINED_MANAGED_DECISION_PINS ||
+      !retainedPins.every(validManagedPin) || !retainedPins.includes(ticketPin))) return denied;
   const issued = Date.parse(ticket.created_at), claimed = Date.parse(ticket.claimed_at), deadline = Date.parse(ticket.expires_at);
   if (!(issued <= claimed && claimed < deadline && deadline - issued === TICKET_TTL_MS)) return denied;
   const decision = { protocol: 'ghostfleet-managed-panel-decision/v1', node_uid: nodeUid, panel_ticket_id: ticketId,
-    profile: MANAGED_PROFILE, role: 'managed', bootstrap_sha256: bootstrapSha,
+    profile: MANAGED_PROFILE, role: 'managed', bootstrap_sha256: ticketPin,
     issued_at: ticket.created_at, claimed_at: ticket.claimed_at, code_expires_at: ticket.expires_at };
   return { ok: true, decision, owner_decision_digest: 'sha256:' + digest(JSON.stringify(decision)) };
 }
@@ -192,19 +199,16 @@ export function dispatch(input, state, now = Date.now()) {
         ...(managed ? { profile: MANAGED_PROFILE, bootstrap_sha256: managedBootstrapSha, request_id: body.request_id,
           ...(body.node_uid ? { attempt_node_uid: body.node_uid } : {}) } : {}) };
       state.nodes ??= {};
-      // An older Worker only sees the reporter tickets, including during rollback.
       const tickets = managed ? (state.managed_enrollment_tickets ??= {}) : (state.presence_tickets ??= {});
-      const superseded = managed && existing && !existing.managed_enrollment
-        ? Object.values(state.presence_tickets ?? {}) : Object.values(tickets);
-      for (const t of superseded) {
-        if (t.node_uid === uid && t.state === 'ISSUED') { t.state = 'REVOKED'; t.code_digest = null; }
-      }
+      revokeLegacyTickets(state, uid);
+      revokeNextgenInvitations(state, uid, true);
       // A managed replacement keeps the current reporter active until claim.
       // Reporter-only replacement retains the original immediate revocation behavior.
       state.nodes[uid] = { ...(existing ?? { node_uid: uid, node_id: uid, platform: 'linux', lifecycle: 'PROVISIONAL' }),
         label: label ?? existing.label ?? existing.node_id,
         reporting: (managed && existing?.reporting) ||
-          { registered_at: null, last_seen_at: null, last_report: null, digest: null, revoked_at: null },
+          { registered_at: null, last_seen_at: null, last_report: null, digest: null, revoked_at: null,
+            previous_digest: existing?.reporting?.digest ?? existing?.reporting?.previous_digest ?? null },
         ...(managed ? { managed_enrollment: { ...(existing?.managed_enrollment ?? {}), ticket_id: ticketId } } : {}) };
       tickets[ticketId] = ticket;
       if (pairing) { pairing.ticket_id = ticketId; pairing.expires_at = ticket.expires_at; }
@@ -224,10 +228,7 @@ export function dispatch(input, state, now = Date.now()) {
       shape(body, [], []);
       const node = nodeAt(state, match[1]);
       if (!node.reporting) reject('NODE_NOT_REGISTERED', 409);
-      node.reporting.revoked_at ??= iso(now); node.reporting.digest = null;
-      for (const t of Object.values(state.presence_tickets ?? {})) {
-        if (t.node_uid === node.node_uid && t.state === 'ISSUED') { t.state = 'REVOKED'; t.code_digest = null; }
-      }
+      revokeReporting(state, node, now);
       return ok({ node: publicNode(node, now), scope: 'reporting_only' }, true);
     }
     match = /^\/v1\/enrollment-tickets\/([^/]+)\/claim$/.exec(path);
@@ -262,17 +263,21 @@ export function dispatch(input, state, now = Date.now()) {
       }
       if (body.expected_node_uid && body.expected_node_uid !== t.node_uid) reject('NODE_IDENTITY_CONFLICT', 409);
       const node = nodeAt(state, t.node_uid);
+      const previousDigest = node.reporting?.digest ?? node.reporting?.previous_digest ?? null;
       if (managedClaim) {
         if (node.managed_enrollment?.ticket_id !== t.ticket_id) reject('TICKET_NOT_CLAIMABLE', 409);
         node.reporting = { registered_at: null, last_seen_at: null, last_report: null, digest: null, revoked_at: null };
       } else if (node.managed_enrollment) reject('ENROLLMENT_PROFILE_CONFLICT', 409);
       const token = 'gf_hb_' + randomBytes(32).toString('base64url');
       node.reporting.digest = digest(token); node.reporting.registered_at = iso(now);
+      node.reporting.generation = randomUUID(); node.reporting.previous_digest = previousDigest;
       t.state = 'CONSUMED'; t.code_digest = null;
       if (managedClaim) {
         t.claimed_at = iso(now);
         node.managed_enrollment.claimed_ticket_id = t.ticket_id;
       }
+      revokeLegacyTickets(state, node.node_uid);
+      revokeNextgenInvitations(state, node.node_uid, true);
       return ok({ node_uid: node.node_uid, reporting_token: token, ...(managedClaim ? { profile: MANAGED_PROFILE } : {}) }, true);
     }
     match = /^\/v1\/nodes\/([^/]+)\/heartbeat$/.exec(path);

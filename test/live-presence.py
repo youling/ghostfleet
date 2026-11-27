@@ -83,7 +83,7 @@ export default { async fetch(request, env, ctx) {
         managed_path = '/bootstrap/' + managed_pin + '.managed.sh'
         config['vars'].update(GHOSTFLEET_PANEL_ORIGIN=origin, GHOSTFLEET_NODE_ORIGIN=origin,
                               GHOSTFLEET_OPERATOR_TOKEN=operator, GHOSTFLEET_READ_TOKEN=reader,
-                              GHOSTFLEET_MANAGED_BOOTSTRAP_SHA256=managed_pin)
+                              GHOSTFLEET_MANAGED_BOOTSTRAP_SHA256=managed_pin, NEXTGEN_LOCAL_TEST='1')
         config_path = run / 'wrangler.json'
         config_path.write_text(json.dumps(config)); config_path.chmod(0o600)
         # No provider/account credential environment or native owner config.

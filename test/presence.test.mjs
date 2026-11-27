@@ -7,7 +7,9 @@ import worker, { GhostFleetState } from '../src/adapters/cloudflare/worker.js';
 
 const clock = Date.parse('2026-11-01T00:00:00Z');
 const operator = 'synthetic-operator-'.repeat(4), reader = 'synthetic-reader-'.repeat(4);
+const allowIngress = { async limit() { return { success: true }; } };
 const env = { GHOSTFLEET_OPERATOR_TOKEN: operator, GHOSTFLEET_READ_TOKEN: reader,
+  NEXTGEN_CLAIM_LIMIT: allowIngress, GHOSTFLEET_REPORT_LIMIT: allowIngress,
   GHOSTFLEET_PANEL_ORIGIN: 'https://panel.example.invalid', GHOSTFLEET_NODE_ORIGIN: 'https://node.example.invalid' };
 const report = { protocol: 'ghostfleet-heartbeat/v1', boot_id: '11111111-1111-4111-8111-111111111111',
   reporter_version: '1', services: { ssh: 'active', cloudflared: 'not_found', tailscaled: 'active' } };
@@ -339,7 +341,8 @@ test('read token cannot issue/reissue/revoke; prototype paths and body fields re
 });
 
 function request(path, { method = 'GET', token = operator, body, origin = env.GHOSTFLEET_PANEL_ORIGIN, headers = {} } = {}) {
-  return new Request(origin + path, { method, headers: { ...(token ? { authorization: 'Bearer ' + token } : {}),
+  return new Request(origin + path, { method, headers: { 'cf-connecting-ip': '192.0.2.10',
+    ...(token ? { authorization: 'Bearer ' + token } : {}),
     ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...headers },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
 }
@@ -639,6 +642,7 @@ test('node ingress serves only exact pinned installer and join shim; static UI s
 
 test('managed bootstrap and claim are node-only; the managed issue is operator-only', async () => {
   const bindings = mockBindings({ GHOSTFLEET_MANAGED_BOOTSTRAP_SHA256: managedPin,
+    NEXTGEN_CLAIM_LIMIT: undefined, GHOSTFLEET_REPORT_LIMIT: undefined,
     ASSETS: { fetch: async () => new Response(managedAsset) } });
   const access = await worker.fetch(request('/v0/access'), bindings);
   const path = '/bootstrap/' + managedPin + '.managed.sh';

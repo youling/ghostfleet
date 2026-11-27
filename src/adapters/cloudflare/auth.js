@@ -1,4 +1,6 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
+import { parseObserverGrants } from '../../control-plane/observations.js';
 
 function denied(error, status) {
   return Response.json({ ok: false, error }, { status, headers: {
@@ -86,4 +88,40 @@ export async function authorizePanel(request, env) {
     return denied('ORIGIN_DENIED', 403);
   }
   return { access, authMode: 'bearer' };
+}
+
+const hash = value => createHash('sha256').update(value).digest();
+
+function nextgenCredentials(env) {
+  const grants = parseObserverGrants(env);
+  const tokens = [env.GHOSTFLEET_OPERATOR_TOKEN, env.GHOSTFLEET_READ_TOKEN, env.GHOSTFLEET_OBSERVER_TOKEN]
+    .filter(token => typeof token === 'string' && token.length >= 32 && token.length <= 4089);
+  const digests = new Set(tokens.map(token => hash(token).toString('hex')));
+  const conflict = digests.size !== tokens.length || grants?.some(grant => digests.has(grant.token_sha256));
+  return { grants, conflict };
+}
+
+export async function authorizeNextgenPanel(request, env) {
+  if (nextgenCredentials(env).conflict) return denied('AUTH_CONFIG_CONFLICT', 503);
+  return authorizePanel(request, env);
+}
+
+export function authorizeObserver(request, env) {
+  const { grants, conflict } = nextgenCredentials(env);
+  if (conflict) return { response: denied('AUTH_CONFIG_CONFLICT', 503) };
+  if (!grants?.length) return { response: denied('OBSERVER_GRANTS_NOT_CONFIGURED', 503) };
+  const authorization = request.headers.get('authorization') ?? '';
+  const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+  if (!/^gf_obs_[A-Za-z0-9_-]{43}$/.test(token)) return { response: denied('UNAUTHORIZED', 401) };
+  const digest = hash(token);
+  const grant = grants.find(({ token_sha256 }) => timingSafeEqual(digest, Buffer.from(token_sha256, 'hex')));
+  return grant ? { grant } : { response: denied('UNAUTHORIZED', 401) };
+}
+
+export function checkObservationGrant(grant, uid, body) {
+  const { source, dimension } = body ?? {};
+  const scope = body && Object.hasOwn(body, 'scope') ? body.scope : 'primary';
+  if (uid !== grant.node_uid || scope !== grant.scope || typeof source !== 'string' || typeof dimension !== 'string' ||
+      !grant.streams.includes(source + '/' + dimension)) return denied('OBSERVATION_SCOPE_DENIED', 403);
+  return null;
 }

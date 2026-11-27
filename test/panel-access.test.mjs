@@ -20,6 +20,7 @@ const env = {
   GHOSTFLEET_PANEL_ACCESS_AUD: audience,
   GHOSTFLEET_PANEL_ACCESS_OWNER_EMAIL: owner,
   GHOSTFLEET_OPERATOR_TOKEN: legacy,
+  NEXTGEN_CLAIM_LIMIT: { async limit() { return { success: true }; } },
 };
 
 function fixture(baseEnv = env) {
@@ -95,15 +96,29 @@ test('single Cloudflare Access session authenticates Panel only, with exact writ
   const inventory = await app.fetch(panel + '/v0/nodes', { headers });
   assert.equal(inventory.status, 200);
   assert.equal((await inventory.json()).nodes[0].node_uid, delivery.ticket.node_uid);
+  const inventoryV2 = await app.fetch(panel + '/v2/nodes', { headers });
+  assert.equal(inventoryV2.status, 200);
+  assert.equal((await inventoryV2.json()).nodes[0].node_uid, delivery.ticket.node_uid);
+  assert.equal((await app.fetch(panel + '/v2/nodes', { headers: { authorization: 'Bearer ' + legacy } })).status, 401);
+  assert.equal((await app.fetch(node + '/v2/nodes', { headers })).status, 404);
+  const invitation = { method: 'POST', body: JSON.stringify({
+    node_uid: delivery.ticket.node_uid,
+    profile: { channel: 'canary', platform: 'debian13-amd64', config_revision: 'c'.repeat(64), desired: null },
+  }) };
+  assert.equal((await app.fetch(panel + '/v2/invitations', { ...invitation, headers: issueHeaders })).status, 403);
+  assert.equal((await app.fetch(panel + '/v2/invitations', { ...invitation,
+    headers: { ...issueHeaders, origin: node } })).status, 403);
   assert.equal((await app.fetch(node + '/v0/nodes', { headers })).status, 404);
   assert.equal((await app.instance.fetch(new Request(node + '/v0/nodes', { headers }))).status, 403);
   assert.equal((await app.instance.fetch(new Request(panel + '/v0/nodes'))).status, 401);
   const claimed = await app.fetch(node + '/v1/enrollment-tickets/' + delivery.ticket.ticket_id + '/claim', {
-    method: 'POST', headers: { 'content-type': 'application/json' },
+    method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '192.0.2.10' },
     body: JSON.stringify({ short_code: delivery.short_code }),
   });
   assert.equal(claimed.status, 200);
   assert.equal((await claimed.json()).node_uid, delivery.ticket.node_uid);
+  assert.equal((await app.fetch(panel + '/v2/invitations', { ...invitation,
+    headers: { ...issueHeaders, origin: panel } })).status, 201);
 
   const artifact = '#!/bin/sh\n# Synthetic managed fixture.\nexit 1\n';
   const sha256 = createHash('sha256').update(artifact).digest('hex');
