@@ -11,6 +11,7 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm test
 node --test 'nextgen/test/*.test.mjs'
 python3 -m unittest discover -s nextgen/test -p test_native.py
+python3 -m unittest discover -s nextgen/test -p test_install.py
 sudo python3 -m unittest discover -s nextgen/test -p test_update.py
 sudo "$(command -v node)" nextgen/test/host-e2e.mjs
 npm run check:publication
