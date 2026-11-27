@@ -1,6 +1,6 @@
 {
   "schema": "ghostfleet-resource-matrix/v1",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "owners": {
     "ansible": {
       "scopes": [
@@ -563,6 +563,9 @@
         ],
         "agent": [
           "k3s-agent.service"
+        ],
+        "rc3-agent": [
+          "ghostfleet-nextgen-k3s-agent.service"
         ]
       }
     }

@@ -4,7 +4,10 @@ from pathlib import Path
 import re
 
 DIGEST = re.compile(r'[0-9a-f]{64}')
-COMPONENTS = {'ghostfleet-installer': 'ghostfleet', 'linux-converger': 'converger'}
+COMPONENTS = {
+    'ghostfleet-installer': ('ghostfleet', 'ghostfleet:installer'),
+    'linux-converger': ('converger', 'fleet:primary-converger'),
+}
 BOOTSTRAP = {
     'install.py', 'enroll.py', 'node.py', 'update.py', 'report.py', 'native.py',
     'ghostfleet-nextgen-report.service', 'ghostfleet-nextgen-report.timer',
@@ -35,21 +38,31 @@ def approved_file(value, expected, private=False):
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1 or info.st_size > 1048576:
         raise ValueError()
-    if info.st_mode & (0o077 if private else 0o022) or sha256(path.read_bytes()).hexdigest() != expected:
+    body = path.read_bytes()
+    if info.st_mode & (0o077 if private else 0o022) or sha256(body).hexdigest() != expected:
         raise ValueError()
+    return body
 
 try:
     if os.geteuid() != 0:
         raise ValueError()
     config = request['profile']
-    approved_file(config, request['profile_sha256'], True)
+    profile = json.loads(approved_file(config, request['profile_sha256'], True))
     if component == 'ghostfleet-installer':
+        if profile.get('schema') != 'ghostfleet-install/v1' or profile.get('enrollment', {}).get('node_uid') != uid:
+            raise ValueError()
+        if profile.get('components', {}).get('k3s', {'role': 'none'}) != {'role': 'none'}:
+            raise ValueError()
         directory = Path(request['bootstrap_directory'])
+        if {item.name for item in directory.iterdir()} != set(request['bootstrap_files']):
+            raise ValueError()
         for name, digest in request['bootstrap_files'].items():
             approved_file(directory / name, digest)
         original_action = {'plan': 'plan', 'verify': 'status', 'apply': 'apply'}[action]
-        argv = ['/usr/bin/python3', '-I', str(directory / 'install.py'), original_action, config]
+        argv = ['/usr/bin/python3', '-IB', str(directory / 'install.py'), original_action, config]
     else:
+        if profile.get('manifest', {}).get('node_uid') != uid:
+            raise ValueError()
         if importlib.metadata.version('youling-ai-hub-runner') != request['runtime_version']:
             raise ValueError()
         spec = importlib.util.find_spec('youling_fleet.linux.cli')
@@ -66,8 +79,12 @@ try:
         accepted = {'plan': {'PLAN'}, 'apply': {'APPLIED','UNCHANGED'}, 'verify': {'STATUS'}}
         if reply.get('node_uid') != uid or reply.get('result') not in accepted[action]:
             raise ValueError()
-        if action == 'verify' and (reply.get('identity') != 'present' or not reply.get('installed_release')):
-            raise ValueError()
+        if action == 'verify':
+            timers = ('ghostfleet-nextgen-update.timer', 'ghostfleet-nextgen-report.timer')
+            expected = {'ActiveState': 'active', 'UnitFileState': 'enabled'}
+            if (reply.get('identity') != 'present' or not reply.get('installed_release') or reply.get('files')
+                    or reply.get('units') or any(reply.get('services', {}).get(unit) != expected for unit in timers)):
+                raise ValueError()
         changed = reply['result'] == 'APPLIED' or (action == 'plan' and bool(reply['files'] or reply['units']))
     else:
         if action == 'plan':
@@ -106,8 +123,13 @@ def command(spec, projection, target, action, require, absolute):
     require(isinstance(spec['profile_sha256'], str) and DIGEST.fullmatch(spec['profile_sha256']),
             'OWNER_PROFILE_PIN_REQUIRED')
     claims = [resource for resource in projection['resources'] if resource.get('id') == spec['resource_id']]
+    owner, key = COMPONENTS[component]
     require(projection['target']['platform'] == 'debian13-amd64' and len(claims) == 1
-            and claims[0].get('owner') == COMPONENTS[component] and claims[0].get('scope') == 'host'
-            and claims[0].get('kind') == 'lifecycle' and claims[0].get('mode') == 'manage',
-            'OWNER_LIFECYCLE_CLAIM_REQUIRED')
+            and claims[0].get('owner') == owner and claims[0].get('scope') == 'host'
+            and claims[0].get('kind') == 'lifecycle' and claims[0].get('mode') == 'manage'
+            and claims[0].get('key') == key, 'OWNER_LIFECYCLE_CLAIM_REQUIRED')
+    desired = claims[0].get('desired')
+    expected = ({'state': 'present'} if component == 'ghostfleet-installer'
+                else {'state': 'present', 'version': spec['runtime_version']})
+    require(desired == expected, 'OWNER_LIFECYCLE_DESIRED_MISMATCH')
     return ['/usr/bin/python3', '-I', '-c', REMOTE, json.dumps(spec), action, projection['target']['node_uid']]

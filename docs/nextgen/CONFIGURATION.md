@@ -40,9 +40,17 @@ python3 -I scripts/ghostfleet_converge.py verify \
   --lock "$PROJECT_LOCK" --authority "$OWNER_AUTHORITY" --asset-directory "$ASSETS"
 ```
 
-- For an exact file claim, store its untemplated bytes in the approved asset directory under their lowercase SHA-256. The controller verifies the bytes and the playbook compares remote SHA-256 and mode after applying. Plans report simulated changes and skipped tasks. The apply and verify receipts record actual state. Repeat apply to confirm zero changes.
-- Approved root package operations require exact package versions and an existing Python APT module. The playbook checks installed versions and simulates the transaction to refuse removals, upgrades and unrelated installs. Its normal apt lock is distinct from the controller's per-node coordination lock.
-- Each optional owner handoff uses a separate attempt and a managed lifecycle claim owned by GhostFleet or the existing Linux Converger. The owner provides its exact private profile and the original pinned runtime. The RC3 owner adapter checks each bootstrap member and calls `install.py plan|apply|status`. The Converger adapter checks the installed module and calls its original plan or explicitly authorized convergence. Converger plan reports plan-only status. Provider setup and identity recovery use their existing owner channels.
+- For an exact file claim, store its untemplated bytes in the approved asset directory under their lowercase SHA-256. The controller verifies the bytes and the playbook compares remote SHA-256 and mode after applying. Plans report simulated changes and skipped tasks. The apply and verify receipts list selected resource IDs and separately report managed IDs left for another attempt.
+  A readback flag requires actual state and no remaining managed resources for that projection. Repeat apply to confirm zero changes.
+- Approved root package operations require exact versions and an existing pinned Fleet Debian package runtime. Bind
+  its package version and the system and package_guard module digests in the authority's tools.package_runtime.
+  The handoff uses the existing pre-dpkg checks under APT's transaction lock. If the approved transaction leaves packages
+  unpacked, it configures those exact packages and verifies their installed versions and a clean dpkg state.
+  An already unclean package database requires owner recovery before retry. The native package locks and the
+  controller's per-node coordination lock remain separate.
+- Each optional owner handoff uses a separate attempt and a managed lifecycle claim owned by GhostFleet or the existing Linux Converger. The owner provides its exact private profile and the original pinned runtime. Approved lifecycle keys are
+  `ghostfleet:installer` and `fleet:primary-converger`. The runtime checks the profile UID before effects. The GhostFleet
+  adapter accepts its own lifecycle scope and leaves K3s activation to the K3s owner. The RC3 owner adapter checks each bootstrap member and calls `install.py plan|apply|status`. The Converger adapter checks the installed module and calls its original plan or explicitly authorized convergence. Converger plan reports plan-only status. Provider setup and identity recovery use their existing owner channels.
 - Recover configuration by applying a separately approved previous project lock and then reading it back. Keep the same host pin and lock. Restore signed GhostFleet releases, lifecycle state, credentials and provider configuration through their original recovery mechanisms.
 
 恢复一项文件或权限漂移时，对原授权重新核验并复跑同一配置。回退使用获准的前一项目锁，保留文件摘要、唯一写者与同一私有恢复入口。GhostFleet 自有签名更新、K3s 工作负载、Tailscale/Cloudflare 网络策略、Windows 设置和 WSL 生命周期沿各自 owner。候选未改变现役 0.3.0 安装包或兼容控制面。

@@ -306,7 +306,7 @@ def node_lock(target, platform, paths, options, env):
 
 
 def engine(tools, env):
-    fields(tools, 'ansible ansible_sha256 pythonpath')
+    fields({key: value for key, value in tools.items() if key != 'package_runtime'}, 'ansible ansible_sha256 pythonpath')
     binary = absolute(tools['ansible'])
     trusted_read(str(binary), digest=tools['ansible_sha256'])
     if tools['pythonpath'] is not None:
@@ -321,7 +321,7 @@ def engine(tools, env):
     return str(binary)
 
 
-def run_playbook(binary, scratch, action, target, options, paths, packages, owner, env, lock, expires):
+def run_playbook(binary, scratch, action, target, options, paths, packages, owner, package_action, env, lock, expires):
     inventory = {'all': {'hosts': {'target': {
         'ansible_host': target['host'], 'ansible_port': target['port'], 'ansible_user': target['user'],
         'ansible_connection': 'ssh', 'ansible_ssh_common_args': shlex.join(options),
@@ -341,7 +341,8 @@ def run_playbook(binary, scratch, action, target, options, paths, packages, owne
     rendered.sort(key=lambda item: len(Path(item['path']).parts))
     variables = scratch / 'projection.json'
     variables.write_text(json.dumps({'ghostfleet_phase': action, 'ghostfleet_paths': rendered,
-                                     'ghostfleet_packages': packages, 'ghostfleet_owner_argv': owner}))
+                                     'ghostfleet_packages': packages, 'ghostfleet_owner_argv': owner,
+                                     'ghostfleet_package_argv': package_action}))
     args = [binary, '-i', str(inventory_path), '--limit', 'target', '--extra-vars', '@' + str(variables),
             str(PLAY / 'converge.yml')]
     if action == 'plan':
@@ -409,6 +410,18 @@ def main():
             require(not paths and not packages, 'OWNER_HANDOFF_REQUIRES_SEPARATE_ATTEMPT')
             handoff = runpy.run_path(str(PLAY / 'owner_handoff.py'))['command']
             owner = handoff(authority['owner_handoff'], projection, target, args.action, require, absolute)
+        package_action = []
+        if packages and args.action != 'verify':
+            guarded = runpy.run_path(str(PLAY / 'package_action.py'))['command']
+            package_action = guarded(authority['tools'].get('package_runtime'), packages, args.action, require)
+        selected = {claim['id'] for claim in projection['resources'] if claim['owner'] == 'ansible'
+                    and claim['mode'] == 'manage' and claim['kind'] in {'path', 'package'}}
+        if owner:
+            selected.add(authority['owner_handoff']['resource_id'])
+        require(selected, 'NO_AUTHORIZED_RESOURCE_ACTION')
+        requested = {claim['id'] for claim in projection['resources'] if claim['mode'] == 'manage'
+                     and claim['kind'] != 'package-db'}
+        not_run = sorted(requested - selected)
         previous = os.umask(0o077)
         try:
             with tempfile.TemporaryDirectory(prefix='ghostfleet-config-') as temporary:
@@ -421,13 +434,14 @@ def main():
                 binary = engine(authority['tools'], env)
                 options = ssh_options(target, pins)
                 with node_lock(target, authority['platform'], paths, options, env) as held:
-                    stats = run_playbook(binary, scratch, args.action, target, options, paths, packages, owner,
+                    stats = run_playbook(binary, scratch, args.action, target, options, paths, packages, owner, package_action,
                                          env, held, authority['expires_at'])
         finally:
             os.umask(previous)
         print(json.dumps({'schema': 'ghostfleet-config-result/v1', 'action': args.action, 'status': 'SUCCESS',
                           'node_uid': authority['node_uid'], 'projection_sha256': authority['projection_sha256'],
-                          'simulation': args.action == 'plan', 'readback': args.action != 'plan', 'recap': stats},
+                          'simulation': args.action == 'plan', 'readback': args.action != 'plan' and not not_run,
+                          'selected_resources': sorted(selected), 'managed_resources_not_run': not_run, 'recap': stats},
                          sort_keys=True))
         return 0
     except (Refused, OSError, KeyError, TypeError, ValueError, subprocess.SubprocessError) as error:

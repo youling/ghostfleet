@@ -10,6 +10,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 runner = runpy.run_path(str(ROOT / 'scripts/ghostfleet_converge.py'))
 handoff = runpy.run_path(str(ROOT / 'config/convergence/owner_handoff.py'))
+package_action = runpy.run_path(str(ROOT / 'config/convergence/package_action.py'))
 Refused = runner['Refused']
 
 
@@ -37,10 +38,22 @@ class ConfigureScopeTest(unittest.TestCase):
         with self.assertRaisesRegex(Refused, 'PINNED_PACKAGE_SCOPE_INVALID'):
             runner['desired_resources']({'resources': [resource]}, {'user':'fixture'}, None)
 
+    def test_package_action_requires_exact_existing_runtime_pins(self):
+        packages = [{'name': 'git', 'version': '1:2.47.3-0+deb13u1'}]
+        guarded = package_action['command']
+        with self.assertRaisesRegex(Refused, 'EXISTING_PACKAGE_GUARD_REQUIRED'):
+            guarded(None, packages, 'apply', runner['require'])
+        with self.assertRaisesRegex(Refused, 'EXISTING_PACKAGE_GUARD_PIN_INVALID'):
+            guarded({'runtime_version': '0.7.0', 'system_sha256': 'a' * 64, 'guard_sha256': 'short'},
+                    packages, 'apply', runner['require'])
+        pins = {'runtime_version': '0.7.0', 'system_sha256': 'a' * 64, 'guard_sha256': 'b' * 64}
+        self.assertEqual(guarded(pins, packages, 'apply', runner['require'])[:3],
+                         ['/usr/bin/python3', '-IB', '-c'])
+
     def test_handoff_requires_one_matching_managed_lifecycle(self):
         uid = 'node-' + str(uuid.uuid4())
         resource = {'id': 'original-owner', 'owner': 'ghostfleet', 'scope': 'host', 'mode': 'manage',
-                    'kind': 'lifecycle'}
+                    'kind': 'lifecycle', 'key': 'ghostfleet:installer', 'desired': {'state': 'present'}}
         spec = {'component': 'ghostfleet-installer', 'resource_id': resource['id'],
                 'profile': '/etc/ghostfleet-example/profile.json', 'profile_sha256': 'a' * 64,
                 'bootstrap_directory': '/opt/ghostfleet-example',

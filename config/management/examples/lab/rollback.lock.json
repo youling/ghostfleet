@@ -1,7 +1,7 @@
 {
   "schema": "ghostfleet-project-lock/v1",
   "version": "1.0.1",
-  "matrix_sha256": "c1b365459371843f2172ef12ed43654702c8ff630ba742638b721b093c6d3727",
+  "matrix_sha256": "e7835f4dd1323962ff35866ffaef8f003b2493e3fac430e7fef2409128d59146",
   "baseline": {
     "path": "baseline.json",
     "sha256": "9e38ac9a83aefaf1f4000e118c97945a39d8774eda19152f250397bb9e58ee78"

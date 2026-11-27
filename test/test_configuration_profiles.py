@@ -238,6 +238,35 @@ class ConfigurationProfiles(unittest.TestCase):
         self.check_deny("PROTECTED_RESOURCE", self.fixture([resource(
             "identity-path", "path", "/etc/other/../ghostfleet-nextgen/identity", state="file")]))
 
+    def test_protected_unit_files_and_dropins_require_owner_even_without_active_unit_claim(self):
+        observed = resource("reporter-readback", "unit", "ghostfleet-nextgen-report.timer", "ghostfleet", observe=True)
+        blocked = [
+            ("/etc/systemd/system/ghostfleet-nextgen-report.timer", "file"),
+            ("/etc/systemd/system/ghostfleet-nextgen-report.timer.d", "directory"),
+            ("/usr/local/lib/systemd/system/ghostfleet-nextgen-report.timer.d/20-local.conf", "file"),
+            ("/run/systemd/system/tailscaled.service.d/10-settings.conf", "file"),
+            ("/usr/lib/systemd/system/cloudflared-ssh.service", "file"),
+            ("/etc/systemd/system/k3s-.service.d/10-common.conf", "file"),
+            ("/etc/systemd/system/service.d/10-common.conf", "file"),
+            ("/etc/systemd/system", "directory"),
+        ]
+        for key, state in blocked:
+            with self.subTest(path=key):
+                candidate = resource("unrelated-writer", "path", key, state=state)
+                self.check_deny("PROTECTED_RESOURCE", self.fixture([observed, candidate]))
+        own = resource("reporter-owner", "path", blocked[0][0], "ghostfleet", state="file")
+        unrelated = resource("fixture-owner", "path", "/etc/systemd/system/fixture.service.d/local.conf", state="file")
+        compile_target(self.fixture([observed, own, unrelated]), UID, NATIVE)
+
+    def test_rc3_k3s_agent_excludes_other_active_k3s_host_units(self):
+        rc3 = resource("rc3-agent", "unit", "ghostfleet-nextgen-k3s-agent.service", "ghostfleet", state="active")
+        for unit in ("k3s.service", "k3s-agent.service"):
+            with self.subTest(unit=unit):
+                legacy = resource("previous-role", "unit", unit, "k3s", state="active")
+                self.check_deny("EXCLUSIVE_RUNTIME_WRITER", self.fixture([legacy, rc3]))
+                observation = resource("role-readback", "unit", unit, "k3s", observe=True)
+                compile_target(self.fixture([observation, rc3]), UID, NATIVE)
+
     def test_declared_wsl_or_oci_mounts_collapse_to_one_physical_path(self):
         alias = {"from": {"scope": "wsl", "path": "/sample-mount/drive"},
                  "to": {"scope": "windows", "path": "C:/Synthetic"}}

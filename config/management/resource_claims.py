@@ -11,7 +11,8 @@ KINDS = frozenset(("package", "package-db", "path", "unit", "port", "route", "cr
 SCOPES = frozenset(("host", "wsl", "windows", "k3s", "oci", "tailnet", "cloudflare"))
 IDENTIFIER = re.compile(r"[a-z][a-z0-9._-]{0,63}")
 PACKAGE = re.compile(r"[a-z0-9][a-z0-9+.-]*(?::[a-z0-9][a-z0-9-]*)?")
-SYSTEMD_UNIT = re.compile(r"[A-Za-z0-9:@_.-]+\.(?:service|socket|timer|target|mount|path|slice|scope)")
+UNIT_TYPES = ("service", "socket", "timer", "target", "mount", "path", "slice", "scope")
+SYSTEMD_UNIT = re.compile(r"[A-Za-z0-9:@_.-]+\.(?:" + "|".join(UNIT_TYPES) + ")")
 VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+:~_-]{0,127}")
 DIGEST = re.compile(r"[a-f0-9]{64}")
 STATES = {
@@ -30,7 +31,12 @@ OPTIONAL_DESIRED = {
     "credential": {"reference"}, "lifecycle": {"version"},
 }
 APT_ROOTS = ("/var/lib/dpkg", "/var/lib/apt", "/var/cache/apt")
-UNIT_ROOTS = ("/etc/systemd/system", "/run/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system")
+UNIT_ROOTS = (
+    "/etc/systemd/system", "/etc/systemd/system.control", "/etc/systemd/system.attached",
+    "/run/systemd/system", "/run/systemd/system.control", "/run/systemd/system.attached", "/run/systemd/transient",
+    "/run/systemd/generator.early", "/run/systemd/generator", "/run/systemd/generator.late",
+    "/usr/local/lib/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system",
+)
 BAD_WINDOWS_PART = re.compile(r"(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\..*)?|.*~[0-9]+(?:\..*)?")
 
 
@@ -277,11 +283,48 @@ def overlaps(left, right):
     return key == other
 
 
+def unit_entry_overlaps(entry, rule):
+    is_dropin = entry.endswith(".d")
+    name = entry.removesuffix(".d")
+    prefix = rule.get("prefix")
+    protected = rule["key"]
+    if is_dropin and name in UNIT_TYPES:
+        return prefix or protected.endswith("." + name)
+    if not SYSTEMD_UNIT.fullmatch(name):
+        return False
+    direct = name.startswith(protected) if prefix else name == protected
+    if direct:
+        return True
+
+    # Templates can supply unit files, while dash-prefix directories provide inherited drop-ins.
+    stem, suffix = name.rsplit(".", 1)
+    if not (stem.endswith("@") or (is_dropin and stem.endswith("-"))):
+        return False
+    if prefix:
+        return protected.startswith(stem)
+    return protected.startswith(stem) and protected.endswith("." + suffix)
+
+
+def unit_path_overlaps(path, rule):
+    for root in UNIT_ROOTS:
+        if is_under(root, path):
+            return True
+        if is_under(path, root):
+            entry = path[len(root) + 1:].split("/", 1)[0]
+            if unit_entry_overlaps(entry, rule):
+                return True
+    return False
+
+
 def protected_claims(resource, platform, policy):
+    owned_claims = claims(resource, platform)
     for rule in policy["protected"]:
         if domain(resource["scope"], platform) not in rule["domains"] or resource["owner"] in rule["owners"]:
             continue
-        for kind, _, key in claims(resource, platform):
+        if rule["kind"] == "unit" and domain(resource["scope"], platform) != "windows":
+            require(not any(kind == "path" and unit_path_overlaps(key, rule) for kind, _, key in owned_claims),
+                    "PROTECTED_RESOURCE")
+        for kind, _, key in owned_claims:
             if kind != rule["kind"]:
                 continue
             if kind == "path":
