@@ -61,15 +61,17 @@ npx --no-install wrangler deploy --dry-run --config nextgen/wrangler.jsonc --out
 
 ## 首次纳管、授权与可选计算
 
-面板部署规划使用两个 origin，Panel 上游可放已批准的 Access 策略。应用内由实例配置独立 operator、read-only、observer 凭据。面板凭据只在页面内存；节点和 observer 从本地受限文件读取各自凭据。真实密钥不使用候选默认值。Worker 版本由 provider metadata 读回，部署时单独把 `NEXTGEN_SOURCE_REVISION` 绑定到实际构建提交。
+面板部署使用两个 origin，Panel 上游可放已批准的 Access 策略。实例配置独立 operator、read-only 凭据。每个 observer 使用本地受限文件中的独立凭据，对应配置授权绑定节点 UID、观测范围和允许的证据流。面板凭据只在页面内存。Worker 版本由 provider metadata 读回，部署时单独把 `NEXTGEN_SOURCE_REVISION` 绑定到实际构建提交。
 
-公网领取使用 Cloudflare 的可信连接地址和 Worker Rate Limit binding，在调用 DO 前执行来源级限流。缺少来源或绑定时保守失败；超出预算返回 429。实际账户应为绑定分配独占 namespace，并在可信入口移除可伪造来源的非受信子请求。该限制按 Cloudflare 站点近似计数，领用授权和原子性仍由高熵邀请及 DO 决定。参见 [Cloudflare Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)。
+公网领取和上报在调用 DO 前分别使用 Cloudflare 的来源级配额。Nextgen 使用 `NEXTGEN_CLAIM_LIMIT` 与 `GHOSTFLEET_REPORT_LIMIT`，单独部署 legacy 时为 `GHOSTFLEET_CLAIM_LIMIT` 与 `GHOSTFLEET_REPORT_LIMIT`。给每个绑定分配独占 namespace，并在可信入口保证连接地址的来源。缺少绑定或可信连接地址时相关入口返回 503，超出配额返回 429。Cloudflare 按站点近似计数，实例应实测预算和恢复窗口。 [Cloudflare Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
+
+部署前为 observer 换发受限凭据，Worker 中只配置 SHA-256 摘要和允许范围。`GHOSTFLEET_OBSERVER_GRANTS` 是 JSON 数组，每项含 `token_sha256`、`node_uid`、`scope` 和 `streams`。较大配置可用同格式的 `_01` 至 `_32` 分片。`streams` 每项由 `source/dimension` 表示，`scope` 取 `primary` 或 `secondary`。原有全局 observer 凭据应随切换撤回。
 
 1. 在操作员面板选渠道、平台及审批 profile 摘要，签发一次性邀请。把邀请文件经受信通道以 0600 交给目标，只在节点侧读入。预置 root-owned 0600 `/etc/ghostfleet-nextgen/enrollment.json`，包含 `origin` 和 `config_revision`。配置摘要必须来自相同的已审批配置。
 2. 在根级注册或换发前，核对独立引导入口来自批准的 bootstrap。执行 `sudo /usr/bin/python3 -I /usr/local/lib/ghostfleet-nextgen/enroll.py enroll --invitation-file /path/to/invitation.json`，验证面板 UID 和注册状态。若网络结果不确定，重试同一邀请，客户端沿已有 pending 凭据继续。
 3. 在已授权靶机 `sudo systemctl daemon-reload` 后，启用 `ghostfleet-nextgen-report.timer` 和 `ghostfleet-nextgen-update.timer`，先手动触发各自 oneshot 取证。实例另验普通用户的 pinned SSH 与独立救援。首次安装可跳过 K3s。
 4. 实例 owner 管理 TS、CF、SSH、集群和私有 Work 物理准入。从可信端执行 `python3 nextgen/native.py observe /path/to/bindings.json`。配置键和取值见代码与 `test_native.py`。提交观察时增加 `--panel-origin`、`--credential-file`。Tailnet device ID、Tunnel ID、Cloudflare account、K8s cluster/Node UID、SSH host key 由实例确认，credential 采用只读范围。
-5. 可选 Agent profile 为 `node_uid`、`server`、`ca_sha256`、`version`、`sha256`、`node_name`，多接口可加 `node_ip` 和 `flannel_iface`。运行 `plan-agent PROFILE` 读出 digest。发现已有安装时先用原生证据核验所有权和绑定。新 Agent 采用集群 owner 签发的固定 CA 的原生 bootstrap 凭据，静态共享凭据拒绝。经具体批准执行 `sudo python3 native.py apply-agent PROFILE --approve-plan DIGEST --artifact FILE --token-file FILE`。这个步骤只准备自己的目录。集群 owner 另行安装和启动 `ghostfleet-nextgen-k3s-agent.service`，检查真实 Node UID、Lease 和独立救援，再授予私有 Work scope。 [K3s token 合同](https://docs.k3s.io/cli/token)
+5. 可选 Agent profile 为 `node_uid`、`server`、`ca_sha256`、`version`、`sha256`、`node_name`，多接口可加 `node_ip` 和 `flannel_iface`。运行 `plan-agent PROFILE` 读出 digest。发现已有安装时先用原生证据核验所有权和绑定。新 Agent 采用集群 owner 签发的固定 CA、有限 TTL 的原生 bootstrap 凭据，以集群侧签发记录核对有效期。静态共享凭据会被拒绝。经具体批准执行 `sudo python3 native.py apply-agent PROFILE --approve-plan DIGEST --artifact FILE --token-file FILE`，完成自己的目录准备。`ALREADY_PREPARED` 表示同一批准计划的本地准备结果一致。集群 owner 另行安装和启动 `ghostfleet-nextgen-k3s-agent.service`，检查真实 Node UID、Lease 和独立救援，再授予私有 Work scope。 [K3s token 合同](https://docs.k3s.io/cli/token)
 
 报告撤销立即阻断旧报告凭据。主机失陷处置由可信实例同时撤销网络/SSH/集群能力及已签发的权限，保留独立救援。面板 Ready、软件版本和 K3s Ready 均作为证据输入。
 
