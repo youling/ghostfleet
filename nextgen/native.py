@@ -177,7 +177,10 @@ def ssh(binding, now, *, diagnostics=None):
     detail = session.stderr.decode("utf-8", errors="replace").lower()
     if "host key verification failed" in detail or "remote host identification has changed" in detail:
         reason = "SSH_HOST_KEY_REJECTED"
-    elif "permission denied" in detail or "no supported authentication methods" in detail:
+    elif binding["transport"] != "cloudflare" and any(
+            re.fullmatch(re.escape(login + "@" + host.lower()) +
+                         r": permission denied \((?:publickey|publickey,[a-z0-9@.,_-]+)\)\.", line)
+            for line in detail.splitlines()):
         reason = "SSH_AUTHENTICATION_FAILED"
     elif any(message in detail for message in ("connection timed out", "connection refused", "no route to host",
                                                "network is unreachable", "could not resolve hostname")):
@@ -210,7 +213,14 @@ def kubernetes(binding, now):
     require(node["metadata"]["uid"] == binding["node_uid"], "KUBE_NODE_PIN_MISMATCH")
     lease = get("get", "lease", binding["node_name"], "-n", "kube-node-lease")
     now = sampled(now)
-    lease_ready = lease["spec"]["holderIdentity"] == binding["node_name"] and fresh(lease["spec"]["renewTime"], now, 90)
+    renew_time = lease["spec"]["renewTime"]
+    try:
+        require(isinstance(renew_time, str), "INVALID_LEASE_TIME")
+        renewed = datetime.fromisoformat(renew_time.replace("Z", "+00:00"))
+        require(renewed.tzinfo is not None and renewed <= now, "INVALID_LEASE_TIME")
+    except (ValueError, OverflowError):
+        raise NativeError("INVALID_LEASE_TIME") from None
+    lease_ready = lease["spec"]["holderIdentity"] == binding["node_name"] and fresh(renew_time, now, 90)
     ready = any(item["type"] == "Ready" and item["status"] == "True" for item in node["status"]["conditions"])
     return receipt("kubernetes-api", "compute", "READY" if ready and lease_ready else "UNAVAILABLE",
                    now, node["status"]["nodeInfo"]["kubeletVersion"])
@@ -259,6 +269,65 @@ def existing_k3s_paths():
     return any(path.exists() or path.is_symlink() for path in candidates)
 
 
+def preparation_plan(profile):
+    payload = {"outcome": "PREPARE_DEDICATED_AGENT", "profile": profile, "schema": "ghostfleet-k3s-plan/v1"}
+    return {**payload, "plan_sha256": hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()}
+
+
+def agent_config(profile):
+    config = {"server": profile["server"], "node-name": profile["node_name"],
+              "token-file": str(AGENT_HOME / "token"), "data-dir": "/var/lib/ghostfleet-nextgen-k3s"}
+    for option in ("node_ip", "flannel_iface"):
+        if option in profile:
+            config[option.replace("_", "-")] = profile[option]
+    return config
+
+
+def trusted_attachment(profile=None):
+    """Read only our root-owned local attachment, never infer ownership by name."""
+    try:
+        for path in (AGENT_HOME.parent, AGENT_HOME, *(AGENT_HOME / name for name in
+                                                     ("plan.json", "config.json", "k3s", "token"))):
+            info = path.lstat()
+            require(not stat.S_ISLNK(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022,
+                    "UNTRUSTED_ATTACHMENT")
+        marker = json.loads(read(AGENT_HOME / "plan.json"))
+        installed = marker["profile"]
+        require(profile is None or installed == profile, "EXISTING_ATTACHMENT_CONFLICT")
+        require(marker == preparation_plan(installed) and
+                json.loads(read(AGENT_HOME / "config.json")) == agent_config(installed) and
+                hashlib.sha256(read(AGENT_HOME / "k3s", limit=128 * 1024 * 1024)).hexdigest() == installed["sha256"],
+                "EXISTING_ATTACHMENT_CONFLICT")
+        agent_token(read(AGENT_HOME / "token", secret=True), installed["ca_sha256"])
+        return marker
+    except (NativeError, OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def owned_service_pid():
+    """Resolve the actual systemd service, not a process that shares its name."""
+    result = command(["systemctl", "show", AGENT_UNIT,
+                      "--property=MainPID,ControlGroup,User,ExecStart,Environment,EnvironmentFiles,DropInPaths"])
+    require(result.returncode == 0, "OWNERSHIP_UNAVAILABLE")
+    properties = dict(line.split("=", 1) for line in result.stdout.decode().splitlines() if "=" in line)
+    pid = properties.get("MainPID", "")
+    expected = str(AGENT_HOME / "k3s") + " agent --config " + str(AGENT_HOME / "config.json")
+    require(pid.isdecimal() and int(pid) > 0 and properties.get("User") in ("", "root") and
+            all(properties.get(key) == "" for key in ("Environment", "EnvironmentFiles", "DropInPaths")) and
+            properties.get("ControlGroup") == "/system.slice/" + AGENT_UNIT and
+            re.fullmatch(re.escape("{ path=" + str(AGENT_HOME / "k3s") + " ; argv[]=" + expected +
+                                   " ; ignore_errors=no ; ") + r"[^{}]* \}", properties.get("ExecStart", "")),
+            "OWNERSHIP_UNAVAILABLE")
+    process = Path("/proc") / pid
+    require((process / "exe").resolve() == (AGENT_HOME / "k3s").resolve() and
+            (process / "cmdline").read_bytes() == b"\0".join(part.encode() for part in
+                (str(AGENT_HOME / "k3s"), "agent", "--config", str(AGENT_HOME / "config.json"))) + b"\0" and
+            (process / "cgroup").read_text().strip() == "0::/system.slice/" + AGENT_UNIT,
+            "OWNERSHIP_UNAVAILABLE")
+    return pid
+
+
+
 def discover():
     components = {}
     for executable, unit in (("ssh", "ssh"), ("tailscale", "tailscaled"), ("cloudflared", "cloudflared"),
@@ -280,8 +349,16 @@ def discover():
             units = [line.split()[0] for line in result.stdout.decode().splitlines() if line.strip()]
             if any(unit != AGENT_UNIT for unit in units):
                 owner_state = "detected"
-    # A custom systemd unit can run k3s under a name without 'k3s'. Read only
-    # process names, never argv/environ, which may carry credentials.
+    # Only the verified MainPID of our service is exempt from conflict checks.
+    # Do not publish process arguments or service properties.
+    own_pid = None
+    if components[AGENT_UNIT]["activity"] == "active":
+        try:
+            require(trusted_attachment() is not None, "OWNERSHIP_UNAVAILABLE")
+            own_pid = owned_service_pid()
+        except (NativeError, OSError, ValueError):
+            owner_state = "detected"
+    own_seen = False
     try:
         for process in Path("/proc").iterdir():
             if process.name.isdecimal():
@@ -290,9 +367,16 @@ def discover():
                 except FileNotFoundError:  # process exited during inventory
                     continue
                 if name == "k3s" or name.startswith("k3s-"):
-                    owner_state = "detected"
+                    if process.name == own_pid:
+                        own_seen = True
+                    else:
+                        owner_state = "detected"
     except OSError:
         owner_state = "unknown" if owner_state == "clear" else owner_state
+    if own_pid and not own_seen:
+        owner_state = "unknown" if owner_state == "clear" else owner_state
+    elif own_seen and owner_state == "clear":
+        owner_state = "owned"
     components["k3s-ownership"] = {"state": owner_state}
     return components
 
@@ -311,7 +395,10 @@ def agent_plan(profile, current):
             "INVALID_FLANNEL_INTERFACE")
     if any(current[unit]["unit"] != "not-found" or current[unit]["activity"] != "inactive" or
            current[unit].get("binary_found", False) for unit in ("k3s", "k3s-agent")) or (
-            current.get("k3s-ownership", {}).get("state", "clear") != "clear") or existing_k3s_paths():
+            current.get("k3s-ownership", {}).get("state", "clear") not in ("clear", "owned")) or (
+            current.get(AGENT_UNIT, {}).get("activity") == "active" and
+            (current.get("k3s-ownership", {}).get("state") != "owned" or trusted_attachment(profile) is None)) or (
+            current.get("k3s-ownership", {}).get("state") == "owned" and trusted_attachment(profile) is None) or existing_k3s_paths():
         outcome = "OWNERSHIP_REVIEW"
     else:
         outcome = "PREPARE_DEDICATED_AGENT"
@@ -344,11 +431,7 @@ def apply_agent(profile, approval, artifact, token_file):
     token = agent_token(read(token_file, secret=True, limit=1024), profile["ca_sha256"])
     data = read(artifact, limit=128 * 1024 * 1024)
     require(hashlib.sha256(data).hexdigest() == profile["sha256"], "K3S_ARTIFACT_MISMATCH")
-    config = {"server": profile["server"], "node-name": profile["node_name"],
-              "token-file": str(AGENT_HOME / "token"), "data-dir": "/var/lib/ghostfleet-nextgen-k3s"}
-    for option in ("node_ip", "flannel_iface"):
-        if option in profile:
-            config[option.replace("_", "-")] = profile[option]
+    config = agent_config(profile)
     marker = json.dumps(plan, sort_keys=True).encode()
     if AGENT_HOME.exists():
         require(not AGENT_HOME.is_symlink() and read(AGENT_HOME / "plan.json") == marker and

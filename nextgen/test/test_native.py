@@ -130,7 +130,10 @@ class NativeTest(unittest.TestCase):
         binding = {"host": "fixture.example.invalid", "port": 22, "login": "fixture",
                    "host_key": "ssh-ed25519 " + "a" * 64, "identity_file": "unused",
                    "transport": "direct", "dimension": "management"}
-        cases = [(b"Permission denied (publickey). private-detail", "SSH_AUTHENTICATION_FAILED", "UNAVAILABLE"),
+        cases = [(b"fixture@fixture.example.invalid: Permission denied (publickey).", "SSH_AUTHENTICATION_FAILED", "UNAVAILABLE"),
+                 (b"Permission denied (publickey). private-detail", "SSH_PROBE_FAILED", "UNKNOWN"),
+                 (b"Load key private-detail: Permission denied", "SSH_PROBE_FAILED", "UNKNOWN"),
+                 (b"cloudflared: permission denied private-detail", "SSH_PROBE_FAILED", "UNKNOWN"),
                  (b"Host key verification failed. private-detail", "SSH_HOST_KEY_REJECTED", "UNAVAILABLE"),
                  (b"Connection refused private-detail", "SSH_CONNECTION_FAILED", "UNAVAILABLE"),
                  (b"unknown private-detail", "SSH_PROBE_FAILED", "UNKNOWN")]
@@ -142,6 +145,10 @@ class NativeTest(unittest.TestCase):
             self.assertEqual(result["observations"][0]["verdict"], verdict)
             self.assertEqual(result["diagnostics"][0]["reason"], reason)
             self.assertNotIn("private-detail", json.dumps(result))
+        with patch.object(native, "read"), patch.object(native.shutil, "which", return_value="/stub/ssh"), \
+                patch.object(native, "command", return_value=SimpleNamespace(returncode=255,
+                    stderr=b"fixture@fixture.example.invalid: Permission denied (publickey).")):
+            self.assertEqual(native.ssh({**binding, "transport": "cloudflare"}, self.now)["verdict"], "UNKNOWN")
         with patch.object(native, "read"), patch.object(native.shutil, "which", return_value="/stub/ssh"), \
                 patch.object(native, "command", return_value=SimpleNamespace(returncode=0, stderr=b"")):
             self.assertEqual(native.ssh(binding, self.now)["verdict"], "READY")
@@ -189,6 +196,74 @@ class NativeTest(unittest.TestCase):
                 patch.object(native, "command", return_value=output()):
             self.assertEqual(native.discover()["k3s-ownership"]["state"], "detected")
             self.assertEqual(read_name.call_args.args, ())
+
+    def test_discovery_accepts_only_verified_owned_main_process(self):
+        def output(data=b"", code=0):
+            return SimpleNamespace(stdout=data, returncode=code)
+        for verified, processes, expected in [(True, ["123"], "owned"),
+                                               (False, ["123"], "detected"),
+                                               (True, ["123", "456"], "detected"),
+                                               (True, [], "unknown")]:
+            service_outputs = [output(b"LoadState=not-found\nActiveState=inactive\n") for _ in range(5)]
+            service_outputs.append(output(b"LoadState=loaded\nActiveState=active\n"))
+            with self.subTest(verified=verified, processes=processes), \
+                    patch.object(native, "existing_k3s_paths", return_value=False), \
+                    patch.object(native.shutil, "which", return_value=None), \
+                    patch.object(native, "trusted_attachment", return_value={} if verified else None), \
+                    patch.object(native, "owned_service_pid", return_value="123"), \
+                    patch.object(Path, "iterdir", return_value=iter([Path("/proc") / pid for pid in processes])), \
+                    patch.object(Path, "read_text", return_value="k3s\n"), \
+                    patch.object(native, "command", side_effect=service_outputs + [output(), output()]):
+                current = native.discover()
+                self.assertEqual(current["k3s-ownership"]["state"], expected)
+                if expected != "owned":
+                    self.assertEqual(native.agent_plan(self.server, current)["outcome"], "OWNERSHIP_REVIEW")
+
+    def test_owned_service_requires_exact_executable_command_and_cgroup(self):
+        home = native.AGENT_HOME
+        expected_argv = b"\0".join(part.encode() for part in
+            (str(home / "k3s"), "agent", "--config", str(home / "config.json"))) + b"\0"
+        properties = ("MainPID=123\nControlGroup=/system.slice/" + native.AGENT_UNIT +
+                      "\nUser=\nEnvironment=\nEnvironmentFiles=\nDropInPaths=\n" +
+                      "ExecStart={ path=" + str(home / "k3s") + " ; argv[]=" + str(home / "k3s") +
+                      " agent --config " + str(home / "config.json") +
+                      " ; ignore_errors=no ; start_time=x ; stop_time=x ; pid=123 ; code=0 ; status=0 }\n")
+        for binary, argv, group, valid in [
+                (home / "k3s", expected_argv, "0::/system.slice/" + native.AGENT_UNIT, True),
+                (Path("/another/k3s"), expected_argv, "0::/system.slice/" + native.AGENT_UNIT, False),
+                (home / "k3s", b"different-command\0", "0::/system.slice/" + native.AGENT_UNIT, False),
+                (home / "k3s", expected_argv, "0::/another.service", False)]:
+            def resolved(path, **kwargs):
+                return binary if path == Path("/proc/123/exe") else path
+            with self.subTest(valid=valid), \
+                    patch.object(native, "command", return_value=SimpleNamespace(returncode=0, stdout=properties.encode())), \
+                    patch.object(Path, "resolve", resolved), \
+                    patch.object(Path, "read_bytes", return_value=argv), \
+                    patch.object(Path, "read_text", return_value=group):
+                if valid:
+                    self.assertEqual(native.owned_service_pid(), "123")
+                else:
+                    with self.assertRaises(native.NativeError):
+                        native.owned_service_pid()
+
+    def test_invalid_lease_timestamp_is_unknown_while_expired_is_unavailable(self):
+        cluster, node = str(uuid4()), str(uuid4())
+        binding = {"kubeconfig": "unused", "context": "fixture", "cluster_uid": cluster,
+                   "node_name": "fixture", "node_uid": node}
+        config = {"clusters": [{"cluster": {"server": self.server["server"]}}]}
+        system = {"metadata": {"uid": cluster}}
+        obj = {"metadata": {"uid": node}, "status": {"nodeInfo": {"kubeletVersion": self.server["version"]},
+               "conditions": [{"type": "Ready", "status": "True"}]}}
+        for value in (None, "invalid", self.now.replace(tzinfo=None).isoformat(),
+                      (self.now + timedelta(days=1)).isoformat()):
+            lease = {"spec": {"holderIdentity": "fixture", "renewTime": value}}
+            outputs = [SimpleNamespace(returncode=0, stdout=json.dumps(item).encode()) for item in
+                       (config, system, obj, lease)]
+            with self.subTest(value=value), patch.object(native, "read"), \
+                    patch.object(native, "kube", return_value=[]), patch.object(native, "command", side_effect=outputs):
+                result = native.observations({"node_uid": self.uid, "kubernetes": binding})
+                self.assertEqual(result["observations"][0]["verdict"], "UNKNOWN")
+                self.assertEqual(result["diagnostics"][0]["reason"], "INVALID_LEASE_TIME")
 
     def test_bootstrap_credential_parser_accepts_only_pinned_native_agent_type(self):
         token = "K10" + self.server["ca_sha256"] + "::abc123.0123456789abcdef"
@@ -242,12 +317,28 @@ class NativeTest(unittest.TestCase):
                 original_lstat = Path.lstat
                 def local_lstat(path, *args, **kwargs):
                     info = original_lstat(path, *args, **kwargs)
-                    return SimpleNamespace(st_mode=0o40700, st_uid=0) if path == home.parent else info
+                    return SimpleNamespace(st_mode=info.st_mode & ~0o022, st_uid=0) if path in (home, home.parent) or home in path.parents else info
                 with patch.object(Path, "lstat", local_lstat):
                     self.assertEqual(native.apply_agent(profile, plan["plan_sha256"], "artifact", "credential"), "PREPARED")
                     self.assertEqual(native.apply_agent(profile, plan["plan_sha256"], "artifact", "credential"), "ALREADY_PREPARED")
                     self.assertEqual((home / "token").read_bytes(), valid_token)
                     self.assertEqual(command.call_count, 1)
+                    # Same artifact/config/plan remains a no-op after the owner
+                    # starts the verified dedicated service.
+                    current[native.AGENT_UNIT] = {"unit": "loaded", "activity": "active"}
+                    current["k3s-ownership"] = {"state": "owned"}
+                    self.assertIsNotNone(native.trusted_attachment(profile))
+                    self.assertEqual(native.apply_agent(profile, plan["plan_sha256"], "artifact", "credential"), "ALREADY_PREPARED")
+                    self.assertEqual(command.call_count, 1)
+                    changed = {**profile, "node_name": "another"}
+                    self.assertEqual(native.agent_plan(changed, current)["outcome"], "OWNERSHIP_REVIEW")
+                    for filename, replacement in (("config.json", b"{}"), ("k3s", b"other artifact"),
+                                                  ("plan.json", b"{}")):
+                        original = (home / filename).read_bytes()
+                        (home / filename).write_bytes(replacement)
+                        self.assertIsNone(native.trusted_attachment(profile))
+                        self.assertEqual(native.agent_plan(profile, current)["outcome"], "OWNERSHIP_REVIEW")
+                        (home / filename).write_bytes(original)
                     token = ("K10" + "a" * 64 + "::def456.0123456789abcdef").encode()
                     with self.assertRaisesRegex(native.NativeError, "EXISTING_ATTACHMENT_CONFLICT"):
                         native.apply_agent(profile, plan["plan_sha256"], "artifact", "credential")
