@@ -10,7 +10,10 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GhostFleetState"] }],
   "version_metadata": { "binding": "NEXTGEN_VERSION" },
-  "ratelimits": [{ "name": "NEXTGEN_CLAIM_LIMIT", "namespace_id": "14103", "simple": { "limit": 24, "period": 60 } }],
+  "ratelimits": [
+    { "name": "NEXTGEN_CLAIM_LIMIT", "namespace_id": "14103", "simple": { "limit": 24, "period": 60 } },
+    { "name": "GHOSTFLEET_REPORT_LIMIT", "namespace_id": "14106", "simple": { "limit": 1200, "period": 60 } }
+  ],
   "assets": { "directory": "../console/nextgen", "binding": "NEXTGEN_ASSETS", "run_worker_first": true },
   "vars": {
     "GHOSTFLEET_PANEL_ORIGIN": "https://panel.example.invalid",

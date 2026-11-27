@@ -1,8 +1,9 @@
 // The existing node_uid and ghostfleet-state remain canonical. Presence is a
 // reporting projection, not a promotion to NodeLifecycle.ACTIVE or SSH access.
 import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
+import { ENROLLMENT_TTL, MAX_INVITATIONS, MAX_NODES, UID, credentialGeneration,
+  pruneExpiredEnrollments, revokeLegacyTickets, revokeNextgenInvitations, revokeReporting } from './enrollment.js';
 
-const UID = /^node-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TICKET = /^ticket-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TOKEN = /^gf_hb_[A-Za-z0-9_-]{43}$/;
 const BOOT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -82,20 +83,24 @@ export function dispatch(input, state, now = Date.now()) {
       if (!body.node_uid && !body.label) reject('LABEL_REQUIRED');
       const uid = body.node_uid ?? 'node-' + randomUUID();
       const existing = body.node_uid ? nodeAt(state, uid) : null;
+      const pruned = pruneExpiredEnrollments(state, now);
+      if (!existing && Object.keys(state.nodes ?? {}).length >= MAX_NODES) reject('NODE_CAPACITY', 409, pruned);
+      if (Object.keys(state.presence_tickets ?? {}).length >= MAX_INVITATIONS) reject('TICKET_CAPACITY', 429, pruned);
       const ticketId = 'ticket-' + randomUUID();
       const code = String(randomInt(100_000_000)).padStart(8, '0');
+      const generation = randomUUID();
       const ticket = { ticket_id: ticketId, node_uid: uid, code_digest: digest(code),
-        state: 'ISSUED', created_at: iso(now), expires_at: iso(now + 600_000), failed_claims: 0 };
+        state: 'ISSUED', created_at: iso(now), expires_at: iso(now + ENROLLMENT_TTL), failed_claims: 0, generation };
       state.nodes ??= {};
       state.presence_tickets ??= {};
-      for (const t of Object.values(state.presence_tickets)) {
-        if (t.node_uid === uid && t.state === 'ISSUED') t.state = 'REVOKED';
-      }
+      revokeLegacyTickets(state, uid);
+      revokeNextgenInvitations(state, uid, true);
       // Reissue invalidates the former reporting credential without changing SSH
       // keys, OS accounts, provider access, or the existing lifecycle/identity.
       state.nodes[uid] = { ...(existing ?? { node_uid: uid, node_id: uid, platform: 'linux', lifecycle: 'PROVISIONAL' }),
         label: body.label?.trim() ?? existing.label ?? existing.node_id,
-        reporting: { registered_at: null, last_seen_at: null, last_report: null, digest: null, revoked_at: null } };
+        reporting: { registered_at: null, last_seen_at: null, last_report: null, digest: null, revoked_at: null,
+          generation, previous_digest: existing?.reporting?.digest ?? existing?.reporting?.previous_digest ?? null } };
       state.presence_tickets[ticketId] = ticket;
       return ok({ ticket: { ticket_id: ticketId, node_uid: uid, expires_at: ticket.expires_at }, short_code: code }, true, 201);
     }
@@ -111,12 +116,15 @@ export function dispatch(input, state, now = Date.now()) {
     match = /^\/v0\/nodes\/([^/]+)\/revoke$/.exec(path);
     if (method === 'POST' && match) {
       shape(body, [], []);
-      const node = nodeAt(state, match[1]);
-      if (!node.reporting) reject('NODE_NOT_REGISTERED', 409);
-      node.reporting.revoked_at ??= iso(now); node.reporting.digest = null;
-      for (const t of Object.values(state.presence_tickets ?? {})) {
-        if (t.node_uid === node.node_uid && t.state === 'ISSUED') { t.state = 'REVOKED'; t.code_digest = null; }
+      const uid = match[1];
+      if (!UID.test(uid)) reject('NODE_NOT_FOUND', 404);
+      if (!own(state.nodes, uid)) {
+        if (!revokeNextgenInvitations(state, uid)) reject('NODE_NOT_FOUND', 404);
+        return ok({ node: null, node_uid: uid, scope: 'reporting_only' }, true);
       }
+      const node = state.nodes[uid];
+      if (!node.reporting && !revokeNextgenInvitations(state, uid)) reject('NODE_NOT_REGISTERED', 409);
+      revokeReporting(state, node, now);
       return ok({ node: publicNode(node, now), scope: 'reporting_only' }, true);
     }
     match = /^\/v1\/enrollment-tickets\/([^/]+)\/claim$/.exec(path);
@@ -125,18 +133,30 @@ export function dispatch(input, state, now = Date.now()) {
       if (body.expected_node_uid !== undefined && (typeof body.expected_node_uid !== 'string' || !UID.test(body.expected_node_uid))) reject('INVALID_NODE_UID');
       const t = TICKET.test(match[1]) && own(state.presence_tickets, match[1]) ? state.presence_tickets[match[1]] : null;
       if (!t) reject('TICKET_NOT_FOUND', 404);
+      if (t.state === 'EXPIRED') reject('TICKET_EXPIRED', 410);
       if (t.state !== 'ISSUED') reject('TICKET_NOT_CLAIMABLE', 409);
-      if (Date.parse(t.expires_at) <= now) { t.state = 'EXPIRED'; t.code_digest = null; reject('TICKET_EXPIRED', 410, true); }
+      if (!(Date.parse(t.expires_at) > now)) {
+        t.state = 'EXPIRED'; t.code_digest = null;
+        reject('TICKET_EXPIRED', 410, true);
+      }
+      const node = nodeAt(state, t.node_uid);
+      const pending = node.reporting && !node.reporting.digest && !node.reporting.registered_at && !node.reporting.revoked_at;
+      const sameGeneration = t.generation === undefined ? node.reporting?.generation === undefined
+        : t.generation === credentialGeneration(node);
+      if (!pending || !sameGeneration) reject('TICKET_NOT_CLAIMABLE', 409);
       if (typeof body.short_code !== 'string' || !/^[0-9]{8}$/.test(body.short_code) || !equalDigest(body.short_code, t.code_digest)) {
         t.failed_claims++;
         if (t.failed_claims >= 5) { t.state = 'LOCKED'; t.code_digest = null; }
         reject('TICKET_CODE_INVALID', 403, true);
       }
       if (body.expected_node_uid && body.expected_node_uid !== t.node_uid) reject('NODE_IDENTITY_CONFLICT', 409);
-      const node = nodeAt(state, t.node_uid);
       const token = 'gf_hb_' + randomBytes(32).toString('base64url');
-      node.reporting.digest = digest(token); node.reporting.registered_at = iso(now);
+      node.reporting.digest = digest(token);
+      node.reporting.registered_at = iso(now);
+      node.reporting.generation = randomUUID();
       t.state = 'CONSUMED'; t.code_digest = null;
+      revokeLegacyTickets(state, node.node_uid);
+      revokeNextgenInvitations(state, node.node_uid, true);
       return ok({ node_uid: node.node_uid, reporting_token: token }, true);
     }
     match = /^\/v1\/nodes\/([^/]+)\/heartbeat$/.exec(path);

@@ -1,9 +1,13 @@
-import { authorizeApi, getAccessLevel } from '../adapters/cloudflare/auth.js';
+import { authorizeApi } from '../adapters/cloudflare/auth.js';
 export const MAX_BODY_BYTES = 4096;
 export const json = (data, status = 200) => Response.json(data, { status, headers: {
   'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
 } });
 const deny = (error, status) => json({ ok: false, error }, status);
+
+export async function cancelBody(request) {
+  if (!request.body?.locked) await request.body?.cancel().catch(() => {});
+}
 
 export async function prepare(request, env) {
   const url = new URL(request.url);
@@ -11,12 +15,9 @@ export async function prepare(request, env) {
   if (!['GET', 'POST'].includes(request.method)) return { response: deny('METHOD_NOT_ALLOWED', 405) };
   let access = null;
   if (url.pathname.startsWith('/v0/')) {
-    if (env.GHOSTFLEET_OPERATOR_TOKEN && env.GHOSTFLEET_OPERATOR_TOKEN === env.GHOSTFLEET_READ_TOKEN) {
-      return { response: deny('AUTH_CONFIG_CONFLICT', 503) };
-    }
-    const denial = await authorizeApi(request, env);
-    if (denial) return { response: denial };
-    access = await getAccessLevel(request, env);
+    const authorization = authorizeApi(request, env);
+    if (authorization.response) return authorization;
+    access = authorization.access;
     const origin = request.headers.get('origin');
     if (request.method === 'POST' && origin && origin !== env.GHOSTFLEET_PANEL_ORIGIN) {
       return { response: deny('ORIGIN_DENIED', 403) };

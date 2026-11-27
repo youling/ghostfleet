@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { apply } from '../core.mjs';
+import { dispatch } from '../../src/control-plane/presence.js';
+import { ENROLLMENT_TTL, MAX_INVITATIONS, MAX_NODES } from '../../src/control-plane/enrollment.js';
 
 const token = () => 'gf_hb_' + randomBytes(32).toString('base64url');
 const revision = 'a'.repeat(64);
@@ -13,6 +15,10 @@ const issue = (state, extra = { label: 'Fixture' }, now = base) =>
 function enrollment(invitation, credential) {
   return { invitation: invitation.invitation, expected_node_uid: invitation.node_uid,
     config_revision: revision, reporting_token: credential };
+}
+
+function legacy(state, path, body, now = base) {
+  return dispatch({ method: 'POST', path, body, access: 'operator' }, state, now);
 }
 
 test('atomic invitation binding, replay and stale generations', () => {
@@ -109,4 +115,92 @@ test('recovery preserves independently observed binding evidence and archives v1
   assert.equal(apply(state, 'claim', { body: { ...changed, config_revision: changedProfile.config_revision } }, base + 2).status, 200);
   assert.equal(read().health.management.verdict, 'UNKNOWN');
   assert.equal(read().versions.previous_legacy_reporter.version, '1');
+});
+
+test('operator enrollment and revocation affect the same identity across both APIs', () => {
+  const uid = 'node-' + randomUUID();
+  const state = { nodes: { [uid]: { node_uid: uid, label: 'Shared fixture', lifecycle: 'ACTIVE' } } };
+  const ticketRoute = '/v0/enrollment-tickets';
+  assert.equal(issue(state, { node_uid: uid }).node_uid, uid);
+  assert.equal(Object.keys(state.nextgen_invitations).length, 1);
+  const first = legacy(state, ticketRoute, { node_uid: uid });
+  assert.equal(first.status, 201);
+  assert.deepEqual(state.nextgen_invitations, {});
+  const firstGeneration = state.nodes[uid].reporting.generation;
+  const second = legacy(state, ticketRoute, { node_uid: uid });
+  assert.equal(second.status, 201);
+  assert.notEqual(state.nodes[uid].reporting.generation, firstGeneration);
+  assert.equal(state.presence_tickets[first.data.ticket.ticket_id].code_digest, null);
+  const current = issue(state, { node_uid: uid });
+  assert.equal(state.presence_tickets[second.data.ticket.ticket_id].state, 'REVOKED');
+  assert.equal(state.presence_tickets[second.data.ticket.ticket_id].code_digest, null);
+
+  const currentToken = token();
+  assert.equal(apply(state, 'claim', { body: enrollment(current, currentToken) }, base).body.registration, 'APPLIED');
+  assert.equal(legacy(state, '/v0/nodes/' + uid + '/revoke', {}).status, 200);
+  assert.equal(state.nodes[uid].reporting.digest, null);
+  assert.deepEqual(state.nextgen_invitations, {});
+  const replacement = issue(state, { node_uid: uid });
+  const result = apply(state, 'claim', { body: enrollment(replacement, token()) }, base);
+  assert.equal(result.body.registration, 'APPLIED');
+  assert.equal(result.body.node_uid, uid);
+  assert.equal(state.nodes[uid].lifecycle, 'ACTIVE');
+});
+
+test('stored pre-generation ticket and active node identity survive the upgrade', () => {
+  const uid = 'node-' + randomUUID();
+  const state = { nodes: { [uid]: { node_uid: uid, label: 'Preexisting fixture', lifecycle: 'ACTIVE' } } };
+  const pending = legacy(state, '/v0/enrollment-tickets', { node_uid: uid });
+  const ticket = pending.data.ticket.ticket_id;
+  delete state.presence_tickets[ticket].generation;
+  delete state.nodes[uid].reporting.generation;
+  const restored = JSON.parse(JSON.stringify(state));
+  const claimed = legacy(restored, '/v1/enrollment-tickets/' + ticket + '/claim', { short_code: pending.data.short_code });
+  assert.equal(claimed.status, 200);
+  assert.equal(claimed.data.node_uid, uid);
+  assert.equal(restored.nodes[uid].lifecycle, 'ACTIVE');
+  assert.ok(restored.nodes[uid].reporting.generation);
+});
+
+test('enrollment reclaims expired records and keeps existing nodes at capacity', () => {
+  const nodes = Object.fromEntries(Array.from({ length: MAX_NODES + 1 }, (_, index) => {
+    const node_uid = 'node-00000000-0000-4000-8000-' + index.toString(16).padStart(12, '0');
+    return [node_uid, { node_uid, label: 'Existing fixture', lifecycle: 'ACTIVE', history: ['kept'] }];
+  }));
+  const uid = Object.keys(nodes)[0];
+  const old = base - ENROLLMENT_TTL;
+  const state = { nodes,
+    presence_tickets: Object.fromEntries(Array.from({ length: MAX_INVITATIONS }, (_, index) => [index, {
+      expires_at: new Date(old).toISOString(), code_digest: 'a'.repeat(64), state: 'ISSUED', node_uid: uid,
+    }])),
+    nextgen_invitations: { expired: { expires_at: base, node_uid: uid } },
+    previous_record: { keep: true },
+  };
+  const full = legacy(state, '/v0/enrollment-tickets', { label: 'New fixture' });
+  assert.equal(full.data.error, 'NODE_CAPACITY');
+  assert.equal(full.dirty, true);
+  assert.deepEqual(state.presence_tickets, {});
+  assert.deepEqual(state.nextgen_invitations, {});
+  assert.equal(issue(state).error, 'NODE_LABEL_OR_CAPACITY');
+  assert.equal(legacy(state, '/v0/enrollment-tickets', { node_uid: uid }).status, 201);
+  assert.equal(issue(state, { node_uid: uid }).node_uid, uid);
+  assert.equal(Object.keys(state.nodes).length, MAX_NODES + 1);
+  assert.deepEqual(state.nodes[uid].history, ['kept']);
+  assert.deepEqual(state.previous_record, { keep: true });
+});
+
+test('legacy ticket capacity preserves unexpired ticket outcomes', () => {
+  const uid = 'node-' + randomUUID();
+  const expires_at = new Date(base + ENROLLMENT_TTL).toISOString();
+  const state = {
+    nodes: { [uid]: { node_uid: uid, label: 'Existing fixture' } },
+    presence_tickets: Object.fromEntries(Array.from({ length: MAX_INVITATIONS }, (_, id) =>
+      [id, { state: 'CONSUMED', node_uid: uid, expires_at, code_digest: null }])),
+  };
+  const full = legacy(state, '/v0/enrollment-tickets', { node_uid: uid });
+  assert.equal(full.data.error, 'TICKET_CAPACITY');
+  assert.equal(full.dirty, false);
+  assert.equal(Object.keys(state.presence_tickets).length, MAX_INVITATIONS);
+  assert.equal(legacy(state, '/v0/enrollment-tickets', { node_uid: uid }, base + 2 * ENROLLMENT_TTL).status, 201);
+  assert.equal(Object.keys(state.presence_tickets).length, 1);
 });

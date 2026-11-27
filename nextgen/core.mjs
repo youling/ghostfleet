@@ -1,6 +1,9 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { ENROLLMENT_TTL, MAX_INVITATIONS, MAX_NODES, UID, credentialGeneration,
+  pruneExpiredEnrollments, revokeLegacyTickets, revokeNextgenInvitations, revokeReporting } from '../src/control-plane/enrollment.js';
+import { OBSERVATION_SOURCES, OBSERVATION_SCOPES } from '../src/control-plane/observations.js';
 
-export const UID = /^node-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export { UID };
 const TOKEN = /^gf_hb_[A-Za-z0-9_-]{43}$/;
 const INVITE = /^gf_inv_[A-Za-z0-9_-]{43}$/;
 const SHA = /^[a-f0-9]{64}$/;
@@ -9,15 +12,7 @@ const CHANNEL = /^(?:canary|stable)$/;
 const PLATFORM = /^debian13-(?:amd64|arm64)$/;
 const VERSION = /^\d{1,8}\.\d{1,8}\.\d{1,8}(?:~[a-z0-9.]{1,24})?(?:\+[a-z0-9.]{1,24})?$/;
 const TEN_MINUTES = 600_000;
-const MAX_NODES = 256;
-const MAX_INVITATIONS = 2 * MAX_NODES;
-const SOURCES = {
-  'tailscale-api': ['network'],
-  'cloudflare-api': ['edge'],
-  'ssh-probe': ['management', 'origin', 'rescue'],
-  'kubernetes-api': ['compute'],
-};
-const DIMENSIONS = [...new Set(Object.values(SOURCES).flat())];
+const DIMENSIONS = [...new Set(Object.values(OBSERVATION_SOURCES).flat())];
 const VERDICTS = new Set(['READY', 'UNAVAILABLE', 'UNKNOWN']);
 const iso = (time) => new Date(time).toISOString();
 const hash = (value) => createHash('sha256').update(value).digest('hex');
@@ -33,7 +28,7 @@ function response(status, body, dirty = false) {
 }
 
 class Rejected extends Error {
-  constructor(code, status = 400) { super(code); this.status = status; }
+  constructor(code, status = 400, dirty = false) { super(code); this.status = status; this.dirty = dirty; }
 }
 
 function requireThat(condition, code, status) {
@@ -61,11 +56,6 @@ export function profile(value) {
     requireThat(artifact(value.desired).platform === value.platform, 'PLATFORM_MISMATCH');
   }
   return value;
-}
-
-function credentialGeneration(node) {
-  const current = node.reporting;
-  return [current?.digest ?? null, current?.registered_at ?? null, current?.revoked_at ?? null].join('/');
 }
 
 function catalogNode(node, now) {
@@ -121,15 +111,6 @@ function guardReporter(state, uid, token) {
   return node;
 }
 
-function invalidateLegacyTickets(state, uid) {
-  for (const ticket of Object.values(state.presence_tickets ?? {})) {
-    if (ticket.node_uid === uid && ticket.state === 'ISSUED') {
-      ticket.state = 'REVOKED';
-      ticket.code_digest = null;
-    }
-  }
-}
-
 function issue(state, body, now) {
   shape(body, ['profile'], ['label', 'node_uid']);
   const chosenProfile = profile(body.profile);
@@ -138,22 +119,24 @@ function issue(state, body, now) {
       !/[\x00-\x1f\x7f]/u.test(body.label), 'INVALID_LABEL');
   }
   const existing = Object.hasOwn(body, 'node_uid') ? findNode(state, body.node_uid) : null;
-  requireThat(existing || (body.label && Object.keys(state.nodes ?? {}).length < MAX_NODES),
-    'NODE_LABEL_OR_CAPACITY', 409);
+  const pruned = pruneExpiredEnrollments(state, now);
+  if (!existing && !(body.label && Object.keys(state.nodes ?? {}).length < MAX_NODES)) {
+    throw new Rejected('NODE_LABEL_OR_CAPACITY', 409, pruned);
+  }
   const uid = existing?.node_uid ?? 'node-' + randomUUID();
   const node = existing ?? { node_uid: uid, node_id: uid, platform: 'linux', lifecycle: 'PROVISIONAL', label: body.label.trim() };
-  const invitations = state.nextgen_invitations ?? {};
-  const retained = Object.entries(invitations).filter(([, entry]) =>
-    entry.expires_at > now && (entry.node_uid !== uid || entry.consumed));
-  requireThat(retained.length < MAX_INVITATIONS, 'INVITATION_CAPACITY', 429);
-  state.nextgen_invitations = Object.fromEntries(retained);
+  const retained = Object.values(state.nextgen_invitations ?? {}).filter((entry) => entry.node_uid !== uid || entry.consumed);
+  if (retained.length >= MAX_INVITATIONS) throw new Rejected('INVITATION_CAPACITY', 429, pruned);
+  revokeNextgenInvitations(state, uid, true);
+  revokeLegacyTickets(state, uid);
+  state.nextgen_invitations ??= {};
   const invitation = 'gf_inv_' + randomBytes(32).toString('base64url');
   state.nextgen_invitations[hash(invitation)] = {
-    node_uid: uid, profile: chosenProfile, expires_at: now + TEN_MINUTES,
+    node_uid: uid, profile: chosenProfile, expires_at: now + ENROLLMENT_TTL,
     generation: credentialGeneration(node), label: body.label?.trim() ?? node.label ?? uid, reserved_node: !existing,
   };
   // A pending enrollment has no node record until claim.
-  return response(201, { node_uid: uid, invitation, expires_at: iso(now + TEN_MINUTES) }, true);
+  return response(201, { node_uid: uid, invitation, expires_at: iso(now + ENROLLMENT_TTL) }, true);
 }
 
 function claim(state, body, now) {
@@ -167,15 +150,22 @@ function claim(state, body, now) {
   const digest = hash(body.reporting_token);
   if (ticket.consumed) {
     requireThat(prior && !prior.reporting?.revoked_at && equalHash(digest, prior.reporting?.digest) &&
-      equalHash(digest, ticket.consumed), 'INVITATION_CONSUMED', 409);
+      equalHash(digest, ticket.consumed) &&
+      (ticket.consumed_generation === undefined ? prior.reporting?.generation === undefined
+        : ticket.consumed_generation === credentialGeneration(prior)), 'INVITATION_CONSUMED', 409);
     return response(200, { node_uid: ticket.node_uid, registration: 'ALREADY_APPLIED' });
   }
   const node = prior ?? {
     node_uid: ticket.node_uid, node_id: ticket.node_uid, platform: 'linux', lifecycle: 'PROVISIONAL', label: ticket.label,
   };
-  requireThat((prior || (ticket.reserved_node && Object.keys(state.nodes ?? {}).length < MAX_NODES)) &&
-    ticket.generation === credentialGeneration(node), 'ENROLLMENT_BINDING_MISMATCH', 409);
-  requireThat(!equalHash(digest, node.reporting?.digest), 'NEW_REPORTING_CREDENTIAL_REQUIRED', 409);
+  requireThat((prior || ticket.reserved_node) && ticket.generation === credentialGeneration(node),
+    'ENROLLMENT_BINDING_MISMATCH', 409);
+  requireThat(prior || Object.keys(state.nodes ?? {}).length < MAX_NODES, 'NODE_CAPACITY', 409);
+  const { digest: activeDigest, previous_digest: previousDigest } = node.reporting ?? {};
+  const usedByEarlierClaim = Object.values(state.nextgen_invitations).some((other) =>
+    other.node_uid === node.node_uid && other.expires_at > now && equalHash(digest, other.consumed));
+  requireThat(!equalHash(digest, activeDigest) && !equalHash(digest, previousDigest) && !usedByEarlierClaim,
+    'NEW_REPORTING_CREDENTIAL_REQUIRED', 409);
   state.nodes ??= {};
   state.nodes[node.node_uid] = node;
   node.label = ticket.label;
@@ -186,19 +176,22 @@ function claim(state, body, now) {
   } : node.nextgen?.previous_legacy_reporter;
   const sameBinding = node.nextgen?.profile?.config_revision === ticket.profile.config_revision;
   const observations = sameBinding ? node.nextgen?.observations : undefined;
-  node.reporting = { digest, registered_at: iso(now), revoked_at: null, last_seen_at: null, last_report: null };
+  const generation = randomUUID();
+  node.reporting = { digest, registered_at: iso(now), revoked_at: null, last_seen_at: null, last_report: null,
+    generation, previous_digest: activeDigest ?? previousDigest ?? null };
   node.nextgen = { profile: ticket.profile, ...(observations ? { observations } : {}),
     ...(previousLegacy ? { previous_legacy_reporter: previousLegacy } : {}) };
   ticket.consumed = digest;
-  invalidateLegacyTickets(state, node.node_uid);
+  ticket.consumed_generation = generation;
+  revokeLegacyTickets(state, node.node_uid);
   return response(200, { node_uid: node.node_uid, registration: 'APPLIED' }, true);
 }
 
 function observe(node, body, now) {
   shape(body, ['source', 'dimension', 'verdict', 'observed_at'], ['version', 'scope']);
-  requireThat(typeof body.source === 'string' && keyed(SOURCES, body.source)?.includes(body.dimension) &&
+  requireThat(typeof body.source === 'string' && keyed(OBSERVATION_SOURCES, body.source)?.includes(body.dimension) &&
     VERDICTS.has(body.verdict) && (!Object.hasOwn(body, 'version') || matches(/^[a-zA-Z0-9._+~-]{1,60}$/, body.version)) &&
-    (!Object.hasOwn(body, 'scope') || ['primary', 'secondary'].includes(body.scope)), 'INVALID_OBSERVATION');
+    (!Object.hasOwn(body, 'scope') || OBSERVATION_SCOPES.includes(body.scope)), 'INVALID_OBSERVATION');
   const time = typeof body.observed_at === 'string' ? Date.parse(body.observed_at) : NaN;
   requireThat(Number.isFinite(time) && iso(time) === body.observed_at && time <= now &&
     time >= now - TEN_MINUTES, 'OBSERVATION_OUTSIDE_WINDOW');
@@ -246,21 +239,13 @@ export function apply(state, operation, { uid, token, body, role }, now = Date.n
     if (operation === 'issue') return issue(state, body, now);
     if (operation === 'revoke' && matches(UID, uid) && !keyed(state.nodes, uid)) {
       shape(body, []);
-      const pending = Object.entries(state.nextgen_invitations ?? {}).filter(([, entry]) => entry.node_uid === uid);
-      requireThat(pending.length, 'NODE_NOT_FOUND', 404);
-      for (const [key] of pending) delete state.nextgen_invitations[key];
+      requireThat(revokeNextgenInvitations(state, uid), 'NODE_NOT_FOUND', 404);
       return response(200, { node_uid: uid }, true);
     }
     const node = findNode(state, uid);
     if (operation === 'revoke') {
       shape(body, []);
-      node.reporting ??= {};
-      node.reporting.revoked_at ??= iso(now);
-      node.reporting.digest = null;
-      for (const [key, entry] of Object.entries(state.nextgen_invitations ?? {})) {
-        if (entry.node_uid === uid) delete state.nextgen_invitations[key];
-      }
-      invalidateLegacyTickets(state, uid);
+      revokeReporting(state, node, now);
     } else if (operation === 'desired') {
       requireThat(node.nextgen?.profile, 'NEXTGEN_PROFILE_REQUIRED', 409);
       shape(body, ['desired']);
@@ -278,6 +263,6 @@ export function apply(state, operation, { uid, token, body, role }, now = Date.n
     return response(200, { node_uid: uid }, true);
   } catch (error) {
     if (!(error instanceof Rejected)) throw error;
-    return response(error.status, { error: error.message });
+    return response(error.status, { error: error.message }, error.dirty);
   }
 }
