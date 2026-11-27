@@ -18,7 +18,7 @@ npm run check:publication
 npx --no-install wrangler deploy --dry-run --config nextgen/wrangler.jsonc --outdir dist/nextgen
 ```
 
-这些测试使用临时 SQLite DO、合成签名、文件源与临时主机状态。Workerd 用仓库锁定的 Wrangler 依赖，用 Linux 验证；Windows 原生 Workerd 对 DO 落盘的失败不影响 Linux 路径。原有功能套件仍由现有 CI 一同运行。[隔离实验](https://github.com/youling/ghostfleet/blob/main/docs/nextgen/LAB.md) 给出真实 Debian VM、OpenSSH 与 K3s 复跑步骤。
+这些测试使用临时 SQLite DO、合成签名、文件源与临时主机状态。Workerd 用仓库锁定的 Wrangler 依赖，用 Linux 验证；Windows 原生 Workerd 对 DO 落盘的失败不影响 Linux 路径。原有功能套件仍由现有 CI 一同运行。[隔离实验](https://github.com/youling/ghostfleet/blob/99f33081b5af806da0032a8f91466443e8eb3535/docs/nextgen/LAB.md) 给出真实 Debian VM、OpenSSH 与 K3s 复跑步骤。
 
 ### 测试证据
 
