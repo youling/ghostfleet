@@ -193,11 +193,12 @@ def inspect(value, local):
     if existing:
         require(existing['node_uid'] == entry['node_uid'] and existing['origin'] == entry['origin'], 'IDENTITY_CONFLICT')
         require(existing['trust'] == trust, 'TRUST_ROOT_CHANGED')
-    else:
-        current = ETC / 'update.json'
-        if exists(current):
-            prior = update.settings(current, local)
-            require(all(prior[key] == trust[key] for key in ('keyring', 'fingerprint')), 'TRUST_ROOT_CHANGED')
+    current = ETC / 'update.json'
+    if exists(current):
+        # A separate, explicitly authorized trust rotation may have changed the
+        # effective configuration after the installer wrote its ownership receipt.
+        prior = update.settings(current, local)
+        require(all(prior[key] == trust[key] for key in ('keyring', 'fingerprint')), 'TRUST_ROOT_CHANGED')
     owned = existing['owned'] if existing else ()
     identity_action = identity_state(entry, local)
     states = {unit: service_state(unit) for unit in UNIT_FILES}
@@ -231,6 +232,9 @@ def inspect(value, local):
                     'K3S_ARTIFACT_MISMATCH')
             native.agent_token(native.read(token, secret=True, limit=1024), approved['ca_sha256'])
     actions = list(map(str, changed))
+    if exists(LIB) and LIB.stat().st_mode & 0o055 != 0o055:
+        require(str(LIB / 'report.py') in owned, 'UNMANAGED_LAUNCHER_DIRECTORY_MODE')
+        actions.append(str(LIB))
     active_units = (*TIMERS, native.AGENT_UNIT) if k3s.get('mode') == 'start' else TIMERS
     operations = [unit for unit in active_units if states[unit].get('UnitFileState') != 'enabled' or
                   states[unit].get('ActiveState') != 'active']
@@ -282,6 +286,50 @@ def unit_view(states):
             for unit, state in states.items() if unit != native.AGENT_UNIT}
 
 
+def enable_owned(unit, agent):
+    if unit == native.AGENT_UNIT and service_state(unit).get('ActiveState') != 'active':
+        # Another owner may have provisioned K3s after this Agent was prepared.
+        require(native.agent_plan(agent, native.discover()) == native.preparation_plan(agent),
+                'K3S_START_OWNERSHIP_REVIEW')
+    update.command(['systemctl', 'enable', '--now', unit], error='SYSTEMD_ENABLE_FAILED:' + unit)
+
+
+def activate_release(action, value, receipt, desired, changed, states, actions, local):
+    config = ETC / 'update.json'
+    updater = LIB / 'update.py'
+    timer = UNIT_BASE + 'update.timer'
+    service = UNIT_BASE + 'update.service'
+    # RC2 loads its configuration before locking. Drain only that old timer
+    # during a settings change. RC3 and later resolve settings under the lock.
+    drain = config in changed and updater in changed and exists(config) and exists(updater)
+    resume = drain and states[timer].get('ActiveState') == 'active'
+    if resume:
+        update.command(['systemctl', 'stop', timer], error='SYSTEMD_PAUSE_UPDATE_TIMER_FAILED')
+
+    def before_activate():
+        if exists(config):
+            prior = update.settings(config, local)
+            require(all(prior[key] == receipt['trust'][key] for key in ('keyring', 'fingerprint')),
+                    'TRUST_ROOT_CHANGED')
+        if str(RECEIPT) in actions:
+            write_file(RECEIPT, json_bytes(receipt), 0o600)
+        if updater in changed:
+            root_directory(LIB, 0o755)
+            write_file(updater, *desired[updater])
+        if config in changed:
+            root_directory(ETC, 0o755)
+            write_file(config, *desired[config])
+
+    try:
+        if drain and service_state(service).get('ActiveState') not in ('inactive', 'failed'):
+            update.command(['systemctl', 'stop', service], error='SYSTEMD_DRAIN_UPDATE_FAILED')
+        return update.run_update(SOFTWARE, value['update'], 'amd64', repair=(action == 'repair'),
+                                 before_activate=before_activate)
+    finally:
+        if resume:
+            update.command(['systemctl', 'start', timer], error='SYSTEMD_RESUME_UPDATE_TIMER_FAILED')
+
+
 def execute(action, value, local):
     release, desired, receipt, changed, states, units, agent, prepared, identity_action, actions = inspect(value, local)
     result = {'schema': SCHEMA, 'node_uid': receipt['node_uid'], 'platform': 'debian13-amd64',
@@ -290,15 +338,14 @@ def execute(action, value, local):
     if action in ('plan', 'status'):
         result.update(result='PLAN' if action == 'plan' else 'STATUS', components=show_components(value))
         return result
-    update_result = update.run_update(SOFTWARE, value['update'], 'amd64', repair=(action == 'repair'))
-    # Persist ownership before the first file replacement so interrupted updates
-    # can resume with the same verified bootstrap and profile.
-    if str(RECEIPT) in actions:
-        write_file(RECEIPT, json_bytes(receipt), 0o600)
+    update_result = activate_release(action, value, receipt, desired, changed, states, actions, local)
     root_directory(ETC, 0o755)
     root_directory(LIB, 0o755)
+    if str(LIB) in actions:
+        LIB.chmod(stat.S_IMODE(LIB.stat().st_mode) | 0o055)
     for path in changed:
-        write_file(path, *desired[path])
+        if path not in (ETC / 'update.json', LIB / 'update.py'):
+            write_file(path, *desired[path])
     entry = value['enrollment']
     if identity_action != 'present':
         # Reuse the enrollment entry point, including its own identity lock and
@@ -319,7 +366,7 @@ def execute(action, value, local):
         k3s = value['components']['k3s']
         native.apply_agent(agent, k3s['approve_plan'], local_path(k3s['artifact']), local_path(k3s['token_file']))
     for unit in units:
-        update.command(['systemctl', 'enable', '--now', unit], error='SYSTEMD_ENABLE_FAILED:' + unit)
+        enable_owned(unit, agent)
     if action == 'repair':
         reporter = UNIT_BASE + 'report.service'
         if states[reporter].get('ActiveState') == 'failed':

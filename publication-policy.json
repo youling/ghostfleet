@@ -7,7 +7,7 @@
     "headscale.net", "man.openbsd.org", "packages.debian.org", "rustdesk.com",
     "sources.debian.org", "www.freedesktop.org", "www.harding.motd.ca",
     "www.openssh.org", "registry.npmjs.org", "cheatsheetseries.owasp.org",
-    "manpages.debian.org", "www.rfc-editor.org", "smallstep.com"
+    "manpages.debian.org", "www.rfc-editor.org", "smallstep.com", "json-schema.org"
   ],
   "allowed_public_github_repositories": [
     "youling/ghostfleet", "youling/ai-use", "cloudflare/cloudflared",

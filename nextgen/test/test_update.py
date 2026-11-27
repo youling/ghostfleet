@@ -1,6 +1,7 @@
 """Native APT integration with temporary keys, archives and state."""
 from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
+import fcntl
 import hashlib
 from io import StringIO
 import json
@@ -13,13 +14,16 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from threading import Event, Thread
 import unittest
 from unittest.mock import patch
+from urllib.parse import urlunsplit
 
 NEXTGEN = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NEXTGEN))
 from release import BOOTSTRAP, build, build_package, sign
-from update import UpdateError, active, archive_unavailable, command, pull, release_platform, sandbox, settings, validate_settings
+from update import (UpdateError, active, archive_unavailable, command, pull, release_platform,
+                    run_update, sandbox, settings, validate_settings)
 
 
 class ReleaseBuildTest(unittest.TestCase):
@@ -169,9 +173,10 @@ class UpdateTest(unittest.TestCase):
         path = self.workspace / "update.json"
         path.write_text(json.dumps(config))
         self.assertEqual(settings(path, False), config)
-        for invalid in (None, "http://mirror.example.invalid", "https://@mirror.example.invalid", "https://x:65536",
-                        "https://[invalid", "https://x?", "https://x#", "https://x/\\path", "\x00https://x",
-                        "https://x\nSigned-By: no"):
+        mirror = "https://mirror.example.invalid"
+        for invalid in (None, "http://mirror.example.invalid", mirror.replace("://", "://@"),
+                        mirror + ":65536", mirror.replace("://", "://["), mirror + "?", mirror + "#",
+                        mirror + "/\\path", "\x00" + mirror, mirror + "\nSigned-By: no"):
             with self.subTest(uri=invalid), self.assertRaisesRegex(UpdateError, "INVALID_ARCHIVE_URI"):
                 validate_settings({**config, "fallback_uri": invalid}, False)
         local = {**config, "fallback_uri": self.workspace.as_uri()}
@@ -192,6 +197,36 @@ class UpdateTest(unittest.TestCase):
         self.assertFalse(archive_unavailable(rate_limit.replace(b"429", b"401") + summary))
         self.assertFalse(archive_unavailable(rate_limit + summary + b"W: OpenPGP signature verification failed\n"))
 
+    def test_queued_update_reads_effective_channel_after_install_lock(self):
+        acquired = Event()
+        requests = []
+        configured = {'channel': 'canary'}
+        native_lock = fcntl.flock
+
+        def delayed_lock(fd, mode):
+            acquired.set()
+            return native_lock(fd, mode)
+
+        def read_config():
+            requests.append(configured['channel'])
+            return configured.copy()
+
+        with (self.installed / 'update.lock').open('wb') as blocker:
+            native_lock(blocker, fcntl.LOCK_EX)
+            with (patch('update.fcntl.flock', side_effect=delayed_lock),
+                  patch('update.pull', return_value='UNCHANGED') as updater):
+                queued = Thread(target=run_update, args=(self.installed, read_config, 'amd64'))
+                queued.start()
+                try:
+                    self.assertTrue(acquired.wait(3))
+                    self.assertEqual(requests, [])
+                    configured['channel'] = 'stable'
+                finally:
+                    native_lock(blocker, fcntl.LOCK_UN)
+                    queued.join(3)
+                self.assertFalse(queued.is_alive())
+                self.assertEqual(updater.call_args.args[1]['channel'], 'stable')
+
     def test_fallback_transport_and_exact_signed_download(self):
         first, _ = self.channel("0.3.0~rc1")
         primary, package = self.channel("0.3.0~rc2")
@@ -199,7 +234,7 @@ class UpdateTest(unittest.TestCase):
         different, _ = self.channel("0.3.0~rc2", tag="different", reporter=self.reporter + b"\n# different\n")
         with socket.socket() as offline:
             offline.bind(("127.0.0.1", 0))
-            uri = f"https://127.0.0.1:{offline.getsockname()[1]}"
+            uri = urlunsplit(("https", f"127.0.0.1:{offline.getsockname()[1]}", "", "", ""))
             config = {**first, "uri": uri, "fallback_uri": first["uri"], "minimum_version": "0.3.0~rc1"}
             self.assertEqual(pull(self.installed, config, "amd64"), "ACTIVATED")
             before = active(self.installed)

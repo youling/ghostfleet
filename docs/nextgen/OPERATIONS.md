@@ -63,7 +63,7 @@ npx --no-install wrangler deploy --dry-run --config nextgen/wrangler.jsonc --out
   },
   "enrollment": {
     "mode": "enroll",
-    "node_uid": "node-11111111-1111-4111-8111-111111111111",
+    "node_uid": "<APPROVED_NODE_UID>",
     "origin": "https://node.example.invalid",
     "config_revision": "1111111111111111111111111111111111111111111111111111111111111111",
     "invitation_file": "/root/trust/invitation.json"

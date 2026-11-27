@@ -37,7 +37,7 @@ APT_FETCH_SUMMARIES = {
     "E: Some index files failed to download. They have been ignored, or old ones used instead.",
     "E: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?",
 }
-APT_UNSIGNED = re.compile(r"E: The repository '(https://\S+) (canary|stable) (InRelease|Release)' is not signed\.")
+APT_UNSIGNED = re.compile(r"E: The repository '(\S+) (canary|stable) (InRelease|Release)' is not signed\.")
 
 
 class UpdateError(Exception):
@@ -77,6 +77,10 @@ def archive_unavailable(stderr):
     for line in diagnostics.copy():
         missing = APT_UNSIGNED.fullmatch(line)
         if missing:
+            try:
+                validate_archive_uri(missing[1], False)
+            except UpdateError:
+                continue
             # A transient HTTP error fetching this exact Release can cause a generic unsigned summary.
             uri = f"{missing[1].rstrip('/')}/dists/{missing[2]}/{missing[3]}"
             failure = re.compile(rf"E: Failed to fetch {re.escape(uri)}  {APT_HTTP_UNAVAILABLE}.*")
@@ -348,7 +352,7 @@ def repair_reporter(slot, release, script):
     return "REPAIRED"
 
 
-def pull_archive(root, config, arch, installed, repair_slot, approved=None):
+def pull_archive(root, config, arch, installed, repair_slot, approved=None, before_activate=None):
     platform = "debian13-" + arch
     with tempfile.TemporaryDirectory(prefix="ghostfleet-apt-", dir="/tmp") as directory:
         scratch = Path(directory)
@@ -362,6 +366,8 @@ def pull_archive(root, config, arch, installed, repair_slot, approved=None):
             check(version == installed["version"], "ROLLBACK_REFUSED")
             check(digest == installed["sha256"], "IMMUTABLE_VERSION_CONFLICT")
             if repair_slot is None and approved is None:
+                if before_activate is not None:
+                    before_activate()
                 return "UNCHANGED"
         check(approved is None or selected == approved, "FALLBACK_CANDIDATE_MISMATCH")
         check(repair_slot is None or version == installed["version"], "REPAIR_VERSION_MISMATCH")
@@ -384,13 +390,15 @@ def pull_archive(root, config, arch, installed, repair_slot, approved=None):
         sync_file(verified, contents, 0o644)
         release, script = read_package(verified, (version, platform))
         release["sha256"] = digest
+        if before_activate is not None:
+            before_activate()
         if repair_slot is not None:
             return repair_reporter(repair_slot, release, script)
         activate(root, release, script)
     return "ACTIVATED"
 
 
-def pull(root, config, arch, *, repair=False):
+def pull(root, config, arch, *, repair=False, before_activate=None):
     if repair:
         trusted_directory(root)
     else:
@@ -415,11 +423,12 @@ def pull(root, config, arch, *, repair=False):
             if stat.S_IMODE(path.stat().st_mode) != 0o644:
                 path.chmod(0o644)
     try:
-        return pull_archive(root, config, arch, installed, slot)
+        return pull_archive(root, config, arch, installed, slot, before_activate=before_activate)
     except ArchiveUnavailable as error:
         if "fallback_uri" not in config:
             raise
-        return pull_archive(root, {**config, "uri": config["fallback_uri"]}, arch, installed, slot, error.approved)
+        return pull_archive(root, {**config, "uri": config["fallback_uri"]}, arch, installed, slot, error.approved,
+                            before_activate)
 
 
 def version_compare(version, comparison, reference):
@@ -429,7 +438,7 @@ def version_compare(version, comparison, reference):
     return result.returncode == 0
 
 
-def run_update(root, config, arch, *, repair=False):
+def run_update(root, config, arch, *, repair=False, before_activate=None):
     check(os.geteuid() == 0, "ROOT_REQUIRED")
     root = root.absolute()
     if repair:
@@ -445,7 +454,9 @@ def run_update(root, config, arch, *, repair=False):
         check(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1 and not info.st_mode & 0o022,
               "UNSAFE_UPDATE_LOCK")
         fcntl.flock(lock, fcntl.LOCK_EX)
-        return pull(root, config, arch, repair=repair)
+        # Timers resolve the effective profile after taking this same lock.
+        loaded = config() if callable(config) else config
+        return pull(root, loaded, arch, repair=repair, before_activate=before_activate)
 
 
 def main():
@@ -457,8 +468,8 @@ def main():
     args = parser.parse_args()
     try:
         check(os.geteuid() == 0, "ROOT_REQUIRED")
-        config = settings(args.config, args.allow_local_fixture)
-        result = run_update(args.root, config, release_platform(), repair=args.repair)
+        result = run_update(args.root, lambda: settings(args.config, args.allow_local_fixture),
+                            release_platform(), repair=args.repair)
         print("GHOSTFLEET_UPDATE_" + result)
     except UpdateError as error:
         print(str(error), file=sys.stderr)

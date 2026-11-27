@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ghostfleet.invalid/schema/ghostfleet-install-v1.json",
+  "$id": "https://ghostfleet.example.invalid/schema/ghostfleet-install-v1.json",
   "title": "GhostFleet installer profile",
   "type": "object",
   "required": ["schema", "update", "enrollment"],
