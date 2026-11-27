@@ -329,14 +329,29 @@ class UpdateTest(unittest.TestCase):
         with self.assertRaisesRegex(UpdateError, "ROLLBACK_REFUSED"):
             pull(self.installed, {**first, "fallback_uri": second["uri"]}, "amd64")
 
-    def test_repair_cli_verifies_signed_bytes_and_preserves_state(self):
-        arch = release_platform()
+    def test_repair_verifies_signed_bytes_and_preserves_state(self):
+        try:
+            arch = release_platform()
+            supported_host = True
+        except UpdateError as error:
+            if str(error) != "PLATFORM_NOT_SUPPORTED":
+                raise
+            # Hosted CI uses Ubuntu. Exercise the same locked updater without
+            # changing the production CLI's Debian-only platform admission.
+            arch = command(["dpkg", "--print-architecture"]).strip()
+            supported_host = False
         config, _ = self.channel("0.3.0~rc2", arch=arch)
         path = self.workspace / "update.json"
         path.write_text(json.dumps(config))
         cli = [sys.executable, "-I", NEXTGEN / "host/update.py", "--config", path, "--root", self.installed,
                "--allow-local-fixture"]
-        self.assertEqual(subprocess.check_output(cli, text=True).strip(), "GHOSTFLEET_UPDATE_ACTIVATED")
+        def run(repair=False):
+            if supported_host:
+                options = ["--repair"] if repair else []
+                return subprocess.check_output(cli + options, text=True).strip().removeprefix("GHOSTFLEET_UPDATE_")
+            return run_update(self.installed, lambda: settings(path, True), arch, repair=repair)
+
+        self.assertEqual(run(), "ACTIVATED")
         link = self.installed / "current"
         slot = link.resolve()
         node = slot / "node.py"
@@ -350,11 +365,11 @@ class UpdateTest(unittest.TestCase):
 
         protected = protected_state()
         initial = node.stat()
-        self.assertEqual(subprocess.check_output(cli, text=True).strip(), "GHOSTFLEET_UPDATE_UNCHANGED")
+        self.assertEqual(run(), "UNCHANGED")
         self.assertEqual(node.stat().st_ctime_ns, initial.st_ctime_ns)
 
         node.write_bytes(b"# drifted reporter\n")
-        self.assertEqual(subprocess.check_output(cli, text=True).strip(), "GHOSTFLEET_UPDATE_UNCHANGED")
+        self.assertEqual(run(), "UNCHANGED")
         self.assertEqual(node.read_bytes(), b"# drifted reporter\n")
         original = Path.replace
 
@@ -374,11 +389,11 @@ class UpdateTest(unittest.TestCase):
                     node.unlink()
                 if damage == "mode":
                     node.chmod(0o600)
-                self.assertEqual(subprocess.check_output(cli + ["--repair"], text=True).strip(), "GHOSTFLEET_UPDATE_REPAIRED")
+                self.assertEqual(run(repair=True), "REPAIRED")
                 self.assertEqual(node.read_bytes(), self.reporter)
                 self.assertEqual(node.stat().st_mode & 0o777, 0o644)
         final = node.stat()
-        self.assertEqual(subprocess.check_output(cli + ["--repair"], text=True).strip(), "GHOSTFLEET_UPDATE_UNCHANGED")
+        self.assertEqual(run(repair=True), "UNCHANGED")
         self.assertEqual(node.stat().st_ctime_ns, final.st_ctime_ns)
         self.assertEqual(link.resolve(), slot)
         self.assertEqual(protected_state(), protected)
