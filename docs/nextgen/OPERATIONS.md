@@ -63,7 +63,7 @@ npx --no-install wrangler deploy --dry-run --config nextgen/wrangler.jsonc --out
 
 面板部署使用两个 origin，Panel 上游可放已批准的 Access 策略。实例配置独立 operator、read-only 凭据。每个 observer 使用本地受限文件中的独立凭据，对应配置授权绑定节点 UID、观测范围和允许的证据流。面板凭据只在页面内存。Worker 版本由 provider metadata 读回，部署时单独把 `NEXTGEN_SOURCE_REVISION` 绑定到实际构建提交。
 
-公网领取和上报在调用 DO 前分别使用 Cloudflare 的来源级配额。Nextgen 使用 `NEXTGEN_CLAIM_LIMIT` 与 `GHOSTFLEET_REPORT_LIMIT`，单独部署 legacy 时为 `GHOSTFLEET_CLAIM_LIMIT` 与 `GHOSTFLEET_REPORT_LIMIT`。给每个绑定分配独占 namespace，并在可信入口保证连接地址的来源。缺少绑定或可信连接地址时相关入口返回 503，超出配额返回 429。Cloudflare 按站点近似计数，实例应实测预算和恢复窗口。 [Cloudflare Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
+公网领取和上报在调用 DO 前分别使用 Cloudflare 的来源级配额。IPv6 按 `/64` 聚合，IPv4 映射地址与对应 IPv4 共用配额。Nextgen 使用 `NEXTGEN_CLAIM_LIMIT` 与 `GHOSTFLEET_REPORT_LIMIT`，单独部署 legacy 时为 `GHOSTFLEET_CLAIM_LIMIT` 与 `GHOSTFLEET_REPORT_LIMIT`。给每个绑定分配独占 namespace，并在可信入口保证连接地址的来源。缺少绑定或可信连接地址时相关入口返回 503，超出配额返回 429。Cloudflare 按站点近似计数，实例应实测预算和恢复窗口。 [Cloudflare Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
 
 部署前为 observer 换发受限凭据，Worker 中只配置 SHA-256 摘要和允许范围。`GHOSTFLEET_OBSERVER_GRANTS` 是 JSON 数组，每项含 `token_sha256`、`node_uid`、`scope` 和 `streams`。较大配置可用同格式的 `_01` 至 `_32` 分片。`streams` 每项由 `source/dimension` 表示，`scope` 取 `primary` 或 `secondary`。原有全局 observer 凭据应随切换撤回。
 
