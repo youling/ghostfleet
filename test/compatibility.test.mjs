@@ -195,6 +195,20 @@ test('distinct origins, role grants, bounded payloads and v2 ingress rules are e
   assert.deepEqual(lookups, ['192.0.2.10']);
 
   const observedUid = 'node-' + randomUUID();
+  const legacyClaim = '/v1/enrollment-tickets/ticket-' + randomUUID() + '/claim';
+  const legacyReport = '/v1/nodes/' + observedUid + '/heartbeat';
+  const edgeSource = { 'cf-connecting-ip': '192.0.2.10' };
+  assert.equal((await request(node, legacyClaim, undefined, {})).status, 503);
+  assert.equal((await request(node, legacyClaim, undefined, {}, edgeSource)).status, 429);
+  assert.equal((await request(node, legacyReport, undefined, heartbeat, edgeSource)).status, 503);
+  env.GHOSTFLEET_REPORT_LIMIT = { async limit() { return { success: false }; } };
+  assert.equal((await request(node, legacyReport, undefined, heartbeat, edgeSource)).status, 429);
+  assert.equal((await request(node, '/v2/nodes/' + observedUid + '/evidence', undefined, {}, edgeSource)).status, 429);
+  env.GHOSTFLEET_CLAIM_LIMIT = env.NEXTGEN_CLAIM_LIMIT;
+  delete env.NEXTGEN_CLAIM_LIMIT;
+  assert.equal((await request(node, legacyClaim, undefined, {}, edgeSource)).status, 429);
+  assert.equal((await request(node, '/v2/claim', undefined, {}, edgeSource)).status, 503);
+
   const observer = 'gf_obs_' + randomBytes(32).toString('base64url');
   env.GHOSTFLEET_OBSERVER_GRANTS = JSON.stringify([{ token_sha256: hash(observer), node_uid: observedUid,
     scope: 'secondary', streams: ['ssh-probe/rescue'] }]);

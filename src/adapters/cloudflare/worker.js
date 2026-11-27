@@ -1,6 +1,7 @@
 import { dispatch } from '../../control-plane/presence.js';
-import { prepare, json, managedBootstrap } from '../../control-plane/http.js';
+import { cancelBody, prepare, json, managedBootstrap } from '../../control-plane/http.js';
 import { apply } from '../../../nextgen/core.mjs';
+import { admitNodeRequest } from './node-ingress.js';
 import { prepareNextgen, serveNextgen } from './nextgen.js';
 
 // Retain the original class, namespace name and snapshot key. Legacy nodes and
@@ -12,7 +13,7 @@ export class GhostFleetState {
     const prepared = await (nextgen ? prepareNextgen(request, this.env) : prepare(request, this.env));
     if (prepared.response) {
       // Cancel an unread upload on early auth/MIME rejection before responding.
-      await request.body?.cancel().catch(() => {});
+      await cancelBody(request);
       return prepared.response;
     }
     return this.state.storage.transaction(async txn => {
@@ -49,16 +50,24 @@ export default {
       if (!artifact) return denied('MANAGED_BOOTSTRAP_UNAVAILABLE', 503);
       return json({ ok: true, protocol: 'ghostfleet-managed-enrollment/v1', node_origin: node, artifact });
     }
-    const nodeRoute = /^\/v1\/enrollment-tickets\/ticket-[0-9a-f-]+\/claim$/.test(u.pathname) ||
-      ['/v1/managed-enrollment/requests', '/v1/managed-enrollment/claim'].includes(u.pathname) ||
-      /^\/v1\/nodes\/node-[0-9a-f-]+\/heartbeat$/.test(u.pathname);
-    if ((isPanel && u.pathname.startsWith('/v0/')) || (isNode && nodeRoute)) {
+    const claim = /^\/v1\/enrollment-tickets\/ticket-[0-9a-f-]+\/claim$/.test(u.pathname);
+    const report = /^\/v1\/nodes\/node-[0-9a-f-]+\/heartbeat$/.test(u.pathname);
+    const managed = ['/v1/managed-enrollment/requests', '/v1/managed-enrollment/claim'].includes(u.pathname);
+    if ((isPanel && u.pathname.startsWith('/v0/')) || (isNode && (claim || report || managed))) {
       if (!env.GHOSTFLEET_STATE) return denied('STORE_NOT_CONFIGURED', 503);
+      if (isNode && (claim || report) && request.method === 'POST') {
+        const limiter = claim ? env.NEXTGEN_CLAIM_LIMIT ?? env.GHOSTFLEET_CLAIM_LIMIT : env.GHOSTFLEET_REPORT_LIMIT;
+        const denial = await admitNodeRequest(request, limiter, claim ? 'claim' : 'report', env.NEXTGEN_LOCAL_TEST);
+        if (denial) {
+          await cancelBody(request);
+          return denial;
+        }
+      }
       // Bound and authorize at the edge before opening a DO upload. The DO
       // repeats validation at its own boundary; neither trusts client role headers.
       const prepared = await prepare(request, env);
       if (prepared.response) {
-        await request.body?.cancel().catch(() => {});
+        await cancelBody(request);
         return prepared.response;
       }
       const headers = new Headers(request.headers); headers.delete('content-length');

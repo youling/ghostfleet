@@ -20,6 +20,7 @@ const env = {
   GHOSTFLEET_PANEL_ACCESS_AUD: audience,
   GHOSTFLEET_PANEL_ACCESS_OWNER_EMAIL: owner,
   GHOSTFLEET_OPERATOR_TOKEN: legacy,
+  NEXTGEN_CLAIM_LIMIT: { async limit() { return { success: true }; } },
 };
 
 function fixture(baseEnv = env) {
@@ -111,7 +112,7 @@ test('single Cloudflare Access session authenticates Panel only, with exact writ
   assert.equal((await app.instance.fetch(new Request(node + '/v0/nodes', { headers }))).status, 403);
   assert.equal((await app.instance.fetch(new Request(panel + '/v0/nodes'))).status, 401);
   const claimed = await app.fetch(node + '/v1/enrollment-tickets/' + delivery.ticket.ticket_id + '/claim', {
-    method: 'POST', headers: { 'content-type': 'application/json' },
+    method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '192.0.2.10' },
     body: JSON.stringify({ short_code: delivery.short_code }),
   });
   assert.equal(claimed.status, 200);
