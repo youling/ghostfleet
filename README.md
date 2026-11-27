@@ -19,19 +19,28 @@ flowchart TD
   Node --> Worker
 ```
 
-## 当前交付
+## 当前候选与恢复入口
 
-**2026-11-18 回执快照：** 公共源码已整合轻量面板、一次性纳管和系统级 reporter。实例工头在[此前三节点回执](https://github.com/youling/ghostfleet/issues/11#issuecomment-6962898014)之后，补交了[第四节点独立纳管、自动心跳与指定路径直连的报告](https://github.com/youling/ghostfleet/issues/11#issuecomment-6977178292)。四节点同时上报只覆盖该次观测窗口，不是实时在线保证，也不证明所有来源或所有 SSH 路径通过。
+**2026-11-28 核对：0.3.0 RC3 已有源码接受和有界隔离验收，尚未正式上线。** 当前候选是 [Draft #143](https://github.com/youling/ghostfleet/pull/143) 的 `4b2a039dc6bce169d8b00ecd34736017df1732db`；[架构评审](https://github.com/youling/ghostfleet/pull/143#pullrequestreview-6091711303)明确区分本轮复验、既有 VM 回执与未完成的现场事项。
 
-Cloudflare SSH 仍未验收。原[分层排障回执](https://github.com/youling/ghostfleet/issues/11#issuecomment-6962547549)已确认所选客户端能启动 `cloudflared access ssh`；[北京时间 22:01 的舰队只读复测](https://github.com/youling/ghostfleet/issues/11#issuecomment-6980797500)再次得到 DNS `NXDOMAIN`，同时连接器运行且本机 readiness 为 200。后续应回读权威 DNS、Published Application route 与 Access，再完成新会话正测及拒绝来源/身份负测；NXDOMAIN 本身不能证明缺少 route。连接器运行、出站心跳和另一条 SSH 路径成功，均不能替代这条路径的结果。
+| 入口 | 适用范围 |
+| --- | --- |
+| [阶段交付与版本图](docs/DELIVERY.md) | 当前 RC3、叠加 PR、旧线保留、发行与现场下一步；恢复时先核对 #11 最新回执。 |
+| [RC3 操作手册](https://github.com/youling/ghostfleet/blob/4b2a039dc6bce169d8b00ecd34736017df1732db/docs/nextgen/OPERATIONS.md) | 固定候选的统一安装、同 UID 接管、升级、修复、签名 APT 更新与恢复。 |
+| [RC3 profile schema](https://github.com/youling/ghostfleet/blob/4b2a039dc6bce169d8b00ecd34736017df1732db/nextgen/install-profile.schema.json) | `ghostfleet-install/v1`；实例值与凭据由 owner 交付。 |
+| [主干 v1 运维](docs/PRESENCE.md) | 当前主干保留的旧实现与兼容路径；不把候选目录或安装步骤当成已经合入。 |
 
-生产版本、M2 鉴权与双 origin、M3 恢复测试及 M4 各路径的剩余项统一见 [#11](https://github.com/youling/ghostfleet/issues/11)。源码合并、CI 成功和现场验收分别报告。v1 Python 安装器仍只安装心跳上报功能；POSIX join bootstrap 由面板命令先校验固定摘要，再仅补齐缺失的系统 python3 并启动固定摘要的 Python 安装器，不配置 SSH/provider。Access SSO 和统一远控就绪向导仍是研究项，不在本次实现范围。
+统一安装器首发支持 **Debian 13 amd64 + systemd**。同一入口覆盖 GhostFleet 自有组件的首装、接管、覆盖升级、重复执行和修复；TS/CF 当前只读观察，K3s Server/Agent 可由外部管理并观察，获准的专用 K3s Agent 可准备或启动。arm64 reporter 可构建，统一安装器的 arm64 运行未支持。完整边界见[产品范围](PRODUCT.md)和[候选责任图](docs/ARCHITECTURE.md#候选组件责任图)。
 
-**源码与现场分开验收：** [#109](https://github.com/youling/ghostfleet/pull/109) 补齐最小 Linux 系统缺少 Python 的首次引导；[#110](https://github.com/youling/ghostfleet/pull/110) 修复 DynamicUser 下的服务观测与快照文件描述符隔离。两项源码已整合，现役升级与真实 system-unit 验收继续回到原工单。心跳成功可以与服务 `unknown` 同时出现，不能据此认定服务已停止。首次引导的包安装与失败边界见 [ADR005](docs/adr/005-pinned-posix-join-bootstrap.md)。
+实际签名渠道、既有节点迁移、Root、TS 隔离与 K3s 消费分别按原 owner 的现场证据判断。本次实例交付要求包含 TS 和 K3s；公共产品继续支持无 K3s 节点。版本、心跳、网络准入、SSH 认证、Kubernetes RBAC 与 OS 权限分别核验。
+
+### 历史现场证据
+
+[2026-11-18 第四节点回执](https://github.com/youling/ghostfleet/issues/11#issuecomment-6977178292)与[同日 NXDOMAIN 诊断](https://github.com/youling/ghostfleet/issues/11#issuecomment-6980797500)只说明当时的目标、来源和时间窗口，不能作为今天所有 CF 路径或节点的统一结论。现行分项证据回到 [#11](https://github.com/youling/ghostfleet/issues/11)、[#36 传输](https://github.com/youling/ghostfleet/issues/36)与[#64 准入](https://github.com/youling/ghostfleet/issues/64)。[ADR005](docs/adr/005-pinned-posix-join-bootstrap.md)继续解释主干 v1 首次引导；它不替代 RC3 安装手册。
 
 [产品范围](PRODUCT.md) · [架构](docs/ARCHITECTURE.md) · [传输安装](docs/REMOTE_ACCESS.md) · [面板与心跳部署](docs/PRESENCE.md) · [阶段交付](docs/DELIVERY.md) · [文档目录](docs/README.md)
 
-## 开发与验证
+## 主干 v1 开发与验证
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
@@ -48,10 +57,10 @@ npm run test:live
 
 **Native SSH transport, lightweight enrollment and presence.** Cloudflare Tunnel/Tailscale reach the same OpenSSH service. A thin panel registers nodes, issues reporting-only credentials and shows last-seen plus local service observations. Python standard-library oneshots run under systemd; diagnostics stay in journald. There is no resident command agent, execution API or job queue.
 
-The latest field receipt extends the previous three-node report to a fourth independently enrolled Linux node, with automatic heartbeats and a working direct path from the recorded management client. Four-node reporting is a dated observation, not a live availability guarantee or acceptance of every SSH path. The one-time join flow now uses a hash-pinned POSIX shell bootstrap; trusted CA certificates, curl or GNU wget, and sha256sum are prerequisites. Supported Debian/Ubuntu hosts use apt-get, and Fedora/RHEL-family hosts use dnf or yum, only when system python3 is missing. An existing Python below 3.10 fails without replacement; no system-wide upgrade runs. The shell artifact is verified before execution, and the short code remains a hidden terminal prompt. The Cloudflare SSH path remains unaccepted. A fresh read-only Fleet probe again observed DNS NXDOMAIN while the existing connector was running and its local readiness endpoint returned 200. Read back authoritative DNS, the actual published route and Access configuration before a fresh positive SSH session and denied-source/identity test. NXDOMAIN alone does not prove that a route is absent.
+As checked on 2026-11-28, the latest candidate is Draft #143 at `4b2a039dc6bce169d8b00ecd34736017df1732db`, version `0.3.0~rc3`. It has bounded source/isolated acceptance, not a completed live release. [DELIVERY](docs/DELIVERY.md) links the exact operations guide, PR lineage and remaining owner-specific evidence. Main still contains the v1 implementation; the development commands above apply to that baseline. Follow the pinned candidate guide when building or testing RC3.
 
-PR #109 integrates the missing-Python bootstrap; PR #110 integrates DynamicUser service observation and snapshot descriptor isolation. Source acceptance does not establish production rollout or the real system-unit canary. Successful heartbeats can contain an unknown service state; that does not prove the service stopped. See [ADR005](docs/adr/005-pinned-posix-join-bootstrap.md) for package effects and failure recovery.
+The RC3 installer supports Debian 13 amd64/systemd and its own installation, adoption, upgrade and repair lifecycle. TS/CF modes are read-only observations. External K3s Server/Agent observation and explicitly approved dedicated Agent preparation/start are supported; automatic Server installation and arm64 installer execution are not. Network, OS and cluster authority remain separate. This instance's integrated delivery includes TS and K3s, while the public product retains a non-K3s path.
 
-[#11](https://github.com/youling/ghostfleet/issues/11) owns exact production versions and remaining M2/M3/M4 evidence. Source/CI acceptance is separate from deployment and field acceptance. Reporting revocation is not SSH revocation. The v1 installer does not configure SSH or provider networks. Access SSO and unified remote-readiness guidance remain design inputs, not shipped behavior. Follow the commands above and the [deployment runbook](docs/PRESENCE.md); preserve instance-owned origins, credentials and DO identity.
+The fourth-node and NXDOMAIN receipts from 2026-11-18 are historical observations, not current blanket claims about every CF path. See #11, #36 and #64 for current scoped evidence. Preserve the existing node UID, reporting credentials, DO identity and independent native SSH recovery. Reporting revocation is not SSH revocation.
 
 License: AGPL-3.0-only.

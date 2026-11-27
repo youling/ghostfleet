@@ -3,10 +3,83 @@
 | 字段 / Field | 值 / Value |
 | --- | --- |
 | 文档性质 / Classification | `DERIVED`：交付条件与依赖导航，不是状态数据库 / Delivery criteria and dependency navigation, not a status database |
-| `source_pointer` | [#11 当前目标、裁决与回执 / Current goal, decisions and receipts](https://github.com/youling/ghostfleet/issues/11)；[ADR004](adr/004-lightweight-enrollment-presence.md) |
-| 文档核对日期 / Documentation checked | `2026-11-18`；不表示已经部署 / Does not establish deployment |
+| `source_pointer` | [#11 当前目标与回执](https://github.com/youling/ghostfleet/issues/11)；[统一安装合同](https://github.com/youling/ghostfleet/issues/11#issuecomment-7218722415)；[RC3 评审](https://github.com/youling/ghostfleet/pull/143#pullrequestreview-6091711303) |
+| 文档核对日期 / Documentation checked | `2026-11-28`；恢复时须核对原 Issue/PR live refs，不表示已经部署 / Revalidate live refs; this is not deployment evidence |
 
-## 1. 范围与用法 / Scope and use
+## 当前恢复入口：0.3.0 RC3
+
+**当前最新候选为 RC3，源码接受与隔离证据已有回执；正式签名、首个既有节点迁移和 Stable 尚未完成。** [#11](https://github.com/youling/ghostfleet/issues/11)是唯一产品主线，#3 管架构治理，#36 管标准传输，#64 管准入，#69 管旧资源/attempt 收口。各条原 Work 的 owner 和独立验收继续有效，保留一个现场工头统一对接。
+
+| 分支角色 | 精确来源 | 状态与恢复方式 |
+| --- | --- | --- |
+| 主干 v1 基线 | `d24138597fea41c74400f741ddd9634b40d8a7e8` | 已合入的旧实现；本次主干文档整理不把 nextgen 源码合入，也不证明现役版本。 |
+| RC1 审计基线 | [#141](https://github.com/youling/ghostfleet/pull/141) · `943ad828e09c58b85fa095361018fd97722913c6` | 冻结源码与原审计材料，Draft。 |
+| RC2 返修基线 | [#142](https://github.com/youling/ghostfleet/pull/142) · `99f33081b5af806da0032a8f91466443e8eb3535` | RC1 的后继，源码候选已接受，Draft；原制品不可覆盖。 |
+| RC3 统一安装器 | [#143](https://github.com/youling/ghostfleet/pull/143) · `4b2a039dc6bce169d8b00ecd34736017df1732db` | RC2 的后继，`0.3.0~rc3`，Draft；[工头隔离回执](https://github.com/youling/ghostfleet/issues/11#issuecomment-7219492224)与[架构复核](https://github.com/youling/ghostfleet/pull/143#pullrequestreview-6091711303)分别说明证据。 |
+| 旧纳管集成线 | [#135](https://github.com/youling/ghostfleet/pull/135) · `99d3d72655e405da60038c3514e50057c6f7c4e5` | HOLD，与 RC3 分叉；未被新版包含或宣布替代。 |
+| 研究资料 | [#140](https://github.com/youling/ghostfleet/pull/140) · `b8d4a38edb7440a7331d4ddd9e9994848251300a` | 设计输入，不是独立待部署版本。 |
+
+当前可执行源码与操作指针：[统一安装器](https://github.com/youling/ghostfleet/blob/4b2a039dc6bce169d8b00ecd34736017df1732db/nextgen/host/install.py)、[profile schema](https://github.com/youling/ghostfleet/blob/4b2a039dc6bce169d8b00ecd34736017df1732db/nextgen/install-profile.schema.json)、[操作手册](https://github.com/youling/ghostfleet/blob/4b2a039dc6bce169d8b00ecd34736017df1732db/docs/nextgen/OPERATIONS.md)、[候选架构](https://github.com/youling/ghostfleet/blob/4b2a039dc6bce169d8b00ecd34736017df1732db/docs/nextgen/ARCHITECTURE.md)。固定候选中的 `docs/nextgen/CURRENT.md` 仍是 R0–R6 / RC1 时期的恢复说明；本节与 #11 的更新回执提供后继导航，不改冻结发行字节。
+
+### 版本与现场依赖图
+
+图源为上表与[集成交付裁决](https://github.com/youling/ghostfleet/issues/11#issuecomment-7217955618)。版本之间的实线是 Git 祖先关系；现场框的实线是该动作自身的必要依赖；虚线是尚待原 owner 验收的工作。无一表示已经发布。实际消费者的准备与独立试验可并行，不要求等待全部源码线或无关现场项。
+
+```mermaid
+flowchart TD
+  Base["主干源码基线 d241385"] --> RC1["RC1 #141 / 冻结"]
+  Base --> Old["旧纳管 #135 / HOLD"]
+  RC1 --> RC2["RC2 #142 / 冻结"]
+  RC2 --> RC3["RC3 #143 / 当前候选"]
+  RC3 --> Source["源码接受与有界隔离证据"]
+  Source -. "待实际签名与分发" .-> Channel["获准签名渠道与固定制品"]
+  Channel --> Migration["既有节点同 UID 迁移"]
+  Source -. "独立准备与原授权" .-> Consumer["Root、TS、K3s 实际消费"]
+  Migration --> Release["本实例集成上线裁决"]
+  Consumer --> Release
+```
+
+相对上一阶段，本次恢复入口从 RC1 提升到 RC3，增加统一安装器和版本化 profile 的证据；没有改变主干运行代码、正式签名、实例身份或权限。公共 K3s 仍可选，本实例的集成交付范围则包含 K3s；两者不互相替代。
+
+### 现场下一步与证据边界
+
+| 原工作线 | 已有证据 | 仍需完成的具体交付 |
+| --- | --- | --- |
+| 可信发行 | RC3 两环境首装/接管与最终 CI；原 RC1 灰度的签名/Pull/no-op 历史回执 | 以最终 RC3 制品重新核对批准对象、信任根、渠道、期限与回退；真实 429/恢复、签名发布、定时 Pull、版本/no-op/失败保护。旧 RC2 授权描述不自动覆盖 RC3。 |
+| 既有节点迁移 | 统一入口保留身份的隔离试验；真实节点 intake 由原 owner 持有 | 同源兼容控制面、同一 DO/UID/凭据、受信 profile、唯一写者、独立 SSH 救援及迁移后真实消费者读回。 |
+| Root | 原 owner 持有普通消费者与既有审批链证据 | 当前有效的有界授权、真实连续管理员消费及撤销/到期证据；公共安装器不实现或签发它。 |
+| TS / CF | 原路径的有界连接证据 | #64 完整现行策略/Controller 身份、正控与反向/横向拒绝、备用路径和恢复。旧 A09 FAIL 不被源码改写；它只阻断依赖未证实隔离的动作。 |
+| K3s | [工作站隔离双来宾回执](https://github.com/youling/ghostfleet/issues/11#issuecomment-7218509279)已覆盖调度、真实 API、日志/RBAC、重启和撤销 | 目标实例的获准存储/资源、固定制品、实际工作负载和恢复读回；工作站试验不等于目标节点已安装。 |
+
+已有独立测试与隔离回执按版本/范围复用，不重复整套审计。原工头应先完成可在当前权限内准备的 profile、发布和回退材料，再由原正式机制处理确需的新批准；不能让未指定的所有者输入变成无限期“等 owner”占位。凭据、完整策略和实例拓扑留私有来源。
+
+### 旧线替代对账
+
+祖先核对确认 #128–#134、#136–#139 的固定 HEAD 均在 #135 中；其中 #136 已合并到旧线，其余仍有开放候选入口。#135 不在 RC3 祖先链上。以下只完成源码/合同层面的映射，不能替代实例消费者和回退证据，也不自动关闭原 PR。
+
+| 旧候选 | RC3 对应接缝或处置 | 尚不能据此宣布替代的部分 |
+| --- | --- | --- |
+| #128、#130、#132 同 UID、配对与 host bootstrap | 新邀请/profile、持久 pending 凭据、`enroll.py` 与统一 `install.py` | 旧短码/可信客户端、真实消费者及现役来源的切换和恢复。 |
+| #129、#131 旧制品打包 | `release.py`、签名 APT、固定 bootstrap 与 reporter 制品 | 旧分发入口和仍被消费的固定摘要；新旧发行机制不能仅按功能名视为等价。 |
+| #133、#138 私有 decision readback / retained pins | 新版节点/观察证据可供消费者对账 | 旧命名 service entrypoint、历史 pin 回读是否仍被私有 broker 使用；未取得替代证明。 |
+| #134 Access 单登录 | 候选可复用上游 Access，应用仍检查各自角色凭据 | 旧自动打开 Console 的完整体验与真实消费是否需要迁移，不能由“支持 Access”推定等价。 |
+| #137 自定义 reporter unit 映射 | v1 兼容与新版原生观察分别保留 | 真实自定义 unit 的配置和接管读回。 |
+| #139 多 Controller 通用语义 | 已有后发裁决与候选角色表，本次主干导航同步 | 旧七文件分支仍留原证据；真实 Controller 及准入不由文档验收。 |
+| #140 设计研究 | 固定 SHA 留作 ARCH-0 输入 | 研究资料不是发行载荷，不强制复制全部文件。 |
+
+按[既有保留裁决](https://github.com/youling/ghostfleet/issues/11#issuecomment-7197717929)，只有消费者、回退与独立未完验收核清后，才能逐项提出关闭或退役。各子 PR 已进入 #135 只证明代码包含，不证明 #135 或 RC3 已交付相同现场能力。架构师负责裁决，原工头仅补其掌握的现场缺口。
+
+### Current recovery summary
+
+RC3 `4b2a039dc6bce169d8b00ecd34736017df1732db` is the current candidate. RC1 → RC2 → RC3 is Git ancestry, not a merged or deployed release sequence. #135 is a separate HOLD lineage; #140 is research input. The pinned candidate's CURRENT page still describes the earlier RC1 stage, so resume through #11 and this dated navigation.
+
+Source and bounded isolated evidence are accepted. Actual RC3 signing/channel approval, canary Pull, same-UID migration, Root/TS/K3s consumer evidence and Stable promotion remain with their existing owners. Reuse completed tests; prepare concrete profile/release/rollback inputs before requesting any genuinely missing authorization. The old-line table records source mappings and unresolved consumers, not feature-equivalence or retirement acceptance.
+
+## 主干 v1 交付说明
+
+以下保留 ADR004 的 M1–M4 基座流程，适用于 v1 的源码与现场证据解释；RC3 使用上方固定操作手册和现行 #11 合同，不照搬旧票据或安装命令。
+
+### 1. 范围与用法 / Scope and use
 
 交付当前最小产品：原生 SSH、薄面板、一次性注册和 systemd/journald 心跳。当前进度、责任人、精确候选与接受结论留在 #11 及其引用的原工单、PR 和实例回执。本页不复制动态状态，不新开父工单。沿既有授权和责任线执行；源码整合不自动扩大生产、凭据或系统级安装权限。
 
@@ -16,7 +89,7 @@ Deliver the current minimal product: native SSH, a thin panel, one-time enrollme
 
 Deliver each stage's proven capability when complete. Resolve concrete gaps without adding a fixed observation period, framework, database or command plane. Reuse accepted evidence while its revision and scope remain applicable; assess the actual effect of later changes. Keep real node/domain/provider locators, credentials and raw logs with the instance owner; public records contain sanitized summaries only.
 
-## 2. 交付条件 / Delivery criteria
+### 2. 交付条件 / Delivery criteria
 
 | 阶段 / Stage | 交付物 / Deliverable | 完成证据 / Completion evidence |
 | --- | --- | --- |
@@ -48,7 +121,7 @@ flowchart TD
   CF -.->|证据回写| Receipt
 ```
 
-## 3. 实例发布与首次使用 / Instance release and first use
+### 3. 实例发布与首次使用 / Instance release and first use
 
 操作步骤复用 [PRESENCE](PRESENCE.md)，原生传输复用 [REMOTE_ACCESS](REMOTE_ACCESS.md) 与 [ACCEPTANCE](ACCEPTANCE.md)。每次执行记录实际提交、安装器字节摘要、实例版本和回执指针；不要把另一环境的行尾或构建结果直接套用到本次发布物。
 
@@ -64,7 +137,7 @@ Use [PRESENCE](PRESENCE.md) for operations and [REMOTE_ACCESS](REMOTE_ACCESS.md)
 
 [Official systemd documentation](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html) defines DynamicUser identity lifetime and LoadCredential's read-only credential delivery. Record the installed systemd version; neither the upstream manual nor a temporary user-service test replaces its actual system-service evidence.
 
-## 4. 回退与完成声明 / Rollback and completion claims
+### 4. 回退与完成声明 / Rollback and completion claims
 
 面板代码回退与停用 reporter 分别记录。保留既有 DO 数据、node_uid、SSH 密钥和原生连接；安装器按自己的 manifest 处理文件，本地修改的文件不盲删。不要用删除 DO、重建节点或轮换全部 SSH/provider 凭据代替本功能回退。尚在使用的旧消费者必须有明确的切换和恢复安排。
 
@@ -79,19 +152,19 @@ Cloudflare does not require a new class migration for a code-only update to an e
 The receipt distinguishes source integration, package preparation, panel release, first-node usability, second-node replication and dual-path transport, with evidence and remaining limits. Deliver each established scope without using CI, heartbeat or plans as substitutes for unexecuted live capability.
 
 
-## 4. 正式版 FULLY_MANAGED 交付 / Full-managed release gates
+## 历史 ADR007 的 FULLY_MANAGED 验收
 
-Owner 于 2026-11-22 已选择真实搬瓦工 VPS 作为首次全流程 Canary，**不使用虚拟机**。通过后才分批纳管国内生产力服务器；这些目标全部是 Managed lower nodes，TP 是唯一 Controller。产品与端到端门禁见 [ADR007](adr/007-fully-managed-lower-node-enrollment.md)。
+下表保留早期全新下位机的端到端验收场景，不是 RC3 已完成声明。早期特定 VPS、单 Controller 与不使用 VM 的实例安排见 [ADR007](adr/007-fully-managed-lower-node-enrollment.md) 原文；后发的多 Controller、既有节点迁移和隔离 VM 方向已在上方现行入口引用。实际目标与权限始终由原 owner 确认。
 
 | Gate | 完成条件 | 不可替代的证据 |
 |---|---|---|
 | G0 Panel profile | Operator 能创建 `FULL_MANAGED_LOWER_NODE`，签发同一 immutable UID 的一次性 ticket/短码 | 真实受保护 Panel 操作、TTL/错误锁/重复 Claim 负测 |
-| G1 Root bootstrap | 目标 VPS 只需一次可信 root 引导和短码输入，固定摘要校验、预检、阶段 receipt | 真实 VPS shell/systemd receipt；不以 CI 或旧节点安装替代 |
-| G2 Provider/transport | 自动发现并复用现有 TS/CF，建立原生 SSH、Host Key pin 和可恢复路径 | Provider readback + 从 TP/Worker 发起的新 SSH 会话；Tunnel healthy 不是 origin SSH |
+| G1 Root bootstrap | 该历史场景的全新目标只需一次可信 root 引导和短码输入，固定摘要校验、预检、阶段 receipt | 该目标实际 shell/systemd receipt；不以 CI 或另一目标安装替代 |
+| G2 Provider/transport | 自动发现并复用现有 TS/CF，建立原生 SSH、Host Key pin 和可恢复路径 | Provider readback + 从实际获准 Controller 发起的新 SSH 会话；Tunnel healthy 不是 origin SSH |
 | G3 DCR | 同一 UID 自动进入动态 DCR catalog/target/policy，无逐节点源码改动 | 当前 ChatGPT 会话真实 `node.inspect` + typed Job receipt、准确策略版本 |
 | G4 Root | 专用 root-probe + 一次 Owner 委托覆盖范围/期限的连续 Root maintenance session | ChatGPT 真实 Root receipt，至少两条连续无害 Root 命令、撤销/过期负测 |
 | G5 FULLY_MANAGED | G0–G4 必需阶段全通过；修复/恢复路径可用 | Panel 最终状态与真实 ChatGPT 可操作性相互吻合 |
 
-**先真实 VPS，后国内生产力服务器。** 搬瓦工 Canary 通过后，按单节点、小批次、全量 rollout；OMV8/NAS 仍需自己的只读存储 Phase 0。Panel 状态投影不能覆盖现有 NodeLifecycle/Presence，也不能把 `UNKNOWN` 伪装成完成。每阶段失败保留同一 Node UID 和已有 Provider/SSH 成果，走 repair/resume；不得自动创建第二身份或重复消费票据。
+当前按既有节点迁移与独立场景的实际 readiness 推进，不再从这份历史表推导固定机器顺序或普遍排除 VM。兼容设备保留自己的只读存储探测。Panel 状态投影不能覆盖现有 NodeLifecycle/Presence，也不能把 `UNKNOWN` 伪装成完成。每阶段失败保留同一 Node UID 和已有 Provider/SSH 成果，走 repair/resume；不得自动创建第二身份或重复消费票据。
 
 **动态 DCR 是全自动的硬前置。** 现有每节点 `runtimeTarget.ts` 常量与 Wrangler VPC binding 若要求人工改源码/部署，尚不满足 G3。由私有 Fleet owner 在现有 Worker/DO 上完成审核过的动态 UID/transport/policy 消费；不能为此另建第二 Worker/第二身份控制面。
