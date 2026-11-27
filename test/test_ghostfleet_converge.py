@@ -50,6 +50,23 @@ class ConfigureScopeTest(unittest.TestCase):
         self.assertEqual(guarded(pins, packages, 'apply', runner['require'])[:3],
                          ['/usr/bin/python3', '-IB', '-c'])
 
+    def test_linux_converger_write_scope_requires_its_original_owner(self):
+        uid = 'node-' + str(uuid.uuid4())
+        resource = {'id': 'original-owner', 'owner': 'converger', 'scope': 'host', 'mode': 'manage',
+                    'kind': 'lifecycle', 'key': 'fleet:primary-converger',
+                    'desired': {'state': 'present', 'version': '0.7.0'}}
+        spec = {'component': 'linux-converger', 'resource_id': resource['id'],
+                'profile': '/etc/ghostfleet-example/profile.json', 'profile_sha256': 'a' * 64,
+                'runtime_version': '0.7.0', 'module_sha256': 'b' * 64}
+        projection = {'resources': [resource], 'target': {'node_uid': uid, 'platform': 'debian13-amd64'}}
+        for action in ('apply', 'verify'):
+            with self.subTest(action=action):
+                with self.assertRaisesRegex(Refused, 'CONVERGER_WRITE_SCOPE_NOT_SUPPORTED'):
+                    handoff['command'](spec, projection, {'user': 'root'}, action,
+                                       runner['require'], runner['absolute'])
+        command = handoff['command'](spec, projection, {'user': 'root'}, 'plan', runner['require'], runner['absolute'])
+        self.assertEqual(command[-2:], ['plan', uid])
+
     def test_handoff_requires_one_matching_managed_lifecycle(self):
         uid = 'node-' + str(uuid.uuid4())
         resource = {'id': 'original-owner', 'owner': 'ghostfleet', 'scope': 'host', 'mode': 'manage',

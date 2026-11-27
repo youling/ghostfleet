@@ -234,6 +234,9 @@ def normalize(spec, platform, aliases, matrix):
         require(not any(domain(origin, platform) == domain(scope, platform) and name != prefix and
                         is_under(prefix, name) for (origin, prefix), _ in aliases), "PATH_COVERS_MOUNT")
     scope, key = normalize_key(kind, scope, spec["key"], platform, aliases)
+    if (mode == "manage" and domain(scope, platform) in ("host", "wsl") and
+            kind in ("path", "store", "credential") and file_key(key)):
+        require(not any(paths_overlap(key, root) for root in APT_ROOTS), "PACKAGE_STATE_REQUIRES_NATIVE_OWNER")
     policy = matrix["owners"][owner]
     if mode == "manage" and kind == "package" and "packages" in policy:
         require(key.partition(":")[0] in policy["packages"], "RESOURCE_OWNER_MISMATCH")
@@ -339,17 +342,19 @@ def check_unit_writers(active, platform, rules):
     selected = {}
     for resource in active:
         state = resource["desired"]
-        if resource["kind"] != "unit":
-            continue
-        if not (state["state"] == "active" or state.get("enabled") is True or
+        if (resource["kind"], resource["key"], state["state"]) == ("lifecycle", "ghostfleet:installer", "present"):
+            unit = "ghostfleet-nextgen-report.timer"
+        elif resource["kind"] == "unit" and (state["state"] == "active" or state.get("enabled") is True or
                 (state["state"] == "present" and "enabled" not in state)):
+            unit = resource["key"]
+        else:
             continue
         location = domain(resource["scope"], platform)
         for rule in rules:
             if location not in rule["domains"]:
                 continue
             for family, units in rule["families"].items():
-                if resource["key"] in units:
+                if unit in units:
                     slot = (rule["id"], location)
                     require(selected.setdefault(slot, family) == family, "EXCLUSIVE_RUNTIME_WRITER")
 

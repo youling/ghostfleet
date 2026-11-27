@@ -218,9 +218,26 @@ class ConfigurationProfiles(unittest.TestCase):
         self.check_deny("PACKAGE_MANAGER_CONFLICT", self.fixture([git, {**tailscale, "scope": "wsl"}], platform=WSL),
                         platform=WSL)
         store = resource("dpkg-shadow", "store", "/var/lib/dpkg/status", "oci", state="retained")
-        self.check_deny("RESOURCE_OVERLAP", self.fixture([git, store]))
+        self.check_deny("PACKAGE_STATE_REQUIRES_NATIVE_OWNER", self.fixture([git, store]))
         self.check_deny("RESOURCE_OWNER_MISMATCH", self.fixture([{**git, "owner": "ghostfleet"}]))
         self.check_deny("DUPLICATE_RESOURCE_WRITER", self.fixture([git, {**git, "id": "git-alias", "key": "git"}]))
+
+    def test_package_state_paths_cannot_bypass_native_owner(self):
+        entries = (("/var/lib/dpkg/status", "file"), ("/var/lib/apt", "directory"),
+                   ("/var/cache/apt/archives", "directory"), ("/var/cache", "directory"))
+        for path, state in entries:
+            with self.subTest(path=path):
+                writer = resource("package-state", "path", path, state=state)
+                self.check_deny("PACKAGE_STATE_REQUIRES_NATIVE_OWNER", self.fixture([writer]))
+                observed = resource("package-state", "path", path, observe=True)
+                compile_target(self.fixture([observed]), UID, NATIVE)
+
+    def test_installer_lifecycle_reserves_next_generation_reporter(self):
+        installer = resource("installer", "lifecycle", "ghostfleet:installer", "ghostfleet", state="present")
+        legacy = resource("legacy-timer", "unit", "ghostfleet-heartbeat.timer", "ghostfleet", state="active")
+        self.check_deny("EXCLUSIVE_RUNTIME_WRITER", self.fixture([installer, legacy]))
+        observed = resource("legacy-timer", "unit", "ghostfleet-heartbeat.timer", "ghostfleet", observe=True)
+        compile_target(self.fixture([installer, observed]), UID, NATIVE)
 
     def test_paths_overlap_other_paths_units_credentials_and_stores(self):
         base = resource("a", "path", f"{FIXTURE_HOME}/aaa", state="directory")

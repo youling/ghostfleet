@@ -43,6 +43,23 @@ def approved_file(value, expected, private=False):
         raise ValueError()
     return body
 
+def require_legacy_reporter_quiescent(environment):
+    for unit in ('ghostfleet-heartbeat.timer', 'ghostfleet-heartbeat.service'):
+        command = ['/usr/bin/systemctl', 'show', '--property=LoadState,ActiveState,UnitFileState', '--', unit]
+        observed = subprocess.run(command, env=environment, capture_output=True, timeout=10, check=True, text=True)
+        values = dict(line.split('=', 1) for line in observed.stdout.splitlines())
+        if values.get('ActiveState') != 'inactive':
+            raise ValueError()
+        load, state = values.get('LoadState'), values.get('UnitFileState')
+        if load == 'not-found' and state == '':
+            continue
+        safe_states = {'disabled', 'masked', 'masked-runtime'}
+        if unit.endswith('.service'):
+            safe_states.add('static')
+        if load not in {'loaded', 'masked'} or state not in safe_states:
+            raise ValueError()
+
+clean = {'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'}
 try:
     if os.geteuid() != 0:
         raise ValueError()
@@ -58,6 +75,7 @@ try:
             raise ValueError()
         for name, digest in request['bootstrap_files'].items():
             approved_file(directory / name, digest)
+        require_legacy_reporter_quiescent(clean)
         original_action = {'plan': 'plan', 'verify': 'status', 'apply': 'apply'}[action]
         argv = ['/usr/bin/python3', '-IB', str(directory / 'install.py'), original_action, config]
     else:
@@ -68,9 +86,6 @@ try:
         spec = importlib.util.find_spec('youling_fleet.linux.cli')
         approved_file(spec.origin, request['module_sha256'])
         argv = ['/usr/bin/python3', '-I', '-m', 'youling_fleet.linux.cli', '--config', config]
-        if action == 'apply':
-            argv.append('--apply')
-    clean = {'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'}
     final = subprocess.run(argv, env=clean, capture_output=True, timeout=135)
     if final.returncode != 0 or len(final.stdout) > 262144:
         raise ValueError()
@@ -87,15 +102,9 @@ try:
                 raise ValueError()
         changed = reply['result'] == 'APPLIED' or (action == 'plan' and bool(reply['files'] or reply['units']))
     else:
-        if action == 'plan':
-            if reply.get('outcome') != 'PLAN_ONLY_NOT_VERIFIED':
-                raise ValueError()
-            changed = False
-        else:
-            if (reply.get('outcome') != 'PRIMARY_CONVERGED' or reply.get('node_uid') != uid or
-                    not reply.get('postconditions_digest')):
-                raise ValueError()
-            changed = bool(reply.get('material_delta'))
+        if reply.get('outcome') != 'PLAN_ONLY_NOT_VERIFIED':
+            raise ValueError()
+        changed = False
     print(json.dumps({'owner': component, 'changed': changed}, sort_keys=True))
 except (OSError, ValueError, TypeError, KeyError, AttributeError, subprocess.SubprocessError, ImportError):
     print('{"status":"OWNER_HANDOFF_REFUSED"}')
@@ -115,7 +124,8 @@ def command(spec, projection, target, action, require, absolute):
             isinstance(value, str) and DIGEST.fullmatch(value) for value in files.values()), 'BOOTSTRAP_MANIFEST_INCOMPLETE')
     else:
         require(set(spec) == required | {'runtime_version', 'module_sha256'}, 'OWNER_HANDOFF_FIELDS_INVALID')
-        require(action != 'verify' and isinstance(spec['runtime_version'], str)
+        require(action == 'plan', 'CONVERGER_WRITE_SCOPE_NOT_SUPPORTED')
+        require(isinstance(spec['runtime_version'], str)
                 and re.fullmatch(r'\d+\.\d+\.\d+', spec['runtime_version'])
                 and isinstance(spec['module_sha256'], str) and DIGEST.fullmatch(spec['module_sha256']),
                 'CONVERGER_ACTION_OR_PIN_INVALID')
