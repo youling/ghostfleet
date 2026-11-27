@@ -1,6 +1,8 @@
 """Native APT integration with temporary keys, archives and state."""
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 import hashlib
+from io import StringIO
 import json
 import os
 import pwd
@@ -8,14 +10,66 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
 
 NEXTGEN = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NEXTGEN))
-from release import build, build_package, sign
+from release import BOOTSTRAP, build, build_package, sign
 from update import UpdateError, active, command, pull, sandbox
+
+
+class ReleaseBuildTest(unittest.TestCase):
+    def test_installer_bootstrap_and_reporter_payload(self):
+        revision = "1" * 40
+        version = "0.3.0~rc3"
+        epoch = 1_760_000_000
+        release_path = "nextgen/release.py"
+        sources = {path: path.encode() for path in (*BOOTSTRAP, release_path)}
+        git_results = {
+            ("rev-parse", "HEAD"): revision.encode(),
+            ("status", "--porcelain=v1", "--untracked-files=all"): b"",
+            ("show", "-s", "--format=%ct", revision): str(epoch).encode(),
+            **{("cat-file", "blob", f"{revision}:{path}"): contents for path, contents in sources.items()},
+        }
+        expected_installer = {
+            "install.py": "nextgen/host/install.py",
+            "install-profile.schema.json": "nextgen/install-profile.schema.json",
+            "OPERATIONS.md": "docs/nextgen/OPERATIONS.md",
+        }
+        with tempfile.TemporaryDirectory() as tmp, patch("release.check_toolchain"), \
+                patch("release.git", side_effect=lambda *args: git_results[args]):
+            out = Path(tmp) / "release"
+            for retired in ("0.3.0~rc1", "0.3.0~rc2", "0.3.0~rc2+rebuild"):
+                with self.subTest(version=retired), self.assertRaisesRegex(UpdateError, "RELEASE_VERSION_TOO_OLD"):
+                    build(out, retired, "amd64", revision)
+                self.assertFalse(out.exists())
+
+            with redirect_stdout(StringIO()) as stdout:
+                build(out, version, "amd64", revision)
+            receipt = json.loads(stdout.getvalue())
+            self.assertEqual(receipt["version"], version)
+            self.assertEqual(receipt["source_revision"], revision)
+            self.assertEqual(receipt["input_sha256"], {path: hashlib.sha256(data).hexdigest()
+                                                      for path, data in sources.items()})
+            with tarfile.open(out / "ghostfleet-bootstrap.tar.gz", "r:gz") as tar:
+                self.assertEqual(tar.getnames(), sorted(BOOTSTRAP.values()))
+                for name, source in expected_installer.items():
+                    member = tar.getmember(name)
+                    self.assertTrue(member.isfile())
+                    self.assertEqual(tar.extractfile(member).read(), sources[source])
+                    self.assertEqual((member.mode, member.mtime), (0o644, epoch))
+
+            extracted = Path(tmp) / "package"
+            package = out / f"ghostfleet-node_{version}_amd64.deb"
+            subprocess.run(["dpkg-deb", "-x", package, extracted], check=True, timeout=30)
+            payload = extracted / "usr/share/ghostfleet-nextgen"
+            self.assertEqual(sorted(path.name for path in payload.iterdir()), ["node.py", "release.json"])
+            self.assertEqual((payload / "node.py").read_bytes(), sources["nextgen/host/node.py"])
+            self.assertEqual(receipt["sha256"], {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                                                for path in out.iterdir()})
 
 
 class UpdateTest(unittest.TestCase):

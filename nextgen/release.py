@@ -16,11 +16,15 @@ import tarfile
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "host"))
-from update import ARCHITECTURES, COMMIT, FINGERPRINT, MAX_SIZE, PAYLOAD, PKG, SHA, VERSION, check, matches  # noqa: E402
+from update import (  # noqa: E402
+    ARCHITECTURES, COMMIT, FINGERPRINT, MAX_SIZE, PAYLOAD, PKG, SHA, VERSION, check, matches, version_compare,
+)
 
 HOST = "nextgen/host/"
+RELEASE_VERSION_FLOOR = "0.3.0~rc3"
 BOOTSTRAP = {
     HOST + "enroll.py": "enroll.py",
+    HOST + "install.py": "install.py",
     HOST + "node.py": "node.py",
     HOST + "update.py": "update.py",
     HOST + "report.py": "report.py",
@@ -29,7 +33,9 @@ BOOTSTRAP = {
     HOST + "ghostfleet-nextgen-update.service": "ghostfleet-nextgen-update.service",
     HOST + "ghostfleet-nextgen-update.timer": "ghostfleet-nextgen-update.timer",
     HOST + "ghostfleet-nextgen-k3s-agent.service": "ghostfleet-nextgen-k3s-agent.service",
+    "nextgen/install-profile.schema.json": "install-profile.schema.json",
     "nextgen/native.py": "native.py",
+    "docs/nextgen/OPERATIONS.md": "OPERATIONS.md",
 }
 
 
@@ -86,6 +92,8 @@ def build(out, version, arch, source):
     check(matches(COMMIT, source) and git("rev-parse", "HEAD").decode().strip() == source, "SOURCE_REVISION_MISMATCH")
     check(not git("status", "--porcelain=v1", "--untracked-files=all").strip(), "DIRTY_CHECKOUT")
     check_toolchain()
+    check(matches(VERSION, version) and arch in ARCHITECTURES, "INVALID_BUILD_TARGET")
+    check(version_compare(version, "ge", RELEASE_VERSION_FLOOR), "RELEASE_VERSION_TOO_OLD")
     epoch = int(git("show", "-s", "--format=%ct", source))
     files = {}
     inputs = {"nextgen/release.py": hashlib.sha256(git("cat-file", "blob", source + ":nextgen/release.py")).hexdigest()}
