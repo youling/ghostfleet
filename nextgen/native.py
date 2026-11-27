@@ -227,8 +227,10 @@ def kubernetes(binding, now):
 
 
 def observations(profile):
-    shape(profile, ("node_uid",), ("tailscale", "cloudflare", "ssh", "kubernetes"))
+    shape(profile, ("node_uid",), ("tailscale", "cloudflare", "ssh", "kubernetes", "scope"))
     require(match(UID, profile["node_uid"]), "INVALID_FLEET_UID")
+    scope = profile.get("scope", "primary")
+    require(scope in ("primary", "secondary"), "INVALID_OBSERVATION_SCOPE")
     clock = lambda: datetime.now(timezone.utc)
     result, notices = [], []
     for source, collector, dimension in (
@@ -260,6 +262,9 @@ def observations(profile):
                                 "reason": str(error) if isinstance(error, NativeError) else (
                                     "SSH_TIMEOUT" if source == "ssh" and isinstance(error, subprocess.TimeoutExpired)
                                     else "EVIDENCE_UNAVAILABLE")})
+    if "scope" in profile:
+        for observation in result:
+            observation["scope"] = scope
     return {"node_uid": profile["node_uid"], "observations": result, "diagnostics": notices}
 
 

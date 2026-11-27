@@ -53,6 +53,24 @@ class NativeTest(unittest.TestCase):
         self.assertEqual(observed["observations"][0]["verdict"], "UNKNOWN")
         self.assertEqual(observed["diagnostics"][0]["reason"], "TAILSCALE_IDENTITY_MISMATCH")
 
+    def test_observer_profile_scope_is_published_and_validated_before_collection(self):
+        profile = {"node_uid": self.uid, "tailscale": {"device_id": "fixture", "credential_file": "unused"}}
+        observation = native.receipt("tailscale-api", "network", "READY", self.now)
+        endpoint = "https://panel.example.invalid"
+        with patch.object(native, "tailscale", side_effect=lambda *args: observation.copy()) as collect:
+            default = native.observations(profile)
+            self.assertEqual(default["observations"], [observation])
+            secondary = native.observations({**profile, "scope": "secondary"})
+            with self.assertRaisesRegex(native.NativeError, "INVALID_OBSERVATION_SCOPE"):
+                native.observations({**profile, "scope": "unassigned"})
+            self.assertEqual(collect.call_count, 2)
+        scoped = {**observation, "scope": "secondary"}
+        self.assertEqual(secondary["observations"], [scoped])
+        with patch.object(native, "read", return_value=b"fixture"), \
+                patch.object(native, "request_json", return_value={"ok": True, "node_uid": self.uid}) as request:
+            native.publish(secondary, endpoint, "unused")
+        request.assert_called_once_with(endpoint + "/v2/nodes/" + self.uid + "/observation", "fixture", scoped)
+
     def test_compute_readiness_requires_pinned_cluster_node_and_fresh_lease(self):
         cluster, node = str(uuid4()), str(uuid4())
         binding = {"kubeconfig": "unused", "context": "fixture", "cluster_uid": cluster,
