@@ -44,7 +44,7 @@ export default {
       if (!env.GHOSTFLEET_STATE) return denied('STORE_NOT_CONFIGURED', 503);
       if (isNode && (claim || report) && request.method === 'POST') {
         const limiter = claim ? env.NEXTGEN_CLAIM_LIMIT ?? env.GHOSTFLEET_CLAIM_LIMIT : env.GHOSTFLEET_REPORT_LIMIT;
-        const denial = await admitNodeRequest(request, limiter, claim ? 'claim' : 'report');
+        const denial = await admitNodeRequest(request, limiter, claim ? 'claim' : 'report', env.NEXTGEN_LOCAL_TEST);
         if (denial) {
           await cancelBody(request);
           return denial;

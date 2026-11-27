@@ -165,6 +165,7 @@ test('Workerd shares bounded node budgets by source across the two protocol vers
     assert.equal(overBudget.status, 429);
     assert.equal(overBudget.body.error, 'REPORT_RATE_LIMITED');
     assert.equal((await call(runtime, node, beat, heartbeat, legacyToken, null, '192.0.2.5')).status, 200);
+    assert.equal((await call(runtime, node, evidence, report, current.reporting_token, null, '2001:db8:11:3::1')).status, 200);
   } finally {
     await runtime.dispose();
   }

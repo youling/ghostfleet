@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { dispatch, presence } from '../src/control-plane/presence.js';
 import { prepare } from '../src/control-plane/http.js';
 import worker, { GhostFleetState } from '../src/adapters/cloudflare/worker.js';
+import { admitNodeRequest } from '../src/adapters/cloudflare/node-ingress.js';
 
 const clock = Date.parse('2026-11-01T00:00:00Z');
 const operator = 'synthetic-operator-'.repeat(4), reader = 'synthetic-reader-'.repeat(4);
@@ -352,6 +353,37 @@ test('legacy node admission fails closed when its configured quota is unavailabl
   assert.equal(unbound.status, 503);
   assert.equal((await unbound.json()).error, 'REPORT_INGRESS_UNAVAILABLE');
   assert.equal((await worker.fetch(beat(), bindings)).status, 200);
+});
+
+test('node quotas use canonical IPv6 /64 keys and retain IPv4 source keys', async () => {
+  const keys = [];
+  const limiter = { limit: async ({ key }) => { keys.push(key); return { success: true }; } };
+  const sources = [
+    '2001:0DB8:11:2:0000:0000:0000:0001', '2001:db8:11:2::2', '2001:db8:11:3::1',
+    '2001:db8::1', '192.0.2.4', '::ffff:192.0.2.4', '::FFFF:C000:0204', '192.0.2.5',
+  ];
+  for (const source of sources) {
+    const request = new Request(env.GHOSTFLEET_NODE_ORIGIN, { headers: { 'cf-connecting-ip': source } });
+    assert.equal(await admitNodeRequest(request, limiter, 'claim'), null);
+  }
+  assert.deepEqual(keys, [
+    '2001:db8:11:2::/64', '2001:db8:11:2::/64', '2001:db8:11:3::/64',
+    '2001:db8::/64', '192.0.2.4', '192.0.2.4', '192.0.2.4', '192.0.2.5',
+  ]);
+});
+
+test('only explicitly enabled HTTP loopback fixtures skip node admission bindings', async () => {
+  const loopback = new URL('http://127.0.0.1:8080');
+  const loopbackIPv6 = new URL(loopback);
+  loopbackIPv6.hostname = '[::1]';
+  for (const origin of [loopback, loopbackIPv6]) {
+    const fixture = new Request(origin);
+    assert.equal((await admitNodeRequest(fixture, undefined, 'report')).status, 503);
+    assert.equal((await admitNodeRequest(fixture, undefined, 'report', '0')).status, 503);
+    assert.equal(await admitNodeRequest(fixture, undefined, 'report', '1'), null);
+  }
+  const hosted = new Request(env.GHOSTFLEET_NODE_ORIGIN);
+  assert.equal((await admitNodeRequest(hosted, undefined, 'report', '1')).status, 503);
 });
 
 test('Worker/DO path rejects Read-token ticket creation before state mutation', async () => {

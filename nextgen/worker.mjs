@@ -112,7 +112,7 @@ export default {
     }
     if (identity.operation === 'claim' || identity.operation === 'report') {
       const limiter = identity.operation === 'claim' ? env.NEXTGEN_CLAIM_LIMIT : env.GHOSTFLEET_REPORT_LIMIT;
-      const denial = await admitNodeRequest(request, limiter, identity.operation);
+      const denial = await admitNodeRequest(request, limiter, identity.operation, env.NEXTGEN_LOCAL_TEST);
       if (denial) {
         await cancelBody(request);
         return denial;
