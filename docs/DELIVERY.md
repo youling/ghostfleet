@@ -75,6 +75,20 @@ RC3 `4b2a039dc6bce169d8b00ecd34736017df1732db` is the current candidate. RC1 →
 
 Source and bounded isolated evidence are accepted. Actual RC3 signing/channel approval, canary Pull, same-UID migration, Root/TS/K3s consumer evidence and Stable promotion remain with their existing owners. Reuse completed tests; prepare concrete profile/release/rollback inputs before requesting any genuinely missing authorization. The old-line table records source mappings and unresolved consumers, not feature-equivalence or retirement acceptance.
 
+## 0.3.0 之后的配置管理规划 / Post-0.3.0 configuration-management plan
+
+Human 已同意纳入 Ansible 配置管理方向，暂以 0.4.0 为规划目标。范围、责任与验证以 [#11 规划记录](https://github.com/youling/ghostfleet/issues/11#issuecomment-7227108988)为准。该路线独立于 0.3.0 的发布、迁移和现场验收。
+
+- **配置与执行。** 获准控制端按需运行固定版本的 Ansible，复用已有 Profiles 和身份校验。实例 owner 维护实际清单、配置和授权。候选通用接缝沿用现有 UID、SSH 信任和结果读回。GhostFleet 继续负责自有安装和签名更新，每项受管配置由一个明确的 owner 写入。
+- **首轮验证。** 先在可丢弃的原生 Debian 与 WSL Debian 上验证公共用户态基线及平台适配。Windows 保留原生应用、硬件、构建和调试。WSL 使用 Linux 文件系统承载工作树与热缓存，按权限明确的本机交换目录交接输入和产物。远端制品传输继续沿 [#36](https://github.com/youling/ghostfleet/issues/36)。
+- **验收。** 核对目标后生成差异计划，经授权对单目标执行并读回实际状态，再复跑验证零差异和故障恢复。Windows 原生自动化、WSL 纳管和生产推广各自需要适用的实测证据。
+
+The Human approved planning for Ansible-based configuration management, with 0.4.0 as the working target. [The decision and validation scope in #11](https://github.com/youling/ghostfleet/issues/11#issuecomment-7227108988) govern this work. The 0.3.0 release, migration and field acceptance proceed independently.
+
+- **Configuration and execution.** An authorized controller runs a pinned Ansible version on demand and reuses existing profiles and target verification. Deployment owners retain the actual inventory, configuration and authorization. Candidate product integration reuses existing node UIDs, SSH trust and result readback. GhostFleet owns its installer and signed updates. Each managed configuration resource has a single writer.
+- **Initial validation.** Prove the common userspace baseline and platform adaptations on disposable native Debian and WSL Debian. Windows keeps native apps, hardware access, builds and debugging. WSL keeps active worktrees and caches on its Linux filesystem and uses scoped local directories to exchange inputs and outputs. Remote artifact transport follows [#36](https://github.com/youling/ghostfleet/issues/36).
+- **Acceptance.** Verify the target, plan the changes, apply to a single authorized target and read back actual state. Confirm a no-change rerun and test recovery. Windows native automation, WSL enrollment and production rollout each require applicable field evidence.
+
 ## 主干 v1 交付说明
 
 以下保留 ADR004 的 M1–M4 基座流程，适用于 v1 的源码与现场证据解释；RC3 使用上方固定操作手册和现行 #11 合同，不照搬旧票据或安装命令。
