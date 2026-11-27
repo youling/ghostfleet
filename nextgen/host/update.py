@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import stat
 import subprocess
@@ -41,13 +42,36 @@ def matches(pattern, value):
     return isinstance(value, str) and pattern.fullmatch(value)
 
 
-def command(args, *, root=None, env=None, error="NATIVE_TOOL_FAILED"):
-    result = subprocess.run(args, cwd=root, env=env, capture_output=True, timeout=120, check=False)
+NATIVE_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"}
+
+
+def apt_user():
+    try:
+        account = pwd.getpwnam("_apt")
+    except KeyError:
+        raise UpdateError("APT_USER_UNAVAILABLE") from None
+    check(account.pw_uid != 0 and account.pw_gid != 0, "UNSAFE_APT_USER")
+    return {"user": account.pw_uid, "group": account.pw_gid, "extra_groups": []}
+
+
+def command(args, *, root=None, env=None, error="NATIVE_TOOL_FAILED", unprivileged=False):
+    result = subprocess.run(args, cwd=root, env=env or NATIVE_ENV, capture_output=True, timeout=120, check=False,
+                            **(apt_user() if unprivileged else {}))
     check(result.returncode == 0, error)
     return result.stdout.decode("utf-8")
 
 
+def trusted_parents(path):
+    check(path.is_absolute() and ".." not in path.parts, "UNSAFE_TRUST_PATH")
+    for parent in path.parents:
+        info = parent.lstat()
+        # A root-owned sticky directory allows safe temporary test trees.
+        check(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and
+              (not info.st_mode & 0o022 or info.st_mode & stat.S_ISVTX), "UNSAFE_TRUST_PATH")
+
+
 def trusted_file(path):
+    trusted_parents(path)
     info = path.lstat()
     check(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022, "UNSAFE_TRUST_FILE")
     return path
@@ -87,18 +111,23 @@ def release_platform():
 
 
 def sandbox(scratch, config, arch):
-    for name in ("lists/partial", "conf.d", "downloads", "trusted.d"):
+    scratch.chmod(0o755)
+    for name in ("lists", "conf.d", "downloads", "trusted.d", "preferences.d", "auth.conf.d"):
         (scratch / name).mkdir(parents=True)
-    for name in ("status", "empty.gpg"):
+    for name in ("status", "empty.gpg", "preferences", "auth.conf"):
         (scratch / name).touch()
+    # Only this public key is exposed to the fetch user, even under a private /etc directory.
+    (scratch / "archive.gpg").write_bytes(trusted_file(Path(config["keyring"])).read_bytes())
     (scratch / "channel.sources").write_text(
         f"Types: deb\nURIs: {config['uri']}\nSuites: {config['channel']}\nComponents: main\nArchitectures: {arch}\n"
-        f"Signed-By: {config['keyring']} {config['fingerprint']}\nValid-Until-Max: 172800\n", encoding="ascii")
+        f"Signed-By: {scratch}/archive.gpg {config['fingerprint']}\nValid-Until-Max: 172800\n", encoding="ascii")
     # Empty the host's hook, key, cache and sources paths. No dpkg install is used.
     (scratch / "apt.conf").write_text(
         f'Dir::Etc::main "/dev/null";\nDir::Etc::parts "{scratch}/conf.d";\n'
         f'Dir::Etc::sourcelist "{scratch}/channel.sources";\nDir::Etc::sourceparts "-";\n'
         f'Dir::Etc::trusted "{scratch}/empty.gpg";\nDir::Etc::trustedparts "{scratch}/trusted.d";\n'
+        f'Dir::Etc::preferences "{scratch}/preferences"; Dir::Etc::preferencesparts "{scratch}/preferences.d";\n'
+        f'Dir::Etc::netrc "{scratch}/auth.conf"; Dir::Etc::netrcparts "{scratch}/auth.conf.d";\n'
         f'Dir::State::lists "{scratch}/lists";\nDir::State::status "{scratch}/status";\n'
         'Dir::Cache::pkgcache ""; Dir::Cache::srcpkgcache "";\n'
         f'APT::Architecture "{arch}";\nAPT::Update::Error-Mode "any";\n'
@@ -106,20 +135,26 @@ def sandbox(scratch, config, arch):
         'Acquire::Check-Date "true"; Acquire::Check-Valid-Until "true";\n'
         'Acquire::AllowInsecureRepositories "false"; Acquire::AllowDowngradeToInsecureRepositories "false";\n'
         'Acquire::https::AllowRedirect "false";\n', encoding="ascii")
-    return {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C", "APT_CONFIG": str(scratch / "apt.conf")}
+    for item in scratch.iterdir():
+        item.chmod(0o755 if item.is_dir() else 0o644)
+    account = apt_user()
+    for directory in (scratch / "lists", scratch / "downloads"):
+        directory.chmod(0o700)
+        os.chown(directory, account["user"], account["group"])
+    return {**NATIVE_ENV, "APT_CONFIG": str(scratch / "apt.conf")}
 
 
 def candidate(env, arch, channel):
-    command(["apt-get", "update"], env=env, error="ARCHIVE_CHECK_FAILED")
-    archive_policy = command(["apt-cache", "policy"], env=env, error="INDEX_POLICY_FAILED")
+    command(["apt-get", "update"], env=env, unprivileged=True, error="ARCHIVE_CHECK_FAILED")
+    archive_policy = command(["apt-cache", "policy"], env=env, unprivileged=True, error="INDEX_POLICY_FAILED")
     archive_releases = re.findall(r"^\s*release (?!a=now$)(.+)$", archive_policy, re.MULTILINE)
     expected = {"o=GhostFleet", "a=" + channel, "n=" + channel, "l=GhostFleet", "c=main", "b=" + arch}
     check(len(archive_releases) == 1 and expected.issubset(archive_releases[0].split(",")), "WRONG_ARCHIVE_CHANNEL")
-    policy = command(["apt-cache", "policy", PKG], env=env, error="INDEX_POLICY_FAILED")
+    policy = command(["apt-cache", "policy", PKG], env=env, unprivileged=True, error="INDEX_POLICY_FAILED")
     found = re.search(r"^\s*Candidate: (\S+)$", policy, re.MULTILINE)
     check(found and matches(VERSION, found[1]), "NO_APPROVED_PACKAGE")
     version = found[1]
-    summary = command(["apt-cache", "show", PKG + "=" + version], env=env, error="INDEX_READ_FAILED")
+    summary = command(["apt-cache", "show", PKG + "=" + version], env=env, unprivileged=True, error="INDEX_READ_FAILED")
     records = [record for record in summary.strip().split("\n\n") if record]
     check(len(records) == 1, "AMBIGUOUS_PACKAGE")
     fields = dict(line.split(": ", 1) for line in records[0].splitlines() if ": " in line and not line.startswith(" "))
@@ -132,7 +167,7 @@ def candidate(env, arch, channel):
 
 def read_package(package, expected):
     process = subprocess.Popen(["dpkg-deb", "--fsys-tarfile", str(package)], stdout=subprocess.PIPE,
-                               stderr=subprocess.DEVNULL)
+                               stderr=subprocess.DEVNULL, env=NATIVE_ENV, **apt_user())
     files = {}
     try:
         with tarfile.open(fileobj=process.stdout, mode="r|") as contents:
@@ -172,15 +207,30 @@ def sync_dir(path):
 def sync_file(path, content, mode):
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, mode)
     with os.fdopen(fd, "wb") as handle:
+        os.fchmod(handle.fileno(), mode)
         handle.write(content)
         handle.flush()
         os.fsync(handle.fileno())
 
 
 def safe_dir(path):
-    path.mkdir(parents=True, exist_ok=True, mode=0o755)
+    if not path.exists():
+        if not path.parent.exists():
+            safe_dir(path.parent)
+        trusted_parents(path)
+        try:
+            path.mkdir(mode=0o755)
+        except FileExistsError:
+            pass
+        else:
+            path.chmod(0o755)
+    trusted_parents(path)
     info = path.lstat()
     check(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022, "UNSAFE_UPDATE_DIRECTORY")
+    # The reporter's DynamicUser must traverse software directories even after a
+    # bootstrap with umask 077. Only root-owned software directories enter here.
+    if info.st_mode & 0o011 != 0o011:
+        path.chmod(stat.S_IMODE(info.st_mode) | 0o011)
     return path
 
 
@@ -206,6 +256,7 @@ def activate(root, release, script):
     with tempfile.TemporaryDirectory(prefix=".stage-", dir=releases) as staging:
         staged = Path(staging) / "release"
         staged.mkdir(mode=0o755)
+        staged.chmod(0o755)
         sync_file(staged / "receipt.json", manifest, 0o644)
         sync_file(staged / "node.py", script, 0o644)
         sync_dir(staged)
@@ -225,10 +276,20 @@ def activate(root, release, script):
 
 
 def pull(root, config, arch):
+    safe_dir(root)
     installed = active(root)
+    if installed:
+        # An rc1 installation may have been staged under a restrictive umask.
+        slot = root / "current"
+        previous = root / slot.readlink()
+        safe_dir(previous.parent)
+        safe_dir(previous)
+        for name in ("receipt.json", "node.py"):
+            path = trusted_file(previous / name)
+            path.chmod(0o644)
     platform = "debian13-" + arch
     check(not installed or installed.get("platform") == platform, "INSTALLED_PLATFORM_MISMATCH")
-    with tempfile.TemporaryDirectory(prefix=".apt-", dir=root) as directory:
+    with tempfile.TemporaryDirectory(prefix="ghostfleet-apt-", dir="/tmp") as directory:
         scratch = Path(directory)
         env = sandbox(scratch, config, arch)
         version, digest, size = candidate(env, arch, config["channel"])
@@ -241,18 +302,26 @@ def pull(root, config, arch):
                 check(digest == installed["sha256"], "IMMUTABLE_VERSION_CONFLICT")
                 return "UNCHANGED"
         download = scratch / "downloads"
-        command(["apt-get", "download", PKG + "=" + version], root=download, env=env, error="PACKAGE_DOWNLOAD_FAILED")
+        command(["apt-get", "download", PKG + "=" + version], root=download, env=env, unprivileged=True, error="PACKAGE_DOWNLOAD_FAILED")
         packages = list(download.glob("*.deb"))
-        check(len(packages) == 1 and packages[0].stat().st_size == size and
-              hashlib.sha256(packages[0].read_bytes()).hexdigest() == digest, "PACKAGE_HASH_MISMATCH")
-        release, script = read_package(packages[0], (version, platform))
+        check(len(packages) == 1, "PACKAGE_HASH_MISMATCH")
+        # Copy once from the fetch account; unpack the same verified, root-owned bytes.
+        fd = os.open(packages[0], os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as source:
+            info = os.fstat(source.fileno())
+            check(stat.S_ISREG(info.st_mode) and info.st_size == size, "PACKAGE_HASH_MISMATCH")
+            contents = source.read(MAX_SIZE + 1)
+        check(len(contents) == size and hashlib.sha256(contents).hexdigest() == digest, "PACKAGE_HASH_MISMATCH")
+        verified = scratch / "verified.deb"
+        sync_file(verified, contents, 0o644)
+        release, script = read_package(verified, (version, platform))
         activate(root, {**release, "sha256": digest}, script)
     return "ACTIVATED"
 
 
 def version_compare(version, comparison, reference):
     result = subprocess.run(["dpkg", "--compare-versions", version, comparison, reference],
-                            capture_output=True, timeout=15, check=False)
+                            capture_output=True, timeout=15, check=False, env=NATIVE_ENV)
     check(result.returncode in (0, 1), "VERSION_COMPARE_FAILED")
     return result.returncode == 0
 
@@ -266,7 +335,9 @@ def main():
     try:
         check(os.geteuid() == 0, "ROOT_REQUIRED")
         config = settings(args.config, args.allow_local_fixture)
-        root = safe_dir(args.root.resolve())
+        if args.root == ROOT:
+            safe_dir(ROOT.parent)
+        root = safe_dir(args.root.absolute())
         fd = os.open(root / "update.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "wb") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)

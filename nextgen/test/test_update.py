@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
+import pwd
 from pathlib import Path
 import shutil
 import subprocess
@@ -13,8 +14,8 @@ from unittest.mock import patch
 
 NEXTGEN = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NEXTGEN))
-from release import build_package, sign
-from update import UpdateError, active, pull
+from release import build, build_package, sign
+from update import UpdateError, active, command, pull, sandbox
 
 
 class UpdateTest(unittest.TestCase):
@@ -71,6 +72,55 @@ class UpdateTest(unittest.TestCase):
              expected_sha256=hashlib.sha256(package.read_bytes()).hexdigest())
         return {"uri": archive.as_uri(), "channel": name, "keyring": str(self.keyring),
                 "fingerprint": self.fingerprint}, package
+
+    def test_umask_build_and_minimum_runtime_access(self):
+        version = "0.3.0~rc2"
+        original = os.umask(0o022)
+        try:
+            config, first = self.channel(version)
+            os.umask(0o077)
+            _, other = self.channel(version, tag="private-build")
+            self.assertEqual(first.read_bytes(), other.read_bytes())
+            self.assertEqual(pull(self.installed, config, "amd64"), "ACTIVATED")
+            slot = (self.installed / "current").resolve()
+            for name in ("receipt.json", "node.py"):
+                self.assertEqual((slot / name).stat().st_mode & 0o777, 0o644)
+            # Correct an rc1 slot previously staged under a restricted umask.
+            slot.chmod(0o700)
+            (slot / "receipt.json").chmod(0o600)
+            self.assertEqual(pull(self.installed, config, "amd64"), "UNCHANGED")
+            subprocess.run(["cat", str(slot / "receipt.json")], check=True, stdout=subprocess.DEVNULL,
+                           user="nobody", group="nogroup", extra_groups=[])
+        finally:
+            os.umask(original)
+
+    def test_native_apt_identity_and_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            env = sandbox(root, {"uri": "https://packages.example.invalid", "channel": "canary",
+                                 "keyring": str(self.keyring), "fingerprint": self.fingerprint}, "amd64")
+            self.assertEqual(int(command(["id", "-u"], env=env, unprivileged=True)), pwd.getpwnam("_apt").pw_uid)
+            self.assertEqual(command(["id", "-G"], env=env, unprivileged=True).strip(), str(pwd.getpwnam("_apt").pw_gid))
+            for setting, filename in (("preferences/f", "preferences"), ("preferencesparts/d", "preferences.d"),
+                                      ("netrc/f", "auth.conf"), ("netrcparts/d", "auth.conf.d")):
+                value = command(["apt-config", "shell", "ENTRY", "Dir::Etc::" + setting], env=env, unprivileged=True)
+                value = value.strip().removeprefix("ENTRY='").removesuffix("'")
+                self.assertEqual(Path(value), root / filename)
+
+    def test_signer_expiry_and_commit_guards(self):
+        # A normal foreign configuration and a private umask do not select release inputs.
+        with patch.dict(os.environ, {"APT_CONFIG": str(self.workspace / "unrelated.conf"),
+                                     "GNUPGHOME": str(self.foreign), "LC_ALL": "C"}):
+            config, _ = self.channel("0.3.0~rc2")
+        self.assertEqual(pull(self.installed, config, "amd64"), "ACTIVATED")
+        release = (self.workspace / "0.3.0~rc2/dists/canary/Release").read_text()
+        self.assertEqual(sum(line.lower().startswith("valid-until:") for line in release.splitlines()), 1)
+        with self.assertRaisesRegex(UpdateError, "SOURCE_REVISION_MISMATCH"):
+            build(self.workspace / "unpublished", "0.3.0~rc2", "amd64", "wrong")
+        self.assertFalse((self.workspace / "unpublished").exists())
+        report_actions = subprocess.check_output([sys.executable, "-I", NEXTGEN / "host/node.py", "--help"], text=True)
+        self.assertNotIn("adopt", report_actions)
+        self.assertNotIn("enroll", report_actions)
 
     def test_upgrade_noop_and_reviewed_roll_forward(self):
         first, previous = self.channel("0.3.0~rc1")

@@ -17,6 +17,8 @@ def main():
     parser.add_argument("--allow-local-fixture", action="store_true")
     args = parser.parse_args()
     try:
+        if os.geteuid() == 0:
+            raise ValueError
         root = args.release_root.resolve(strict=True)
         slot = (root / "current").resolve(strict=True)
         if slot.parent != root / "releases" or not SLOT.fullmatch(slot.name):
