@@ -27,10 +27,27 @@ FILES = {PAYLOAD + "node.py", PAYLOAD + "release.json"}
 DIRS = {".", "usr", "usr/share", PAYLOAD.rstrip("/")}
 MAX_SIZE = 1024 * 1024
 ROOT = Path("/var/lib/ghostfleet-nextgen/software")
+APT_HTTP_UNAVAILABLE = r"(?:408|429|5[0-9]{2})\b"
+APT_TRANSPORT_ERROR = re.compile(
+    r"E: Failed to fetch \S+  (?:Could not (?:connect to|resolve|wait for server fd)|"
+    r"Unable to connect to|Temporary failure resolving|Connection (?:failed|timed out)|"
+    rf"File not found -|{APT_HTTP_UNAVAILABLE}).*"
+)
+APT_FETCH_SUMMARIES = {
+    "E: Some index files failed to download. They have been ignored, or old ones used instead.",
+    "E: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?",
+}
+APT_UNSIGNED = re.compile(r"E: The repository '(https://\S+) (canary|stable) (InRelease|Release)' is not signed\.")
 
 
 class UpdateError(Exception):
     pass
+
+
+class ArchiveUnavailable(UpdateError):
+    def __init__(self, message, approved=None):
+        super().__init__(message)
+        self.approved = approved
 
 
 def check(requirement, message):
@@ -54,9 +71,25 @@ def apt_user():
     return {"user": account.pw_uid, "group": account.pw_gid, "extra_groups": []}
 
 
-def command(args, *, root=None, env=None, error="NATIVE_TOOL_FAILED", unprivileged=False):
+def archive_unavailable(stderr):
+    # APT shares an exit code across transport, signature and integrity failures.
+    diagnostics = set(stderr.decode("utf-8", errors="replace").splitlines()) - APT_FETCH_SUMMARIES - {""}
+    for line in diagnostics.copy():
+        missing = APT_UNSIGNED.fullmatch(line)
+        if missing:
+            # A transient HTTP error fetching this exact Release can cause a generic unsigned summary.
+            uri = f"{missing[1].rstrip('/')}/dists/{missing[2]}/{missing[3]}"
+            failure = re.compile(rf"E: Failed to fetch {re.escape(uri)}  {APT_HTTP_UNAVAILABLE}.*")
+            if any(failure.fullmatch(other) for other in diagnostics):
+                diagnostics.remove(line)
+    return bool(diagnostics) and all(APT_TRANSPORT_ERROR.fullmatch(line) for line in diagnostics)
+
+
+def command(args, *, root=None, env=None, error="NATIVE_TOOL_FAILED", unprivileged=False, fetch=False):
     result = subprocess.run(args, cwd=root, env=env or NATIVE_ENV, capture_output=True, timeout=120, check=False,
                             **(apt_user() if unprivileged else {}))
+    if result.returncode and fetch and archive_unavailable(result.stderr):
+        raise ArchiveUnavailable(error)
     check(result.returncode == 0, error)
     return result.stdout.decode("utf-8")
 
@@ -78,17 +111,30 @@ def trusted_file(path):
 
 
 def settings(path, local):
-    data = json.loads(trusted_file(path).read_bytes())
-    required = {"uri", "channel", "keyring", "fingerprint"}
-    check(isinstance(data, dict) and required <= data.keys() <= required | {"minimum_version"}, "INVALID_UPDATE_SETTINGS")
-    check("minimum_version" not in data or matches(VERSION, data["minimum_version"]), "INVALID_MINIMUM_VERSION")
-    uri_text = data["uri"]
-    check(isinstance(uri_text, str) and uri_text.isascii() and not any(char.isspace() for char in uri_text),
-          "INVALID_ARCHIVE_URI")
-    uri = urlsplit(uri_text)
-    check(not (uri.username or uri.password or uri.query or uri.fragment) and
-          ((uri.scheme == "https" and uri.hostname) or
+    return validate_settings(json.loads(trusted_file(path).read_bytes()), local)
+
+
+def validate_archive_uri(text, local):
+    check(isinstance(text, str) and re.fullmatch(r"[\x21-\x7e]+", text) and
+          not any(char in text for char in "?#\\"), "INVALID_ARCHIVE_URI")
+    try:
+        uri = urlsplit(text)
+        port = uri.port
+    except ValueError:
+        raise UpdateError("INVALID_ARCHIVE_URI") from None
+    check(uri.username is None and uri.password is None and
+          ((uri.scheme == "https" and uri.hostname and port != 0) or
            (local and uri.scheme == "file" and not uri.netloc and uri.path.startswith("/"))), "INVALID_ARCHIVE_URI")
+
+
+def validate_settings(data, local):
+    required = {"uri", "channel", "keyring", "fingerprint"}
+    optional = {"minimum_version", "fallback_uri"}
+    check(isinstance(data, dict) and required <= data.keys() <= required | optional, "INVALID_UPDATE_SETTINGS")
+    check("minimum_version" not in data or matches(VERSION, data["minimum_version"]), "INVALID_MINIMUM_VERSION")
+    validate_archive_uri(data["uri"], local)
+    if "fallback_uri" in data:
+        validate_archive_uri(data["fallback_uri"], local)
     check(data["channel"] in ("canary", "stable"), "INVALID_CHANNEL")
     check(matches(FINGERPRINT, data["fingerprint"]), "INVALID_FINGERPRINT")
     keyring = data["keyring"]
@@ -134,7 +180,7 @@ def sandbox(scratch, config, arch):
         'Acquire::Languages "none"; Acquire::Retries "0";\n'
         'Acquire::Check-Date "true"; Acquire::Check-Valid-Until "true";\n'
         'Acquire::AllowInsecureRepositories "false"; Acquire::AllowDowngradeToInsecureRepositories "false";\n'
-        'Acquire::https::AllowRedirect "false";\n', encoding="ascii")
+        'Acquire::https::AllowRedirect "false"; Acquire::https::Timeout "30";\n', encoding="ascii")
     for item in scratch.iterdir():
         item.chmod(0o755 if item.is_dir() else 0o644)
     account = apt_user()
@@ -145,7 +191,7 @@ def sandbox(scratch, config, arch):
 
 
 def candidate(env, arch, channel):
-    command(["apt-get", "update"], env=env, unprivileged=True, error="ARCHIVE_CHECK_FAILED")
+    command(["apt-get", "update"], env=env, unprivileged=True, error="ARCHIVE_CHECK_FAILED", fetch=True)
     archive_policy = command(["apt-cache", "policy"], env=env, unprivileged=True, error="INDEX_POLICY_FAILED")
     archive_releases = re.findall(r"^\s*release (?!a=now$)(.+)$", archive_policy, re.MULTILINE)
     expected = {"o=GhostFleet", "a=" + channel, "n=" + channel, "l=GhostFleet", "c=main", "b=" + arch}
@@ -213,6 +259,13 @@ def sync_file(path, content, mode):
         os.fsync(handle.fileno())
 
 
+def trusted_directory(path):
+    trusted_parents(path)
+    info = path.lstat()
+    check(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022, "UNSAFE_UPDATE_DIRECTORY")
+    return info
+
+
 def safe_dir(path):
     if not path.exists():
         if not path.parent.exists():
@@ -224,9 +277,7 @@ def safe_dir(path):
             pass
         else:
             path.chmod(0o755)
-    trusted_parents(path)
-    info = path.lstat()
-    check(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022, "UNSAFE_UPDATE_DIRECTORY")
+    info = trusted_directory(path)
     # The reporter's DynamicUser must traverse software directories even after a
     # bootstrap with umask 077. Only root-owned software directories enter here.
     if info.st_mode & 0o011 != 0o011:
@@ -275,34 +326,51 @@ def activate(root, release, script):
         sync_dir(root)
 
 
-def pull(root, config, arch):
-    safe_dir(root)
-    installed = active(root)
-    if installed:
-        # An rc1 installation may have been staged under a restrictive umask.
-        slot = root / "current"
-        previous = root / slot.readlink()
-        safe_dir(previous.parent)
-        safe_dir(previous)
-        for name in ("receipt.json", "node.py"):
-            path = trusted_file(previous / name)
-            path.chmod(0o644)
+def repair_reporter(slot, release, script):
+    receipt = trusted_file(slot / "receipt.json")
+    check(receipt.stat().st_nlink == 1 and receipt.read_bytes() == json.dumps(release, sort_keys=True).encode(),
+          "REPAIR_RECEIPT_MISMATCH")
+    reporter = slot / "node.py"
+    try:
+        info = reporter.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        check(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1 and not info.st_mode & 0o022,
+              "UNSAFE_REPAIR_REPORTER")
+        if stat.S_IMODE(info.st_mode) == 0o644 and info.st_size == len(script) and reporter.read_bytes() == script:
+            return "UNCHANGED"
+    with tempfile.TemporaryDirectory(prefix=".repair-", dir=slot) as staging:
+        staged = Path(staging) / "node.py"
+        sync_file(staged, script, 0o644)
+        staged.replace(reporter)
+        sync_dir(slot)
+    return "REPAIRED"
+
+
+def pull_archive(root, config, arch, installed, repair_slot, approved=None):
     platform = "debian13-" + arch
-    check(not installed or installed.get("platform") == platform, "INSTALLED_PLATFORM_MISMATCH")
     with tempfile.TemporaryDirectory(prefix="ghostfleet-apt-", dir="/tmp") as directory:
         scratch = Path(directory)
         env = sandbox(scratch, config, arch)
-        version, digest, size = candidate(env, arch, config["channel"])
+        selected = candidate(env, arch, config["channel"])
+        version, digest, size = selected
         floor = config.get("minimum_version")
         if floor:
             check(not version_compare(version, "lt", floor), "BELOW_APPROVED_FLOOR")
-        if installed:
-            if version_compare(version, "le", installed["version"]):
-                check(version == installed["version"], "ROLLBACK_REFUSED")
-                check(digest == installed["sha256"], "IMMUTABLE_VERSION_CONFLICT")
+        if installed and version_compare(version, "le", installed["version"]):
+            check(version == installed["version"], "ROLLBACK_REFUSED")
+            check(digest == installed["sha256"], "IMMUTABLE_VERSION_CONFLICT")
+            if repair_slot is None and approved is None:
                 return "UNCHANGED"
+        check(approved is None or selected == approved, "FALLBACK_CANDIDATE_MISMATCH")
+        check(repair_slot is None or version == installed["version"], "REPAIR_VERSION_MISMATCH")
         download = scratch / "downloads"
-        command(["apt-get", "download", PKG + "=" + version], root=download, env=env, unprivileged=True, error="PACKAGE_DOWNLOAD_FAILED")
+        try:
+            command(["apt-get", "download", PKG + "=" + version], root=download, env=env, unprivileged=True,
+                    error="PACKAGE_DOWNLOAD_FAILED", fetch=True)
+        except ArchiveUnavailable as error:
+            raise ArchiveUnavailable(str(error), selected) from None
         packages = list(download.glob("*.deb"))
         check(len(packages) == 1, "PACKAGE_HASH_MISMATCH")
         # Copy once from the fetch account; unpack the same verified, root-owned bytes.
@@ -315,8 +383,43 @@ def pull(root, config, arch):
         verified = scratch / "verified.deb"
         sync_file(verified, contents, 0o644)
         release, script = read_package(verified, (version, platform))
-        activate(root, {**release, "sha256": digest}, script)
+        release["sha256"] = digest
+        if repair_slot is not None:
+            return repair_reporter(repair_slot, release, script)
+        activate(root, release, script)
     return "ACTIVATED"
+
+
+def pull(root, config, arch, *, repair=False):
+    if repair:
+        trusted_directory(root)
+    else:
+        safe_dir(root)
+    installed = active(root)
+    check(not installed or installed.get("platform") == "debian13-" + arch, "INSTALLED_PLATFORM_MISMATCH")
+    slot = None
+    if repair:
+        check(installed is not None, "REPAIR_REQUIRES_ACTIVE_RELEASE")
+        current = root / "current"
+        check(current.lstat().st_uid == 0, "INVALID_ACTIVE_RELEASE")
+        slot = root / current.readlink()
+        trusted_directory(slot.parent)
+        trusted_directory(slot)
+    elif installed:
+        # An rc1 installation may have been staged under a restrictive umask.
+        previous = root / (root / "current").readlink()
+        safe_dir(previous.parent)
+        safe_dir(previous)
+        for name in ("receipt.json", "node.py"):
+            path = trusted_file(previous / name)
+            if stat.S_IMODE(path.stat().st_mode) != 0o644:
+                path.chmod(0o644)
+    try:
+        return pull_archive(root, config, arch, installed, slot)
+    except ArchiveUnavailable as error:
+        if "fallback_uri" not in config:
+            raise
+        return pull_archive(root, {**config, "uri": config["fallback_uri"]}, arch, installed, slot, error.approved)
 
 
 def version_compare(version, comparison, reference):
@@ -326,22 +429,36 @@ def version_compare(version, comparison, reference):
     return result.returncode == 0
 
 
+def run_update(root, config, arch, *, repair=False):
+    check(os.geteuid() == 0, "ROOT_REQUIRED")
+    root = root.absolute()
+    if repair:
+        check(root.exists() or root.is_symlink(), "REPAIR_REQUIRES_ACTIVE_RELEASE")
+        trusted_directory(root)
+    else:
+        if root == ROOT:
+            safe_dir(ROOT.parent)
+        safe_dir(root)
+    fd = os.open(root / "update.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    with os.fdopen(fd, "wb") as lock:
+        info = os.fstat(lock.fileno())
+        check(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1 and not info.st_mode & 0o022,
+              "UNSAFE_UPDATE_LOCK")
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return pull(root, config, arch, repair=repair)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("/etc/ghostfleet-nextgen/update.json"))
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--allow-local-fixture", action="store_true", help="allow a local signed file: test archive")
+    parser.add_argument("--repair", action="store_true", help="verify and restore the active release reporter")
     args = parser.parse_args()
     try:
         check(os.geteuid() == 0, "ROOT_REQUIRED")
         config = settings(args.config, args.allow_local_fixture)
-        if args.root == ROOT:
-            safe_dir(ROOT.parent)
-        root = safe_dir(args.root.absolute())
-        fd = os.open(root / "update.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "wb") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            result = pull(root, config, release_platform())
+        result = run_update(args.root, config, release_platform(), repair=args.repair)
         print("GHOSTFLEET_UPDATE_" + result)
     except UpdateError as error:
         print(str(error), file=sys.stderr)
