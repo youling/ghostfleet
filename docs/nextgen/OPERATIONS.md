@@ -57,7 +57,7 @@ npx --no-install wrangler deploy --dry-run --config nextgen/wrangler.jsonc --out
     "uri": "https://updates.example.invalid",
     "fallback_uri": "https://updates-backup.example.invalid",
     "channel": "canary",
-    "keyring": "/root/trust/release.gpg",
+    "keyring": "/etc/ghostfleet-nextgen/release.gpg",
     "fingerprint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     "minimum_version": "0.3.0~rc3"
   },
@@ -72,7 +72,7 @@ npx --no-install wrangler deploy --dry-run --config nextgen/wrangler.jsonc --out
 }
 ```
 
-把 profile 和邀请或旧身份文件设为 root 所有、0600，并引用独立交付的 keyring。已获准的 legacy 节点使用 `mode: adopt`，把 `invitation_file` 换成 `legacy_config`。确保面板已批准同 UID 接管，原 reporter 及其配置由原 owner 保留。已有手装的同名 GhostFleet 文件与引导包内容不同时，先由 owner 核准旧字节 SHA-256，再把固定文件名及对应摘要填入 `previous_files`。未知归属会报告冲突。
+把 profile 和邀请或旧身份文件设为 root 所有、0600，并引用独立交付、周期更新服务可读的 keyring。例如把公钥文件放在 `/etc/ghostfleet-nextgen/release.gpg`。更新服务的 `ProtectHome` 与 `PrivateTmp` 会屏蔽 `/root`、用户家目录及临时目录，安装器会拒绝用这些位置作为周期更新的签名信任。已获准的 legacy 节点使用 `mode: adopt`，把 `invitation_file` 换成 `legacy_config`。确保面板已批准同 UID 接管，原 reporter 及其配置由原 owner 保留。已有手装的同名 GhostFleet 文件与引导包内容不同时，先由 owner 核准旧字节 SHA-256，再把固定文件名及对应摘要填入 `previous_files`。未知归属会报告冲突。
 
 ```sh
 sudo /usr/bin/python3 -I /root/ghostfleet-bootstrap/install.py plan /root/ghostfleet-profile.json
@@ -80,6 +80,8 @@ sudo /usr/bin/python3 -I /root/ghostfleet-bootstrap/install.py apply /root/ghost
 sudo /usr/bin/python3 -I /root/ghostfleet-bootstrap/install.py status /root/ghostfleet-profile.json
 sudo /usr/bin/python3 -I /root/ghostfleet-bootstrap/install.py repair /root/ghostfleet-profile.json
 ```
+
+首装或切换发布频道后，实触发一次 `sudo systemctl start ghostfleet-nextgen-update.service`，读回退出结果及 journal，确认周期服务使用相同信任根。
 
 `plan` 与 `status` 读取本机文件、身份和 systemd 状态。`apply` 使用签名渠道激活 reporter，布置自有文件与定时器，首纳或保留既有身份。`repair` 通过相同版本和签名包恢复自有 reporter、引导文件和定时器。状态使用 JSON，包含实际安装版、变更项和诊断。当前 release 的签名索引不可用时保留原指针。前滚恢复由发布 owner 签署版本更高的已知好内容。`fallback_uri` 选用相同信任根和频道，只在可确认的获取故障时切换。若主源已经选定包，备用源必须给出同一版本、大小和摘要。
 

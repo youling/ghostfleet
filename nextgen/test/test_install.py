@@ -103,6 +103,12 @@ class InstallPreflightTest(unittest.TestCase):
         self.assertIn(str(install.LIB), result['files'])
         self.assertEqual(install.LIB.stat().st_mode & 0o055, 0o055)
 
+    def test_keyring_matches_the_packaged_systemd_namespace(self):
+        install.service_keyring(Path('/etc/ghostfleet-nextgen/release.gpg'))
+        for root in ('/root', '/home/user', '/tmp', '/var/tmp'):
+            with self.subTest(root=root), self.assertRaisesRegex(install.update.UpdateError, 'KEYRING_HIDDEN'):
+                install.service_keyring(Path(root) / 'release.gpg')
+
 
 if __name__ == '__main__':
     unittest.main()

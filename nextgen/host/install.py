@@ -32,6 +32,9 @@ TIMERS = (UNIT_BASE + 'report.timer', UNIT_BASE + 'update.timer')
 UNIT_FILES = (*TIMERS, UNIT_BASE + 'report.service', UNIT_BASE + 'update.service', native.AGENT_UNIT)
 SCRIPTS = ('enroll.py', 'node.py', 'update.py', 'report.py', 'native.py')
 SCHEMA = 'ghostfleet-install/v1'
+# These paths are hidden by ProtectHome, PrivateTmp, or InaccessiblePaths in
+# the packaged update unit. The CLI and scheduled service must share trust.
+UPDATE_UNIT_HIDDEN = tuple(map(Path, ('/root', '/home', '/run/user', '/tmp', '/var/tmp', '/etc/ssh'))) + (PRIVATE,)
 
 
 def require(condition, code):
@@ -64,11 +67,16 @@ def fields(value, required, optional=()):
             'INVALID_INSTALL_PROFILE')
 
 
+def service_keyring(path):
+    require(not any(path.is_relative_to(hidden) for hidden in UPDATE_UNIT_HIDDEN), 'KEYRING_HIDDEN_FROM_UPDATE_SERVICE')
+
+
 def profile(path, local):
     value = node.read_json(update.trusted_file(path.absolute()), private=True)
     fields(value, ('schema', 'update', 'enrollment'), ('components', 'previous_files'))
     require(value['schema'] == SCHEMA, 'INVALID_INSTALL_SCHEMA')
     update.validate_settings(value['update'], local)
+    service_keyring(Path(value['update']['keyring']))
     entry = value['enrollment']
     fields(entry, ('mode', 'node_uid', 'origin', 'config_revision'), ('invitation_file', 'legacy_config'))
     require(entry['mode'] in ('enroll', 'adopt') and node.valid(node.UID, entry['node_uid']) and
@@ -225,6 +233,12 @@ def inspect(value, local):
         if exists(native.AGENT_HOME):
             require(native.trusted_attachment(approved) is not None, 'EXISTING_ATTACHMENT_CONFLICT')
             prepared = True
+            token = local_path(k3s['token_file'])
+            if exists(token) or k3s['mode'] == 'start' and states[native.AGENT_UNIT].get('ActiveState') != 'active':
+                supplied = native.agent_token(native.read(update.trusted_file(token), secret=True, limit=1024),
+                                               approved['ca_sha256'])
+                require(native.read(native.AGENT_HOME / 'token', secret=True, limit=1024) == supplied.encode(),
+                        'EXISTING_ATTACHMENT_CONFLICT')
         else:
             artifact = update.trusted_file(local_path(k3s['artifact']))
             token = update.trusted_file(local_path(k3s['token_file']))
