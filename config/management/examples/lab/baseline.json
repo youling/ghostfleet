@@ -1,0 +1,24 @@
+{
+  "schema": "ghostfleet-config-layer/v1",
+  "type": "baseline",
+  "name": "baseline",
+  "version": "1.0.0",
+  "platforms": [
+    "debian13-amd64",
+    "wsl-debian13-amd64"
+  ],
+  "resources": [
+    {
+      "id": "synthetic-fleet-identity",
+      "kind": "credential",
+      "scope": "cloudflare",
+      "key": "ghostfleet:lab-identity",
+      "owner": "ghostfleet",
+      "mode": "observe",
+      "recovery": "synthetic-owner-preimage",
+      "consumers": [
+        "configuration-check"
+      ]
+    }
+  ]
+}

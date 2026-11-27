@@ -1,0 +1,192 @@
+{
+  "schema": "ghostfleet-config-layer/v1",
+  "type": "capability",
+  "name": "linux-owners-observe",
+  "version": "1.0.0",
+  "platforms": [
+    "debian13-amd64",
+    "wsl-debian13-amd64"
+  ],
+  "resources": [
+    {
+      "id": "fleet-isolated-apt",
+      "kind": "package-db",
+      "scope": "host",
+      "key": "isolated-apt",
+      "owner": "ghostfleet",
+      "mode": "observe",
+      "recovery": "signed-release-pointer",
+      "consumers": [
+        "fleet-reporter"
+      ]
+    },
+    {
+      "id": "fleet-reporter-timer",
+      "kind": "unit",
+      "scope": "host",
+      "key": "ghostfleet-nextgen-report.timer",
+      "owner": "ghostfleet",
+      "mode": "observe",
+      "recovery": "signed-release-pointer",
+      "consumers": [
+        "fleet-reporter"
+      ]
+    },
+    {
+      "id": "fleet-update-timer",
+      "kind": "unit",
+      "scope": "host",
+      "key": "ghostfleet-nextgen-update.timer",
+      "owner": "ghostfleet",
+      "mode": "observe",
+      "recovery": "signed-release-pointer",
+      "consumers": [
+        "fleet-reporter"
+      ]
+    },
+    {
+      "id": "fleet-local-state",
+      "kind": "store",
+      "scope": "host",
+      "key": "/var/lib/ghostfleet-nextgen",
+      "owner": "ghostfleet",
+      "mode": "observe",
+      "recovery": "signed-release-pointer",
+      "consumers": [
+        "fleet-reporter"
+      ]
+    },
+    {
+      "id": "converger-selection",
+      "kind": "lifecycle",
+      "scope": "host",
+      "key": "converger:enrollment-attempt",
+      "owner": "converger",
+      "mode": "observe",
+      "recovery": "matched-enrollment-checkpoint",
+      "consumers": [
+        "ansible"
+      ]
+    },
+    {
+      "id": "converger-package",
+      "kind": "package",
+      "scope": "host",
+      "key": "tailscale",
+      "owner": "converger",
+      "mode": "observe",
+      "recovery": "upstream-ts-or-converger",
+      "consumers": [
+        "ansible"
+      ]
+    },
+    {
+      "id": "ts-native-service",
+      "kind": "unit",
+      "scope": "host",
+      "key": "tailscaled.service",
+      "owner": "tailscale",
+      "mode": "observe",
+      "recovery": "original-ts-unit",
+      "consumers": [
+        "linux-toolchain"
+      ]
+    },
+    {
+      "id": "ts-provider-route",
+      "kind": "route",
+      "scope": "tailnet",
+      "key": "192.0.2.32/27",
+      "owner": "tailscale",
+      "mode": "observe",
+      "recovery": "prior-provider-policy",
+      "consumers": [
+        "management"
+      ]
+    },
+    {
+      "id": "cf-native-service",
+      "kind": "unit",
+      "scope": "host",
+      "key": "cloudflared.service",
+      "owner": "cloudflare",
+      "mode": "observe",
+      "recovery": "original-connector-unit",
+      "consumers": [
+        "management"
+      ]
+    },
+    {
+      "id": "cf-tunnel-identity",
+      "kind": "credential",
+      "scope": "cloudflare",
+      "key": "cloudflare:tunnel",
+      "owner": "cloudflare",
+      "mode": "observe",
+      "recovery": "prior-provider-binding",
+      "consumers": [
+        "management"
+      ]
+    },
+    {
+      "id": "k3s-workload-port",
+      "kind": "port",
+      "scope": "k3s",
+      "key": "tcp/30443",
+      "owner": "k3s",
+      "mode": "observe",
+      "recovery": "prior-workload-revision",
+      "consumers": [
+        "management"
+      ]
+    },
+    {
+      "id": "k3s-workload-route",
+      "kind": "route",
+      "scope": "k3s",
+      "key": "198.51.100.0/25",
+      "owner": "k3s",
+      "mode": "observe",
+      "recovery": "prior-workload-revision",
+      "consumers": [
+        "management"
+      ]
+    },
+    {
+      "id": "k3s-state",
+      "kind": "store",
+      "scope": "host",
+      "key": "/var/lib/rancher/k3s",
+      "owner": "k3s",
+      "mode": "observe",
+      "recovery": "owner-datastore-snapshot",
+      "consumers": [
+        "management"
+      ]
+    },
+    {
+      "id": "oci-image",
+      "kind": "lifecycle",
+      "scope": "oci",
+      "key": "oci:reviewed-image",
+      "owner": "oci",
+      "mode": "observe",
+      "recovery": "prior-image-digest",
+      "consumers": [
+        "linux-toolchain"
+      ]
+    },
+    {
+      "id": "oci-state",
+      "kind": "store",
+      "scope": "host",
+      "key": "/var/lib/containers",
+      "owner": "oci",
+      "mode": "observe",
+      "recovery": "owner-volume-snapshot",
+      "consumers": [
+        "linux-toolchain"
+      ]
+    }
+  ]
+}

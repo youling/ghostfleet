@@ -1,0 +1,166 @@
+---
+- name: Converge the one authorized GhostFleet target
+  hosts: target
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  serial: 1
+  vars:
+    ghostfleet_package_names: "{{ ghostfleet_packages | map(attribute='name') | list }}"
+    ghostfleet_package_pins: "{{ ghostfleet_package_names | zip(ghostfleet_packages | map(attribute='version')) | map('join', '=') | list }}"
+  tasks:
+    - name: Invoke the original owner entrypoint
+      ansible.builtin.command:
+        argv: "{{ ghostfleet_owner_argv }}"
+        expand_argument_vars: false
+      when: ghostfleet_owner_argv | length > 0
+      check_mode: false
+      register: ghostfleet_owner_result
+      changed_when: ghostfleet_owner_result.rc == 0 and (ghostfleet_owner_result.stdout | from_json).changed
+      no_log: true
+
+    - name: Verify installed package versions before considering changes
+      when: ghostfleet_packages | length > 0
+      block:
+        - name: Inspect current package database
+          ansible.builtin.command:
+            expand_argument_vars: false
+            argv: [/usr/bin/dpkg, --audit]
+          check_mode: false
+          changed_when: false
+          register: ghostfleet_dpkg_audit
+          failed_when: ghostfleet_dpkg_audit.rc != 0 or ghostfleet_dpkg_audit.stdout | length > 0
+
+        - name: Read each installed package version
+          ansible.builtin.command:
+            expand_argument_vars: false
+            argv:
+              - /usr/bin/dpkg-query
+              - -W
+              - '-f=${Status} ${Version}'
+              - "{{ item.name }}"
+          loop: "{{ ghostfleet_packages }}"
+          register: ghostfleet_existing_packages
+          check_mode: false
+          changed_when: false
+          failed_when: >
+            ghostfleet_existing_packages.rc not in [0, 1] or
+            (ghostfleet_existing_packages.rc == 0 and
+             ghostfleet_existing_packages.stdout != ('install ok installed ' ~ item.version))
+
+    - name: Apply only reviewed resources
+      when: ghostfleet_phase != 'verify'
+      block:
+        - name: Calculate package transaction before package writes
+          ansible.builtin.command:
+            expand_argument_vars: false
+            argv: "{{ ['/usr/bin/apt-get', '-s', '--no-upgrade', '--no-remove', '--no-install-recommends',
+              'install'] + ghostfleet_package_pins }}"
+          check_mode: false
+          changed_when: false
+          register: ghostfleet_apt_plan
+          when: ghostfleet_packages | length > 0
+
+        - name: Refuse unrelated package operations
+          ansible.builtin.assert:
+            that:
+              - "(ghostfleet_apt_plan.stdout | regex_findall('(?m)^Inst ([^ ]+) ') | difference(ghostfleet_package_names)) | length == 0"
+              - "(ghostfleet_apt_plan.stdout | regex_findall('(?m)^Remv ') | length) == 0"
+              - "(ghostfleet_apt_plan.stdout | regex_findall('(?m)^Inst [^ ]+ \\[') | length) == 0"
+          when: ghostfleet_packages | length > 0
+
+        - name: Ensure explicitly pinned packages are present
+          ansible.builtin.apt:
+            name: "{{ ghostfleet_package_pins }}"
+            state: present
+            update_cache: false
+            auto_install_module_deps: false
+            install_recommends: false
+            fail_on_autoremove: true
+            allow_downgrade: false
+            force_apt_get: true
+            lock_timeout: 20
+          when: ghostfleet_packages | length > 0
+
+        - name: Ensure owned directories exist
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: directory
+            mode: "{{ item.mode }}"
+            follow: false
+          loop: "{{ ghostfleet_paths | selectattr('state', 'equalto', 'directory') | list }}"
+          loop_control:
+            label: "{{ item.path }}"
+
+        - name: Read existing parent directories during simulation
+          ansible.builtin.stat:
+            path: "{{ item.path | dirname }}"
+            follow: false
+            get_checksum: false
+          loop: "{{ ghostfleet_paths | selectattr('state', 'equalto', 'file') | list }}"
+          register: ghostfleet_planned_parents
+          when: ghostfleet_phase == 'plan'
+          no_log: true
+
+        - name: Plan files below reviewed directories that do not exist yet
+          ansible.builtin.debug:
+            msg: File will be created after its parent directory
+          loop: "{{ ghostfleet_planned_parents.results | default([]) }}"
+          when: ghostfleet_phase == 'plan' and not (item.stat.isdir | default(false))
+          changed_when: true
+          no_log: true
+
+        - name: Converge exact bytes of owned files
+          ansible.builtin.copy:
+            src: "{{ item.source }}"
+            dest: "{{ item.path }}"
+            mode: "{{ item.mode }}"
+            follow: false
+          loop: "{{ ghostfleet_paths | selectattr('state', 'equalto', 'file') | list }}"
+          loop_control:
+            index_var: ghostfleet_file_index
+            label: "{{ item.path }}"
+          when: >
+            ghostfleet_phase != 'plan' or
+            ghostfleet_planned_parents.results[ghostfleet_file_index].stat.isdir | default(false)
+          no_log: true
+          diff: false
+
+    - name: Read actual remote state
+      when: ghostfleet_phase != 'plan'
+      block:
+        - name: Inspect installed path metadata and SHA-256
+          ansible.builtin.stat:
+            path: "{{ item.path }}"
+            follow: false
+            checksum_algorithm: sha256
+          register: ghostfleet_path_observations
+          loop: "{{ ghostfleet_paths }}"
+          loop_control:
+            label: "{{ item.path }}"
+          no_log: true
+
+        - name: Verify paths against the approved projection
+          ansible.builtin.assert:
+            that:
+              - item.stat.exists
+              - item.stat.mode == item.item.mode
+              - (item.item.state == 'directory' and item.stat.isdir) or
+                (item.item.state == 'file' and item.stat.isreg and item.stat.checksum == item.item.sha256)
+          loop: "{{ ghostfleet_path_observations.results }}"
+          no_log: true
+
+        - name: Read back each pinned package
+          ansible.builtin.command:
+            expand_argument_vars: false
+            argv:
+              - /usr/bin/dpkg-query
+              - -W
+              - '-f=${Status} ${Version}'
+              - "{{ item.name }}"
+          loop: "{{ ghostfleet_packages }}"
+          register: ghostfleet_package_readback
+          changed_when: false
+          failed_when: >
+            ghostfleet_package_readback.rc != 0 or
+            ghostfleet_package_readback.stdout != ('install ok installed ' ~ item.version)

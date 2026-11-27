@@ -1,0 +1,45 @@
+{
+  "schema": "ghostfleet-config-layer/v1",
+  "type": "capability",
+  "name": "fixture-rollback",
+  "version": "1.0.1",
+  "platforms": [
+    "debian13-amd64",
+    "wsl-debian13-amd64"
+  ],
+  "resources": [
+    {
+      "kind": "path",
+      "scope": "host",
+      "owner": "ansible",
+      "mode": "manage",
+      "recovery": "synthetic-owner-preimage",
+      "consumers": [
+        "configuration-check"
+      ],
+      "id": "lab-directory",
+      "key": "/opt/ghostfleet-fixture/ghostfleet-profile-sample",
+      "desired": {
+        "state": "directory",
+        "mode": "0750"
+      }
+    },
+    {
+      "kind": "path",
+      "scope": "host",
+      "owner": "ansible",
+      "mode": "manage",
+      "recovery": "synthetic-owner-preimage",
+      "consumers": [
+        "configuration-check"
+      ],
+      "id": "lab-file",
+      "key": "/opt/ghostfleet-fixture/ghostfleet-profile-sample/README.txt",
+      "desired": {
+        "state": "file",
+        "mode": "0644",
+        "sha256": "aa7e1a29b3a079f7714ea5b6a89fd403f604c2ef55e11389b9e5239862a1d403"
+      }
+    }
+  ]
+}

@@ -1,0 +1,570 @@
+{
+  "schema": "ghostfleet-resource-matrix/v1",
+  "version": "1.0.1",
+  "owners": {
+    "ansible": {
+      "scopes": [
+        "host"
+      ],
+      "kinds": [
+        "package",
+        "package-db",
+        "path",
+        "unit",
+        "port",
+        "route"
+      ]
+    },
+    "ghostfleet": {
+      "scopes": [
+        "host",
+        "wsl",
+        "cloudflare"
+      ],
+      "kinds": [
+        "package",
+        "package-db",
+        "path",
+        "unit",
+        "credential",
+        "store",
+        "lifecycle"
+      ],
+      "packages": [
+        "ghostfleet-node"
+      ]
+    },
+    "converger": {
+      "scopes": [
+        "host",
+        "wsl"
+      ],
+      "kinds": [
+        "package",
+        "package-db",
+        "path",
+        "unit",
+        "credential",
+        "store",
+        "lifecycle"
+      ],
+      "packages": [
+        "tailscale"
+      ]
+    },
+    "k3s": {
+      "scopes": [
+        "host",
+        "wsl",
+        "k3s"
+      ],
+      "kinds": [
+        "path",
+        "unit",
+        "port",
+        "route",
+        "credential",
+        "store",
+        "lifecycle"
+      ]
+    },
+    "tailscale": {
+      "scopes": [
+        "host",
+        "wsl",
+        "windows",
+        "tailnet"
+      ],
+      "kinds": [
+        "package",
+        "package-db",
+        "path",
+        "unit",
+        "port",
+        "route",
+        "credential",
+        "store",
+        "lifecycle"
+      ],
+      "packages": [
+        "tailscale"
+      ]
+    },
+    "cloudflare": {
+      "scopes": [
+        "host",
+        "wsl",
+        "windows",
+        "cloudflare"
+      ],
+      "kinds": [
+        "package",
+        "package-db",
+        "path",
+        "unit",
+        "port",
+        "route",
+        "credential",
+        "store",
+        "lifecycle"
+      ],
+      "packages": [
+        "cloudflared"
+      ]
+    },
+    "windows": {
+      "scopes": [
+        "host",
+        "windows"
+      ],
+      "kinds": [
+        "package",
+        "path",
+        "unit",
+        "port",
+        "route",
+        "credential",
+        "store",
+        "lifecycle"
+      ]
+    },
+    "wsl": {
+      "scopes": [
+        "wsl"
+      ],
+      "kinds": [
+        "package",
+        "package-db",
+        "path",
+        "unit",
+        "port",
+        "route",
+        "credential",
+        "store",
+        "lifecycle"
+      ]
+    },
+    "oci": {
+      "scopes": [
+        "host",
+        "wsl",
+        "oci"
+      ],
+      "kinds": [
+        "path",
+        "port",
+        "route",
+        "credential",
+        "store",
+        "lifecycle"
+      ]
+    }
+  },
+  "protected": [
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "path",
+      "key": "/etc/ghostfleet",
+      "owners": [
+        "ghostfleet"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "path",
+      "key": "/etc/ghostfleet-nextgen",
+      "owners": [
+        "ghostfleet"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "path",
+      "key": "/var/lib/ghostfleet",
+      "owners": [
+        "ghostfleet"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "path",
+      "key": "/var/lib/ghostfleet-nextgen",
+      "owners": [
+        "ghostfleet"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "path",
+      "key": "/usr/local/lib/ghostfleet-nextgen",
+      "owners": [
+        "ghostfleet"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "path",
+      "key": "/usr/local/libexec/ghostfleet-heartbeat.py",
+      "owners": [
+        "ghostfleet"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "package",
+      "key": "ghostfleet-node",
+      "owners": [
+        "ghostfleet"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "package-db",
+      "key": "isolated-apt",
+      "owners": [
+        "ghostfleet"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "package-db",
+      "key": "apt/dpkg",
+      "owners": [
+        "ansible",
+        "converger",
+        "tailscale",
+        "cloudflare",
+        "wsl"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "unit",
+      "key": "ghostfleet-",
+      "owners": [
+        "ghostfleet"
+      ],
+      "prefix": true
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "path",
+      "key": "/etc/tailscale",
+      "owners": [
+        "tailscale",
+        "converger"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "path",
+      "key": "/var/lib/tailscale",
+      "owners": [
+        "tailscale",
+        "converger"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "unit",
+      "key": "tailscaled.service",
+      "owners": [
+        "tailscale",
+        "converger"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "package",
+      "key": "tailscale",
+      "owners": [
+        "tailscale",
+        "converger"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "path",
+      "key": "/etc/cloudflared",
+      "owners": [
+        "cloudflare"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "path",
+      "key": "/var/lib/cloudflared",
+      "owners": [
+        "cloudflare"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "unit",
+      "key": "cloudflared",
+      "owners": [
+        "cloudflare"
+      ],
+      "prefix": true
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "package",
+      "key": "cloudflared",
+      "owners": [
+        "cloudflare"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "path",
+      "key": "/etc/rancher/k3s",
+      "owners": [
+        "k3s"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "path",
+      "key": "/var/lib/rancher/k3s",
+      "owners": [
+        "k3s"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "unit",
+      "key": "k3s.service",
+      "owners": [
+        "k3s"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "unit",
+      "key": "k3s-agent.service",
+      "owners": [
+        "k3s"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "path",
+      "key": "/var/lib/containers",
+      "owners": [
+        "oci"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "path",
+      "key": "/var/lib/docker",
+      "owners": [
+        "oci"
+      ]
+    },
+    {
+      "domains": [
+        "windows"
+      ],
+      "kind": "lifecycle",
+      "key": "wsl:",
+      "prefix": true,
+      "owners": [
+        "windows"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "path",
+      "key": "/usr/bin/tailscale",
+      "owners": [
+        "tailscale",
+        "converger"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "path",
+      "key": "/usr/sbin/tailscaled",
+      "owners": [
+        "tailscale",
+        "converger"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "path",
+      "key": "/usr/bin/cloudflared",
+      "owners": [
+        "cloudflare"
+      ]
+    },
+    {
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "kind": "path",
+      "key": "/usr/local/bin/k3s",
+      "owners": [
+        "k3s"
+      ]
+    },
+    {
+      "domains": [
+        "windows"
+      ],
+      "kind": "lifecycle",
+      "key": "wsl",
+      "owners": [
+        "windows"
+      ]
+    }
+  ],
+  "exclusive_units": [
+    {
+      "id": "ghostfleet-reporter",
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "families": {
+        "legacy": [
+          "ghostfleet-heartbeat.service",
+          "ghostfleet-heartbeat.timer"
+        ],
+        "nextgen": [
+          "ghostfleet-nextgen-report.service",
+          "ghostfleet-nextgen-report.timer"
+        ]
+      }
+    },
+    {
+      "id": "tailscale-backend",
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "families": {
+        "standard": [
+          "tailscaled.service"
+        ],
+        "alternate": [
+          "tailscale.service"
+        ]
+      }
+    },
+    {
+      "id": "cloudflare-connector",
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "families": {
+        "standard": [
+          "cloudflared.service"
+        ],
+        "ssh": [
+          "cloudflared-ssh.service"
+        ]
+      }
+    },
+    {
+      "id": "k3s-host-role",
+      "domains": [
+        "host",
+        "wsl"
+      ],
+      "families": {
+        "server": [
+          "k3s.service"
+        ],
+        "agent": [
+          "k3s-agent.service"
+        ]
+      }
+    }
+  ]
+}

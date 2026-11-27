@@ -1,0 +1,62 @@
+{
+  "schema": "ghostfleet-project-lock/v1",
+  "version": "1.0.0",
+  "matrix_sha256": "c1b365459371843f2172ef12ed43654702c8ff630ba742638b721b093c6d3727",
+  "baseline": {
+    "path": "baseline.json",
+    "sha256": "bbc8509dde2dc015381c4a573c5a88cb6e7a5d635146945915e0c7d32fea61a0"
+  },
+  "platforms": {
+    "debian13-amd64": {
+      "profile": {
+        "path": "debian-native.json",
+        "sha256": "6653775bef678a9919b0b8646ad27890ddf8038cd575d24ea0e5a9a08561ba24"
+      },
+      "layers": [
+        {
+          "path": "linux-tools.json",
+          "sha256": "33873ee6de75fe7fb2f857a994bd66af8bcfdf20faa854995116b566f18acbc3"
+        },
+        {
+          "path": "linux-owners-observe.json",
+          "sha256": "721c14f0ab5d0c2d33e240c2c0e0821ed3654734e92b218b1f85c427de61f1bd"
+        }
+      ]
+    },
+    "wsl-debian13-amd64": {
+      "profile": {
+        "path": "debian-wsl.json",
+        "sha256": "1eb5a37d8671b0989a1c69b46587e63f205e59c38ab26d0f8a235d330cfb6dae"
+      },
+      "layers": [
+        {
+          "path": "linux-tools.json",
+          "sha256": "33873ee6de75fe7fb2f857a994bd66af8bcfdf20faa854995116b566f18acbc3"
+        },
+        {
+          "path": "linux-owners-observe.json",
+          "sha256": "721c14f0ab5d0c2d33e240c2c0e0821ed3654734e92b218b1f85c427de61f1bd"
+        }
+      ],
+      "path_aliases": [
+        {
+          "from": {
+            "scope": "wsl",
+            "path": "/exchange"
+          },
+          "to": {
+            "scope": "windows",
+            "path": "C:/Example/Exchange"
+          }
+        }
+      ]
+    },
+    "windows-amd64": {
+      "profile": {
+        "path": "windows-native.json",
+        "sha256": "6af6b9e5c5d5a4cbf21e040838b1e359b5d6cffaf55835978a4fe86d5164f6e2"
+      },
+      "layers": []
+    }
+  }
+}

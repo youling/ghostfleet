@@ -35,6 +35,11 @@ jobs:
         run: python3 -m unittest discover -v -s nextgen/test -p test_install.py
       - name: Python client regressions
         run: npm run test:python
+      - name: Gate configuration profiles, ownership and runtime dispatch
+        run: |
+          python3 -m unittest discover -v -s test -p test_configuration_profiles.py
+          python3 -m unittest discover -v -s test -p test_ghostfleet_converge.py
+          python3 -m unittest discover -v -s test -p test_ghostfleet_runtime.py
       - name: Deterministic installer and Console build
         run: npm run build
       - name: Real local Worker and Durable Object integration

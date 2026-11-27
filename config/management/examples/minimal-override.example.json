@@ -1,0 +1,17 @@
+{
+  "schema": "ghostfleet-config-override/v1",
+  "name": "synthetic-mode-override",
+  "version": "1.0.0",
+  "target": {
+    "node_uid": "<approved-node-uid>",
+    "platform": "debian13-amd64"
+  },
+  "changes": [
+    {
+      "id": "ansible-synthetic-directory",
+      "desired": {
+        "mode": "0750"
+      }
+    }
+  ]
+}

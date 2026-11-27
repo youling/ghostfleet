@@ -1,0 +1,75 @@
+{
+  "schema": "ghostfleet-config-layer/v1",
+  "type": "capability",
+  "name": "linux-tools",
+  "version": "1.0.0",
+  "platforms": [
+    "debian13-amd64",
+    "wsl-debian13-amd64"
+  ],
+  "resources": [
+    {
+      "id": "linux-apt-owner",
+      "kind": "package-db",
+      "scope": "host",
+      "key": "apt/dpkg",
+      "owner": "ansible",
+      "mode": "manage",
+      "recovery": "prior-pinned-toolchain",
+      "consumers": [
+        "linux-toolchain"
+      ],
+      "desired": {
+        "state": "managed"
+      }
+    },
+    {
+      "id": "linux-git",
+      "kind": "package",
+      "scope": "host",
+      "key": "git",
+      "owner": "ansible",
+      "mode": "manage",
+      "recovery": "prior-pinned-toolchain",
+      "consumers": [
+        "linux-toolchain"
+      ],
+      "desired": {
+        "state": "present",
+        "version": "1:2.47.3-1"
+      }
+    },
+    {
+      "id": "linux-python",
+      "kind": "package",
+      "scope": "host",
+      "key": "python3",
+      "owner": "ansible",
+      "mode": "manage",
+      "recovery": "prior-pinned-toolchain",
+      "consumers": [
+        "linux-toolchain"
+      ],
+      "desired": {
+        "state": "present",
+        "version": "3.13.5-1"
+      }
+    },
+    {
+      "id": "ansible-synthetic-directory",
+      "kind": "path",
+      "scope": "host",
+      "key": "/var/tmp/ghostfleet-profile-sample",
+      "owner": "ansible",
+      "mode": "manage",
+      "recovery": "synthetic-target-preimage",
+      "consumers": [
+        "configuration-check"
+      ],
+      "desired": {
+        "state": "directory",
+        "mode": "0755"
+      }
+    }
+  ]
+}

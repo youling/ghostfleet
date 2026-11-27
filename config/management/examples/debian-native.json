@@ -1,0 +1,23 @@
+{
+  "schema": "ghostfleet-config-layer/v1",
+  "type": "platform",
+  "name": "debian-native",
+  "version": "1.0.0",
+  "platforms": [
+    "debian13-amd64"
+  ],
+  "resources": [
+    {
+      "id": "native-ssh",
+      "kind": "unit",
+      "scope": "host",
+      "key": "ssh.service",
+      "owner": "ansible",
+      "mode": "observe",
+      "recovery": "existing-native-rescue",
+      "consumers": [
+        "management"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "schema": "ghostfleet-config-layer/v1",
+  "type": "platform",
+  "name": "wsl-debian",
+  "version": "1.0.0",
+  "platforms": [
+    "wsl-debian13-amd64"
+  ],
+  "resources": []
+}
