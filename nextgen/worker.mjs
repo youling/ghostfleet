@@ -1,8 +1,7 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
-import { isIP } from 'node:net';
 import legacy, { GhostFleetState as LegacyState } from '../src/adapters/cloudflare/worker.js';
-import { authorizeApi, getAccessLevel } from '../src/adapters/cloudflare/auth.js';
-import { prepare, json } from '../src/control-plane/http.js';
+import { authorizeApi, authorizeObserver, checkObservationGrant } from '../src/adapters/cloudflare/auth.js';
+import { admitNodeRequest } from '../src/adapters/cloudflare/node-ingress.js';
+import { cancelBody, prepare, json } from '../src/control-plane/http.js';
 import { apply } from './core.mjs';
 
 const denied = (error, status) => json({ ok: false, error }, status);
@@ -39,14 +38,7 @@ function validOrigin(value, local) {
   }
 }
 
-function observerAuth(token, env) {
-  const expected = env.GHOSTFLEET_OBSERVER_TOKEN;
-  if (typeof expected !== 'string' || expected.length < 32) return false;
-  const digest = (value) => createHash('sha256').update(value).digest();
-  return timingSafeEqual(digest(token), digest(expected));
-}
-
-async function identify(request, env) {
+function identify(request, env) {
   const url = new URL(request.url);
   const [surface, operation, uid] = route(request, url);
   const panel = env.GHOSTFLEET_PANEL_ORIGIN;
@@ -57,52 +49,26 @@ async function identify(request, env) {
   if (!surface || url.search || url.origin !== (surface === 'node' ? node : panel)) {
     return { error: denied('NOT_FOUND', 404) };
   }
-  const auth = request.headers.get('authorization') ?? '';
-  const token = auth.startsWith('Bearer ') && auth.length <= 512 ? auth.slice(7) : '';
-  let role = null;
-  if (surface !== 'node') {
-    const roleTokens = [env.GHOSTFLEET_OPERATOR_TOKEN, env.GHOSTFLEET_READ_TOKEN, env.GHOSTFLEET_OBSERVER_TOKEN]
-      .filter((value) => typeof value === 'string' && value.length);
-    if (new Set(roleTokens).size !== roleTokens.length || roleTokens.some((value) => value.length < 32 || value.length > 505)) {
-      return { error: denied('AUTH_CONFIG_CONFLICT', 503) };
-    }
-    const from = request.headers.get('origin');
-    if (from && request.method === 'POST' && from !== panel) return { error: denied('ORIGIN_DENIED', 403) };
-    if (surface === 'observer') {
-      if (!observerAuth(token, env)) return { error: denied('UNAUTHORIZED', 401) };
-      role = 'observer';
-    } else {
-      const error = await authorizeApi(request, env);
-      if (error) return { error };
-      role = await getAccessLevel(request, env);
-    }
+  if (surface === 'node') {
+    const auth = request.headers.get('authorization') ?? '';
+    const token = auth.startsWith('Bearer ') && auth.length <= 512 ? auth.slice(7) : '';
+    return { operation, uid, token };
   }
-  return { operation, uid, token, role };
-}
-
-async function cancelBody(request) {
-  if (!request.body?.locked) await request.body?.cancel().catch(() => {});
-}
-
-async function admitClaim(request, env, url) {
-  if (env.NEXTGEN_LOCAL_TEST === '1' && url.protocol === 'http:' && ['127.0.0.1', '[::1]'].includes(url.hostname)) {
-    return null;
+  const from = request.headers.get('origin');
+  if (from && request.method === 'POST' && from !== panel) return { error: denied('ORIGIN_DENIED', 403) };
+  if (surface === 'observer') {
+    const { response, grant } = authorizeObserver(request, env);
+    return response ? { error: response } : { operation, uid, role: 'observer', grant };
   }
-  const source = request.headers.get('cf-connecting-ip');
-  if (!source || !isIP(source) || !env.NEXTGEN_CLAIM_LIMIT) return denied('CLAIM_INGRESS_UNAVAILABLE', 503);
-  try {
-    const result = await env.NEXTGEN_CLAIM_LIMIT.limit({ key: source });
-    return result.success ? null : denied('CLAIM_RATE_LIMITED', 429);
-  } catch {
-    return denied('CLAIM_INGRESS_UNAVAILABLE', 503);
-  }
+  const { response, access } = authorizeApi(request, env);
+  return response ? { error: response } : { operation, uid, role: access };
 }
 
 export class GhostFleetState extends LegacyState {
   async fetch(request) {
     const url = new URL(request.url);
     if (!url.pathname.startsWith('/v2/')) return super.fetch(request);
-    const identity = await identify(request, this.env);
+    const identity = identify(request, this.env);
     if (identity.error) {
       await cancelBody(request);
       return identity.error;
@@ -112,6 +78,8 @@ export class GhostFleetState extends LegacyState {
       await cancelBody(request);
       return parsed.response;
     }
+    const observerDenial = identity.grant && checkObservationGrant(identity.grant, identity.uid, parsed.input.body);
+    if (observerDenial) return observerDenial;
     const now = Date.now();
     return this.state.storage.transaction(async (txn) => {
       const state = (await txn.get('ghostfleet-state')) ?? { nodes: {} };
@@ -137,13 +105,14 @@ export default {
       return new Response(asset.body, { status: asset.status, headers });
     }
     if (!path.startsWith('/v2/')) return legacy.fetch(request, env);
-    const identity = await identify(request, env);
+    const identity = identify(request, env);
     if (identity.error) {
       await cancelBody(request);
       return identity.error;
     }
-    if (identity.operation === 'claim') {
-      const denial = await admitClaim(request, env, url);
+    if (identity.operation === 'claim' || identity.operation === 'report') {
+      const limiter = identity.operation === 'claim' ? env.NEXTGEN_CLAIM_LIMIT : env.GHOSTFLEET_REPORT_LIMIT;
+      const denial = await admitNodeRequest(request, limiter, identity.operation, env.NEXTGEN_LOCAL_TEST);
       if (denial) {
         await cancelBody(request);
         return denial;
@@ -154,6 +123,8 @@ export default {
       await cancelBody(request);
       return parsed.response;
     }
+    const observerDenial = identity.grant && checkObservationGrant(identity.grant, identity.uid, parsed.input.body);
+    if (observerDenial) return observerDenial;
     try {
       const headers = new Headers(request.headers);
       headers.delete('content-length');

@@ -100,8 +100,16 @@ def receipt(source, dimension, verdict, now, version=None):
 def fresh(value, now, max_seconds):
     if not isinstance(value, str):
         return False
-    timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return timestamp.tzinfo is not None and 0 <= (now - timestamp).total_seconds() <= max_seconds
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return timestamp.tzinfo is not None and 0 <= (now - timestamp).total_seconds() <= max_seconds
+    except (ValueError, OverflowError):
+        return False
+
+
+def sampled(now):
+    # Observations pass a clock, sampled after I/O; direct callers may pass a datetime.
+    return now() if callable(now) else now
 
 
 def tailscale(binding, now):
@@ -111,9 +119,11 @@ def tailscale(binding, now):
     token = read(binding["credential_file"], secret=True, limit=4096).decode().strip()
     result = request_json("https://api.tailscale.com/api/v2/device/" + device, token)
     require(device in (result.get("id"), result.get("nodeId")), "TAILSCALE_IDENTITY_MISMATCH")
-    seen = result.get("lastSeen")
-    authorized = result.get("authorized")
-    verdict = "UNKNOWN" if not seen or type(authorized) is not bool else "READY" if authorized and fresh(seen, now, 300) else "UNAVAILABLE"
+    now = sampled(now)
+    connected, authorized = result.get("connectedToControl"), result.get("authorized")
+    # lastSeen can be absent while connected and recent while disconnected.
+    verdict = "UNKNOWN" if type(connected) is not bool or type(authorized) is not bool else (
+        "READY" if authorized and connected else "UNAVAILABLE")
     return receipt("tailscale-api", "network", verdict, now, result.get("clientVersion"))
 
 
@@ -126,12 +136,13 @@ def cloudflare(binding, now):
     tunnel_info = envelope.get("result")
     require(envelope.get("success") is True and isinstance(tunnel_info, dict) and tunnel_info.get("id") == tunnel,
             "TUNNEL_IDENTITY_MISMATCH")
+    now = sampled(now)
     status = tunnel_info.get("status")
     verdict = "READY" if status == "healthy" else "UNAVAILABLE" if status in ("down", "inactive", "degraded") else "UNKNOWN"
     return receipt("cloudflare-api", "edge", verdict, now)
 
 
-def ssh(binding, now):
+def ssh(binding, now, *, diagnostics=None):
     shape(binding, ("host", "port", "login", "host_key", "identity_file", "transport", "dimension"))
     host, port, login = binding["host"], binding["port"], binding["login"]
     require(match(HOST, host) and type(port) is int and 1 <= port <= 65535 and match(LOGIN, login) and
@@ -159,7 +170,27 @@ def ssh(binding, now):
             "-o", "ProxyCommand=" + proxy, "-i", binding["identity_file"], "-p", str(port),
             "-l", login, "--", host, "/usr/bin/true",
         ])
-    return receipt("ssh-probe", binding["dimension"], "READY" if session.returncode == 0 else "UNAVAILABLE", now)
+    now = sampled(now)
+    if session.returncode == 0:
+        return receipt("ssh-probe", binding["dimension"], "READY", now)
+    # Output may contain endpoint/user/credential facts: return only fixed codes.
+    detail = session.stderr.decode("utf-8", errors="replace").lower()
+    if "host key verification failed" in detail or "remote host identification has changed" in detail:
+        reason = "SSH_HOST_KEY_REJECTED"
+    elif binding["transport"] != "cloudflare" and any(
+            re.fullmatch(re.escape(login + "@" + host.lower()) +
+                         r": permission denied \((?:publickey|publickey,[a-z0-9@.,_-]+)\)\.", line)
+            for line in detail.splitlines()):
+        reason = "SSH_AUTHENTICATION_FAILED"
+    elif any(message in detail for message in ("connection timed out", "connection refused", "no route to host",
+                                               "network is unreachable", "could not resolve hostname")):
+        reason = "SSH_CONNECTION_FAILED"
+    else:
+        reason = "SSH_PROBE_FAILED"
+    if diagnostics is not None:
+        diagnostics.append({"source": "ssh-probe", "dimension": binding["dimension"], "reason": reason})
+    return receipt("ssh-probe", binding["dimension"],
+                   "UNKNOWN" if reason == "SSH_PROBE_FAILED" else "UNAVAILABLE", now)
 
 
 def kubernetes(binding, now):
@@ -181,16 +212,26 @@ def kubernetes(binding, now):
     node = get("get", "node", binding["node_name"])
     require(node["metadata"]["uid"] == binding["node_uid"], "KUBE_NODE_PIN_MISMATCH")
     lease = get("get", "lease", binding["node_name"], "-n", "kube-node-lease")
-    lease_ready = lease["spec"]["holderIdentity"] == binding["node_name"] and fresh(lease["spec"]["renewTime"], now, 90)
+    now = sampled(now)
+    renew_time = lease["spec"]["renewTime"]
+    try:
+        require(isinstance(renew_time, str), "INVALID_LEASE_TIME")
+        renewed = datetime.fromisoformat(renew_time.replace("Z", "+00:00"))
+        require(renewed.tzinfo is not None and renewed <= now, "INVALID_LEASE_TIME")
+    except (ValueError, OverflowError):
+        raise NativeError("INVALID_LEASE_TIME") from None
+    lease_ready = lease["spec"]["holderIdentity"] == binding["node_name"] and fresh(renew_time, now, 90)
     ready = any(item["type"] == "Ready" and item["status"] == "True" for item in node["status"]["conditions"])
     return receipt("kubernetes-api", "compute", "READY" if ready and lease_ready else "UNAVAILABLE",
                    now, node["status"]["nodeInfo"]["kubeletVersion"])
 
 
 def observations(profile):
-    shape(profile, ("node_uid",), ("tailscale", "cloudflare", "ssh", "kubernetes"))
+    shape(profile, ("node_uid",), ("tailscale", "cloudflare", "ssh", "kubernetes", "scope"))
     require(match(UID, profile["node_uid"]), "INVALID_FLEET_UID")
-    now = datetime.now(timezone.utc)
+    scope = profile.get("scope", "primary")
+    require(scope in ("primary", "secondary"), "INVALID_OBSERVATION_SCOPE")
+    clock = lambda: datetime.now(timezone.utc)
     result, notices = [], []
     for source, collector, dimension in (
             ("tailscale", tailscale, "network"), ("cloudflare", cloudflare, "edge"),
@@ -208,16 +249,66 @@ def observations(profile):
             bindings = [profile[source]]
         for binding in bindings:
             try:
-                result.append(collector(binding, now))
+                result.append(collector(binding, clock, diagnostics=notices) if source == "ssh"
+                              else collector(binding, clock))
             except (NativeError, OSError, ValueError, KeyError, TypeError, IndexError, AttributeError,
                     subprocess.TimeoutExpired) as error:
+                now = clock()
                 trusted_source = {"tailscale": "tailscale-api", "cloudflare": "cloudflare-api",
                                   "ssh": "ssh-probe", "kubernetes": "kubernetes-api"}[source]
                 dimension = binding["dimension"] if source == "ssh" else dimension
                 result.append(receipt(trusted_source, dimension, "UNKNOWN", now))
                 notices.append({"source": trusted_source, "dimension": dimension,
-                                "reason": str(error) if isinstance(error, NativeError) else "EVIDENCE_UNAVAILABLE"})
+                                "reason": str(error) if isinstance(error, NativeError) else (
+                                    "SSH_TIMEOUT" if source == "ssh" and isinstance(error, subprocess.TimeoutExpired)
+                                    else "EVIDENCE_UNAVAILABLE")})
+    if "scope" in profile:
+        for observation in result:
+            observation["scope"] = scope
     return {"node_uid": profile["node_uid"], "observations": result, "diagnostics": notices}
+
+
+def existing_k3s_paths():
+    candidates = (Path("/etc/rancher/k3s"), Path("/var/lib/rancher/k3s"),
+                  Path.home() / ".rancher/k3s")
+    return any(path.exists() or path.is_symlink() for path in candidates)
+
+
+def preparation_plan(profile):
+    payload = {"outcome": "PREPARE_DEDICATED_AGENT", "profile": profile, "schema": "ghostfleet-k3s-plan/v1"}
+    return {**payload, "plan_sha256": hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()}
+
+
+def agent_config(profile):
+    config = {"server": profile["server"], "node-name": profile["node_name"],
+              "token-file": str(AGENT_HOME / "token"), "data-dir": "/var/lib/ghostfleet-nextgen-k3s"}
+    for option in ("node_ip", "flannel_iface"):
+        if option in profile:
+            config[option.replace("_", "-")] = profile[option]
+    return config
+
+
+def trusted_attachment(profile=None):
+    """Read only our root-owned local attachment, never infer ownership by name."""
+    try:
+        for path in (AGENT_HOME.parent, AGENT_HOME, *(AGENT_HOME / name for name in
+                                                     ("plan.json", "config.json", "k3s", "token"))):
+            info = path.lstat()
+            require(not stat.S_ISLNK(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022,
+                    "UNTRUSTED_ATTACHMENT")
+        marker = json.loads(read(AGENT_HOME / "plan.json"))
+        installed = marker["profile"]
+        require(profile is None or installed == profile, "EXISTING_ATTACHMENT_CONFLICT")
+        require(marker == preparation_plan(installed) and
+                read(AGENT_HOME / "config.json") == json.dumps(agent_config(installed), sort_keys=True).encode() and
+                hashlib.sha256(read(AGENT_HOME / "k3s", limit=128 * 1024 * 1024)).hexdigest() == installed["sha256"],
+                "EXISTING_ATTACHMENT_CONFLICT")
+        agent_token(read(AGENT_HOME / "token", secret=True), installed["ca_sha256"])
+        return marker
+    except (NativeError, OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 
 
 def discover():
@@ -230,10 +321,34 @@ def discover():
         loaded = state.get("LoadState")
         components[unit] = {"binary_found": available, "unit": loaded or "unknown",
                             "activity": state.get("ActiveState", "unknown")}
+    # Include custom names, inactive unit files and running units. Inventory errors
+    # are uncertainty, not proof of absence. Do not read service environments.
+    owner_state = "detected" if existing_k3s_paths() else "clear"
+    for inventory in ("list-unit-files", "list-units"):
+        result = command(["systemctl", inventory, "--all", "--no-legend", "--no-pager", "*k3s*"])
+        if result.returncode != 0:
+            owner_state = "unknown" if owner_state == "clear" else owner_state
+        else:
+            units = [line.split()[0] for line in result.stdout.decode().splitlines() if line.strip()]
+            if any(unit != AGENT_UNIT for unit in units):
+                owner_state = "detected"
+    # Process names establish only possible conflicts, never runtime ownership.
+    try:
+        for process in Path("/proc").iterdir():
+            if process.name.isdecimal():
+                try:
+                    name = (process / "comm").read_text().strip()
+                except FileNotFoundError:  # process exited during inventory
+                    continue
+                if name == "k3s" or name.startswith("k3s-"):
+                    owner_state = "detected"
+    except OSError:
+        owner_state = "unknown" if owner_state == "clear" else owner_state
+    components["k3s-ownership"] = {"state": owner_state}
     return components
 
 
-def agent_plan(profile, current):
+def validate_agent_profile(profile):
     shape(profile, ("node_uid", "server", "ca_sha256", "version", "sha256", "node_name"), ("node_ip", "flannel_iface"))
     server = urlsplit(profile["server"])
     require(match(UID, profile["node_uid"]) and match(K3S_VERSION, profile["version"]) and
@@ -245,36 +360,58 @@ def agent_plan(profile, current):
         ipaddress.ip_address(profile["node_ip"])
     require("flannel_iface" not in profile or match(re.compile(r"[a-zA-Z0-9_.-]{1,15}"), profile["flannel_iface"]),
             "INVALID_FLANNEL_INTERFACE")
-    if any(current[unit]["unit"] not in ("not-found",) or current[unit]["activity"] == "active"
-           for unit in ("k3s", "k3s-agent")) or Path("/etc/rancher/k3s/config.yaml").exists():
-        outcome = "ADOPT_WITH_VERIFIED_BINDING" if any(current[unit]["activity"] == "active"
-                                                       for unit in ("k3s", "k3s-agent")) else "OWNERSHIP_REVIEW"
+
+
+def agent_plan(profile, current):
+    validate_agent_profile(profile)
+    if any(current[unit]["unit"] != "not-found" or current[unit]["activity"] != "inactive" or
+           current[unit].get("binary_found", False) for unit in ("k3s", "k3s-agent")) or (
+            current.get("k3s-ownership", {}).get("state", "clear") != "clear") or (
+            current.get(AGENT_UNIT, {}).get("activity") == "active") or existing_k3s_paths():
+        outcome = "OWNERSHIP_REVIEW"
     else:
         outcome = "PREPARE_DEDICATED_AGENT"
     payload = {"outcome": outcome, "profile": profile, "schema": "ghostfleet-k3s-plan/v1"}
     return {**payload, "plan_sha256": hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()}
 
 
+def agent_token(data, ca_sha256):
+    """Accept only native Agent bootstrap credentials, never shared static passwords.
+
+    K3s static agent-token defaults to the server secret; even a node: prefix
+    cannot establish separation. Native bootstrap tokens have a distinct parser
+    and authentication path (docs.k3s.io/cli/token; pkg/clientaccess/token.go).
+    Shape proves neither issuance nor TTL; those remain cluster-owner checks.
+    """
+    require(isinstance(data, bytes), "INVALID_AGENT_CREDENTIAL")
+    try:
+        token = data.decode("ascii").removesuffix("\n")
+    except UnicodeDecodeError:
+        raise NativeError("INVALID_AGENT_CREDENTIAL") from None
+    parsed = re.fullmatch(r"K10([a-f0-9]{64})::([a-z0-9]{6}\.[a-z0-9]{16})", token)
+    require(parsed is not None, "AGENT_BOOTSTRAP_CREDENTIAL_REQUIRED")
+    require(parsed[1] == ca_sha256, "AGENT_CA_PIN_MISMATCH")
+    return token
+
+
 def apply_agent(profile, approval, artifact, token_file):
     require(os.geteuid() == 0, "ROOT_REQUIRED")
-    plan = agent_plan(profile, discover())
-    require(plan["outcome"] == "PREPARE_DEDICATED_AGENT" and plan["plan_sha256"] == approval, "PLAN_CHANGED")
-    token = read(token_file, secret=True, limit=1024).decode().strip()
-    require(re.fullmatch(r"K10" + profile["ca_sha256"] + r"::[A-Za-z0-9_.:-]{8,512}", token), "AGENT_CA_PIN_MISMATCH")
+    validate_agent_profile(profile)
+    plan = preparation_plan(profile)
+    require(plan["plan_sha256"] == approval, "PLAN_CHANGED")
+    token = agent_token(read(token_file, secret=True, limit=1024), profile["ca_sha256"])
     data = read(artifact, limit=128 * 1024 * 1024)
     require(hashlib.sha256(data).hexdigest() == profile["sha256"], "K3S_ARTIFACT_MISMATCH")
-    config = {"server": profile["server"], "node-name": profile["node_name"],
-              "token-file": str(AGENT_HOME / "token"), "data-dir": "/var/lib/ghostfleet-nextgen-k3s"}
-    for option in ("node_ip", "flannel_iface"):
-        if option in profile:
-            config[option.replace("_", "-")] = profile[option]
+    config = agent_config(profile)
     marker = json.dumps(plan, sort_keys=True).encode()
-    if AGENT_HOME.exists():
-        require(not AGENT_HOME.is_symlink() and read(AGENT_HOME / "plan.json") == marker and
-                read(AGENT_HOME / "token", secret=True) == token.encode() and
-                hashlib.sha256(read(AGENT_HOME / "k3s", limit=128 * 1024 * 1024)).hexdigest() == profile["sha256"] and
-                json.loads(read(AGENT_HOME / "config.json")) == config, "EXISTING_ATTACHMENT_CONFLICT")
+    if AGENT_HOME.exists() or AGENT_HOME.is_symlink():
+        # This is solely a receipt for the approved preparation already on disk.
+        # K3s wrappers exec an extracted binary and rewrite argv; neither runtime
+        # identity nor adoption is implied. This branch performs no node writes.
+        require(trusted_attachment(profile) == plan and read(AGENT_HOME / "plan.json") == marker and
+                read(AGENT_HOME / "token", secret=True) == token.encode(), "EXISTING_ATTACHMENT_CONFLICT")
         return "ALREADY_PREPARED"
+    require(agent_plan(profile, discover()) == plan, "PLAN_CHANGED")
     AGENT_HOME.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     owner = AGENT_HOME.parent.lstat()
     require(stat.S_ISDIR(owner.st_mode) and owner.st_uid == 0 and not owner.st_mode & 0o022, "UNSAFE_AGENT_DIRECTORY")

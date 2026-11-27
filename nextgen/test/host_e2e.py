@@ -3,12 +3,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import pwd
 import subprocess
 import sys
+import tempfile
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from test_update import UpdateTest
+from test_update import NEXTGEN, UpdateTest
 from update import UpdateError, active, pull
 
 ORIGIN = sys.argv[1]
@@ -38,10 +40,28 @@ def private_json(path, value):
     return path
 
 
-def node(installed, *args):
-    output = subprocess.run([sys.executable, str((installed / "current/node.py").resolve()), "--allow-local-fixture", *map(str, args)],
-                            check=False, timeout=20, capture_output=True)
-    assert output.returncode == 0, ("NODE_COMMAND_FAILED", args[0], output.stderr.decode().strip())
+def node(installed, action, *args, reporter=None):
+    if action == "report":
+        # Mirror LoadCredential with a temporary per-service readable copy.
+        with tempfile.TemporaryDirectory(dir=installed.parent) as directory:
+            credential = Path(directory) / "identity.json"
+            identity_index = args.index("--identity") + 1
+            credential.write_bytes(Path(args[identity_index]).read_bytes())
+            account = pwd.getpwnam("nobody")
+            os.chown(credential, account.pw_uid, account.pw_gid)
+            credential.chmod(0o400)
+            Path(directory).chmod(0o711)
+            options = list(args)
+            options[identity_index] = credential
+            entry = reporter or installed.parent / "report.py"
+            invocation = [action] if reporter else []
+            output = subprocess.run([sys.executable, "-I", str(entry), "--allow-local-fixture", *invocation,
+                                     *map(str, options)], timeout=20, capture_output=True,
+                                    user=account.pw_uid, group=account.pw_gid, extra_groups=[])
+    else:
+        output = subprocess.run([sys.executable, "-I", str(NEXTGEN / "host/enroll.py"), "--allow-local-fixture",
+                                 action, *map(str, args)], timeout=20, capture_output=True)
+    assert output.returncode == 0, ("NODE_COMMAND_FAILED", action, output.stderr.decode().strip())
 
 
 def catalog(uid):
@@ -50,6 +70,9 @@ def catalog(uid):
 
 def exercise(fixture):
     base, installed = fixture.workspace, fixture.installed
+    launcher = base / "report.py"
+    launcher.write_bytes((NEXTGEN / "host/report.py").read_bytes())
+    launcher.chmod(0o644)
     first, package1 = fixture.channel("0.3.0~rc1")
     second, package2 = fixture.channel("0.3.0~rc2", reporter=fixture.reporter + b"\n# Second reviewed candidate\n")
     rejected, _ = fixture.channel("0.3.0~rc3", expired=True)
@@ -90,8 +113,7 @@ def exercise(fixture):
     assert pull(installed, second, "amd64") == "ACTIVATED"
     assert active(installed)["sha256"] == hashlib.sha256(package2.read_bytes()).hexdigest()
     api("/v2/nodes/" + uid + "/desired", {"desired": active(installed)}, OPERATOR)
-    subprocess.run([sys.executable, str(old_reporter), "--allow-local-fixture", "report", "--release-root",
-                    str(installed), "--identity", str(credential)], check=True, timeout=20, capture_output=True)
+    node(installed, "report", "--release-root", installed, "--identity", credential, reporter=old_reporter)
     assert catalog(uid)["versions"]["state"] == "RUNTIME_UNVERIFIED"
     assert catalog(uid)["versions"]["runtime"]["version"] == "0.3.0~rc1"
     node(installed, "report", "--release-root", installed, "--identity", credential)

@@ -51,7 +51,8 @@ def main():
         config['main'] = str(root / 'src/adapters/cloudflare/worker.js')
         config['assets']['directory'] = str(root / 'dist/console')
         config['vars'].update(GHOSTFLEET_PANEL_ORIGIN=origin, GHOSTFLEET_NODE_ORIGIN=origin,
-                              GHOSTFLEET_OPERATOR_TOKEN=operator, GHOSTFLEET_READ_TOKEN=reader)
+                              GHOSTFLEET_OPERATOR_TOKEN=operator, GHOSTFLEET_READ_TOKEN=reader,
+                              NEXTGEN_LOCAL_TEST='1')
         config_path = run / 'wrangler.json'
         config_path.write_text(json.dumps(config)); config_path.chmod(0o600)
         # No provider/account credential environment or native owner config.

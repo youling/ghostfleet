@@ -27,24 +27,25 @@ npx --no-install wrangler deploy --dry-run --config nextgen/wrangler.jsonc --out
 
 ## 构建与可信安装
 
-构建者从干净的精确 Git 提交执行。输出目录应在 checkout 之外或者使用被 Git 忽略的 `dist`。正式版版本号与渠道晋升由实例发布 owner 记录。
+构建者从干净的精确 Git 提交执行，并传入经批准的完整提交 SHA。输出目录应在 checkout 之外或者使用被 Git 忽略的 `dist`。实例发布 owner 记录版本和渠道晋升，已经发布的版本继续绑定原字节。
 
 ```sh
-python3 nextgen/release.py build --version '0.3.0~rc1' --arch amd64 --output dist/candidate
+/usr/bin/python3 -I nextgen/release.py build --source-revision "$APPROVED_SOURCE_SHA" \
+  --version '0.3.0~rc2' --arch amd64 --output dist/candidate
 ```
 
-输出为 reporter Debian 制品、引导 tar 和 stdout 的 source revision / platform / SHA-256 记录。构建制品以相同源码和打包工具可复现。可信交付渠道预置引导 tar 摘要和 APT 签名根。签名者获取已审制品摘要，显式指定渠道及其独立签名身份。可在 canary 验证后对同一包晋升 stable。
+输出为 reporter Debian 制品、引导 tar 和构建回执。独立构建者以同一提交及打包工具比对制品摘要。可信交付渠道预置引导 tar 摘要和 APT 签名根。签名者在独立环境接收已审制品摘要，指定渠道和签名身份。可在 canary 验证及 owner 批准后对同一包晋升 stable。
 
 ```sh
-python3 nextgen/release.py sign-channel --package 'dist/candidate/ghostfleet-node_0.3.0~rc1_amd64.deb' \
+/usr/bin/python3 -I nextgen/release.py sign-channel --package 'dist/candidate/ghostfleet-node_0.3.0~rc2_amd64.deb' \
   --expected-sha256 "$APPROVED_PACKAGE_SHA256" --channel canary --arch amd64 \
   --signing-home "$SIGNER_GPG_DIRECTORY" --fingerprint "$APPROVED_SIGNER_FINGERPRINT" \
   --output dist/approved-canary
 ```
 
-发布 owner 先将固定 pool/Packages 字节发布到私有测试 origin，再切换签名 `InRelease`。保持上一个签名索引曾引用的包在客户端过渡窗口内可读。签名有效期 24 小时，客户端最多接受 48 小时新鲜度。需要持续服务的渠道应在到期前由受信发布端重新签署现行索引。签名身份轮换先用实例 owner 信任通道更新 keyring/fingerprint，再发布新签名。失陷时冻结推进并沿独立 SSH 救援更新信任。Node profile 的最低版本可抵御首次更新前的旧签名包。短有效期内、尚未见过的新版本仍受 APT 的时间模型限制。
+发布 owner 先将固定 pool/Packages 字节发布到私有测试 origin，再切换签名 `InRelease`。保持上一个签名索引曾引用的包在客户端过渡窗口内可读。验证签名与摘要时同时核对 `Valid-Until` 恰好出现一次，距 `Date` 24 小时。客户端最多接受 48 小时新鲜度。需要持续服务的渠道应在到期前由受信发布端重新签署现行索引。签名身份轮换先用实例 owner 信任通道更新 keyring/fingerprint，再发布新签名。失陷时冻结推进并沿独立 SSH 救援更新信任。Node profile 的最低版本约束首装候选；短有效期内、尚未见过的新版本仍受 APT 的时间模型限制。
 
-受授权操作员验证引导 tar 的批准摘要后在私有目录解包。把 `update.py` 和 `report.py` 安装到 root-owned `/usr/local/lib/ghostfleet-nextgen/`。把 `ghostfleet-nextgen-report.*` 与 `ghostfleet-nextgen-update.*` 安装到系统 unit 目录。先以 0600 写入 root-owned `/etc/ghostfleet-nextgen/update.json`，下例 `fingerprint` 代表实际已审批的公开钥指纹。
+受授权操作员验证引导 tar 的批准摘要后在私有目录解包。把 `update.py`、`report.py`、`enroll.py` 和引导包中的 `node.py` 安装到 root-owned `/usr/local/lib/ghostfleet-nextgen/`。把 `ghostfleet-nextgen-report.*` 与 `ghostfleet-nextgen-update.*` 安装到系统 unit 目录。以 0600 写入 root-owned `/etc/ghostfleet-nextgen/update.json`，其中 `fingerprint` 使用实际已审批的公开钥指纹。
 
 ```json
 {
@@ -52,23 +53,25 @@ python3 nextgen/release.py sign-channel --package 'dist/candidate/ghostfleet-nod
   "channel": "canary",
   "keyring": "/etc/ghostfleet-nextgen/release.gpg",
   "fingerprint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-  "minimum_version": "0.3.0~rc1"
+  "minimum_version": "0.3.0~rc2"
 }
 ```
 
-公钥 keyring 使用 root-owned 0644 文件，走独立信任通道。先手动运行 `sudo python3 -I /usr/local/lib/ghostfleet-nextgen/update.py` 得到 ACTIVATED，核对 `/var/lib/ghostfleet-nextgen/software/current/receipt.json`。主机更新器只读取审核渠道，只解包固定的自有 reporter 文件。源签名错误、包下载失败或未提交的激活中断，保留当前 release。需回退时，发布 owner 以更高版本号签署已知好内容并保留当前安全底线。
+公钥 keyring 使用 root-owned 0644 文件，走独立信任通道。先运行 `sudo systemctl daemon-reload` 和 `sudo systemctl start ghostfleet-nextgen-update.service`，从 journal 读到 ACTIVATED 后核对 `/var/lib/ghostfleet-nextgen/software/current/receipt.json`。主机更新器只读取审核渠道，只解包固定的自有 reporter 文件。源签名错误、包下载失败或未提交的激活中断时保留当前 release。需回退时，发布 owner 以更高版本号签署已知好内容并保留当前安全底线。
 
 ## 首次纳管、授权与可选计算
 
-面板部署规划使用两个 origin，Panel 上游可放已批准的 Access 策略。应用内由实例配置独立 operator、read-only、observer 凭据。面板凭据只在页面内存；节点和 observer 从本地受限文件读取各自凭据。真实密钥不使用候选默认值。Worker 版本由 provider metadata 读回，部署时单独把 `NEXTGEN_SOURCE_REVISION` 绑定到实际构建提交。
+面板部署使用两个 origin，Panel 上游可放已批准的 Access 策略。实例配置独立 operator、read-only 凭据。每个 observer 使用本地受限文件中的独立凭据，对应配置授权绑定节点 UID、观测范围和允许的证据流。面板凭据只在页面内存。Worker 版本由 provider metadata 读回，部署时单独把 `NEXTGEN_SOURCE_REVISION` 绑定到实际构建提交。
 
-公网领取使用 Cloudflare 的可信连接地址和 Worker Rate Limit binding，在调用 DO 前执行来源级限流。缺少来源或绑定时保守失败；超出预算返回 429。实际账户应为绑定分配独占 namespace，并在可信入口移除可伪造来源的非受信子请求。该限制按 Cloudflare 站点近似计数，领用授权和原子性仍由高熵邀请及 DO 决定。参见 [Cloudflare Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)。
+公网领取和上报在调用 DO 前分别使用 Cloudflare 的来源级配额。IPv6 按 `/64` 聚合，IPv4 映射地址与对应 IPv4 共用配额。Nextgen 使用 `NEXTGEN_CLAIM_LIMIT` 与 `GHOSTFLEET_REPORT_LIMIT`，单独部署 legacy 时为 `GHOSTFLEET_CLAIM_LIMIT` 与 `GHOSTFLEET_REPORT_LIMIT`。给每个绑定分配独占 namespace，并在可信入口保证连接地址的来源。缺少绑定或可信连接地址时相关入口返回 503，超出配额返回 429。Cloudflare 按站点近似计数，实例应实测预算和恢复窗口。 [Cloudflare Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
 
-1. 在操作员面板选渠道、平台及审批 profile 摘要，签发一次性邀请。把邀请文件经受信通道以 0600 交给目标；只在节点侧读入。预置 root-owned `/etc/ghostfleet-nextgen/enrollment.json`，包含 `origin` 和 `config_revision`。配置摘要必须来自相同的已审批配置。
-2. 用 `sudo python3 -I /var/lib/ghostfleet-nextgen/software/current/node.py enroll --invitation-file /path/to/invitation.json`。验证面板 UID 和注册状态。若网络结果不确定，重试同一邀请，客户端沿已有 pending 凭据继续。
+部署前为 observer 换发受限凭据，Worker 中只配置 SHA-256 摘要和允许范围。`GHOSTFLEET_OBSERVER_GRANTS` 是 JSON 数组，每项含 `token_sha256`、`node_uid`、`scope` 和 `streams`。较大配置可用同格式的 `_01` 至 `_32` 分片。`streams` 每项由 `source/dimension` 表示，`scope` 取 `primary` 或 `secondary`。原有全局 observer 凭据应随切换撤回。
+
+1. 在操作员面板选渠道、平台及审批 profile 摘要，签发一次性邀请。把邀请文件经受信通道以 0600 交给目标，只在节点侧读入。预置 root-owned 0600 `/etc/ghostfleet-nextgen/enrollment.json`，包含 `origin` 和 `config_revision`。配置摘要必须来自相同的已审批配置。
+2. 在根级注册或换发前，核对独立引导入口来自批准的 bootstrap。执行 `sudo /usr/bin/python3 -I /usr/local/lib/ghostfleet-nextgen/enroll.py enroll --invitation-file /path/to/invitation.json`，验证面板 UID 和注册状态。若网络结果不确定，重试同一邀请，客户端沿已有 pending 凭据继续。
 3. 在已授权靶机 `sudo systemctl daemon-reload` 后，启用 `ghostfleet-nextgen-report.timer` 和 `ghostfleet-nextgen-update.timer`，先手动触发各自 oneshot 取证。实例另验普通用户的 pinned SSH 与独立救援。首次安装可跳过 K3s。
-4. 实例 owner 管理 TS、CF、SSH、集群和私有 Work 物理准入。从可信端执行 `python3 nextgen/native.py observe /path/to/bindings.json`。配置键和取值见代码与 `test_native.py`。提交观察时增加 `--panel-origin`、`--credential-file`。Tailnet device ID、Tunnel ID、Cloudflare account、K8s cluster/Node UID、SSH host key 由实例确认，credential 采用只读范围。
-5. 可选 Agent profile 为 `node_uid`、`server`、`ca_sha256`、`version`、`sha256`、`node_name`，多接口可加 `node_ip` 和 `flannel_iface`。运行 `plan-agent PROFILE` 读出 digest。原生服务存在时先做所有权和可信绑定核验。需要新 Agent 时，经具体批准执行 `sudo python3 native.py apply-agent PROFILE --approve-plan DIGEST --artifact FILE --token-file FILE`。这个步骤只完整准备自己的目录。集群 owner 另行安装/启动 `ghostfleet-nextgen-k3s-agent.service`，检查真实 Node UID、Lease 和独立救援，再授予私有 Work scope。
+4. 实例 owner 管理 TS、CF、SSH、集群和私有 Work 物理准入。从可信端执行 `python3 nextgen/native.py observe /path/to/bindings.json`。在配置顶层使用 `scope` 对应授权的观测范围，默认 `primary`。提交观察时增加 `--panel-origin`、`--credential-file`。Tailnet device ID、Tunnel ID、Cloudflare account、K8s cluster/Node UID、SSH host key 由实例确认，采集凭据采用只读范围。
+5. 可选 Agent profile 为 `node_uid`、`server`、`ca_sha256`、`version`、`sha256`、`node_name`，多接口可加 `node_ip` 和 `flannel_iface`。运行 `plan-agent PROFILE` 读出 digest。发现已有安装时先用原生证据核验所有权和绑定。新 Agent 采用集群 owner 签发的固定 CA、有限 TTL 的原生 bootstrap 凭据，以集群侧签发记录核对有效期。静态共享凭据会被拒绝。经具体批准执行 `sudo python3 native.py apply-agent PROFILE --approve-plan DIGEST --artifact FILE --token-file FILE`，完成自己的目录准备。`ALREADY_PREPARED` 表示同一批准计划的本地准备结果一致。集群 owner 另行安装和启动 `ghostfleet-nextgen-k3s-agent.service`，检查真实 Node UID、Lease 和独立救援，再授予私有 Work scope。 可查阅 K3s CLI 的 Token 文档。
 
 报告撤销立即阻断旧报告凭据。主机失陷处置由可信实例同时撤销网络/SSH/集群能力及已签发的权限，保留独立救援。面板 Ready、软件版本和 K3s Ready 均作为证据输入。
 
@@ -77,11 +80,11 @@ python3 nextgen/release.py sign-channel --package 'dist/candidate/ghostfleet-nod
 ## 迁移、回退与发行次序
 
 - **部署前**，原 owner 读回现役 Worker/DO class、binding、对象名、部署版本、策略版本与实际客户端。准备一致快照和旧版本可恢复工件，snapshots 包含持久身份材料并由实例保管。不同 Worker script/service namespace 对同名 DO 会产生不同对象，不可直接照搬隔离配置部署。
-- **兼容控制面先行**。先冻结新邀请，保存同一写者的快照，在可丢弃副本复跑 legacy v1。正式配置切回同一持久 DO 后，核对旧 UID、老凭据、接收时间与独立 SSH。对每个 legacy 节点由 operator 调用 `POST /v2/nodes/{uid}/adopt` 提供已审 profile，再用 `node.py adopt --legacy-config … --expected-node-uid …` 保留旧 UID/凭据。保留旧配置、reporter 文件和 units。逐节点验证两种协议及预期版本。
+- **兼容控制面先行**。先冻结新邀请，保存同一写者的快照，在可丢弃副本复跑 legacy v1。正式配置切回同一持久 DO 后，核对旧 UID、老凭据、接收时间与独立 SSH。对每个 legacy 节点由 operator 调用 `POST /v2/nodes/{uid}/adopt` 提供已审 profile，再从固定的引导入口运行 `enroll.py adopt --legacy-config … --expected-node-uid …` 保留旧 UID 和凭据。逐节点保留并核对旧配置、reporter 和 units，验证两种协议及预期版本。
 - **可回退的首批**。单个有独立救援的 canary，通过 SSH、普通消费、更新故障、撤销与回退；再小批次晋升。切回旧 Worker 前暂停 v2 写入并留取最新快照，验证旧程序读得懂共同字段、前一 reporter 能恢复 v1。恢复快照只用于 owner 授权的必要数据恢复，须按最后写入时间对账，避免覆盖期间的节点变化。SSH/CF/TS/K3s 保持各 self-owner，分别回退对应组件。
 - **候选退役范围**。新版邀请及签名引导覆盖后，逐步停止为新目标发行 v1 票据。旧 POSIX join、旧面板与 reporter 按 v1 客户端和原生健康覆盖分批停用。旧命令引擎继续沿原裁决。同资源完整切换前保留救援和快照，不从新版源码自动清理运行节点。
 - **发行准备边界**。源码/合成和隔离主机可复跑后交原 owner 与独立验证者。生产发布、现场 A09/Access、TS/CF live、独立真实消费者、证书撤销/多 Server quorum、arm64 实机和 canary 晋升分别取证。
 
 ## English operations
 
-Build the signed APT candidate from a clean commit and record the package and bootstrap digests. Install the verified bootstrap, provision the approved keyring and profile through the instance trust path, and use a separate short-lived enrollment invitation. Keep the present reporting files and UID when adopting an existing host. Use the native SSH and provider credentials owned by the instance. Keep the old control plane available throughout validation. A rollback must preserve current identities and restore a reviewed release or deployment under the instance's authority; an older signed client package is rejected by default.
+Build the APT candidate from an explicitly approved clean commit. Verify independent build digests and sign through the separate instance release environment. Verify the unique signed expiry before promotion. Install the approved bootstrap, provision the approved keyring and profile through the instance trust path, and use the fixed bootstrap enrollment entry point for privileged enrollment and adoption. Keep the present reporting files and UID when adopting an existing host. Use the native SSH and provider credentials owned by the instance. The optional K3s attachment requires a securely pinned native Agent bootstrap credential. Keep the old control plane available throughout validation. Rollback preserves current identities and restores a reviewed release or deployment under the instance owner's authority.
