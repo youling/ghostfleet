@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ghostfleet.example.invalid/schema/ghostfleet-install-v1.json",
+  "title": "GhostFleet installer profile",
+  "type": "object",
+  "required": ["schema", "update", "enrollment"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "ghostfleet-install/v1"},
+    "update": {
+      "type": "object",
+      "required": ["uri", "channel", "keyring", "fingerprint"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": {"type": "string", "format": "uri"},
+        "fallback_uri": {"type": "string", "format": "uri"},
+        "channel": {"enum": ["canary", "stable"]},
+        "keyring": {"$ref": "#/$defs/path"},
+        "fingerprint": {"type": "string", "pattern": "^[A-F0-9]{40}$"},
+        "minimum_version": {"type": "string", "pattern": "^[0-9]{1,8}\\.[0-9]{1,8}\\.[0-9]{1,8}(~[a-z0-9.]{1,24})?(\\+[a-z0-9.]{1,24})?$"}
+      }
+    },
+    "enrollment": {
+      "type": "object",
+      "required": ["mode", "node_uid", "origin", "config_revision"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {"enum": ["enroll", "adopt"]},
+        "node_uid": {"type": "string", "pattern": "^node-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"},
+        "origin": {"type": "string", "format": "uri"},
+        "config_revision": {"$ref": "#/$defs/sha256"},
+        "invitation_file": {"$ref": "#/$defs/path"},
+        "legacy_config": {"$ref": "#/$defs/path"}
+      },
+      "oneOf": [
+        {"properties": {"mode": {"const": "enroll"}}, "required": ["invitation_file"], "not": {"required": ["legacy_config"]}},
+        {"properties": {"mode": {"const": "adopt"}}, "required": ["legacy_config"], "not": {"required": ["invitation_file"]}}
+      ]
+    },
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tailscale": {"enum": ["none", "observe"]},
+        "cloudflare": {"enum": ["none", "observe"]},
+        "k3s": {
+          "oneOf": [
+            {"type": "object", "required": ["role"], "properties": {"role": {"const": "none"}}, "additionalProperties": false},
+            {"type": "object", "required": ["role", "mode"], "properties": {"role": {"enum": ["server", "agent"]}, "mode": {"const": "external"}}, "additionalProperties": false},
+            {
+              "type": "object",
+              "required": ["role", "mode", "profile", "artifact", "token_file", "approve_plan"],
+              "additionalProperties": false,
+              "properties": {
+                "role": {"const": "agent"},
+                "mode": {"enum": ["prepare", "start"]},
+                "profile": {"$ref": "#/$defs/path"},
+                "artifact": {"$ref": "#/$defs/path"},
+                "token_file": {"$ref": "#/$defs/path"},
+                "approve_plan": {"$ref": "#/$defs/sha256"}
+              }
+            }
+          ]
+        }
+      }
+    },
+    "previous_files": {
+      "type": "object",
+      "propertyNames": {"enum": ["enroll.py", "node.py", "update.py", "report.py", "native.py", "enrollment.json", "update.json", "ghostfleet-nextgen-report.timer", "ghostfleet-nextgen-report.service", "ghostfleet-nextgen-update.timer", "ghostfleet-nextgen-update.service", "ghostfleet-nextgen-k3s-agent.service"]},
+      "additionalProperties": {"$ref": "#/$defs/sha256"}
+    }
+  },
+  "$defs": {
+    "path": {"type": "string", "pattern": "^/", "maxLength": 4096},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

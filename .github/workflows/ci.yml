@@ -31,6 +31,8 @@ jobs:
         run: node --test 'nextgen/test/*.test.mjs'
       - name: Native provider binding regressions
         run: python3 -m unittest discover -v -s nextgen/test -p test_native.py
+      - name: Check unified installer preflight
+        run: python3 -m unittest discover -v -s nextgen/test -p test_install.py
       - name: Python client regressions
         run: npm run test:python
       - name: Deterministic installer and Console build

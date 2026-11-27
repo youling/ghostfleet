@@ -11,13 +11,14 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm test
 node --test 'nextgen/test/*.test.mjs'
 python3 -m unittest discover -s nextgen/test -p test_native.py
+python3 -m unittest discover -s nextgen/test -p test_install.py
 sudo python3 -m unittest discover -s nextgen/test -p test_update.py
 sudo "$(command -v node)" nextgen/test/host-e2e.mjs
 npm run check:publication
 npx --no-install wrangler deploy --dry-run --config nextgen/wrangler.jsonc --outdir dist/nextgen
 ```
 
-这些测试使用临时 SQLite DO、合成签名、文件源与临时主机状态。Workerd 用仓库锁定的 Wrangler 依赖，用 Linux 验证；Windows 原生 Workerd 对 DO 落盘的失败不影响 Linux 路径。原有功能套件仍由现有 CI 一同运行。[隔离实验](LAB.md) 给出真实 Debian VM、OpenSSH 与 K3s 复跑步骤。
+这些测试使用临时 SQLite DO、合成签名、文件源与临时主机状态。Workerd 用仓库锁定的 Wrangler 依赖，用 Linux 验证；Windows 原生 Workerd 对 DO 落盘的失败不影响 Linux 路径。原有功能套件仍由现有 CI 一同运行。[隔离实验](https://github.com/youling/ghostfleet/blob/99f33081b5af806da0032a8f91466443e8eb3535/docs/nextgen/LAB.md) 给出真实 Debian VM、OpenSSH 与 K3s 复跑步骤。
 
 ### 测试证据
 
@@ -31,13 +32,13 @@ npx --no-install wrangler deploy --dry-run --config nextgen/wrangler.jsonc --out
 
 ```sh
 /usr/bin/python3 -I nextgen/release.py build --source-revision "$APPROVED_SOURCE_SHA" \
-  --version '0.3.0~rc2' --arch amd64 --output dist/candidate
+  --version '0.3.0~rc3' --arch amd64 --output dist/candidate
 ```
 
 输出为 reporter Debian 制品、引导 tar 和构建回执。独立构建者以同一提交及打包工具比对制品摘要。可信交付渠道预置引导 tar 摘要和 APT 签名根。签名者在独立环境接收已审制品摘要，指定渠道和签名身份。可在 canary 验证及 owner 批准后对同一包晋升 stable。
 
 ```sh
-/usr/bin/python3 -I nextgen/release.py sign-channel --package 'dist/candidate/ghostfleet-node_0.3.0~rc2_amd64.deb' \
+/usr/bin/python3 -I nextgen/release.py sign-channel --package 'dist/candidate/ghostfleet-node_0.3.0~rc3_amd64.deb' \
   --expected-sha256 "$APPROVED_PACKAGE_SHA256" --channel canary --arch amd64 \
   --signing-home "$SIGNER_GPG_DIRECTORY" --fingerprint "$APPROVED_SIGNER_FINGERPRINT" \
   --output dist/approved-canary
@@ -45,19 +46,46 @@ npx --no-install wrangler deploy --dry-run --config nextgen/wrangler.jsonc --out
 
 发布 owner 先将固定 pool/Packages 字节发布到私有测试 origin，再切换签名 `InRelease`。保持上一个签名索引曾引用的包在客户端过渡窗口内可读。验证签名与摘要时同时核对 `Valid-Until` 恰好出现一次，距 `Date` 24 小时。客户端最多接受 48 小时新鲜度。需要持续服务的渠道应在到期前由受信发布端重新签署现行索引。签名身份轮换先用实例 owner 信任通道更新 keyring/fingerprint，再发布新签名。失陷时冻结推进并沿独立 SSH 救援更新信任。Node profile 的最低版本约束首装候选；短有效期内、尚未见过的新版本仍受 APT 的时间模型限制。
 
-受授权操作员验证引导 tar 的批准摘要后在私有目录解包。把 `update.py`、`report.py`、`enroll.py` 和引导包中的 `node.py` 安装到 root-owned `/usr/local/lib/ghostfleet-nextgen/`。把 `ghostfleet-nextgen-report.*` 与 `ghostfleet-nextgen-update.*` 安装到系统 unit 目录。以 0600 写入 root-owned `/etc/ghostfleet-nextgen/update.json`，其中 `fingerprint` 使用实际已审批的公开钥指纹。
+### 统一安装、接管、升级与修复
+
+受授权操作员通过独立信任通道取得批准的 bootstrap SHA-256、公开签名 keyring 和实例资料。先验证 tar 摘要，再在 root 所有且普通用户不可写的目录解包。保留这一份批准的引导包，用其 `install.py` 处理首装、覆盖升级和修复。定时更新仍由签名 APT 更新器更新 reporter。
 
 ```json
 {
-  "uri": "https://updates.example.invalid",
-  "channel": "canary",
-  "keyring": "/etc/ghostfleet-nextgen/release.gpg",
-  "fingerprint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-  "minimum_version": "0.3.0~rc2"
+  "schema": "ghostfleet-install/v1",
+  "update": {
+    "uri": "https://updates.example.invalid",
+    "fallback_uri": "https://updates-backup.example.invalid",
+    "channel": "canary",
+    "keyring": "/etc/ghostfleet-nextgen/release.gpg",
+    "fingerprint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "minimum_version": "0.3.0~rc3"
+  },
+  "enrollment": {
+    "mode": "enroll",
+    "node_uid": "<APPROVED_NODE_UID>",
+    "origin": "https://node.example.invalid",
+    "config_revision": "1111111111111111111111111111111111111111111111111111111111111111",
+    "invitation_file": "/root/trust/invitation.json"
+  },
+  "components": {"tailscale": "observe", "cloudflare": "none", "k3s": {"role": "none"}}
 }
 ```
 
-公钥 keyring 使用 root-owned 0644 文件，走独立信任通道。先运行 `sudo systemctl daemon-reload` 和 `sudo systemctl start ghostfleet-nextgen-update.service`，从 journal 读到 ACTIVATED 后核对 `/var/lib/ghostfleet-nextgen/software/current/receipt.json`。主机更新器只读取审核渠道，只解包固定的自有 reporter 文件。源签名错误、包下载失败或未提交的激活中断时保留当前 release。需回退时，发布 owner 以更高版本号签署已知好内容并保留当前安全底线。
+把 profile 和邀请或旧身份文件设为 root 所有、0600，并引用独立交付、周期更新服务可读的 keyring。例如把公钥文件放在 `/etc/ghostfleet-nextgen/release.gpg`。更新服务的 `ProtectHome` 与 `PrivateTmp` 会屏蔽 `/root`、用户家目录及临时目录，安装器会拒绝用这些位置作为周期更新的签名信任。已获准的 legacy 节点使用 `mode: adopt`，把 `invitation_file` 换成 `legacy_config`。确保面板已批准同 UID 接管，原 reporter 及其配置由原 owner 保留。已有手装的同名 GhostFleet 文件与引导包内容不同时，先由 owner 核准旧字节 SHA-256，再把固定文件名及对应摘要填入 `previous_files`。未知归属会报告冲突。
+
+```sh
+sudo /usr/bin/python3 -I /root/ghostfleet-bootstrap/install.py plan /root/ghostfleet-profile.json
+sudo /usr/bin/python3 -I /root/ghostfleet-bootstrap/install.py apply /root/ghostfleet-profile.json
+sudo /usr/bin/python3 -I /root/ghostfleet-bootstrap/install.py status /root/ghostfleet-profile.json
+sudo /usr/bin/python3 -I /root/ghostfleet-bootstrap/install.py repair /root/ghostfleet-profile.json
+```
+
+首装或切换发布频道后，实触发一次 `sudo systemctl start ghostfleet-nextgen-update.service`，读回退出结果及 journal，确认周期服务使用相同信任根。
+
+`plan` 与 `status` 读取本机文件、身份和 systemd 状态。`apply` 使用签名渠道激活 reporter，布置自有文件与定时器，首纳或保留既有身份。`repair` 通过相同版本和签名包恢复自有 reporter、引导文件和定时器。状态使用 JSON，包含实际安装版、变更项和诊断。当前 release 的签名索引不可用时保留原指针。前滚恢复由发布 owner 签署版本更高的已知好内容。`fallback_uri` 选用相同信任根和频道，只在可确认的获取故障时切换。若主源已经选定包，备用源必须给出同一版本、大小和摘要。
+
+安装器首发支持 Debian 13 amd64 和原生 systemd。Debian 13 兼容设备只能在通过既有设备只读检查及 owner 授权后使用。arm64 reporter 可构建，统一安装器不在 arm64 执行。可选的 Tailscale 和 Cloudflare `observe` 只读取原生服务状态，既有自定义实例仍由 owner 管理。K3s `role: none` 为默认，`mode: external` 可观察外部 Server 或 Agent。对获准的专用 Agent，可配置 `mode: prepare` 或 `start`，以及受信的 `profile`、`artifact`、`token_file` 和 `approve_plan`；复用下面的批准计划与凭据校验。`start` 将启用对应专用单元。现有集群、第三方服务、防火墙、OMV 数据及 SSH 仍由各自 owner 管理。
 
 ## 首次纳管、授权与可选计算
 
@@ -87,4 +115,4 @@ npx --no-install wrangler deploy --dry-run --config nextgen/wrangler.jsonc --out
 
 ## English operations
 
-Build the APT candidate from an explicitly approved clean commit. Verify independent build digests and sign through the separate instance release environment. Verify the unique signed expiry before promotion. Install the approved bootstrap, provision the approved keyring and profile through the instance trust path, and use the fixed bootstrap enrollment entry point for privileged enrollment and adoption. Keep the present reporting files and UID when adopting an existing host. Use the native SSH and provider credentials owned by the instance. The optional K3s attachment requires a securely pinned native Agent bootstrap credential. Keep the old control plane available throughout validation. Rollback preserves current identities and restores a reviewed release or deployment under the instance owner's authority.
+Build the APT candidate from an explicitly approved clean commit. Verify independent build digests and sign through the separate instance release environment. Verify the unique signed expiry before promotion. On Debian 13 amd64 with native systemd, verify the approved bootstrap digest before extraction, and provision the root-owned `0600` profile and approved keyring through the instance trust path. Use the same `install.py plan|apply|status|repair` entry point shown above. Set `enrollment.mode` to `adopt` and reference `legacy_config` to preserve an existing UID and reporting credential. Repeated apply preserves a healthy installation and refreshes only files it owns. The APT updater stays responsible for periodic reporter updates. Keep native SSH recovery and the previous control plane available throughout validation. Optional K3s uses approved Agent provisioning or observes an external server or agent. Tailscale, Cloudflare and external K3s stay under their current owners. The release owner can forward-roll to known-good content at a higher signed version.
