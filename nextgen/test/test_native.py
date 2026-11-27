@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import tempfile
+import subprocess
 from types import SimpleNamespace
 from pathlib import Path
 import sys
@@ -31,14 +32,14 @@ class NativeTest(unittest.TestCase):
         current["k3s"]["unit"] = "loaded"
         self.assertEqual(native.agent_plan(self.server, current)["outcome"], "OWNERSHIP_REVIEW")
         current["k3s"]["activity"] = "active"
-        self.assertEqual(native.agent_plan(self.server, current)["outcome"], "ADOPT_WITH_VERIFIED_BINDING")
+        self.assertEqual(native.agent_plan(self.server, current)["outcome"], "OWNERSHIP_REVIEW")
         with self.assertRaises(native.NativeError):
             native.agent_plan({**self.server, "server": "http://cluster.example.invalid"}, current)
 
     def test_provider_reports_preserve_bound_identity_and_distinct_dimensions(self):
         inputs = {"node_uid": self.uid, "tailscale": {"device_id": "fixture", "credential_file": "unused"},
                   "cloudflare": {"account_id": "a" * 32, "tunnel_id": str(uuid4()), "credential_file": "unused"}}
-        tailnet = {"nodeId": "fixture", "authorized": True, "lastSeen": self.now.isoformat(), "clientVersion": "1.90.2"}
+        tailnet = {"nodeId": "fixture", "authorized": True, "connectedToControl": True, "lastSeen": None, "clientVersion": "1.90.2"}
         cloud = {"success": True, "result": {"id": inputs["cloudflare"]["tunnel_id"], "status": "healthy"}}
         with patch.object(native, "read", return_value=b"synthetic"), \
                 patch.object(native, "request_json", side_effect=[tailnet, cloud]):
@@ -67,7 +68,127 @@ class NativeTest(unittest.TestCase):
                        for item in (config, kube_system, kube_node, lease)]
             with patch.object(native, "read"), patch.object(native, "kube", return_value=[]), \
                     patch.object(native, "command", side_effect=outputs):
-                self.assertEqual(native.kubernetes(binding, self.now)["verdict"], verdict)
+                self.assertEqual(native.kubernetes(binding, lambda: self.now)["verdict"], verdict)
+        # A recent lease for a different holder and an unpinned object cannot
+        # establish readiness, even when the Node condition itself is Ready.
+        lease = {"spec": {"holderIdentity": "different-node", "renewTime": self.now.isoformat()}}
+        outputs = [SimpleNamespace(stdout=json.dumps(item).encode(), returncode=0)
+                   for item in (config, kube_system, kube_node, lease)]
+        with patch.object(native, "read"), patch.object(native, "kube", return_value=[]), \
+                patch.object(native, "command", side_effect=outputs):
+            self.assertEqual(native.kubernetes(binding, self.now)["verdict"], "UNAVAILABLE")
+        for wrong_cluster, wrong_node, reason in [(True, False, "CLUSTER_PIN_MISMATCH"),
+                                                   (False, True, "KUBE_NODE_PIN_MISMATCH")]:
+            wrong_system = {"metadata": {"uid": str(uuid4())}} if wrong_cluster else kube_system
+            wrong_object = {**kube_node, "metadata": {"uid": str(uuid4())}} if wrong_node else kube_node
+            outputs = [SimpleNamespace(stdout=json.dumps(item).encode(), returncode=0)
+                       for item in (config, wrong_system, wrong_object, lease)]
+            with patch.object(native, "read"), patch.object(native, "kube", return_value=[]), \
+                    patch.object(native, "command", side_effect=outputs), self.assertRaisesRegex(native.NativeError, reason):
+                native.kubernetes(binding, self.now)
+
+    def test_tailscale_control_connectivity_is_not_last_seen_recency(self):
+        binding = {"device_id": "fixture", "credential_file": "unused"}
+        cases = [({"authorized": True, "connectedToControl": True, "lastSeen": None}, "READY"),
+                 ({"authorized": True, "connectedToControl": True, "lastSeen": "bad"}, "READY"),
+                 ({"authorized": True, "connectedToControl": False, "lastSeen": self.now.isoformat()}, "UNAVAILABLE"),
+                 ({"authorized": False, "connectedToControl": True}, "UNAVAILABLE"),
+                 ({"authorized": True, "lastSeen": self.now.isoformat()}, "UNKNOWN"),
+                 ({"authorized": True, "connectedToControl": "true"}, "UNKNOWN"),
+                 ({"authorized": 1, "connectedToControl": True}, "UNKNOWN")]
+        for fields, verdict in cases:
+            with self.subTest(fields=fields), patch.object(native, "read", return_value=b"synthetic"), \
+                    patch.object(native, "request_json", return_value={"nodeId": "fixture", **fields}):
+                self.assertEqual(native.tailscale(binding, self.now)["verdict"], verdict)
+
+    def test_freshness_boundaries_and_time_sample_after_io(self):
+        for value, expected in [(self.now.isoformat(), True),
+                                ((self.now - timedelta(seconds=90)).isoformat(), True),
+                                ((self.now - timedelta(seconds=90, microseconds=1)).isoformat(), False),
+                                ((self.now + timedelta(microseconds=1)).isoformat(), False),
+                                (self.now.replace(tzinfo=None).isoformat(), False),
+                                ("bad", False), (None, False)]:
+            with self.subTest(expected=expected):
+                self.assertEqual(native.fresh(value, self.now, 90), expected)
+        # The clock is deliberately ahead of the initial observation: sample it
+        # only after a provider call has finished, avoiding future-lease errors.
+        done = self.now + timedelta(seconds=2)
+        binding = {"device_id": "fixture", "credential_file": "unused"}
+        calls = []
+        def response(*args):
+            calls.append("response")
+            return {"nodeId": "fixture", "authorized": True, "connectedToControl": True}
+        def clock():
+            self.assertEqual(calls, ["response"])
+            return done
+        with patch.object(native, "read", return_value=b"synthetic"), \
+                patch.object(native, "request_json", side_effect=response):
+            result = native.tailscale(binding, clock)
+        self.assertEqual(result["observed_at"], done.isoformat(timespec="milliseconds").replace("+00:00", "Z"))
+
+    def test_ssh_failure_codes_do_not_publish_native_output(self):
+        binding = {"host": "fixture.example.invalid", "port": 22, "login": "fixture",
+                   "host_key": "ssh-ed25519 " + "a" * 64, "identity_file": "unused",
+                   "transport": "direct", "dimension": "management"}
+        cases = [(b"Permission denied (publickey). private-detail", "SSH_AUTHENTICATION_FAILED", "UNAVAILABLE"),
+                 (b"Host key verification failed. private-detail", "SSH_HOST_KEY_REJECTED", "UNAVAILABLE"),
+                 (b"Connection refused private-detail", "SSH_CONNECTION_FAILED", "UNAVAILABLE"),
+                 (b"unknown private-detail", "SSH_PROBE_FAILED", "UNKNOWN")]
+        for stderr, reason, verdict in cases:
+            with self.subTest(reason=reason), patch.object(native, "read"), \
+                    patch.object(native.shutil, "which", return_value="/stub/ssh"), \
+                    patch.object(native, "command", return_value=SimpleNamespace(returncode=255, stderr=stderr)):
+                result = native.observations({"node_uid": self.uid, "ssh": [binding]})
+            self.assertEqual(result["observations"][0]["verdict"], verdict)
+            self.assertEqual(result["diagnostics"][0]["reason"], reason)
+            self.assertNotIn("private-detail", json.dumps(result))
+        with patch.object(native, "read"), patch.object(native.shutil, "which", return_value="/stub/ssh"), \
+                patch.object(native, "command", return_value=SimpleNamespace(returncode=0, stderr=b"")):
+            self.assertEqual(native.ssh(binding, self.now)["verdict"], "READY")
+        with patch.object(native, "read"), patch.object(native.shutil, "which", return_value="/stub/ssh"), \
+                patch.object(native, "command", side_effect=subprocess.TimeoutExpired("private-detail", 12)):
+            result = native.observations({"node_uid": self.uid, "ssh": [binding]})
+            self.assertEqual(result["diagnostics"][0]["reason"], "SSH_TIMEOUT")
+            self.assertNotIn("private-detail", json.dumps(result))
+
+    def test_existing_native_ownership_is_never_verified_from_unit_activity(self):
+        empty = {role: {"unit": "not-found", "activity": "inactive"} for role in ("k3s", "k3s-agent")}
+        cases = [{**empty, "k3s": {"unit": "loaded", "activity": "active"}},
+                 {**empty, "k3s": {"unit": "not-found", "activity": "inactive", "binary_found": True}},
+                 {**empty, "k3s-ownership": {"state": "detected"}},
+                 {**empty, "k3s-ownership": {"state": "unknown"}}]
+        with patch.object(native, "existing_k3s_paths", return_value=False):
+            for current in cases:
+                with self.subTest(current=current):
+                    self.assertEqual(native.agent_plan(self.server, current)["outcome"], "OWNERSHIP_REVIEW")
+        with patch.object(native, "existing_k3s_paths", return_value=True):
+            self.assertEqual(native.agent_plan(self.server, empty)["outcome"], "OWNERSHIP_REVIEW")
+
+    def test_discovery_includes_custom_inactive_units_and_inventory_uncertainty(self):
+        def output(stdout=b"", code=0):
+            return SimpleNamespace(stdout=stdout, returncode=code)
+        for inventory, code, expected in [(b"", 0, "clear"),
+                                           (b"custom-k3s.service disabled\n", 0, "detected"),
+                                           ((native.AGENT_UNIT + " enabled\n").encode(), 0, "clear"),
+                                           (b"", 1, "unknown")]:
+            with self.subTest(expected=expected), \
+                    patch.object(native, "existing_k3s_paths", return_value=False), \
+                    patch.object(native.shutil, "which", return_value=None), \
+                    patch.object(Path, "iterdir", return_value=iter(())), \
+                    patch.object(native, "command", side_effect=[
+                        *[output(b"LoadState=not-found\nActiveState=inactive\n") for _ in range(6)],
+                        output(inventory, code), output()]):
+                self.assertEqual(native.discover()["k3s-ownership"]["state"], expected)
+        # Custom service names still expose a native k3s process name. No process
+        # argv or environment is inspected by discovery.
+        process = Path("/proc/123")
+        with patch.object(native, "existing_k3s_paths", return_value=False), \
+                patch.object(native.shutil, "which", return_value=None), \
+                patch.object(Path, "iterdir", return_value=iter([process])), \
+                patch.object(Path, "read_text", return_value="k3s\n") as read_name, \
+                patch.object(native, "command", return_value=output()):
+            self.assertEqual(native.discover()["k3s-ownership"]["state"], "detected")
+            self.assertEqual(read_name.call_args.args, ())
 
     def test_bootstrap_credential_parser_accepts_only_pinned_native_agent_type(self):
         token = "K10" + self.server["ca_sha256"] + "::abc123.0123456789abcdef"

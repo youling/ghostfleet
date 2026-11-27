@@ -100,8 +100,16 @@ def receipt(source, dimension, verdict, now, version=None):
 def fresh(value, now, max_seconds):
     if not isinstance(value, str):
         return False
-    timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return timestamp.tzinfo is not None and 0 <= (now - timestamp).total_seconds() <= max_seconds
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return timestamp.tzinfo is not None and 0 <= (now - timestamp).total_seconds() <= max_seconds
+    except (ValueError, OverflowError):
+        return False
+
+
+def sampled(now):
+    # Observations pass a clock, sampled after I/O; direct callers may pass a datetime.
+    return now() if callable(now) else now
 
 
 def tailscale(binding, now):
@@ -111,9 +119,11 @@ def tailscale(binding, now):
     token = read(binding["credential_file"], secret=True, limit=4096).decode().strip()
     result = request_json("https://api.tailscale.com/api/v2/device/" + device, token)
     require(device in (result.get("id"), result.get("nodeId")), "TAILSCALE_IDENTITY_MISMATCH")
-    seen = result.get("lastSeen")
-    authorized = result.get("authorized")
-    verdict = "UNKNOWN" if not seen or type(authorized) is not bool else "READY" if authorized and fresh(seen, now, 300) else "UNAVAILABLE"
+    now = sampled(now)
+    connected, authorized = result.get("connectedToControl"), result.get("authorized")
+    # lastSeen can be absent while connected and recent while disconnected.
+    verdict = "UNKNOWN" if type(connected) is not bool or type(authorized) is not bool else (
+        "READY" if authorized and connected else "UNAVAILABLE")
     return receipt("tailscale-api", "network", verdict, now, result.get("clientVersion"))
 
 
@@ -126,12 +136,13 @@ def cloudflare(binding, now):
     tunnel_info = envelope.get("result")
     require(envelope.get("success") is True and isinstance(tunnel_info, dict) and tunnel_info.get("id") == tunnel,
             "TUNNEL_IDENTITY_MISMATCH")
+    now = sampled(now)
     status = tunnel_info.get("status")
     verdict = "READY" if status == "healthy" else "UNAVAILABLE" if status in ("down", "inactive", "degraded") else "UNKNOWN"
     return receipt("cloudflare-api", "edge", verdict, now)
 
 
-def ssh(binding, now):
+def ssh(binding, now, *, diagnostics=None):
     shape(binding, ("host", "port", "login", "host_key", "identity_file", "transport", "dimension"))
     host, port, login = binding["host"], binding["port"], binding["login"]
     require(match(HOST, host) and type(port) is int and 1 <= port <= 65535 and match(LOGIN, login) and
@@ -159,7 +170,24 @@ def ssh(binding, now):
             "-o", "ProxyCommand=" + proxy, "-i", binding["identity_file"], "-p", str(port),
             "-l", login, "--", host, "/usr/bin/true",
         ])
-    return receipt("ssh-probe", binding["dimension"], "READY" if session.returncode == 0 else "UNAVAILABLE", now)
+    now = sampled(now)
+    if session.returncode == 0:
+        return receipt("ssh-probe", binding["dimension"], "READY", now)
+    # Output may contain endpoint/user/credential facts: return only fixed codes.
+    detail = session.stderr.decode("utf-8", errors="replace").lower()
+    if "host key verification failed" in detail or "remote host identification has changed" in detail:
+        reason = "SSH_HOST_KEY_REJECTED"
+    elif "permission denied" in detail or "no supported authentication methods" in detail:
+        reason = "SSH_AUTHENTICATION_FAILED"
+    elif any(message in detail for message in ("connection timed out", "connection refused", "no route to host",
+                                               "network is unreachable", "could not resolve hostname")):
+        reason = "SSH_CONNECTION_FAILED"
+    else:
+        reason = "SSH_PROBE_FAILED"
+    if diagnostics is not None:
+        diagnostics.append({"source": "ssh-probe", "dimension": binding["dimension"], "reason": reason})
+    return receipt("ssh-probe", binding["dimension"],
+                   "UNKNOWN" if reason == "SSH_PROBE_FAILED" else "UNAVAILABLE", now)
 
 
 def kubernetes(binding, now):
@@ -181,6 +209,7 @@ def kubernetes(binding, now):
     node = get("get", "node", binding["node_name"])
     require(node["metadata"]["uid"] == binding["node_uid"], "KUBE_NODE_PIN_MISMATCH")
     lease = get("get", "lease", binding["node_name"], "-n", "kube-node-lease")
+    now = sampled(now)
     lease_ready = lease["spec"]["holderIdentity"] == binding["node_name"] and fresh(lease["spec"]["renewTime"], now, 90)
     ready = any(item["type"] == "Ready" and item["status"] == "True" for item in node["status"]["conditions"])
     return receipt("kubernetes-api", "compute", "READY" if ready and lease_ready else "UNAVAILABLE",
@@ -190,7 +219,7 @@ def kubernetes(binding, now):
 def observations(profile):
     shape(profile, ("node_uid",), ("tailscale", "cloudflare", "ssh", "kubernetes"))
     require(match(UID, profile["node_uid"]), "INVALID_FLEET_UID")
-    now = datetime.now(timezone.utc)
+    clock = lambda: datetime.now(timezone.utc)
     result, notices = [], []
     for source, collector, dimension in (
             ("tailscale", tailscale, "network"), ("cloudflare", cloudflare, "edge"),
@@ -208,16 +237,26 @@ def observations(profile):
             bindings = [profile[source]]
         for binding in bindings:
             try:
-                result.append(collector(binding, now))
+                result.append(collector(binding, clock, diagnostics=notices) if source == "ssh"
+                              else collector(binding, clock))
             except (NativeError, OSError, ValueError, KeyError, TypeError, IndexError, AttributeError,
                     subprocess.TimeoutExpired) as error:
+                now = clock()
                 trusted_source = {"tailscale": "tailscale-api", "cloudflare": "cloudflare-api",
                                   "ssh": "ssh-probe", "kubernetes": "kubernetes-api"}[source]
                 dimension = binding["dimension"] if source == "ssh" else dimension
                 result.append(receipt(trusted_source, dimension, "UNKNOWN", now))
                 notices.append({"source": trusted_source, "dimension": dimension,
-                                "reason": str(error) if isinstance(error, NativeError) else "EVIDENCE_UNAVAILABLE"})
+                                "reason": str(error) if isinstance(error, NativeError) else (
+                                    "SSH_TIMEOUT" if source == "ssh" and isinstance(error, subprocess.TimeoutExpired)
+                                    else "EVIDENCE_UNAVAILABLE")})
     return {"node_uid": profile["node_uid"], "observations": result, "diagnostics": notices}
+
+
+def existing_k3s_paths():
+    candidates = (Path("/etc/rancher/k3s"), Path("/var/lib/rancher/k3s"),
+                  Path.home() / ".rancher/k3s")
+    return any(path.exists() or path.is_symlink() for path in candidates)
 
 
 def discover():
@@ -230,6 +269,31 @@ def discover():
         loaded = state.get("LoadState")
         components[unit] = {"binary_found": available, "unit": loaded or "unknown",
                             "activity": state.get("ActiveState", "unknown")}
+    # Include custom names, inactive unit files and running units. Inventory errors
+    # are uncertainty, not proof of absence. Do not read service environments.
+    owner_state = "detected" if existing_k3s_paths() else "clear"
+    for inventory in ("list-unit-files", "list-units"):
+        result = command(["systemctl", inventory, "--all", "--no-legend", "--no-pager", "*k3s*"])
+        if result.returncode != 0:
+            owner_state = "unknown" if owner_state == "clear" else owner_state
+        else:
+            units = [line.split()[0] for line in result.stdout.decode().splitlines() if line.strip()]
+            if any(unit != AGENT_UNIT for unit in units):
+                owner_state = "detected"
+    # A custom systemd unit can run k3s under a name without 'k3s'. Read only
+    # process names, never argv/environ, which may carry credentials.
+    try:
+        for process in Path("/proc").iterdir():
+            if process.name.isdecimal():
+                try:
+                    name = (process / "comm").read_text().strip()
+                except FileNotFoundError:  # process exited during inventory
+                    continue
+                if name == "k3s" or name.startswith("k3s-"):
+                    owner_state = "detected"
+    except OSError:
+        owner_state = "unknown" if owner_state == "clear" else owner_state
+    components["k3s-ownership"] = {"state": owner_state}
     return components
 
 
@@ -245,10 +309,10 @@ def agent_plan(profile, current):
         ipaddress.ip_address(profile["node_ip"])
     require("flannel_iface" not in profile or match(re.compile(r"[a-zA-Z0-9_.-]{1,15}"), profile["flannel_iface"]),
             "INVALID_FLANNEL_INTERFACE")
-    if any(current[unit]["unit"] not in ("not-found",) or current[unit]["activity"] == "active"
-           for unit in ("k3s", "k3s-agent")) or Path("/etc/rancher/k3s/config.yaml").exists():
-        outcome = "ADOPT_WITH_VERIFIED_BINDING" if any(current[unit]["activity"] == "active"
-                                                       for unit in ("k3s", "k3s-agent")) else "OWNERSHIP_REVIEW"
+    if any(current[unit]["unit"] != "not-found" or current[unit]["activity"] != "inactive" or
+           current[unit].get("binary_found", False) for unit in ("k3s", "k3s-agent")) or (
+            current.get("k3s-ownership", {}).get("state", "clear") != "clear") or existing_k3s_paths():
+        outcome = "OWNERSHIP_REVIEW"
     else:
         outcome = "PREPARE_DEDICATED_AGENT"
     payload = {"outcome": outcome, "profile": profile, "schema": "ghostfleet-k3s-plan/v1"}
