@@ -295,7 +295,7 @@ def trusted_attachment(profile=None):
         installed = marker["profile"]
         require(profile is None or installed == profile, "EXISTING_ATTACHMENT_CONFLICT")
         require(marker == preparation_plan(installed) and
-                json.loads(read(AGENT_HOME / "config.json")) == agent_config(installed) and
+                read(AGENT_HOME / "config.json") == json.dumps(agent_config(installed), sort_keys=True).encode() and
                 hashlib.sha256(read(AGENT_HOME / "k3s", limit=128 * 1024 * 1024)).hexdigest() == installed["sha256"],
                 "EXISTING_ATTACHMENT_CONFLICT")
         agent_token(read(AGENT_HOME / "token", secret=True), installed["ca_sha256"])
@@ -303,28 +303,6 @@ def trusted_attachment(profile=None):
     except (NativeError, OSError, ValueError, KeyError, TypeError):
         return None
 
-
-def owned_service_pid():
-    """Resolve the actual systemd service, not a process that shares its name."""
-    result = command(["systemctl", "show", AGENT_UNIT,
-                      "--property=MainPID,ControlGroup,User,ExecStart,Environment,EnvironmentFiles,DropInPaths"])
-    require(result.returncode == 0, "OWNERSHIP_UNAVAILABLE")
-    properties = dict(line.split("=", 1) for line in result.stdout.decode().splitlines() if "=" in line)
-    pid = properties.get("MainPID", "")
-    expected = str(AGENT_HOME / "k3s") + " agent --config " + str(AGENT_HOME / "config.json")
-    require(pid.isdecimal() and int(pid) > 0 and properties.get("User") in ("", "root") and
-            all(properties.get(key) == "" for key in ("Environment", "EnvironmentFiles", "DropInPaths")) and
-            properties.get("ControlGroup") == "/system.slice/" + AGENT_UNIT and
-            re.fullmatch(re.escape("{ path=" + str(AGENT_HOME / "k3s") + " ; argv[]=" + expected +
-                                   " ; ignore_errors=no ; ") + r"[^{}]* \}", properties.get("ExecStart", "")),
-            "OWNERSHIP_UNAVAILABLE")
-    process = Path("/proc") / pid
-    require((process / "exe").resolve() == (AGENT_HOME / "k3s").resolve() and
-            (process / "cmdline").read_bytes() == b"\0".join(part.encode() for part in
-                (str(AGENT_HOME / "k3s"), "agent", "--config", str(AGENT_HOME / "config.json"))) + b"\0" and
-            (process / "cgroup").read_text().strip() == "0::/system.slice/" + AGENT_UNIT,
-            "OWNERSHIP_UNAVAILABLE")
-    return pid
 
 
 
@@ -349,16 +327,7 @@ def discover():
             units = [line.split()[0] for line in result.stdout.decode().splitlines() if line.strip()]
             if any(unit != AGENT_UNIT for unit in units):
                 owner_state = "detected"
-    # Only the verified MainPID of our service is exempt from conflict checks.
-    # Do not publish process arguments or service properties.
-    own_pid = None
-    if components[AGENT_UNIT]["activity"] == "active":
-        try:
-            require(trusted_attachment() is not None, "OWNERSHIP_UNAVAILABLE")
-            own_pid = owned_service_pid()
-        except (NativeError, OSError, ValueError):
-            owner_state = "detected"
-    own_seen = False
+    # Process names establish only possible conflicts, never runtime ownership.
     try:
         for process in Path("/proc").iterdir():
             if process.name.isdecimal():
@@ -367,21 +336,14 @@ def discover():
                 except FileNotFoundError:  # process exited during inventory
                     continue
                 if name == "k3s" or name.startswith("k3s-"):
-                    if process.name == own_pid:
-                        own_seen = True
-                    else:
-                        owner_state = "detected"
+                    owner_state = "detected"
     except OSError:
         owner_state = "unknown" if owner_state == "clear" else owner_state
-    if own_pid and not own_seen:
-        owner_state = "unknown" if owner_state == "clear" else owner_state
-    elif own_seen and owner_state == "clear":
-        owner_state = "owned"
     components["k3s-ownership"] = {"state": owner_state}
     return components
 
 
-def agent_plan(profile, current):
+def validate_agent_profile(profile):
     shape(profile, ("node_uid", "server", "ca_sha256", "version", "sha256", "node_name"), ("node_ip", "flannel_iface"))
     server = urlsplit(profile["server"])
     require(match(UID, profile["node_uid"]) and match(K3S_VERSION, profile["version"]) and
@@ -393,12 +355,14 @@ def agent_plan(profile, current):
         ipaddress.ip_address(profile["node_ip"])
     require("flannel_iface" not in profile or match(re.compile(r"[a-zA-Z0-9_.-]{1,15}"), profile["flannel_iface"]),
             "INVALID_FLANNEL_INTERFACE")
+
+
+def agent_plan(profile, current):
+    validate_agent_profile(profile)
     if any(current[unit]["unit"] != "not-found" or current[unit]["activity"] != "inactive" or
            current[unit].get("binary_found", False) for unit in ("k3s", "k3s-agent")) or (
-            current.get("k3s-ownership", {}).get("state", "clear") not in ("clear", "owned")) or (
-            current.get(AGENT_UNIT, {}).get("activity") == "active" and
-            (current.get("k3s-ownership", {}).get("state") != "owned" or trusted_attachment(profile) is None)) or (
-            current.get("k3s-ownership", {}).get("state") == "owned" and trusted_attachment(profile) is None) or existing_k3s_paths():
+            current.get("k3s-ownership", {}).get("state", "clear") != "clear") or (
+            current.get(AGENT_UNIT, {}).get("activity") == "active") or existing_k3s_paths():
         outcome = "OWNERSHIP_REVIEW"
     else:
         outcome = "PREPARE_DEDICATED_AGENT"
@@ -412,6 +376,7 @@ def agent_token(data, ca_sha256):
     K3s static agent-token defaults to the server secret; even a node: prefix
     cannot establish separation. Native bootstrap tokens have a distinct parser
     and authentication path (docs.k3s.io/cli/token; pkg/clientaccess/token.go).
+    Shape proves neither issuance nor TTL; those remain cluster-owner checks.
     """
     require(isinstance(data, bytes), "INVALID_AGENT_CREDENTIAL")
     try:
@@ -426,19 +391,22 @@ def agent_token(data, ca_sha256):
 
 def apply_agent(profile, approval, artifact, token_file):
     require(os.geteuid() == 0, "ROOT_REQUIRED")
-    plan = agent_plan(profile, discover())
-    require(plan["outcome"] == "PREPARE_DEDICATED_AGENT" and plan["plan_sha256"] == approval, "PLAN_CHANGED")
+    validate_agent_profile(profile)
+    plan = preparation_plan(profile)
+    require(plan["plan_sha256"] == approval, "PLAN_CHANGED")
     token = agent_token(read(token_file, secret=True, limit=1024), profile["ca_sha256"])
     data = read(artifact, limit=128 * 1024 * 1024)
     require(hashlib.sha256(data).hexdigest() == profile["sha256"], "K3S_ARTIFACT_MISMATCH")
     config = agent_config(profile)
     marker = json.dumps(plan, sort_keys=True).encode()
-    if AGENT_HOME.exists():
-        require(not AGENT_HOME.is_symlink() and read(AGENT_HOME / "plan.json") == marker and
-                read(AGENT_HOME / "token", secret=True) == token.encode() and
-                hashlib.sha256(read(AGENT_HOME / "k3s", limit=128 * 1024 * 1024)).hexdigest() == profile["sha256"] and
-                json.loads(read(AGENT_HOME / "config.json")) == config, "EXISTING_ATTACHMENT_CONFLICT")
+    if AGENT_HOME.exists() or AGENT_HOME.is_symlink():
+        # This is solely a receipt for the approved preparation already on disk.
+        # K3s wrappers exec an extracted binary and rewrite argv; neither runtime
+        # identity nor adoption is implied. This branch performs no node writes.
+        require(trusted_attachment(profile) == plan and read(AGENT_HOME / "plan.json") == marker and
+                read(AGENT_HOME / "token", secret=True) == token.encode(), "EXISTING_ATTACHMENT_CONFLICT")
         return "ALREADY_PREPARED"
+    require(agent_plan(profile, discover()) == plan, "PLAN_CHANGED")
     AGENT_HOME.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     owner = AGENT_HOME.parent.lstat()
     require(stat.S_ISDIR(owner.st_mode) and owner.st_uid == 0 and not owner.st_mode & 0o022, "UNSAFE_AGENT_DIRECTORY")

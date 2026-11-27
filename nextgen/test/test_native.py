@@ -197,55 +197,6 @@ class NativeTest(unittest.TestCase):
             self.assertEqual(native.discover()["k3s-ownership"]["state"], "detected")
             self.assertEqual(read_name.call_args.args, ())
 
-    def test_discovery_accepts_only_verified_owned_main_process(self):
-        def output(data=b"", code=0):
-            return SimpleNamespace(stdout=data, returncode=code)
-        for verified, processes, expected in [(True, ["123"], "owned"),
-                                               (False, ["123"], "detected"),
-                                               (True, ["123", "456"], "detected"),
-                                               (True, [], "unknown")]:
-            service_outputs = [output(b"LoadState=not-found\nActiveState=inactive\n") for _ in range(5)]
-            service_outputs.append(output(b"LoadState=loaded\nActiveState=active\n"))
-            with self.subTest(verified=verified, processes=processes), \
-                    patch.object(native, "existing_k3s_paths", return_value=False), \
-                    patch.object(native.shutil, "which", return_value=None), \
-                    patch.object(native, "trusted_attachment", return_value={} if verified else None), \
-                    patch.object(native, "owned_service_pid", return_value="123"), \
-                    patch.object(Path, "iterdir", return_value=iter([Path("/proc") / pid for pid in processes])), \
-                    patch.object(Path, "read_text", return_value="k3s\n"), \
-                    patch.object(native, "command", side_effect=service_outputs + [output(), output()]):
-                current = native.discover()
-                self.assertEqual(current["k3s-ownership"]["state"], expected)
-                if expected != "owned":
-                    self.assertEqual(native.agent_plan(self.server, current)["outcome"], "OWNERSHIP_REVIEW")
-
-    def test_owned_service_requires_exact_executable_command_and_cgroup(self):
-        home = native.AGENT_HOME
-        expected_argv = b"\0".join(part.encode() for part in
-            (str(home / "k3s"), "agent", "--config", str(home / "config.json"))) + b"\0"
-        properties = ("MainPID=123\nControlGroup=/system.slice/" + native.AGENT_UNIT +
-                      "\nUser=\nEnvironment=\nEnvironmentFiles=\nDropInPaths=\n" +
-                      "ExecStart={ path=" + str(home / "k3s") + " ; argv[]=" + str(home / "k3s") +
-                      " agent --config " + str(home / "config.json") +
-                      " ; ignore_errors=no ; start_time=x ; stop_time=x ; pid=123 ; code=0 ; status=0 }\n")
-        for binary, argv, group, valid in [
-                (home / "k3s", expected_argv, "0::/system.slice/" + native.AGENT_UNIT, True),
-                (Path("/another/k3s"), expected_argv, "0::/system.slice/" + native.AGENT_UNIT, False),
-                (home / "k3s", b"different-command\0", "0::/system.slice/" + native.AGENT_UNIT, False),
-                (home / "k3s", expected_argv, "0::/another.service", False)]:
-            def resolved(path, **kwargs):
-                return binary if path == Path("/proc/123/exe") else path
-            with self.subTest(valid=valid), \
-                    patch.object(native, "command", return_value=SimpleNamespace(returncode=0, stdout=properties.encode())), \
-                    patch.object(Path, "resolve", resolved), \
-                    patch.object(Path, "read_bytes", return_value=argv), \
-                    patch.object(Path, "read_text", return_value=group):
-                if valid:
-                    self.assertEqual(native.owned_service_pid(), "123")
-                else:
-                    with self.assertRaises(native.NativeError):
-                        native.owned_service_pid()
-
     def test_invalid_lease_timestamp_is_unknown_while_expired_is_unavailable(self):
         cluster, node = str(uuid4()), str(uuid4())
         binding = {"kubeconfig": "unused", "context": "fixture", "cluster_uid": cluster,
@@ -282,6 +233,25 @@ class NativeTest(unittest.TestCase):
                 native.agent_token(value, "a" * 64)
         with self.assertRaisesRegex(native.NativeError, "AGENT_CA_PIN_MISMATCH"):
             native.agent_token(token.encode(), "c" * 64)
+
+    def test_first_preparation_refuses_unknown_or_existing_k3s_before_writes(self):
+        data = b"synthetic artifact"
+        profile = {**self.server, "sha256": hashlib.sha256(data).hexdigest()}
+        approval = native.preparation_plan(profile)["plan_sha256"]
+        token = ("K10" + "a" * 64 + "::abc123.0123456789abcdef").encode()
+        empty = {role: {"unit": "not-found", "activity": "inactive"} for role in ("k3s", "k3s-agent")}
+        for state in ("detected", "unknown"):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as temporary:
+                home = Path(temporary) / "unprepared"
+                with patch.object(native, "AGENT_HOME", home), \
+                        patch.object(native.os, "geteuid", return_value=0, create=True), \
+                        patch.object(native, "discover", return_value={**empty, "k3s-ownership": {"state": state}}), \
+                        patch.object(native, "read", side_effect=[token, data]), \
+                        patch.object(native, "command") as command:
+                    with self.assertRaisesRegex(native.NativeError, "PLAN_CHANGED"):
+                        native.apply_agent(profile, approval, "artifact", "credential")
+                    self.assertFalse(home.exists())
+                    command.assert_not_called()
 
     def test_prepare_agent_positive_repeat_conflict_and_prewrite_rejection(self):
         # All inputs are synthetic; the artifact is never executed.
@@ -323,13 +293,23 @@ class NativeTest(unittest.TestCase):
                     self.assertEqual(native.apply_agent(profile, plan["plan_sha256"], "artifact", "credential"), "ALREADY_PREPARED")
                     self.assertEqual((home / "token").read_bytes(), valid_token)
                     self.assertEqual(command.call_count, 1)
-                    # Same artifact/config/plan remains a no-op after the owner
-                    # starts the verified dedicated service.
+                    # Official wrappers exec an extracted binary and rewrite
+                    # argv to 'k3s agent'. No runtime inspection is needed for
+                    # an already approved preparation receipt.
                     current[native.AGENT_UNIT] = {"unit": "loaded", "activity": "active"}
-                    current["k3s-ownership"] = {"state": "owned"}
+                    current["k3s-ownership"] = {"state": "detected"}
                     self.assertIsNotNone(native.trusted_attachment(profile))
-                    self.assertEqual(native.apply_agent(profile, plan["plan_sha256"], "artifact", "credential"), "ALREADY_PREPARED")
+                    before = {path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+                              for path in home.iterdir()}
+                    with patch.object(native, "discover", side_effect=AssertionError("runtime inventory is unnecessary")), \
+                            patch.object(native, "command", side_effect=AssertionError("no runtime command")):
+                        self.assertEqual(native.apply_agent(profile, plan["plan_sha256"], "artifact", "credential"), "ALREADY_PREPARED")
+                    after = {path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+                             for path in home.iterdir()}
+                    self.assertEqual(before, after)
                     self.assertEqual(command.call_count, 1)
+                    with self.assertRaisesRegex(native.NativeError, "PLAN_CHANGED"):
+                        native.apply_agent(profile, "wrong-approved-plan", "artifact", "credential")
                     changed = {**profile, "node_name": "another"}
                     self.assertEqual(native.agent_plan(changed, current)["outcome"], "OWNERSHIP_REVIEW")
                     for filename, replacement in (("config.json", b"{}"), ("k3s", b"other artifact"),
@@ -338,6 +318,8 @@ class NativeTest(unittest.TestCase):
                         (home / filename).write_bytes(replacement)
                         self.assertIsNone(native.trusted_attachment(profile))
                         self.assertEqual(native.agent_plan(profile, current)["outcome"], "OWNERSHIP_REVIEW")
+                        with self.assertRaisesRegex(native.NativeError, "EXISTING_ATTACHMENT_CONFLICT"):
+                            native.apply_agent(profile, plan["plan_sha256"], "artifact", "credential")
                         (home / filename).write_bytes(original)
                     token = ("K10" + "a" * 64 + "::def456.0123456789abcdef").encode()
                     with self.assertRaisesRegex(native.NativeError, "EXISTING_ATTACHMENT_CONFLICT"):
