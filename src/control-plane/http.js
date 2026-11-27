@@ -8,6 +8,10 @@ export const json = (data, status = 200) => Response.json(data, { status, header
 } });
 const deny = (error, status) => json({ ok: false, error }, status);
 
+export async function cancelBody(request) {
+  if (!request.body?.locked) await request.body?.cancel().catch(() => {});
+}
+
 export function managedBootstrap(env) {
   const sha256 = env.GHOSTFLEET_MANAGED_BOOTSTRAP_SHA256;
   if (!env.ASSETS || typeof sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(sha256) ||

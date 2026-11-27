@@ -1,12 +1,15 @@
 import { dispatch } from '../../control-plane/presence.js';
 import { prepare, json, managedBootstrap } from '../../control-plane/http.js';
+import { apply } from '../../../nextgen/core.mjs';
+import { prepareNextgen, serveNextgen } from './nextgen.js';
 
 // Retain the original class, namespace name and snapshot key. Legacy nodes and
 // their lifecycle fields survive; obsolete command/helper routes are not mounted.
 export class GhostFleetState {
   constructor(state, env) { this.state = state; this.env = env; }
   async fetch(request) {
-    const prepared = await prepare(request, this.env);
+    const nextgen = new URL(request.url).pathname.startsWith('/v2/');
+    const prepared = await (nextgen ? prepareNextgen(request, this.env) : prepare(request, this.env));
     if (prepared.response) {
       // Cancel an unread upload on early auth/MIME rejection before responding.
       await request.body?.cancel().catch(() => {});
@@ -14,9 +17,12 @@ export class GhostFleetState {
     }
     return this.state.storage.transaction(async txn => {
       const snapshot = (await txn.get('ghostfleet-state')) ?? { nodes: {} };
-      const result = dispatch(prepared.input, snapshot);
+      const now = Date.now();
+      const result = nextgen
+        ? apply(snapshot, prepared.identity.operation, { ...prepared.identity, body: prepared.body }, now)
+        : dispatch(prepared.input, snapshot, now);
       if (result.dirty) await txn.put('ghostfleet-state', snapshot);
-      return json(result.data, result.status);
+      return json(result.body ?? result.data, result.status);
     });
   }
 }
@@ -31,6 +37,7 @@ const denied = (error, status) => json({ ok: false, error }, status);
 export default {
   async fetch(request, env) {
     const u = new URL(request.url);
+    if (u.pathname.startsWith('/v2/')) return serveNextgen(request, env);
     const panel = env.GHOSTFLEET_PANEL_ORIGIN, node = env.GHOSTFLEET_NODE_ORIGIN;
     if (!validOrigin(panel) || !validOrigin(node) || (panel === node && new URL(panel).protocol !== 'http:')) {
       return denied('ORIGINS_NOT_CONFIGURED', 503);
