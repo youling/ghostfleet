@@ -1,0 +1,16 @@
+[Unit]
+Description=Optional GhostFleet K3s Agent attachment
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/ghostfleet-nextgen/k3s/config.json
+
+[Service]
+Type=notify
+ExecStart=/etc/ghostfleet-nextgen/k3s/k3s agent --config /etc/ghostfleet-nextgen/k3s/config.json
+KillMode=process
+Delegate=yes
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

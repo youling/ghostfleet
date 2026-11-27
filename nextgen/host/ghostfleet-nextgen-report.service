@@ -1,0 +1,15 @@
+[Unit]
+Description=GhostFleet version evidence
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+LoadCredential=identity.json:/var/lib/ghostfleet-nextgen/private/identity.json
+ExecStart=/usr/bin/python3 -I /usr/local/lib/ghostfleet-nextgen/report.py --identity ${CREDENTIALS_DIRECTORY}/identity.json
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

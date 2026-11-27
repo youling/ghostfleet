@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GhostFleet</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header class="masthead">
+      <div><p class="eyebrow">GhostFleet</p><h1>舰队概览</h1></div>
+      <p id="deployment" class="meta"></p>
+    </header>
+    <form id="connect" class="card credentials">
+      <label>面板访问凭据<input id="access-token" type="password" required autocomplete="off" spellcheck="false"></label>
+      <button type="submit">查看节点</button>
+    </form>
+    <div id="message" role="status" aria-live="polite"></div>
+    <section id="fleet" hidden aria-labelledby="fleet-title">
+      <div class="section-head"><h2 id="fleet-title">节点</h2><button type="button" id="refresh" class="secondary">刷新</button></div>
+      <div id="nodes" class="grid"></div>
+    </section>
+    <section id="enrollment" class="card" hidden aria-labelledby="enrollment-title">
+      <h2 id="enrollment-title">签发注册邀请</h2>
+      <form id="invite">
+        <label>节点<select id="target"><option value="">新节点</option></select></label>
+        <label>名称<input id="label" maxlength="80" autocomplete="off"></label>
+        <label>渠道<select id="channel"><option value="canary">Canary</option><option value="stable">Stable</option></select></label>
+        <label>平台<select id="platform"><option value="debian13-amd64">Debian 13 · amd64</option><option value="debian13-arm64">Debian 13 · arm64</option></select></label>
+        <label class="wide">已审批配置的 SHA-256<input id="config-revision" required minlength="64" maxlength="64" pattern="[0-9a-f]{64}" spellcheck="false"></label>
+        <div class="form-actions wide"><button type="submit">签发邀请</button><button type="button" id="download" class="secondary" hidden>下载一次性邀请</button></div>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

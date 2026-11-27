@@ -1,0 +1,15 @@
+[Unit]
+Description=Pull GhostFleet software from the approved APT channel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/local/lib/ghostfleet-nextgen/update.py
+StateDirectory=ghostfleet-nextgen
+StateDirectoryMode=0755
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

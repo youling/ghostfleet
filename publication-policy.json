@@ -1,7 +1,7 @@
 {
   "schema": "ghostfleet-publication-policy/v1",
   "allowed_public_hosts": [
-    "developers.cloudflare.com", "tailscale.com", "docs.openmediavault.org",
+    "developers.cloudflare.com", "api.cloudflare.com", "tailscale.com", "docs.openmediavault.org",
     "fsf.org", "gnu.org", "discuss.hashicorp.com", "docs.meshcentral.com",
     "docs.netbird.io", "docs.zerotier.com", "gofrp.org", "goteleport.com",
     "headscale.net", "man.openbsd.org", "packages.debian.org", "rustdesk.com",
