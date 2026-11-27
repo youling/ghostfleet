@@ -255,12 +255,29 @@ def agent_plan(profile, current):
     return {**payload, "plan_sha256": hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()}
 
 
+def agent_token(data, ca_sha256):
+    """Accept only native Agent bootstrap credentials, never shared static passwords.
+
+    K3s static agent-token defaults to the server secret; even a node: prefix
+    cannot establish separation. Native bootstrap tokens have a distinct parser
+    and authentication path (docs.k3s.io/cli/token; pkg/clientaccess/token.go).
+    """
+    require(isinstance(data, bytes), "INVALID_AGENT_CREDENTIAL")
+    try:
+        token = data.decode("ascii").removesuffix("\n")
+    except UnicodeDecodeError:
+        raise NativeError("INVALID_AGENT_CREDENTIAL") from None
+    parsed = re.fullmatch(r"K10([a-f0-9]{64})::([a-z0-9]{6}\.[a-z0-9]{16})", token)
+    require(parsed is not None, "AGENT_BOOTSTRAP_CREDENTIAL_REQUIRED")
+    require(parsed[1] == ca_sha256, "AGENT_CA_PIN_MISMATCH")
+    return token
+
+
 def apply_agent(profile, approval, artifact, token_file):
     require(os.geteuid() == 0, "ROOT_REQUIRED")
     plan = agent_plan(profile, discover())
     require(plan["outcome"] == "PREPARE_DEDICATED_AGENT" and plan["plan_sha256"] == approval, "PLAN_CHANGED")
-    token = read(token_file, secret=True, limit=1024).decode().strip()
-    require(re.fullmatch(r"K10" + profile["ca_sha256"] + r"::[A-Za-z0-9_.:-]{8,512}", token), "AGENT_CA_PIN_MISMATCH")
+    token = agent_token(read(token_file, secret=True, limit=1024), profile["ca_sha256"])
     data = read(artifact, limit=128 * 1024 * 1024)
     require(hashlib.sha256(data).hexdigest() == profile["sha256"], "K3S_ARTIFACT_MISMATCH")
     config = {"server": profile["server"], "node-name": profile["node_name"],
