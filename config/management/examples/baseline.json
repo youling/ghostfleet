@@ -1,0 +1,37 @@
+{
+  "schema": "ghostfleet-config-layer/v1",
+  "type": "baseline",
+  "name": "baseline",
+  "version": "1.0.0",
+  "platforms": [
+    "debian13-amd64",
+    "wsl-debian13-amd64",
+    "windows-amd64"
+  ],
+  "resources": [
+    {
+      "id": "fleet-observed-identity",
+      "kind": "credential",
+      "scope": "cloudflare",
+      "key": "ghostfleet:node-identity",
+      "owner": "ghostfleet",
+      "mode": "observe",
+      "recovery": "original-fleet-owner",
+      "consumers": [
+        "management"
+      ]
+    },
+    {
+      "id": "fleet-observed-store",
+      "kind": "store",
+      "scope": "cloudflare",
+      "key": "ghostfleet:presence-ledger",
+      "owner": "ghostfleet",
+      "mode": "observe",
+      "recovery": "consistent-owner-snapshot",
+      "consumers": [
+        "management"
+      ]
+    }
+  ]
+}

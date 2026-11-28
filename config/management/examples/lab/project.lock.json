@@ -1,0 +1,35 @@
+{
+  "schema": "ghostfleet-project-lock/v1",
+  "version": "1.0.0",
+  "matrix_sha256": "0225fd05501c643a39c2e5e8a4555dcc245f501b6f2282d9d51da08171e54ccc",
+  "baseline": {
+    "path": "baseline.json",
+    "sha256": "9e38ac9a83aefaf1f4000e118c97945a39d8774eda19152f250397bb9e58ee78"
+  },
+  "platforms": {
+    "debian13-amd64": {
+      "profile": {
+        "path": "native-debian.json",
+        "sha256": "eecb4eff0e5361784901a7cc2f5e662f9c7bec641660cdc1451787109fcba4ee"
+      },
+      "layers": [
+        {
+          "path": "fixture.json",
+          "sha256": "ac5dcd5001eeaab172b9c696ea1cbffa434edef2a666287708065334707d71b5"
+        }
+      ]
+    },
+    "wsl-debian13-amd64": {
+      "profile": {
+        "path": "wsl-debian.json",
+        "sha256": "d507b415688c3928fd78852e1d6a7a71db3c8c33f21dea017a7cd7f2cb473a8d"
+      },
+      "layers": [
+        {
+          "path": "fixture.json",
+          "sha256": "ac5dcd5001eeaab172b9c696ea1cbffa434edef2a666287708065334707d71b5"
+        }
+      ]
+    }
+  }
+}

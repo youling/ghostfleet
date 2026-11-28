@@ -1,0 +1,38 @@
+{
+  "schema": "ghostfleet-config-authority/v1",
+  "node_uid": "<approved-node-uid>",
+  "platform": "debian13-amd64",
+  "projection_sha256": "<compiled-target-sha256>",
+  "operations": [
+    "plan"
+  ],
+  "expires_at": "<owner-expiry-utc>",
+  "controller": {
+    "uid": 1000,
+    "machine_id_sha256": "<owner-controller-machine-id-sha256>"
+  },
+  "target": {
+    "host": "node.example.invalid",
+    "port": 22,
+    "user": "fixture",
+    "alias": "approved-node",
+    "known_hosts": "/opt/ghostfleet-example/known_hosts",
+    "known_hosts_sha256": "<known-hosts-file-sha256>",
+    "host_key_fingerprint": "<openssh-fingerprint>",
+    "identity_file": "/opt/ghostfleet-example/controller-key",
+    "machine_id_sha256": "<approved-target-machine-id-sha256>",
+    "lock_path": "/opt/ghostfleet-lock/controller"
+  },
+  "identity": {
+    "gate": "/opt/ghostfleet-example/identity_gate.py",
+    "gate_sha256": "<verified-fleet-gate-sha256>",
+    "input": "/opt/ghostfleet-example/verified-identities.json",
+    "input_sha256": "<verified-identity-input-sha256>",
+    "node_id": "approved-node"
+  },
+  "tools": {
+    "ansible": "/usr/bin/ansible-playbook",
+    "ansible_sha256": "<pinned-entrypoint-sha256>",
+    "pythonpath": null
+  }
+}

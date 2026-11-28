@@ -1,0 +1,116 @@
+{
+  "debian_artifacts": [
+    {
+      "name": "binutils",
+      "sha256": "6bc08c02539ba53b5e748142397144c499f9b20b5fa9bb56431545db124addeb",
+      "version": "2.44-3"
+    },
+    {
+      "name": "binutils-common",
+      "sha256": "002da5d23f8757dee97a2c0a40e0e1d4d85a43da094488ee2ee7068d4d3691f9",
+      "version": "2.44-3"
+    },
+    {
+      "name": "binutils-x86-64-linux-gnu",
+      "sha256": "e6741ce95ff0f7a131c8d9faa3528ccbbc453078bbc62a97da81340ed7462c53",
+      "version": "2.44-3"
+    },
+    {
+      "name": "libbinutils",
+      "sha256": "4f4664c8a8f0ad0c8631c39fab02e3d8d86ccc6f4436a1d59f059dbcb0492679",
+      "version": "2.44-3"
+    },
+    {
+      "name": "libctf-nobfd0",
+      "sha256": "e280b2be3db6e584500e865c251605b95c346767d87ccb2524e44992048fc657",
+      "version": "2.44-3"
+    },
+    {
+      "name": "libctf0",
+      "sha256": "120cafcd93132a276fa92a8fb4cf39b23d14e5a3e348f4f5580638d71ca95ac5",
+      "version": "2.44-3"
+    },
+    {
+      "name": "libgprofng0",
+      "sha256": "0d36d0bde85c467ac6735dded08e19dd30ae1369e3908b9eb48ccc0d6ff66648",
+      "version": "2.44-3"
+    },
+    {
+      "name": "libsframe1",
+      "sha256": "38f625dfdc582717029ac3a3e97c51d994ec2e7a0e9b230c6b44e40d1276311f",
+      "version": "2.44-3"
+    },
+    {
+      "name": "libicu76",
+      "sha256": "c1bf762996de9ecba9b9d871e4928a8090f023a3e9e7fa3240b3d90f892a01dc",
+      "version": "76.1-4"
+    },
+    {
+      "name": "libjansson4",
+      "sha256": "60707a62fe6c1228c3389b12a13ca4efd76defc5532473e547a29e99cf7d2a6e",
+      "version": "2.14-2+b3"
+    },
+    {
+      "name": "libedit2",
+      "sha256": "b002ea172b9c1e34a67bc497c523c67bb74c3f0a4e98113cb083990a1f1d3bfe",
+      "version": "3.1-20250104-1"
+    },
+    {
+      "name": "libffi8",
+      "sha256": "0ebdc340de33333639c3c63874cd4b15ac2e83dfa1ef3053b7eefaf4919f4f68",
+      "version": "3.4.8-2"
+    },
+    {
+      "name": "libxml2",
+      "sha256": "e0c6b63ce4602a036a526f60fe5e6c1586710688058d98fc1001b9b3147b7efd",
+      "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u3"
+    },
+    {
+      "name": "libllvm19",
+      "sha256": "db0d614d61345ca710fb73e75105f1ec6e38898fa7b3aa99fa7eb7d8b0a11d57",
+      "version": "1:19.1.7-3+b1"
+    },
+    {
+      "name": "libstd-rust-1.85",
+      "sha256": "880a7ccc84ac9ed5964379ff2f2c2de2763dc87cb2c812963cefb44008306587",
+      "version": "1.85.1+dfsg1-1+deb13u1"
+    },
+    {
+      "name": "libstd-rust-dev",
+      "sha256": "f10847d21f156e700c16fede486e404d078183197187406b4b512ccc92468adb",
+      "version": "1.85.1+dfsg1-1+deb13u1"
+    },
+    {
+      "name": "rustc",
+      "sha256": "8dc8db527ef0e4e64c1361281c123c461b768c148d5308f841ef47c7b90b19d4",
+      "version": "1.85.1+dfsg1-1+deb13u1"
+    },
+    {
+      "name": "libz3-4",
+      "sha256": "71383373523ef62d47eccf660cf6535c3febcbb3f88e54cb7a43124014b57359",
+      "version": "4.13.3-1"
+    }
+  ],
+  "node": {
+    "integrity": "sha512-3jhC+wcoWxKZxcRqF2sUSl0c9HEXFnur/nuIPx6O6CWKV0jOUWQm7Htw5SuXqqlMCEhi0cJqybFPEb5hhcBiMw==",
+    "sha256": "2e77fcc6b99a29e82643e27ae8970b168c99e5d74718705c085f8136e605c858",
+    "version": "22.23.5"
+  },
+  "python": {
+    "debian_package": "3.13.5-2+deb13u5",
+    "version": "3.13.5"
+  },
+  "readelf": {
+    "debian_package": "2.44-3",
+    "version": "2.44"
+  },
+  "rust": {
+    "debian_package": "1.85.1+dfsg1-1+deb13u1",
+    "version": "1.85.1"
+  },
+  "typescript": {
+    "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
+    "sha256": "10e108c9cf7d5f2879053dff18515fb405abf2ccef63eaaf017d9c571687a1d3",
+    "version": "5.9.3"
+  }
+}

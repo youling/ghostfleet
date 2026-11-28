@@ -1,0 +1,59 @@
+{
+  "schema": "ghostfleet-config-layer/v1",
+  "type": "platform",
+  "name": "debian-wsl",
+  "version": "1.0.0",
+  "platforms": [
+    "wsl-debian13-amd64"
+  ],
+  "resources": [
+    {
+      "id": "wsl-native-toolchain",
+      "kind": "path",
+      "scope": "wsl",
+      "key": "/usr/local/share",
+      "owner": "wsl",
+      "mode": "observe",
+      "recovery": "guest-rebuild",
+      "consumers": [
+        "linux-toolchain"
+      ]
+    },
+    {
+      "id": "wsl-host-owned-lifecycle",
+      "kind": "lifecycle",
+      "scope": "windows",
+      "key": "wsl:debian",
+      "owner": "windows",
+      "mode": "observe",
+      "recovery": "owner-restart-export",
+      "consumers": [
+        "linux-toolchain"
+      ]
+    },
+    {
+      "id": "exchange-input",
+      "kind": "path",
+      "scope": "wsl",
+      "key": "/exchange/in",
+      "owner": "windows",
+      "mode": "observe",
+      "recovery": "owner-exchange-contract",
+      "consumers": [
+        "linux-toolchain"
+      ]
+    },
+    {
+      "id": "exchange-output",
+      "kind": "path",
+      "scope": "wsl",
+      "key": "/exchange/out",
+      "owner": "windows",
+      "mode": "observe",
+      "recovery": "owner-exchange-contract",
+      "consumers": [
+        "linux-toolchain"
+      ]
+    }
+  ]
+}

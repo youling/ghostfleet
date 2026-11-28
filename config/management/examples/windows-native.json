@@ -1,0 +1,35 @@
+{
+  "schema": "ghostfleet-config-layer/v1",
+  "type": "platform",
+  "name": "windows-native",
+  "version": "1.0.0",
+  "platforms": [
+    "windows-amd64"
+  ],
+  "resources": [
+    {
+      "id": "native-desktop",
+      "kind": "lifecycle",
+      "scope": "windows",
+      "key": "windows:desktop",
+      "owner": "windows",
+      "mode": "observe",
+      "recovery": "owner-recovery-environment",
+      "consumers": [
+        "management"
+      ]
+    },
+    {
+      "id": "wsldistro-owner",
+      "kind": "lifecycle",
+      "scope": "windows",
+      "key": "wsl:debian",
+      "owner": "windows",
+      "mode": "observe",
+      "recovery": "owner-restart-export",
+      "consumers": [
+        "linux-toolchain"
+      ]
+    }
+  ]
+}
