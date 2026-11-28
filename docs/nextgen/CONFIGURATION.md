@@ -71,6 +71,7 @@ python3 -I scripts/ghostfleet_converge.py verify \
 2. Through that channel, read the pending record, the affected resources and their existing owner logs. Compare the attempt ID,
    projection digest and boot identifier, and confirm that any previously dispatched remote actions have ended. For actions whose
    terminal state cannot be observed, keep the reservation in place until the owner establishes a safe recovery boundary.
+   For an incomplete record, use the controller receipt and maintenance evidence to establish the original scope and terminal state.
 3. Under the same exclusive `flock`, the owner rechecks the reservation against the observed attempt and removes only that
    reconciled record. Keep the lock inode in place. Use authorized `verify` to read back the selected configuration. Any needed
    remediation or rollback is a separate authorized apply. If the final confirmation was lost after the record was removed,
@@ -79,6 +80,22 @@ python3 -I scripts/ghostfleet_converge.py verify \
 中断不会触发自动重试，也不会因为授权过期或主机重启自动清除未决记录。owner 先确认旧控制端不能继续派发，
 再通过独立救援入口观察受影响的资源和远端执行终态。确认后持原锁核对记录并清除对应占位，再读回当前配置。
 灰度前核对所有控制端使用同一版本、同一持久锁路径，记录救援入口和负责本次读回的 owner。
+
+### First field pilot / 首次现场灰度
+
+Before requesting a one-node grant, record the reviewed commit, node UID and platform, canonical lock path and filesystem,
+approved controller identity and SSH host pin, project lock and expected projection digest, bounded operations and expiry,
+selected resource IDs, expected diff, previous approved lock for rollback and the independent rescue contact. Record how all
+earlier write entrypoints will be closed and their remaining work will be checked before enabling this revision.
+
+Start with a file-only projection in a dedicated owner-approved directory. Run plan with the approved envelope and confirm the
+expected changes before applying. Record apply, independent verify and a second apply. Require the readback to cover every
+selected resource, with no unreviewed change and a zero-change rerun. When an apply is `UNKNOWN`, follow interrupted apply
+recovery before starting any other configuration attempt. Expanding to package or lifecycle writes requires its own reviewed
+scope and owner procedure.
+
+首次现场试点仅申请一台节点、一个经 owner 指定的配置目录和一个有界时段。用文件的实际摘要、权限、二次零差异、
+同锁恢复和独立救援作为验收回执。审批记录应包含前版项目锁、回退触发条件和执行负责人。由现有授权入口签发。
 
 ## Runtime and exchange / 执行与交换区
 
@@ -97,5 +114,15 @@ The exchange command consumes owner-resolved input and output paths. Each grant 
 ## Acceptance / 验收范围
 
 The configuration fixture uses the same project lock on a disposable native-boot Debian VM and a separate Debian WSL distribution. A scoped path alias selects the approved fixture directory on each instance. Acceptance records initial apply, no-op rerun, one-object drift repair, wrong UID without target contact, concurrent writer refusal, previous-lock recovery, and persistent files and identity after restart. The [checked-in smoke fixture and lock](../../config/management/examples/lab/toolchain) pin Node 22.23.5, TypeScript 5.9.3, Python 3.13.5, Rust 1.85.1 and binutils readelf 2.44. The same inputs produce a synthetic static ELF for inspection on both Linux environments.
+
+The [fresh toolchain example](../../config/management/examples/lab/toolchain) includes the owner supply and restore steps for
+new Debian 13 amd64 lab targets. Capture the approved package and tool archives, full manifest and matching fresh baseline
+together. Reusing that supply verifies the same bytes offline. Recreating the supply against a newer Debian index can resolve
+different dependencies and requires review and a new manifest. Invoke the sample as an ordinary user through the same runtime
+entry point used for project work.
+
+工具链复验按原所有者分工保留。Linux owner 核准新来宾基线和离线制品，原有运行入口执行小样。Windows 原生
+样例由 PowerShell 执行，并通过 HOST_AGENT 有界交换把结果交给 Linux 端核对摘要。现场工具供给和宿主安装沿
+各自现有授权和流程。
 
 0.4.0 的主机试点、生产权限和发行审批沿原 owner。隔离通过后，按现有验收记录实际适用的平台、工具版本和产品边界。交付后以稳定维护、修复和性能工作为主，新的核心组件按独立架构裁决处理。
