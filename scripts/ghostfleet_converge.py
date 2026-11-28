@@ -19,6 +19,7 @@ import stat
 import subprocess
 import tempfile
 import time
+import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,64 +32,17 @@ ALIAS = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}')
 RECAP = re.compile(r'^target\s+:\s+(ok=\d+\s+changed=\d+\s+unreachable=\d+\s+failed=\d+\s+skipped=\d+\s+rescued=\d+\s+ignored=\d+)\s*$', re.M)
 PLATFORMS = {'debian13-amd64', 'wsl-debian13-amd64'}
 
-REMOTE_GATE = r'''
-import fcntl, hashlib, json, os, pathlib, platform, stat, sys
-expected, product_platform, lock, paths = sys.argv[1:]
-machine = pathlib.Path('/etc/machine-id').read_bytes().strip()
-os_release = dict(line.rstrip().split('=', 1) for line in open('/etc/os-release') if '=' in line)
-is_wsl = 'microsoft' in platform.release().lower()
-if hashlib.sha256(machine).hexdigest() != expected or os_release.get('ID') != 'debian' or os_release.get('VERSION_ID', '').strip('"') != '13':
-    raise SystemExit(40)
-if platform.machine() != 'x86_64' or is_wsl != (product_platform == 'wsl-debian13-amd64'):
-    raise SystemExit(40)
-
-paths = json.loads(paths)
-planned_directories = {pathlib.Path(path) for path, kind in paths if kind == 'directory'}
-
-def owned_path(value, required=False):
-    p = pathlib.Path(value)
-    for parent in reversed(p.parents):
-        try:
-            meta = parent.lstat()
-        except FileNotFoundError:
-            if not required and parent in planned_directories:
-                continue
-            raise SystemExit(41)
-        if not stat.S_ISDIR(meta.st_mode) or meta.st_uid not in (0, os.getuid()) or meta.st_mode & 0o022:
-            raise SystemExit(41)
-    try:
-        meta = p.lstat()
-    except FileNotFoundError:
-        if required:
-            raise SystemExit(41)
-        return None
-    if meta.st_uid != os.getuid() or not (stat.S_ISREG(meta.st_mode) or stat.S_ISDIR(meta.st_mode)):
-        raise SystemExit(41)
-    return meta
-
-lock_meta = owned_path(lock, required=True)
-if not stat.S_ISREG(lock_meta.st_mode) or lock_meta.st_nlink != 1 or lock_meta.st_mode & 0o077:
-    raise SystemExit(41)
-fd = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW)
-locked = os.fstat(fd)
-if (locked.st_dev, locked.st_ino) != (lock_meta.st_dev, lock_meta.st_ino):
-    raise SystemExit(41)
-try:
-    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-except BlockingIOError:
-    raise SystemExit(42)
-for path, kind in paths:
-    existing = owned_path(path)
-    if existing and (stat.S_ISDIR(existing.st_mode) != (kind == 'directory') or
-                     (kind == 'file' and existing.st_nlink != 1)):
-        raise SystemExit(41)
-print("LOCKED", flush=True)
-sys.stdin.buffer.read(1)
-'''
+TARGET_GATE = PLAY / 'target_lock.py'
 
 
 class Refused(Exception):
     pass
+
+
+class AttemptUnknown(Exception):
+    def __init__(self, attempt_id, reason):
+        self.attempt_id = attempt_id
+        self.reason = reason
 
 
 def require(ok, code):
@@ -190,8 +144,10 @@ def desired_resources(projection, target, assets):
                 rule = {**rule, 'content': content}
             else:
                 raise Refused('ANSIBLE_PATH_STATE_UNSUPPORTED')
-            require(path != Path('/') and path != absolute(target['lock_path'])
-                    and not absolute(target['lock_path']).is_relative_to(path)
+            lock = absolute(target['lock_path'])
+            pending = lock.with_name(lock.name + '.pending')
+            require(path != Path('/') and not any(item.is_relative_to(path) or path.is_relative_to(item)
+                                               for item in (lock, pending))
                     and isinstance(rule['mode'], str) and re.fullmatch(r'0[0-7]{3}', rule['mode']),
                     'ANSIBLE_PATH_MODE_INVALID')
             paths.append({'path': str(path), **rule})
@@ -270,33 +226,56 @@ def ssh_options(target, pins):
             '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2', '-i', target['identity_file']]
 
 
+def lock_reply(stream, timeout):
+    marker = bytearray()
+    deadline = time.monotonic() + timeout
+    with selectors.DefaultSelector() as watcher:
+        watcher.register(stream, selectors.EVENT_READ)
+        while not marker.endswith(b'\n'):
+            remaining = deadline - time.monotonic()
+            require(remaining > 0 and watcher.select(timeout=remaining), 'TARGET_LOCK_TIMEOUT')
+            chunk = os.read(stream.fileno(), 16)
+            if not chunk:
+                break
+            marker.extend(chunk)
+            require(len(marker) <= 16, 'TARGET_LOCK_RESPONSE_INVALID')
+    return marker
+
+
 @contextmanager
-def node_lock(target, platform, paths, options, env):
-    command = shlex.join(['/usr/bin/python3', '-I', '-c', REMOTE_GATE, target['machine_id_sha256'],
-                          platform, target['lock_path'], json.dumps([(p['path'], p['state']) for p in paths])])
+def node_lock(target, platform, paths, options, env, *, action, projection, expires):
+    attempt = uuid.uuid4().hex
+    command = shlex.join(['/usr/bin/python3', '-I', '-c', TARGET_GATE.read_text(encoding='utf-8'),
+                          target['machine_id_sha256'], platform, target['lock_path'],
+                          json.dumps([(p['path'], p['state']) for p in paths]), action, attempt, projection, expires])
     argv = ['/usr/bin/ssh', *options, '-T', '-p', str(target['port']), '-l', target['user'], target['host'], command]
     process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                env=env, start_new_session=True)
+    refusals = {40: 'TARGET_MACHINE_MISMATCH', 41: 'TARGET_PATH_OWNERSHIP_INVALID', 42: 'TARGET_WRITER_BUSY',
+                43: 'TARGET_RECOVERY_REQUIRED', 44: 'AUTHORITY_EXPIRED', 45: 'TARGET_LOCK_STORAGE_UNSUPPORTED'}
+    rejected = False
     try:
-        marker = bytearray()
-        deadline = time.monotonic() + 12
-        with selectors.DefaultSelector() as watcher:
-            watcher.register(process.stdout, selectors.EVENT_READ)
-            while not marker.endswith(b'\n'):
-                remaining = deadline - time.monotonic()
-                require(remaining > 0 and watcher.select(timeout=remaining), 'TARGET_LOCK_TIMEOUT')
-                chunk = os.read(process.stdout.fileno(), 16)
-                if not chunk:
-                    break
-                marker.extend(chunk)
-                require(len(marker) <= 16, 'TARGET_LOCK_RESPONSE_INVALID')
-        if marker != b'LOCKED\n':
+        if lock_reply(process.stdout, 12) != b'LOCKED\n':
             code = process.wait(timeout=2)
-            raise Refused({40: 'TARGET_MACHINE_MISMATCH', 41: 'TARGET_PATH_OWNERSHIP_INVALID',
-                           42: 'TARGET_WRITER_BUSY'}.get(code, 'PINNED_SSH_REFUSED'))
+            rejected = code in refusals
+            raise Refused(refusals.get(code, 'PINNED_SSH_REFUSED'))
         yield process
+        if action == 'apply':
+            check_window(expires)
+            require(process.poll() is None, 'TARGET_LOCK_LOST')
+            process.stdin.write(('COMMIT ' + attempt + '\n').encode('ascii'))
+            process.stdin.flush()
+            require(lock_reply(process.stdout, 6) == b'COMMITTED\n', 'TARGET_COMMIT_UNCONFIRMED')
+    except (Refused, OSError, subprocess.SubprocessError, KeyboardInterrupt) as error:
+        if action == 'apply' and not rejected:
+            reason = str(error) if isinstance(error, Refused) else 'TARGET_COMMIT_UNCONFIRMED'
+            raise AttemptUnknown(attempt, reason) from None
+        raise
     finally:
-        process.stdin.close()
+        try:
+            process.stdin.close()
+        except BrokenPipeError:
+            pass
         try:
             process.wait(timeout=3)
         except subprocess.TimeoutExpired:
@@ -433,7 +412,8 @@ def main():
                 owner_identity(authority['identity'], target['alias'], scratch, env)
                 binary = engine(authority['tools'], env)
                 options = ssh_options(target, pins)
-                with node_lock(target, authority['platform'], paths, options, env) as held:
+                with node_lock(target, authority['platform'], paths, options, env, action=args.action,
+                               projection=authority['projection_sha256'], expires=authority['expires_at']) as held:
                     stats = run_playbook(binary, scratch, args.action, target, options, paths, packages, owner, package_action,
                                          env, held, authority['expires_at'])
         finally:
@@ -444,6 +424,10 @@ def main():
                           'selected_resources': sorted(selected), 'managed_resources_not_run': not_run, 'recap': stats},
                          sort_keys=True))
         return 0
+    except AttemptUnknown as error:
+        print(json.dumps({'schema': 'ghostfleet-config-result/v1', 'action': args.action, 'status': 'UNKNOWN',
+                          'reason': error.reason, 'attempt_id': error.attempt_id, 'readback': False}))
+        return 3
     except (Refused, OSError, KeyError, TypeError, ValueError, subprocess.SubprocessError) as error:
         print(json.dumps({'schema': 'ghostfleet-config-result/v1', 'action': args.action, 'status': 'BLOCKED',
                           'reason': str(error) if isinstance(error, Refused) else 'INVALID_INPUT_OR_EXECUTION_FAILURE'}))

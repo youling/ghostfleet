@@ -25,9 +25,14 @@ Use the [locked profiles and matrix](../../config/management/README.md) to compi
 
 ## One-target runbook / 单目标运行手册
 
-Use a Linux controller with pinned `ansible-core 2.19.11`, native OpenSSH and Python. Keep the controller inputs in an owner-controlled directory. The owner supplies a short-lived `ghostfleet-config-authority/v1` file, with its existing verified Fleet identity input and gate. The scope binds one node UID and platform, controller UID and machine identity digest, projection digest, allowed operations and expiry. It also binds the target SSH address, login, exact host key and key file reference, target machine identity digest, the target-owned lock file and the exact Ansible entrypoint. See the [authority envelope example](../../config/convergence/authority.example.json) for the exact field names. The host owner provisions the target lock once in an owner-controlled directory. Use the same lock across configuration and recovery attempts for that target.
+Use a Linux controller with pinned `ansible-core 2.19.11`, native OpenSSH and Python. Keep the controller inputs in an owner-controlled directory. The owner supplies a short-lived `ghostfleet-config-authority/v1` file, with its existing verified Fleet identity input and gate. The scope binds one node UID and platform, controller UID and machine identity digest, projection digest, allowed operations and expiry. It also binds the target SSH address, login, exact host key and key file reference, target machine identity digest, the target-owned lock file and the exact Ansible entrypoint. See the [authority envelope example](../../config/convergence/authority.example.json) for the exact field names. The host owner provisions the target lock once in an owner-controlled directory. Use one canonical lock path on a persistent local ext4, XFS or Btrfs filesystem for every authorized controller and
+recovery attempt on that target. The owner preserves the lock inode and its adjacent reservation across restarts.
+Use the same accepted controller revision throughout a rollout. Close the previous write entrypoints and confirm their
+in-flight operations are terminal before enabling this revision. Earlier candidates did not check the reservation.
 
-控制端每次重新编译项目锁，把目标投影和现有授权逐项核对，再通过既有 Fleet 身份门。首次 SSH 使用固定主机密钥。目标核对机身标识和平台后，持有同一个锁到本次结束。等待锁的第二个写者会被拒绝。目标拒绝连接、授权过期或锁会话脱落时，控制端结束当次执行并要求重新观测实际状态。
+控制端每次重新编译项目锁，把目标投影和现有授权逐项核对，再通过既有 Fleet 身份门。首次 SSH 使用固定主机密钥。目标核对机身标识和平台后，持有同一个锁到本次结束。等待锁的第二个写者会被拒绝。目标在派发 apply 前把同目录的 `<lock>.pending` 落盘。只有当 Ansible 成功结束、写后读回通过且授权仍有效，
+控制端才在同一持锁会话确认完成。断线、超时或授权到期，若无法确认提交，回执为 `UNKNOWN`。目标仍有未决
+记录时，新的 plan、apply 和 verify 返回 `TARGET_RECOVERY_REQUIRED`。
 
 ```sh
 python3 -I scripts/ghostfleet_converge.py plan \
@@ -58,6 +63,22 @@ python3 -I scripts/ghostfleet_converge.py verify \
 - Recover configuration by applying a separately approved previous project lock and then reading it back. Keep the same host pin and lock. Restore signed GhostFleet releases, lifecycle state, credentials and provider configuration through their original recovery mechanisms.
 
 恢复一项文件或权限漂移时，对原授权重新核验并复跑同一配置。回退使用获准的前一项目锁，保留文件摘要、唯一写者与同一私有恢复入口。GhostFleet 自有签名更新、K3s 工作负载、Tailscale/Cloudflare 网络策略、Windows 设置和 WSL 生命周期沿各自 owner。候选未改变现役 0.3.0 安装包或兼容控制面。
+
+### Interrupted apply / 中断恢复
+
+1. Preserve the `UNKNOWN` receipt and its attempt ID. Raise the incident to the target owner through the existing
+   independent maintenance channel. Stop the original controller attempt and establish that it can no longer dispatch work.
+2. Through that channel, read the pending record, the affected resources and their existing owner logs. Compare the attempt ID,
+   projection digest and boot identifier, and confirm that any previously dispatched remote actions have ended. For actions whose
+   terminal state cannot be observed, keep the reservation in place until the owner establishes a safe recovery boundary.
+3. Under the same exclusive `flock`, the owner rechecks the reservation against the observed attempt and removes only that
+   reconciled record. Keep the lock inode in place. Use authorized `verify` to read back the selected configuration. Any needed
+   remediation or rollback is a separate authorized apply. If the final confirmation was lost after the record was removed,
+   the same rule applies: have the owner read back the affected resources before repeating any apply.
+
+中断不会触发自动重试，也不会因为授权过期或主机重启自动清除未决记录。owner 先确认旧控制端不能继续派发，
+再通过独立救援入口观察受影响的资源和远端执行终态。确认后持原锁核对记录并清除对应占位，再读回当前配置。
+灰度前核对所有控制端使用同一版本、同一持久锁路径，记录救援入口和负责本次读回的 owner。
 
 ## Runtime and exchange / 执行与交换区
 

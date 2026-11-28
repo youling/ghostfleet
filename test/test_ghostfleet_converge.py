@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 runner = runpy.run_path(str(ROOT / 'scripts/ghostfleet_converge.py'))
 handoff = runpy.run_path(str(ROOT / 'config/convergence/owner_handoff.py'))
 package_action = runpy.run_path(str(ROOT / 'config/convergence/package_action.py'))
+target_lock = runpy.run_path(str(ROOT / 'config/convergence/target_lock.py'))
 Refused = runner['Refused']
 
 
@@ -84,6 +85,31 @@ class ConfigureScopeTest(unittest.TestCase):
         resource['mode'] = 'observe'
         with self.assertRaisesRegex(Refused, 'OWNER_LIFECYCLE_CLAIM_REQUIRED'):
             handoff['command'](spec, projection, {'user': 'root'}, 'apply', runner['require'], runner['absolute'])
+
+
+class DurableReservationTest(unittest.TestCase):
+    def test_reservation_survives_eof_until_exact_completion(self):
+        attempt = uuid.uuid4().hex
+        with tempfile.TemporaryDirectory() as place:
+            pending = target_lock['pending_path'](Path(place) / 'controller.lock')
+            stamp = target_lock['reserve'](pending, {'attempt_id': attempt})
+            self.assertEqual(pending.stat().st_mode & 0o777, 0o600)
+            self.assertFalse(target_lock['complete'](pending, attempt, b'', stamp))
+            self.assertFalse(target_lock['complete'](pending, attempt, b'COMMIT other-attempt\n', stamp))
+            with self.assertRaises(SystemExit) as blocked:
+                target_lock['require_idle'](pending)
+            self.assertEqual(blocked.exception.code, 43)
+            self.assertTrue(target_lock['complete'](pending, attempt, f'COMMIT {attempt}\n'.encode(), stamp))
+            target_lock['require_idle'](pending)
+
+    def test_incomplete_reservation_stays_fail_closed(self):
+        with tempfile.TemporaryDirectory() as place:
+            pending = Path(place) / 'pending'
+            pending.touch(mode=0o600)
+            with self.assertRaises(SystemExit) as blocked:
+                target_lock['require_idle'](pending)
+            self.assertEqual(blocked.exception.code, 43)
+
 
 
 if __name__ == '__main__':
